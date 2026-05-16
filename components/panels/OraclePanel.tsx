@@ -13,6 +13,14 @@ import type { GoPlusResult } from "@/lib/apis/goplus";
 import type { EdgeScore } from "@/lib/engines/edgeScore";
 import { checkAntiFOMO } from "@/lib/engines/antiFomo";
 import type { FOMOCheck } from "@/lib/engines/antiFomo";
+import OnChainBadge from "@/components/ui/OnChainBadge";
+import type { OnChainData } from "@/lib/apis/alchemy";
+import FOMOReplayBadge from "@/components/ui/FOMOReplayBadge";
+import SetupDNABadge from "@/components/ui/SetupDNABadge";
+import { computeSetupDNA } from "@/lib/engines/setupDna";
+import type { SetupDNA } from "@/lib/engines/setupDna";
+import MarketRegimeBadge from "@/components/ui/MarketRegimeBadge";
+import type { MarketRegime } from "@/lib/engines/marketRegime";
 
 interface Props {
   pair: Pair | null;
@@ -25,13 +33,16 @@ interface Props {
   goPlusLoading?: boolean;
   edgeScore?: EdgeScore | null;
   ohlcv?: import("@/types").OHLCVCandle[];
+  onChain?: OnChainData | null;
+  onChainLoading?: boolean;
+  regime?: MarketRegime | null;
 }
 
 const VERDICT_COLOR: Record<string, string> = {
   BUY: "#39ff14", SELL: "#ff3b3b", HOLD: "#ffb347", AVOID: "#ff3b3b", HONEYPOT: "#ff0000",
 };
 
-export default function OraclePanel({ pair, analysis, analyzing, flags, velocity, onAnalyze, goPlus, goPlusLoading, edgeScore, ohlcv = [] }: Props) {
+export default function OraclePanel({ pair, analysis, analyzing, flags, velocity, onAnalyze, goPlus, goPlusLoading, edgeScore, ohlcv = [], onChain, onChainLoading, regime }: Props) {
   if (!pair) {
     return (
       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "60%", gap: 10 }}>
@@ -50,9 +61,15 @@ export default function OraclePanel({ pair, analysis, analyzing, flags, velocity
   const whalePressure = Math.round((buys1h / t1h) * 100);
   const isEdgeScore = !!edgeScore;
   const fomoCheck: FOMOCheck = pair ? checkAntiFOMO(pair, ohlcv) : { blocked: false, reason: null, warnings: [] };
+  const setupDna: SetupDNA | null = (edgeScore && flags)
+    ? computeSetupDNA(edgeScore, flags, pair.chainId ?? "base")
+    : null;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }} className="fade-in">
+	
+	  {/* Market Regime */}
+      <MarketRegimeBadge regime={regime ?? null} />
 
       {/* Header */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
@@ -160,6 +177,15 @@ export default function OraclePanel({ pair, analysis, analyzing, flags, velocity
 
       {/* GoPlus Security */}
       <SecurityCard data={goPlus ?? null} loading={goPlusLoading ?? false} tokenAddress={pair.baseToken?.address} />
+
+	  {/* On-chain Data */}
+      <OnChainBadge data={onChain ?? null} loading={onChainLoading ?? false} />
+	  
+	  {/* Setup DNA */}
+      <SetupDNABadge dna={setupDna} />
+
+      {/* FOMO Replay */}
+      <FOMOReplayBadge />
 
       {/* Trade Gate */}
       {edgeScore && (

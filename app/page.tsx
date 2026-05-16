@@ -26,6 +26,11 @@ import PortfolioPanel from "@/components/panels/PortfolioPanel";
 import MarketPanel from "@/components/panels/MarketPanel";
 import TradePanel from "@/components/panels/TradePanel";
 import MemoryPanel from "@/components/panels/MemoryPanel";
+import { getOnChainData } from "@/lib/apis/alchemy";
+import type { OnChainData } from "@/lib/apis/alchemy";
+import { saveFOMOBlock, updateFOMOOutcomes } from "@/lib/engines/fomoReplay";
+import { detectMarketRegime } from "@/lib/engines/marketRegime";
+import type { MarketRegime } from "@/lib/engines/marketRegime";
 
 type Tab = "oracle" | "chart" | "radar" | "trade" | "paper" | "portfolio" | "market" | "memory";
 
@@ -51,6 +56,11 @@ export default function Page() {
 
   const { alerts, checkVolumeSpikeAlerts, addRiskAlert, addFlagAlert } = useAlerts();
   useEffect(() => { checkVolumeSpikeAlerts(trending); }, [trending, checkVolumeSpikeAlerts]);
+  // Market Regime — recalculat la fiecare trending refresh
+  useEffect(() => {
+    if (!trending.length || !fg.length) return;
+    setRegime(detectMarketRegime(fg, coins, trending));
+  }, [trending, fg, coins]); // eslint-disable-line
 
   const [analysis, setAnalysis]           = useState<AIAnalysis | null>(null);
   const [analyzing, setAnalyzing]         = useState(false);
@@ -86,6 +96,9 @@ export default function Page() {
   const [goPlus, setGoPlus]               = useState<GoPlusResult | null>(null);
   const [goPlusLoading, setGoPlusLoading] = useState(false);
   const [edgeScore, setEdgeScore]         = useState<EdgeScore | null>(null);
+  const [onChain, setOnChain]             = useState<OnChainData | null>(null);
+  const [onChainLoading, setOnChainLoading] = useState(false);
+  const [regime, setRegime] = useState<MarketRegime | null>(null);
 
   // Load OHLCV chart when pair changes
   useEffect(() => {
@@ -120,6 +133,18 @@ export default function Page() {
       const es = computeEdgeScore(selectedPair!, flags, gp);
       setEdgeScore(es);
       setGoPlusLoading(false);
+	  // Salvează FOMO block dacă anti-FOMO a blocat
+      const fomo = checkAntiFOMO(selectedPair!, []);
+      if (fomo.blocked && fomo.reason) {
+        saveFOMOBlock(
+          selectedPair!.baseToken?.symbol ?? "?",
+          selectedPair!.chainId ?? "?",
+          selectedPair!.pairAddress ?? "",
+          Number(selectedPair!.priceUsd),
+          Number(selectedPair!.priceChange?.h24 ?? 0),
+          fomo.reason
+        );
+      }
       if (gp.dataAvailable) {
         log(
           `GoPlus: ${gp.isHoneypot ? "🚨 HONEYPOT" : "safe"} | tax ${(gp.sellTax * 100).toFixed(0)}% sell | ${gp.holderCount} holders`,
@@ -131,8 +156,25 @@ export default function Page() {
     });
   }, [selectedPair?.pairAddress]); // eslint-disable-line
 
+	// Fetch on-chain data when pair changes
+  useEffect(() => {
+    const addr = selectedPair?.baseToken?.address;
+    const pair = selectedPair?.pairAddress;
+    const ch   = selectedPair?.chainId ?? chain;
+    if (!addr || addr.length < 10) { setOnChain(null); return; }
+    setOnChainLoading(true);
+    setOnChain(null);
+    getOnChainData(ch, addr, pair ?? "").then((data) => {
+      setOnChain(data);
+      setOnChainLoading(false);
+      if (data.available) log(`On-chain: ${data.uniqueBuyers} buyers, LP net ${data.lpNet >= 0 ? "+" : ""}${data.lpNet}`, "ok");
+      else log("On-chain: data unavailable for this chain", "warn");
+    });
+  }, [selectedPair?.pairAddress]); // eslint-disable-line
+
   // Memory outcome auto-updater — runs on every trending refresh
   useEffect(() => {
+	updateFOMOOutcomes(trending);
     if (!trending.length) return;
     const entries = getAllMemory();
     const now = Date.now();
@@ -354,6 +396,9 @@ export default function Page() {
                 goPlusLoading={goPlusLoading}
                 edgeScore={edgeScore}
                 ohlcv={ohlcv}
+				onChain={onChain}
+                onChainLoading={onChainLoading}
+				regime={regime}
               />
             )}
             {tab === "chart"     && <ChartPanel pair={selectedPair} ohlcv={ohlcv} loading={loadingChart} />}
