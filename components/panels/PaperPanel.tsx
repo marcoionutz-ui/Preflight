@@ -6,7 +6,6 @@ import { fmtUSD, fmtPrice, fmtPct } from "@/lib/utils";
 import { computeSmartScore } from "@/lib/engines/smartScore";
 import { computeRedFlags } from "@/lib/engines/redFlags";
 import { computeTargets, checkExit } from "@/lib/engines/exitIntelligence";
-import type { OHLCVCandle } from "@/types";
 import { CHAINS, CHAIN_IDS } from "@/lib/chains";
 import type { ChainId } from "@/types";
 
@@ -46,8 +45,10 @@ export default function PaperPanel({ papers, setPapers, selectedPair, trending, 
 		  checkpoints: [...(p.checkpoints ?? []).slice(-23), { t: Date.now(), price: cp }],
 		};
 
-		// Auto-exit check
-		const targets = computeTargets(p.entryPrice, p.score);
+		// Auto-exit check — folosește targets salvate la entry dacă există
+		const targets = p.sl
+		  ? { sl: p.sl, tp1: p.tp1!, tp2: p.tp2!, tp3: p.tp3!, trailingStopPct: 0.2 }
+		  : computeTargets(p.entryPrice, p.score);
 		const signal = checkExit(updated, cp, targets);
 		if (signal && (signal.urgency === "high" || signal.action === "sell_all")) {
 		  return {
@@ -89,7 +90,7 @@ export default function PaperPanel({ papers, setPapers, selectedPair, trending, 
         tp1:  targets.tp1,
         tp2:  targets.tp2,
         tp3:  targets.tp3,
-      } as PaperTrade & { sl: number; tp1: number; tp2: number; tp3: number },
+      },
     ]);
     setNote("");
   };
@@ -215,11 +216,9 @@ export default function PaperPanel({ papers, setPapers, selectedPair, trending, 
             const elStr   = elapsed < 3600000 ? Math.round(elapsed / 60000) + "m" : Math.round(elapsed / 3600000) + "h";
 
             // Exit intelligence
-            const targets = (p as any).sl ? {
-              sl: (p as any).sl, tp1: (p as any).tp1,
-              tp2: (p as any).tp2, tp3: (p as any).tp3,
-              trailingStopPct: 0.2,
-            } : computeTargets(p.entryPrice, p.score);
+            const targets = p.sl && p.tp1 && p.tp2 && p.tp3
+              ? { sl: p.sl, tp1: p.tp1, tp2: p.tp2, tp3: p.tp3, trailingStopPct: 0.2 }
+              : computeTargets(p.entryPrice, p.score);
 
             const exitSignal = checkExit(p, p.currentPrice, targets);
 

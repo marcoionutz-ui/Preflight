@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import type { ChainId, AIAnalysis, Position, PaperTrade, OHLCVCandle } from "@/types";
 import { CHAINS, DEFAULT_CHAIN } from "@/lib/chains";
 import { computeRedFlags } from "@/lib/engines/redFlags";
 import { getTrendingPools, getNewPools, getOHLCV } from "@/lib/apis/geckoterminal";
@@ -26,13 +25,16 @@ import PortfolioPanel from "@/components/panels/PortfolioPanel";
 import MarketPanel from "@/components/panels/MarketPanel";
 import TradePanel from "@/components/panels/TradePanel";
 import MemoryPanel from "@/components/panels/MemoryPanel";
-import { getOnChainData } from "@/lib/apis/alchemy";
+import ProofPanel from "@/components/panels/ProofPanel";
 import type { OnChainData } from "@/lib/apis/alchemy";
 import { saveFOMOBlock, updateFOMOOutcomes } from "@/lib/engines/fomoReplay";
+import { saveShadowTrade, updateShadowPrices } from "@/lib/engines/shadowTrader";
+import { useLiveConfig } from "@/lib/trading/useLiveConfig";
 import { detectMarketRegime } from "@/lib/engines/marketRegime";
 import type { MarketRegime } from "@/lib/engines/marketRegime";
+import type { ChainId, AIAnalysis, Position, PaperTrade, OHLCVCandle, Pair } from "@/types";
 
-type Tab = "oracle" | "chart" | "radar" | "trade" | "paper" | "portfolio" | "market" | "memory";
+type Tab = "oracle" | "chart" | "radar" | "trade" | "paper" | "portfolio" | "market" | "memory" | "proof";
 
 const TABS: Array<[Tab, string]> = [
   ["oracle",    "◈ ORACLE"],
@@ -43,6 +45,7 @@ const TABS: Array<[Tab, string]> = [
   ["portfolio", "◑ PORTFOLIO"],
   ["market",    "◑ MARKET"],
   ["memory",    "◈ MEMORY"],
+  ["proof",     "◎ PROOF"],
 ];
 
 export default function Page() {
@@ -77,19 +80,19 @@ export default function Page() {
   const [allTrending, setAllTrending] = useState<Pair[]>([]);
   const goPlusCache = useRef<Map<string, GoPlusResult>>(new Map());
   // Load with 24h cooldown — forget tokens older than 24h
-	const paperedPairs = useRef<Set<string>>(new Set((() => {
-	  if (typeof window === "undefined") return [];
-	  try {
-		const raw = JSON.parse(localStorage.getItem("paperedPairs") ?? "[]");
-		const records: Array<{ key: string; ts: number }> = Array.isArray(raw)
-		  ? raw.map((k: string | { key: string; ts: number }) =>
-			  typeof k === "string" ? { key: k, ts: 0 } : k
-			)
-		  : [];
-		const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-		return records.filter(r => r.ts > cutoff).map(r => r.key);
-	  } catch { return []; }
-	})()));
+	const paperedPairs = useRef<Map<string, number>>(new Map((() => {
+      if (typeof window === "undefined") return [];
+      try {
+        const raw = JSON.parse(localStorage.getItem("paperedPairs") ?? "[]");
+        const records: Array<{ key: string; ts: number }> = Array.isArray(raw)
+          ? raw.map((k: string | { key: string; ts: number }) =>
+              typeof k === "string" ? { key: k, ts: 0 } : k
+          )
+          : [];
+        const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+        return records.filter(r => r.ts > cutoff).map(r => [r.key, r.ts] as [string, number]);
+      } catch { return []; }
+    })()));
   
 
   // GoPlus + Edge Score
@@ -99,6 +102,7 @@ export default function Page() {
   const [onChain, setOnChain]             = useState<OnChainData | null>(null);
   const [onChainLoading, setOnChainLoading] = useState(false);
   const [regime, setRegime] = useState<MarketRegime | null>(null);
+  const { config } = useLiveConfig();
 
   // Load OHLCV chart when pair changes
   useEffect(() => {
@@ -156,53 +160,60 @@ export default function Page() {
     });
   }, [selectedPair?.pairAddress]); // eslint-disable-line
 
-	// Fetch on-chain data when pair changes
+  // Fetch on-chain data when pair changes
   useEffect(() => {
     const addr = selectedPair?.baseToken?.address;
-    const pair = selectedPair?.pairAddress;
-    const ch   = selectedPair?.chainId ?? chain;
+    const pairAddr = selectedPair?.pairAddress ?? "";
+    const ch = selectedPair?.chainId ?? chain;
     if (!addr || addr.length < 10) { setOnChain(null); return; }
     setOnChainLoading(true);
     setOnChain(null);
-    getOnChainData(ch, addr, pair ?? "").then((data) => {
-      setOnChain(data);
-      setOnChainLoading(false);
-      if (data.available) log(`On-chain: ${data.uniqueBuyers} buyers, LP net ${data.lpNet >= 0 ? "+" : ""}${data.lpNet}`, "ok");
-      else log("On-chain: data unavailable for this chain", "warn");
-    });
+    fetch(`/api/onchain?chain=${ch}&token=${addr}&pair=${pairAddr}`)
+      .then(r => r.json())
+      .then((data) => {
+        setOnChain(data);
+        setOnChainLoading(false);
+        if (data.available) log(`On-chain: ${data.uniqueBuyers} receivers, LP net ${data.lpNet >= 0 ? "+" : ""}${data.lpNet}`, "ok");
+        else log("On-chain: unavailable for this chain", "warn");
+      })
+      .catch(() => { setOnChain(null); setOnChainLoading(false); });
   }, [selectedPair?.pairAddress]); // eslint-disable-line
 
   // Memory outcome auto-updater — runs on every trending refresh
   useEffect(() => {
-	updateFOMOOutcomes(trending);
-    if (!trending.length) return;
+    const outcomeSource = autoPaper && allTrending.length ? allTrending : trending;
+    updateFOMOOutcomes(outcomeSource);
+	updateShadowPrices(outcomeSource);
+    if (!outcomeSource.length) return;
     const entries = getAllMemory();
     const now = Date.now();
     entries.forEach(e => {
-      const found = trending.find(p => p.pairAddress === e.pairAddress);
+      const found = outcomeSource.find(p => p.pairAddress === e.pairAddress);
       if (!found) return;
       const cp = Number(found.priceUsd);
       if (!cp || isNaN(cp)) return;
       const age = now - e.timestamp;
-      if (age >= 30 * 60_000  && !e.outcomes.m30) updateOutcome(e.id, "m30",  cp, e.entryPrice);
-      if (age >= 60 * 60_000  && !e.outcomes.h1)  updateOutcome(e.id, "h1",   cp, e.entryPrice);
-      if (age >= 6 * 3600_000 && !e.outcomes.h6)  updateOutcome(e.id, "h6",   cp, e.entryPrice);
-      if (age >= 24* 3600_000 && !e.outcomes.h24) updateOutcome(e.id, "h24",  cp, e.entryPrice);
+      if (age >= 30 * 60_000  && !e.outcomes.m30) updateOutcome(e.id, "m30", cp, e.entryPrice);
+      if (age >= 60 * 60_000  && !e.outcomes.h1)  updateOutcome(e.id, "h1",  cp, e.entryPrice);
+      if (age >= 6 * 3600_000 && !e.outcomes.h6)  updateOutcome(e.id, "h6",  cp, e.entryPrice);
+      if (age >= 24* 3600_000 && !e.outcomes.h24) updateOutcome(e.id, "h24", cp, e.entryPrice);
     });
-  }, [trending]); // eslint-disable-line
+  }, [trending, allTrending, autoPaper]); // eslint-disable-line
 
-	// Pre-fetch GoPlus for trending tokens in background
 	useEffect(() => {
-	  trending.slice(0, 10).forEach(async (p) => {
-		const addr = p.baseToken?.address?.toLowerCase();
-		if (!addr || addr.length < 10) return;
-		if (goPlusCache.current.has(addr)) return;
-		// Mark as pending to avoid duplicate requests
-		goPlusCache.current.set(addr, { dataAvailable: false } as GoPlusResult);
-		const gp = await getTokenSecurity(p.chainId, addr);
-		goPlusCache.current.set(addr, gp);
-	  });
-	}, [trending]); // eslint-disable-line
+    const source = autoPaper && allTrending.length ? allTrending : trending;
+    const toFetch = source.slice(0, 10).filter(p => {
+      const addr = p.baseToken?.address?.toLowerCase();
+      return addr && addr.length >= 10 && !goPlusCache.current.has(addr);
+    });
+    toFetch.forEach(async (p, i) => {
+      const addr = p.baseToken?.address!.toLowerCase();
+      goPlusCache.current.set(addr, { dataAvailable: false } as GoPlusResult);
+      await new Promise(r => setTimeout(r, i * 800));
+      const gp = await getTokenSecurity(p.chainId, addr);
+      goPlusCache.current.set(addr, gp);
+    });
+  }, [trending, allTrending, autoPaper]); // eslint-disable-line
 
   // Multi-chain fetch for auto-paper
 	useEffect(() => {
@@ -226,6 +237,8 @@ export default function Page() {
   useEffect(() => {
     if (!autoPaper || !allTrending.length) return;
 	  allTrending.forEach(p => {
+	  const price = Number(p.priceUsd);
+      if (!price || Number.isNaN(price)) return;
       const key = p.pairAddress;
       const tokenKey = p.baseToken?.address?.toLowerCase() ?? key;
 	  if (!key || paperedPairs.current.has(key) || paperedPairs.current.has(tokenKey)) return;
@@ -238,33 +251,104 @@ export default function Page() {
 	  const es = computeEdgeScore(p, flags, gp);
       const fomo = checkAntiFOMO(p, []);
       const decision = classify(p, es, fomo, flags);
+	    // Salvează FOMO block și din auto-paper NO_CHASE
+      if (decision.decision === "NO_CHASE" && fomo.blocked && fomo.reason) {
+        saveFOMOBlock(
+          p.baseToken?.symbol ?? "?",
+          p.chainId ?? "?",
+          p.pairAddress ?? "",
+          Number(p.priceUsd),
+          Number(p.priceChange?.h24 ?? 0),
+          fomo.reason
+        );
+      }
       if (decision.decision === "TRADE_CANDIDATE" || decision.decision === "PAPER_CANDIDATE") {
-		  paperedPairs.current.add(key);
-		  paperedPairs.current.add(tokenKey);
-		  const records = [...paperedPairs.current].map(key => ({ key, ts: Date.now() }));
-		  localStorage.setItem("paperedPairs", JSON.stringify(records));
-		  setPapers(prev => [...prev, {
+        // Shadow mode — aplică constrângeri LIVE, salvează WOULD_BUY fără execuție
+        const now = Date.now();
+        if (config.mode === "shadow") {
+        const requiredEdge = config.minEdgeScore;
+        const hasGoPlus = addr && goPlusCache.current.get(addr)?.dataAvailable;
+        if (
+          es.total >= requiredEdge &&
+          (!config.requireGoPlus || hasGoPlus) &&
+          !fomo.blocked &&
+          regime?.regime !== "DANGER" &&
+          Number(p.liquidity?.usd ?? 0) >= config.minLiquidityUsd
+        ) {
+          saveShadowTrade({
+            timestamp:    now,
+            symbol:       p.baseToken?.symbol ?? "?",
+            chain:        p.chainId ?? "?",
+            pairAddress:  key,
+            tokenAddress: p.baseToken?.address ?? "",
+            entryPrice:   price,
+            currentPrice: price,
+            edgeScore:    es.total,
+            flagCount:    flags.filter(f => f.sev === "high").length,
+            note: `SHADOW | Edge ${es.total} | ${decision.reasons.slice(0,2).join(", ")}`,
+            sl:  price * (1 - (es.total >= 80 ? 0.15 : 0.18)),
+            tp1: price * (1 + (es.total >= 80 ? 0.25 : 0.20)),
+            tp2: price * (1 + (es.total >= 80 ? 0.60 : 0.50)),
+            tp3: price * (1 + (es.total >= 80 ? 1.50 : 1.00)),
+          });
+          log(`SHADOW: WOULD_BUY ${p.baseToken?.symbol} Edge ${es.total}`, "info");
+        }
+        return;
+      }
+		
+		// Regime gate
+        if (regime && !regime.autoPaperEnabled) return;
+        const requiredEdge = 65 + (regime?.minEdgeScoreAdj ?? 0);
+        if (es.total < requiredEdge) return;
+       
+        paperedPairs.current.set(key, now);
+        paperedPairs.current.set(tokenKey, now);
+        // Salvează cu timestamp individual — nu mai resetează pe toți
+        const records = [...paperedPairs.current].map(([k, ts]) => ({ key: k, ts }));
+        localStorage.setItem("paperedPairs", JSON.stringify(records));
+
+        setPapers(prev => [...prev, {
           id: Date.now() + Math.random(),
           symbol: p.baseToken?.symbol ?? "?",
           chain: p.chainId ?? "?",
           address: p.baseToken?.address ?? "",
           pairAddress: key,
-          entryPrice: Number(p.priceUsd),
-          currentPrice: Number(p.priceUsd),
-          entryTime: Date.now(),
+          entryPrice: price,
+          currentPrice: price,
+          entryTime: now,
           score: es.total,
           flagCount: flags.filter(f => f.sev === "high").length,
           note: `AUTO | Edge ${es.total} | ${decision.reasons.slice(0,2).join(", ")}`,
           checkpoints: [],
-		  sl:   Number(p.priceUsd) * (1 - (es.total >= 75 ? 0.22 : es.total >= 55 ? 0.18 : 0.15)),
-		  tp1:  Number(p.priceUsd) * (1 + (es.total >= 75 ? 0.35 : es.total >= 55 ? 0.28 : 0.22)),
-		  tp2:  Number(p.priceUsd) * (1 + (es.total >= 75 ? 0.90 : es.total >= 55 ? 0.70 : 0.50)),
-		  tp3:  Number(p.priceUsd) * (1 + (es.total >= 75 ? 2.00 : es.total >= 55 ? 1.50 : 1.00)),
-	    } as PaperTrade]);
+          sl:  price * (1 - (es.total >= 75 ? 0.22 : es.total >= 55 ? 0.18 : 0.15)),
+          tp1: price * (1 + (es.total >= 75 ? 0.35 : es.total >= 55 ? 0.28 : 0.22)),
+          tp2: price * (1 + (es.total >= 75 ? 0.90 : es.total >= 55 ? 0.70 : 0.50)),
+          tp3: price * (1 + (es.total >= 75 ? 2.00 : es.total >= 55 ? 1.50 : 1.00)),
+        }]);
         log(`AUTO PAPER: ${p.baseToken?.symbol} Edge ${es.total} — ${decision.reasons[0]}`, "ok");
+        import("@/lib/db/sync").then(({ syncPaperTrade }) => {
+          syncPaperTrade({
+            id: Date.now() + Math.random(),
+            symbol: p.baseToken?.symbol ?? "?",
+            chain: p.chainId ?? "?",
+            address: p.baseToken?.address ?? "",
+            pairAddress: key,
+            entryPrice: price,
+            currentPrice: price,
+            entryTime: now,
+            score: es.total,
+            flagCount: flags.filter(f => f.sev === "high").length,
+            note: `AUTO | Edge ${es.total}`,
+            checkpoints: [],
+            sl:  price * (1 - (es.total >= 75 ? 0.22 : 0.18)),
+            tp1: price * (1 + (es.total >= 75 ? 0.35 : 0.22)),
+            tp2: price * (1 + (es.total >= 75 ? 0.90 : 0.50)),
+            tp3: price * (1 + (es.total >= 75 ? 2.00 : 1.00)),
+          });
+        });
       }
     });
-  }, [trending, autoPaper]); // eslint-disable-line
+  }, [allTrending, autoPaper, regime, config]); // eslint-disable-line
 
   const handleSelectPair = (pair: typeof selectedPair) => {
     if (!pair) return;
@@ -404,10 +488,11 @@ export default function Page() {
             {tab === "chart"     && <ChartPanel pair={selectedPair} ohlcv={ohlcv} loading={loadingChart} />}
             {tab === "radar"     && <RadarPanel newPools={newPools} trending={trending} onSelectPair={(p) => { handleSelectPair(p); setTab("oracle"); }} />}
             {tab === "trade"     && <TradePanel pair={selectedPair} chain={chain} log={log} edgeScore={edgeScore} ohlcv={ohlcv} />}
-            {tab === "paper" && <PaperPanel papers={papers} setPapers={setPapers} selectedPair={selectedPair} trending={trending} autoPaper={autoPaper} setAutoPaper={setAutoPaper} autoChains={autoChains} setAutoChains={setAutoChains} />}
+            {tab === "paper" && <PaperPanel papers={papers} setPapers={setPapers} selectedPair={selectedPair} trending={autoPaper && allTrending.length ? allTrending : trending} autoPaper={autoPaper} setAutoPaper={setAutoPaper} autoChains={autoChains} setAutoChains={setAutoChains} />}
             {tab === "portfolio" && <PortfolioPanel positions={positions} setPositions={setPositions} trending={trending} />}
             {tab === "market"    && <MarketPanel fg={fg} coins={coins} chain={chain} trending={trending} briefing={briefing} briefingLoading={briefingLoading} onBriefing={handleBriefing} />}
             {tab === "memory"    && <MemoryPanel />}
+			{tab === "proof" && <ProofPanel papers={papers} />}
           </div>
 
           {/* System Log */}

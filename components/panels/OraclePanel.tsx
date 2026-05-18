@@ -78,7 +78,11 @@ export default function OraclePanel({ pair, analysis, analyzing, flags, velocity
             {pair.baseToken?.name ?? pair.baseToken?.symbol}{" "}
             <span style={{ color: chainColor }}>{pair.baseToken?.symbol}</span>
           </div>
-          <div style={{ color: "#2a2a2a", fontSize: 10, fontFamily: "monospace", marginTop: 2 }}>
+          <div
+            onClick={() => pair.baseToken?.address && navigator.clipboard.writeText(pair.baseToken.address)}
+            title={pair.baseToken?.address}
+            style={{ color: "#2a2a2a", fontSize: 10, fontFamily: "monospace", marginTop: 2, cursor: "pointer" }}
+          >
             {pair.baseToken?.address && pair.baseToken.address.length > 10
               ? pair.baseToken.address.slice(0, 18) + "…" + pair.baseToken.address.slice(-6)
               : "No contract address"}

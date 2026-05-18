@@ -80,6 +80,10 @@ export interface PaperTrade {
   exitedAt?: number;
   exitPrice?: number;
   exitReason?: string;
+  sl?: number;
+  tp1?: number;
+  tp2?: number;
+  tp3?: number;
 }
 
 export type LogType = "info" | "ok" | "warn" | "err";

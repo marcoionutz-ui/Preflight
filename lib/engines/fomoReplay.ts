@@ -2,6 +2,8 @@
  * FOMO Replay — urmărește ce s-a întâmplat după fiecare block Anti-FOMO
  * Dovedește că engine-ul funcționează cu date reale
  */
+import { syncFOMOBlock, syncAllFOMOBlocks } from "@/lib/db/sync";
+
 
 const STORAGE_KEY = "supreme_fomo_replay";
 const MAX_ENTRIES = 200;
@@ -23,10 +25,11 @@ export interface FOMOBlock {
 export interface FOMOStats {
   total: number;
   withOutcomes: number;
-  goodBlocks: number;   // token a dump-uit după block ✓
-  badBlocks: number;    // token a continuat să pompeze ✗
-  accuracy: number;     // goodBlocks / withOutcomes
-  avgDump1h: number;    // median % change la 1h după block
+  goodBlocks: number;
+  neutralBlocks: number;
+  badBlocks: number;
+  accuracy: number;
+  medianMove1h: number;
 }
 
 // ── Storage ───────────────────────────────────────────────────────────────────
@@ -71,6 +74,7 @@ export function saveFOMOBlock(
     reason,
   });
   save(all);
+  syncFOMOBlock(all[all.length - 1]);
 }
 
 /** Apelat la fiecare trending refresh — actualizează outcome-urile */
@@ -104,7 +108,10 @@ export function updateFOMOOutcomes(
     }
   });
 
-  if (changed) save(all);
+  if (changed) {
+    save(all);
+    syncAllFOMOBlocks(all);
+  }  
 }
 
 export function getFOMOBlocks(): FOMOBlock[] {
@@ -115,20 +122,26 @@ export function getFOMOStats(): FOMOStats {
   const all = load();
   const withH1 = all.filter(b => b.outcome1h);
 
-  const goodBlocks = withH1.filter(b => (b.outcome1h?.pct ?? 0) < -5).length;
-  const badBlocks  = withH1.filter(b => (b.outcome1h?.pct ?? 0) > 10).length;
-  const accuracy   = withH1.length > 0 ? goodBlocks / withH1.length : 0;
+  const goodBlocks    = withH1.filter(b => (b.outcome1h?.pct ?? 0) < -5).length;
+  const badBlocks     = withH1.filter(b => (b.outcome1h?.pct ?? 0) > 10).length;
+  const neutralBlocks = withH1.length - goodBlocks - badBlocks;
+  const accuracy      = withH1.length > 0 ? goodBlocks / withH1.length : 0;
 
-  const sum1h = withH1.reduce((s, b) => s + (b.outcome1h?.pct ?? 0), 0);
-  const avgDump1h = withH1.length > 0 ? sum1h / withH1.length : 0;
+  // Median real (nu average) — mai corect pentru memecoins cu outlieri
+  const sorted = [...withH1.map(b => b.outcome1h?.pct ?? 0)].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  const medianMove1h = sorted.length === 0 ? 0
+    : sorted.length % 2 ? sorted[mid]
+    : (sorted[mid - 1] + sorted[mid]) / 2;
 
   return {
     total: all.length,
     withOutcomes: withH1.length,
     goodBlocks,
+    neutralBlocks,
     badBlocks,
     accuracy,
-    avgDump1h,
+    medianMove1h,
   };
 }
 

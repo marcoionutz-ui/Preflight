@@ -56,7 +56,7 @@ export default function OnChainBadge({ data, loading }: Props) {
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
         <div style={{ background: "#0a0a0a", borderRadius: 3, padding: "6px 8px" }}>
-          <div style={{ color: "#252525", fontSize: 9, fontFamily: "monospace", marginBottom: 2 }}>UNIQUE BUYERS (10m)</div>
+          <div style={{ color: "#252525", fontSize: 9, fontFamily: "monospace", marginBottom: 2 }}>TRANSFER FLOW (10m)</div>
           <div style={{ color: buyersColor, fontSize: 16, fontFamily: "monospace", fontWeight: "bold" }}>
             {data.uniqueBuyers}
           </div>
@@ -78,7 +78,7 @@ export default function OnChainBadge({ data, loading }: Props) {
 
       {data.uniqueBuyers > 0 && (
         <div style={{ marginTop: 6, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <span style={{ color: "#252525", fontSize: 9, fontFamily: "monospace" }}>TOP BUYER CONCENTRATION</span>
+          <span style={{ color: "#252525", fontSize: 9, fontFamily: "monospace" }}>FLOW CONCENTRATION</span>
           <span style={{ color: topBuyerColor, fontSize: 10, fontFamily: "monospace", fontWeight: "bold" }}>
             {data.topBuyerPct}%
             {data.topBuyerPct > 50 ? " ⚠ CONCENTRATED" : data.topBuyerPct > 30 ? " ● WATCH" : " ✓ OK"}

@@ -14,13 +14,14 @@
  * ✅ All 10 live checklist items passed
  */
 
-export type TradingMode = "paper" | "semi" | "live";
+export type TradingMode = "paper" | "shadow" | "semi" | "live";
 
 export interface LiveConfig {
   mode:              TradingMode;
   maxTradeEth:       number;   // max ETH per single trade
   maxDailyLossEth:   number;   // daily stop-loss in ETH
   maxOpenPositions:  number;   // max concurrent positions
+  maxTradesPerDay:   number;   // max trades per day
   minEdgeScore:      number;   // minimum total edge score
   minSafetyScore:    number;   // minimum safety component
   minLiquidityUsd:   number;   // minimum pool liquidity
@@ -38,6 +39,7 @@ export const LIVE_CONFIG: LiveConfig = {
   maxTradeEth:       0.003,
   maxDailyLossEth:   0.015,
   maxOpenPositions:  2,
+  maxTradesPerDay:   3,
   minEdgeScore:      75,        // paper: 55 | semi: 65 | live: 75
   minSafetyScore:    18,        // out of 30
   minLiquidityUsd:   25_000,
@@ -51,9 +53,10 @@ export const LIVE_CONFIG: LiveConfig = {
 };
 
 export const MODE_LABELS: Record<TradingMode, { label: string; color: string }> = {
-  paper: { label: "PAPER",     color: "#39ff14" },
-  semi:  { label: "SEMI-LIVE", color: "#ffb347" },
-  live:  { label: "LIVE",      color: "#ff3b3b" },
+  paper:  { label: "PAPER",     color: "#39ff14" },
+  shadow: { label: "SHADOW",    color: "#0052ff" },
+  semi:   { label: "SEMI-LIVE", color: "#ffb347" },
+  live:   { label: "LIVE",      color: "#ff3b3b" },
 };
 
 

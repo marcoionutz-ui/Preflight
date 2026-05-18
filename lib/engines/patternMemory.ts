@@ -13,6 +13,8 @@
  * Stored in localStorage — persists between sessions.
  */
 
+import { syncMemoryEntry } from "@/lib/db/sync";
+
 export interface MemoryEntry {
   id: string;
   timestamp: number;
@@ -91,6 +93,7 @@ export function addMemoryEntry(entry: Omit<MemoryEntry, "id" | "outcomes">): Mem
   const all = loadAll();
   all.push(full);
   saveAll(all);
+  syncMemoryEntry(full);
   return full;
 }
 
@@ -109,6 +112,7 @@ export function updateOutcome(
     timestamp: Date.now(),
   };
   saveAll(all);
+  syncMemoryEntry(all[idx]);
 }
 
 export function getAllMemory(): MemoryEntry[] {

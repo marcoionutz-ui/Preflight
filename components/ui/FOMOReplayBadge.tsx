@@ -15,7 +15,7 @@ export default function FOMOReplayBadge() {
   }
 
   const accColor = stats.accuracy >= 0.65 ? "#39ff14" : stats.accuracy >= 0.45 ? "#ffb347" : "#ff3b3b";
-  const dumpColor = stats.avgDump1h <= -5 ? "#39ff14" : stats.avgDump1h <= 0 ? "#ffb347" : "#ff3b3b";
+  const dumpColor = stats.medianMove1h <= -5 ? "#39ff14" : stats.medianMove1h <= 0 ? "#ffb347" : "#ff3b3b";
 
   return (
     <div style={{ background: "#070707", border: "1px solid #ff8c0022", borderRadius: 4, padding: "10px 14px" }}>
@@ -43,7 +43,7 @@ export default function FOMOReplayBadge() {
         <div style={{ marginTop: 6, display: "flex", justifyContent: "space-between" }}>
           <span style={{ color: "#252525", fontSize: 9, fontFamily: "monospace" }}>AVG MOVE AFTER BLOCK (1H)</span>
           <span style={{ color: dumpColor, fontSize: 10, fontFamily: "monospace", fontWeight: "bold" }}>
-            {stats.avgDump1h >= 0 ? "+" : ""}{stats.avgDump1h.toFixed(1)}%
+            {stats.medianMove1h >= 0 ? "+" : ""}{stats.medianMove1h.toFixed(1)}%
           </span>
         </div>
       )}

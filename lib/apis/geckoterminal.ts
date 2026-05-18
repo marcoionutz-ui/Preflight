@@ -26,8 +26,7 @@ export async function getNewPools(network: string): Promise<GeckoPool[]> {
 export async function getOHLCV(network: string, poolAddress: string): Promise<OHLCVCandle[]> {
   try {
     const res = await fetch(
-      `${BASE}?path=${encodeURIComponent(`networks/${network}/pools/${poolAddress}/ohlcv/hour?limit=48`)}`,
-      { headers: HEADERS }
+      `/api/ohlcv?network=${network}&pool=${encodeURIComponent(poolAddress)}`
     );
     const data = await res.json();
     const raw: number[][] = data.data?.attributes?.ohlcv_list ?? [];

@@ -9,7 +9,10 @@ import { NATIVE_SYMBOL, CHAIN_IDS } from "@/lib/trading/constants";
 import { checkAntiFOMO } from "@/lib/engines/antiFomo";
 import { simulateRoundTrip } from "@/lib/trading/simulation";
 import type { EdgeScore } from "@/lib/engines/edgeScore";
-import { LIVE_CONFIG, MODE_LABELS } from "@/lib/trading/liveConfig";
+import { MODE_LABELS } from "@/lib/trading/liveConfig";
+import { useLiveConfig } from "@/lib/trading/useLiveConfig";
+import RiskManagerBadge from "@/components/ui/RiskManagerBadge";
+import { canEnterTrade, recordTradeOpen, recordTradeClose } from "@/lib/engines/liveRiskManager";
 import { fmtPrice } from "@/lib/utils";
 import type { SwapQuote } from "@/lib/trading/evm";
 import type { OHLCVCandle } from "@/types";
@@ -27,10 +30,6 @@ type Side = "buy" | "sell";
 type TxState = "idle" | "quoting" | "approving" | "swapping" | "done" | "error";
 
 const SLIPPAGE_OPTIONS = [0.5, 1, 2, 3, 5];
-const QUICK_AMOUNTS_NATIVE =
-  LIVE_CONFIG.mode === "paper"
-    ? ["0.01", "0.05", "0.1", "0.5"]
-    : ["0.001", "0.002", "0.003"];
 const QUICK_AMOUNTS_PERCENT = [25, 50, 75, 100];
 
 export default function TradePanel({ pair, chain, log, edgeScore, ohlcv = [] }: Props) {
@@ -43,9 +42,14 @@ export default function TradePanel({ pair, chain, log, edgeScore, ohlcv = [] }: 
   const [quote, setQuote] = useState<SwapQuote | JupiterQuote | null>(null);
   const [quoteError, setQuoteError] = useState<string | null>(null);
   const [lastTx, setLastTx] = useState<{ hash: string; success: boolean } | null>(null);
+  const { config, setMode, setMaxTradeEth, setMinEdgeScore } = useLiveConfig();
+  const [showModeDialog, setShowModeDialog] = useState(false);
+  const [pendingMode, setPendingMode]       = useState<"semi" | "live" | null>(null);
+  const [confirmText, setConfirmText]       = useState("");
+  const [editMaxEth, setEditMaxEth]         = useState(String(config.maxTradeEth));
+  const [editMinEdge, setEditMinEdge]       = useState(String(config.minEdgeScore));
   const [nativeBalance, setNativeBalance] = useState<string | null>(null);
   const [tokenBalance, setTokenBalance] = useState<{ formatted: string; decimals: number } | null>(null);
-
   const isSolana = chain === "solana";
   const nativeSym = NATIVE_SYMBOL[chain] ?? "ETH";
   const slippageBps = Math.round((customSlippage ? Number(customSlippage) : slippage) * 100);
@@ -67,7 +71,7 @@ export default function TradePanel({ pair, chain, log, edgeScore, ohlcv = [] }: 
   ];
 
   // Mode label
-  const modeInfo = MODE_LABELS[LIVE_CONFIG.mode];
+  const modeInfo = MODE_LABELS[config.mode];
 
   // Load balances when wallet connects or pair changes
   useEffect(() => {
@@ -146,7 +150,7 @@ export default function TradePanel({ pair, chain, log, edgeScore, ohlcv = [] }: 
     if (!pair?.baseToken?.address || !wallet.address || !quote) return;
 
 	// Block all real swaps in paper mode
-	if (LIVE_CONFIG.mode === "paper") {
+	if (config.mode === "paper") {
 	  log("Paper mode — live swaps disabled. Use Paper tab instead.", "warn");
 	  return;
 	}	
@@ -157,31 +161,44 @@ export default function TradePanel({ pair, chain, log, edgeScore, ohlcv = [] }: 
       return;
     }
 	
+	// LiveRiskManager gate pentru semi/live
+    if (config.mode === "semi" || config.mode === "live") {
+      const riskCheck = canEnterTrade(
+        config.maxDailyLossEth,
+        config.maxOpenPositions,
+        config.maxTradesPerDay ?? 3
+      );
+      if (!riskCheck.allowed && side === "buy") {
+        riskCheck.blockers.forEach(b => log(b, "err"));
+        return;
+      }
+    }
+	
 	// Apply LIVE_CONFIG limits for semi/live mode
-	if (LIVE_CONFIG.mode !== "paper" && side === "buy") {
+	if (config.mode !== "paper" && side === "buy") {
 	  const liquidityUsd = Number(pair.liquidity?.usd ?? 0);
-	  if (liquidityUsd < LIVE_CONFIG.minLiquidityUsd) {
-		log(`Trade blocked: liquidity $${Math.round(liquidityUsd)} < min $${LIVE_CONFIG.minLiquidityUsd}`, "err");
+	  if (liquidityUsd < config.minLiquidityUsd) {
+		log(`Trade blocked: liquidity $${Math.round(liquidityUsd)} < min $${config.minLiquidityUsd}`, "err");
 		return;
 	  }
 	  const amt = Number(amount || 0);
-	  if (amt > LIVE_CONFIG.maxTradeEth) {
-		log(`Trade blocked: ${amt} ETH > max ${LIVE_CONFIG.maxTradeEth} ETH`, "err");
+	  if (amt > config.maxTradeEth) {
+		log(`Trade blocked: ${amt} ETH > max ${config.maxTradeEth} ETH`, "err");
 		return;
 	  }
-	  if (slippageBps > LIVE_CONFIG.maxSlippageBps) {
-		log(`Trade blocked: slippage ${slippageBps}bps > max ${LIVE_CONFIG.maxSlippageBps}bps`, "err");
+	  if (slippageBps > config.maxSlippageBps) {
+		log(`Trade blocked: slippage ${slippageBps}bps > max ${config.maxSlippageBps}bps`, "err");
 		return;
 	  }
-	  if (edgeScore && edgeScore.total < LIVE_CONFIG.minEdgeScore) {
-		log(`Trade blocked: Edge ${edgeScore.total} < min ${LIVE_CONFIG.minEdgeScore}`, "err");
+	  if (edgeScore && edgeScore.total < config.minEdgeScore) {
+		log(`Trade blocked: Edge ${edgeScore.total} < min ${config.minEdgeScore}`, "err");
 		return;
 	  }
-	  if (edgeScore && edgeScore.safety < LIVE_CONFIG.minSafetyScore) {
-		log(`Trade blocked: Safety ${edgeScore.safety} < min ${LIVE_CONFIG.minSafetyScore}`, "err");
+	  if (edgeScore && edgeScore.safety < config.minSafetyScore) {
+		log(`Trade blocked: Safety ${edgeScore.safety} < min ${config.minSafetyScore}`, "err");
 		return;
 	  }
-	  if (LIVE_CONFIG.requireGoPlus && edgeScore?.dataSource !== "goplus+market") {
+	  if (config.requireGoPlus && edgeScore?.dataSource !== "goplus+market") {
 		log("Trade blocked: GoPlus data required in live mode", "err");
 		return;
 	  }
@@ -194,7 +211,7 @@ export default function TradePanel({ pair, chain, log, edgeScore, ohlcv = [] }: 
     }
 
     // Pre-trade simulation for EVM buys
-    if (side === "buy" && isEVMChain && LIVE_CONFIG.requireSimulation) {
+    if (side === "buy" && isEVMChain && config.requireSimulation) {
       log("Running AMM route check…", "info");
       setTxState("quoting");
       try {
@@ -208,12 +225,15 @@ export default function TradePanel({ pair, chain, log, edgeScore, ohlcv = [] }: 
         if (sim.warning) log(`Simulation warning: ${sim.warning}`, "warn");
         else log(`Simulation OK — round-trip loss ~${sim.priceImpact.toFixed(1)}%`, "ok");
       } catch {
-		  if (LIVE_CONFIG.requireSimulation) {
+		  if (config.requireSimulation) {
 			log("Simulation failed — buy blocked (requireSimulation=true)", "err");
 			setTxState("error");
 			return;
 		  }
 		  log("Simulation failed — proceeding (requireSimulation=false)", "warn");
+		  if ((config.mode === "semi" || config.mode === "live") && side === "buy") {
+			recordTradeOpen();
+			}
 		}
     }
 
@@ -246,6 +266,10 @@ export default function TradePanel({ pair, chain, log, edgeScore, ohlcv = [] }: 
         setLastTx({ hash, success: true });
         setTxState("done");
         log(`✓ ${side.toUpperCase()} confirmed: ${hash.slice(0, 16)}…`, "ok");
+		if ((config.mode === "semi" || config.mode === "live") && side === "sell" && result.success) {
+		  // Estimăm PnL simplu din quote — pozitiv dacă am primit ETH înapoi
+		  recordTradeClose(0); // 0 = neutru, va fi înlocuit cu PnL real în Position Manager
+		}
         setAmount("");
         setQuote(null);
         setTimeout(() => loadBalances(), 3000); // refresh balances
@@ -298,7 +322,7 @@ export default function TradePanel({ pair, chain, log, edgeScore, ohlcv = [] }: 
     );
   }
   
-  if (isSolana && !LIVE_CONFIG.solanaEnabled) {
+  if (isSolana && !config.solanaEnabled) {
   return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "60%", gap: 10 }}>
       <div style={{ color: "#9945ff", fontSize: 40 }}>◎</div>
@@ -310,7 +334,10 @@ export default function TradePanel({ pair, chain, log, edgeScore, ohlcv = [] }: 
   );
 }
 
-  const liveDisabled = LIVE_CONFIG.mode === "paper";
+  const liveDisabled = config.mode === "paper" || config.mode === "shadow";
+  const QUICK_AMOUNTS_NATIVE = config.mode === "paper"
+    ? ["0.01", "0.05", "0.1", "0.5"]
+    : ["0.001", "0.002", "0.003"];
 
   const canTrade =
     wallet.connected &&
@@ -401,19 +428,153 @@ export default function TradePanel({ pair, chain, log, edgeScore, ohlcv = [] }: 
         </div>
       </div>
 
-      {/* Mode badge */}
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <span style={{ color: "#252525", fontSize: 9, fontFamily: "monospace" }}>MODE:</span>
-        <span style={{ color: modeInfo.color, fontSize: 10, fontFamily: "monospace", fontWeight: "bold",
-          border: `1px solid ${modeInfo.color}44`, borderRadius: 3, padding: "1px 8px" }}>
-          {modeInfo.label}
-        </span>
+      {/* Mode Toggle */}
+      <div style={{ background: "#070707", border: "1px solid #141414", borderRadius: 6, padding: 14 }}>
+        <div style={{ color: "#282828", fontSize: 9, fontFamily: "monospace", letterSpacing: 2, marginBottom: 10 }}>TRADING MODE</div>
+        <div style={{ display: "flex", gap: 6, marginBottom: config.mode !== "paper" ? 10 : 0 }}>
+          {(["paper", "shadow", "semi", "live"] as const).map((m) => {
+            const info = MODE_LABELS[m];
+            const active = config.mode === m;
+            return (
+              <button
+                key={m}
+                onClick={() => {
+                  if (m === "paper") { setMode("paper"); return; }
+                  if (m === "shadow") {
+                    setMode("shadow");
+                    return;
+                  }
+                  setPendingMode(m);
+                  setEditMaxEth(String(config.maxTradeEth));
+                  setEditMinEdge(String(config.minEdgeScore));
+                  setConfirmText("");
+                  setShowModeDialog(true);
+                }}
+                style={{
+                  flex: 1,
+                  background: active ? `${info.color}15` : "transparent",
+                  border: `1px solid ${active ? info.color : "#1a1a1a"}`,
+                  color: active ? info.color : "#333",
+                  borderRadius: 3, padding: "6px 0",
+                  fontSize: 10, fontWeight: "bold", letterSpacing: 1,
+                  cursor: "pointer",
+                }}
+              >
+                {info.label}
+              </button>
+            );
+          })}
+        </div>
+		
+		{/* Risk Manager */}
+        <RiskManagerBadge config={config} />
+
+        {/* Config display when not paper */}
+        {config.mode !== "paper" && (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+            {[
+              ["MAX TRADE", `${config.maxTradeEth} ETH`],
+              ["MIN EDGE",  `${config.minEdgeScore}/100`],
+            ].map(([l, v]) => (
+              <div key={l} style={{ background: "#0a0a0a", borderRadius: 3, padding: "5px 8px" }}>
+                <div style={{ color: "#252525", fontSize: 8, fontFamily: "monospace" }}>{l}</div>
+                <div style={{ color: "#888", fontSize: 11, fontFamily: "monospace", fontWeight: "bold" }}>{v}</div>
+              </div>
+            ))}
+          </div>
+        )}
+
         {edgeScore && (
-          <span style={{ color: edgeScore.canEnterTrade ? "#39ff14" : "#ff3b3b", fontSize: 10, fontFamily: "monospace", marginLeft: 4 }}>
-            GATE: {edgeScore.canEnterTrade ? "OPEN ✓" : "BLOCKED ⛔"}
-          </span>
+          <div style={{ marginTop: 8 }}>
+            <span style={{ color: edgeScore.canEnterTrade ? "#39ff14" : "#ff3b3b", fontSize: 10, fontFamily: "monospace" }}>
+              GATE: {edgeScore.canEnterTrade ? "OPEN ✓" : "BLOCKED ⛔"}
+            </span>
+          </div>
         )}
       </div>
+
+      {/* Mode Confirmation Dialog */}
+      {showModeDialog && pendingMode && (
+        <div style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)",
+          display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000,
+        }}>
+          <div style={{ background: "#080808", border: `1px solid ${pendingMode === "live" ? "#ff3b3b" : "#ffb347"}`, borderRadius: 8, padding: 24, width: 360, maxWidth: "90vw" }}>
+            <div style={{ color: pendingMode === "live" ? "#ff3b3b" : "#ffb347", fontSize: 14, fontFamily: "monospace", fontWeight: "bold", marginBottom: 16 }}>
+              {pendingMode === "live" ? "⚠ SWITCH TO LIVE MODE?" : "⚠ SWITCH TO SEMI-LIVE?"}
+            </div>
+            <div style={{ color: "#555", fontSize: 11, fontFamily: "monospace", lineHeight: 1.6, marginBottom: 16 }}>
+              {pendingMode === "live"
+                ? "Real transactions will execute automatically when all gates pass. Use a burner wallet with small amounts."
+                : "Quotes and simulations will run. You confirm each trade manually before execution."}
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 16 }}>
+              <div>
+                <div style={{ color: "#333", fontSize: 9, fontFamily: "monospace", marginBottom: 4 }}>MAX TRADE (ETH)</div>
+                <input
+                  value={editMaxEth}
+                  onChange={e => setEditMaxEth(e.target.value)}
+                  type="number" min="0.001" step="0.001"
+                  style={{ width: "100%", padding: "6px 8px", fontSize: 12, borderRadius: 3 }}
+                />
+              </div>
+              <div>
+                <div style={{ color: "#333", fontSize: 9, fontFamily: "monospace", marginBottom: 4 }}>MIN EDGE SCORE</div>
+                <input
+                  value={editMinEdge}
+                  onChange={e => setEditMinEdge(e.target.value)}
+                  type="number" min="50" max="100"
+                  style={{ width: "100%", padding: "6px 8px", fontSize: 12, borderRadius: 3 }}
+                />
+              </div>
+            </div>
+
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ color: "#333", fontSize: 9, fontFamily: "monospace", marginBottom: 4 }}>
+                Type <span style={{ color: "#ff3b3b" }}>CONFIRM</span> to proceed
+              </div>
+              <input
+                value={confirmText}
+                onChange={e => setConfirmText(e.target.value.toUpperCase())}
+                placeholder="CONFIRM"
+                style={{ width: "100%", padding: "8px 10px", fontSize: 13, borderRadius: 3, letterSpacing: 2 }}
+              />
+            </div>
+
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                onClick={() => { setShowModeDialog(false); setPendingMode(null); setConfirmText(""); }}
+                style={{ flex: 1, background: "transparent", border: "1px solid #222", color: "#555", borderRadius: 3, padding: "8px 0", fontSize: 11, cursor: "pointer" }}
+              >
+                CANCEL
+              </button>
+              <button
+                onClick={() => {
+                  if (confirmText !== "CONFIRM") return;
+                  setMode(pendingMode!);
+                  setMaxTradeEth(Number(editMaxEth) || config.maxTradeEth);
+                  setMinEdgeScore(Number(editMinEdge) || config.minEdgeScore);
+                  setShowModeDialog(false);
+                  setPendingMode(null);
+                  setConfirmText("");
+                }}
+                disabled={confirmText !== "CONFIRM"}
+                style={{
+                  flex: 1,
+                  background: confirmText === "CONFIRM" ? `${pendingMode === "live" ? "#ff3b3b" : "#ffb347"}22` : "transparent",
+                  border: `1px solid ${confirmText === "CONFIRM" ? (pendingMode === "live" ? "#ff3b3b" : "#ffb347") : "#222"}`,
+                  color: confirmText === "CONFIRM" ? (pendingMode === "live" ? "#ff3b3b" : "#ffb347") : "#333",
+                  borderRadius: 3, padding: "8px 0", fontSize: 11, fontWeight: "bold",
+                  cursor: confirmText === "CONFIRM" ? "pointer" : "default",
+                }}
+              >
+                SWITCH TO {pendingMode?.toUpperCase()}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Buy/sell blocked warning */}
       {buyBlockedByGate && side === "buy" && (
@@ -576,7 +737,7 @@ export default function TradePanel({ pair, chain, log, edgeScore, ohlcv = [] }: 
         }}
       >
         {liveDisabled
-		  ? "PAPER MODE — LIVE SWAPS DISABLED"
+          ? config.mode === "shadow" ? "SHADOW MODE — TRACKING ONLY" : "PAPER MODE — LIVE SWAPS DISABLED"
 		  : !canTrade
 		  ? `CONNECT ${isSolana ? "PHANTOM" : "METAMASK"} TO TRADE`
           : txState === "approving" ? "APPROVING TOKEN…"
