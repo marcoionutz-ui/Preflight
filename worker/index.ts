@@ -1,34 +1,65 @@
 /**
- * Supreme Trader Worker v3 — Shared Engines + WebSocket Flow
+ * Supreme Trader Worker v4
+ * P1: Multi-chain (BASE + ARB)
+ * P2: Second Wave Detection
+ * P3: LP Events Monitoring (Mint/Burn)
+ * P5: Telegram Alerts
  */
 
 import * as dotenv from "dotenv";
 dotenv.config({ path: ".env.local" });
 
-import { createClient }         from "@supabase/supabase-js";
-import WebSocket                from "ws";
-import { detectPhase }          from "../lib/engines/phaseDetector";
-import type { Phase }           from "../lib/engines/phaseDetector";
-import { checkEntryGate }       from "../lib/engines/pairMemory";
-import type { PairMemoryEntry } from "../lib/engines/pairMemory";
-import { computeFlowFromTxns, NEUTRAL_FLOW } from "../lib/engines/flowTypes";
-import type { FlowSignal }      from "../lib/engines/flowTypes";
+import { createClient }            from "@supabase/supabase-js";
+import WebSocket                   from "ws";
+import { detectPhase }             from "../lib/engines/phaseDetector";
+import type { Phase }              from "../lib/engines/phaseDetector";
+import { checkEntryGate }          from "../lib/engines/pairMemory";
+import type { PairMemoryEntry }    from "../lib/engines/pairMemory";
+import { computeFlowFromTxns, NEUTRAL_FLOW, STABLE_LIQUIDITY } from "../lib/engines/flowTypes";
+import type { FlowSignal, LiquiditySignal } from "../lib/engines/flowTypes";
+import { detectSecondWave }        from "../lib/engines/secondWave";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
 const SUPABASE_URL        = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SUPABASE_KEY        = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-const ALCHEMY_BASE_WS     = process.env.ALCHEMY_BASE_WS ?? "";
+const TELEGRAM_TOKEN      = process.env.TELEGRAM_BOT_TOKEN  ?? "";
+const TELEGRAM_CHAT_ID    = process.env.TELEGRAM_CHAT_ID    ?? "";
 const GECKO_BASE          = "https://api.geckoterminal.com/api/v2";
 const SCAN_INTERVAL       = 30_000;
 const MAX_SHADOW_PER_SCAN = 5;
 const MIN_SEEN_COUNT      = 5;
-const COOLDOWN_MS         = 2 * 60 * 60_000; // 2h
-const MAX_HOLD_MS         = 4 * 60 * 60_000; // 4h
+const COOLDOWN_MS         = 2 * 60 * 60_000;
+const SECOND_WAVE_COOLDOWN_MS = 60 * 60_000; // 1h cooldown pentru second wave
+const MAX_HOLD_MS         = 4 * 60 * 60_000;
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   realtime: { transport: WebSocket },
 });
+
+// ── Multi-chain Config ────────────────────────────────────────────────────────
+
+interface ChainConfig {
+  id:    string;
+  gecko: string;
+  weth:  string;
+  wsUrl: string;
+}
+
+const CHAINS: ChainConfig[] = [
+  {
+    id:    "base",
+    gecko: "base",
+    weth:  "0x4200000000000000000000000000000000000006",
+    wsUrl: process.env.ALCHEMY_BASE_WS ?? "",
+  },
+  {
+    id:    "arbitrum",
+    gecko: "arbitrum",
+    weth:  "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
+    wsUrl: process.env.ALCHEMY_ARB_WS ?? "",
+  },
+].filter(c => c.wsUrl || c.gecko); // include chain dacă are cel puțin gecko
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -42,25 +73,41 @@ interface GeckoPool {
     volume_usd:              { h24: string };
     address:                 string;
     transactions?: {
-      m5?:  { buys: number; sells: number };
-      h1?:  { buys: number; sells: number };
+      m5?: { buys: number; sells: number };
+      h1?: { buys: number; sells: number };
     };
   };
   relationships: { base_token: { data: { id: string } } };
+  _chain: ChainConfig; // adăugat de noi
 }
 
-interface SwapEvent {
-  ts:        number;
-  isBuy:     boolean;
-  ethAmount: number;
-}
+interface SwapEvent { ts: number; isBuy: boolean; ethAmount: number; }
+interface LpEvent   { ts: number; isAdd: boolean; ethAmount: number; }
 
 // ── In-memory stores ──────────────────────────────────────────────────────────
 
 const memory   = new Map<string, PairMemoryEntry>();
-const wsFlow   = new Map<string, SwapEvent[]>(); // WS swap events per pair
+const wsFlow   = new Map<string, SwapEvent[]>();
+const lpEvents = new Map<string, LpEvent[]>();
 
-// ── WS Flow helpers ───────────────────────────────────────────────────────────
+// ── Telegram ──────────────────────────────────────────────────────────────────
+
+async function sendTelegram(msg: string): Promise<void> {
+  if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT_ID) return;
+  try {
+    await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id:    TELEGRAM_CHAT_ID,
+        text:       msg,
+        parse_mode: "HTML",
+      }),
+    });
+  } catch { /* silent */ }
+}
+
+// ── Flow helpers ──────────────────────────────────────────────────────────────
 
 function recordSwap(pairAddress: string, isBuy: boolean, ethAmount: number): void {
   const addr   = pairAddress.toLowerCase();
@@ -70,58 +117,85 @@ function recordSwap(pairAddress: string, isBuy: boolean, ethAmount: number): voi
   wsFlow.set(addr, events);
 }
 
+function recordLp(pairAddress: string, isAdd: boolean, ethAmount: number): void {
+  const addr   = pairAddress.toLowerCase();
+  const now    = Date.now();
+  const events = (lpEvents.get(addr) ?? []).filter(e => now - e.ts < 5 * 60_000);
+  events.push({ ts: now, isAdd, ethAmount });
+  lpEvents.set(addr, events);
+}
+
 function getWsFlow(pairAddress: string): FlowSignal {
   const addr   = pairAddress.toLowerCase();
   const events = wsFlow.get(addr) ?? [];
   if (!events.length) return NEUTRAL_FLOW;
-
-  const now    = Date.now();
-  const e1m    = events.filter(e => now - e.ts < 60_000);
-  const e5m    = events.filter(e => now - e.ts < 5 * 60_000);
-
+  const now = Date.now();
+  const e1m = events.filter(e => now - e.ts < 60_000);
+  const e5m = events.filter(e => now - e.ts < 5 * 60_000);
   return computeFlowFromTxns(
-    e5m.filter(e =>  e.isBuy).length,
-    e5m.filter(e => !e.isBuy).length,
-    e1m.filter(e =>  e.isBuy).length,
-    e1m.filter(e => !e.isBuy).length,
+    e5m.filter(e =>  e.isBuy).length, e5m.filter(e => !e.isBuy).length,
+    e1m.filter(e =>  e.isBuy).length, e1m.filter(e => !e.isBuy).length,
   );
 }
 
-// Merge WS flow cu txns data din Gecko (WS are prioritate)
+function getLpSignal(pairAddress: string): LiquiditySignal {
+  const addr   = pairAddress.toLowerCase();
+  const events = lpEvents.get(addr) ?? [];
+  if (!events.length) return STABLE_LIQUIDITY;
+  const now    = Date.now();
+  const e5m    = events.filter(e => now - e.ts < 5 * 60_000);
+  const added  = e5m.filter(e =>  e.isAdd).reduce((s, e) => s + e.ethAmount, 0);
+  const removed = e5m.filter(e => !e.isAdd).reduce((s, e) => s + e.ethAmount, 0);
+  const net    = added - removed;
+  const status = net > 0.01 ? "ADDED" : net < -0.01 ? "REMOVED" : "STABLE";
+  return { lpAdded5m: added, lpRemoved5m: removed, lpNet5m: net, status, hasData: true };
+}
+
 function getFlow(pool: GeckoPool): FlowSignal {
   const ws = getWsFlow(pool.attributes.address);
   if (ws.hasData) return ws;
-
-  // Fallback: txns din Gecko API dacă WS nu are date încă
   const buys5m  = pool.attributes.transactions?.m5?.buys  ?? 0;
   const sells5m = pool.attributes.transactions?.m5?.sells ?? 0;
-  const buys1h  = pool.attributes.transactions?.h1?.buys  ?? 0;
-  const sells1h = pool.attributes.transactions?.h1?.sells ?? 0;
-
-  if (buys5m + sells5m === 0 && buys1h + sells1h === 0) return NEUTRAL_FLOW;
-
+  if (buys5m + sells5m === 0) return NEUTRAL_FLOW;
   return computeFlowFromTxns(buys5m, sells5m);
 }
 
-// ── WebSocket — Alchemy BASE ──────────────────────────────────────────────────
+// ── WebSocket per chain ───────────────────────────────────────────────────────
 
 const SWAP_V2_TOPIC = "0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822";
-const WETH_BASE     = "0x4200000000000000000000000000000000000006";
+const MINT_V2_TOPIC = "0x4c209b5fc8ad50758f13e2e1088ba56a560dff690a1c6fef26394f4c03821c4f";
+const BURN_V2_TOPIC = "0xdccd412f0b1252819cb1fd330b93224ca42612892bb3f4f789976e6d81936496";
 
-function connectWebSocket(): void {
-  if (!ALCHEMY_BASE_WS) {
-    console.log("[WS] ALCHEMY_BASE_WS not set — flow layer disabled");
+function connectChainWebSocket(chain: ChainConfig): void {
+  if (!chain.wsUrl) {
+    console.log(`[WS] No WS URL for ${chain.id} — flow layer disabled for this chain`);
     return;
   }
 
-  const wsClient = new WebSocket(ALCHEMY_BASE_WS);
+  const wsClient = new WebSocket(chain.wsUrl);
 
   wsClient.on("open", () => {
-    console.log("[WS] Connected to Alchemy BASE");
+    console.log(`[WS] Connected to Alchemy ${chain.id.toUpperCase()}`);
+
+    // Subscribe Swap events
     wsClient.send(JSON.stringify({
       jsonrpc: "2.0", id: 1,
-      method:  "eth_subscribe",
-      params:  ["logs", { topics: [SWAP_V2_TOPIC] }],
+      method: "eth_subscribe",
+      params: ["logs", { topics: [SWAP_V2_TOPIC] }],
+    }));
+
+    // Subscribe LP Mint events
+    wsClient.send(JSON.stringify({
+      jsonrpc: "2.0", id: 2,
+      method: "eth_subscribe",
+      params: ["logs", { topics: [MINT_V2_TOPIC] }],
+    }));
+
+    // Subscribe LP Burn events
+    wsClient.send(JSON.stringify({
+      jsonrpc: "2.0", id: 3,
+      method: "eth_subscribe",
+      params: ["logs", { topics: [BURN_V2_TOPIC] }],
     }));
   });
 
@@ -135,40 +209,61 @@ function connectWebSocket(): void {
       if (!pairAddress || !memory.has(pairAddress)) return;
 
       const raw = log.data?.slice(2);
-      if (!raw || raw.length < 256) return;
+      if (!raw || raw.length < 128) return;
 
-      const amount0In  = BigInt("0x" + raw.slice(0,   64));
-      const amount1In  = BigInt("0x" + raw.slice(64,  128));
-      const amount0Out = BigInt("0x" + raw.slice(128, 192));
-      const amount1Out = BigInt("0x" + raw.slice(192, 256));
+      const topic0 = log.topics?.[0];
 
-      if (amount0In === 0n && amount1In === 0n) return;
+      // ── Swap Event ──────────────────────────────────────────────────────
+      if (topic0 === SWAP_V2_TOPIC && raw.length >= 256) {
+        const amount0In  = BigInt("0x" + raw.slice(0,   64));
+        const amount1In  = BigInt("0x" + raw.slice(64,  128));
+        const amount0Out = BigInt("0x" + raw.slice(128, 192));
+        const amount1Out = BigInt("0x" + raw.slice(192, 256));
 
-      const mem       = memory.get(pairAddress)!;
-      const tokenAddr = mem.tokenAddress.replace("base_", "").toLowerCase();
-      // WETH < tokenAddr → WETH este token0
-      const wethIsToken0 = WETH_BASE.toLowerCase() < tokenAddr;
+        if (amount0In === 0n && amount1In === 0n) return;
 
-      let isBuy: boolean;
-      let ethAmount: number;
+        const mem          = memory.get(pairAddress)!;
+        const tokenAddr    = mem.tokenAddress.replace(`${chain.id}_`, "").toLowerCase();
+        const wethIsToken0 = chain.weth.toLowerCase() < tokenAddr;
 
-      if (wethIsToken0) {
-        isBuy     = amount0In > 0n && amount1Out > 0n;
-        ethAmount = Number(isBuy ? amount0In : amount1In) / 1e18;
-      } else {
-        isBuy     = amount1In > 0n && amount0Out > 0n;
-        ethAmount = Number(isBuy ? amount1In : amount0In) / 1e18;
+        let isBuy: boolean;
+        let ethAmount: number;
+        if (wethIsToken0) {
+          isBuy     = amount0In > 0n && amount1Out > 0n;
+          ethAmount = Number(isBuy ? amount0In : amount1In) / 1e18;
+        } else {
+          isBuy     = amount1In > 0n && amount0Out > 0n;
+          ethAmount = Number(isBuy ? amount1In : amount0In) / 1e18;
+        }
+        recordSwap(pairAddress, isBuy, ethAmount);
       }
 
-      recordSwap(pairAddress, isBuy, ethAmount);
+      // ── LP Mint Event (liquidity added) ─────────────────────────────────
+      if (topic0 === MINT_V2_TOPIC) {
+        const amount0 = BigInt("0x" + raw.slice(0,  64));
+        const amount1 = BigInt("0x" + raw.slice(64, 128));
+        const ethAmount = Number(amount0 > amount1 ? amount0 : amount1) / 1e18;
+        recordLp(pairAddress, true, ethAmount);
+        console.log(`[LP ADD] ${memory.get(pairAddress)?.symbol} +${ethAmount.toFixed(3)} ETH`);
+      }
+
+      // ── LP Burn Event (liquidity removed) ───────────────────────────────
+      if (topic0 === BURN_V2_TOPIC) {
+        const amount0 = BigInt("0x" + raw.slice(0,  64));
+        const amount1 = BigInt("0x" + raw.slice(64, 128));
+        const ethAmount = Number(amount0 > amount1 ? amount0 : amount1) / 1e18;
+        recordLp(pairAddress, false, ethAmount);
+        console.log(`[LP REMOVE] ${memory.get(pairAddress)?.symbol} -${ethAmount.toFixed(3)} ETH ⚠️`);
+      }
+
     } catch { /* silent */ }
   });
 
-  wsClient.on("error", (err: Error) => console.log(`[WS] Error: ${err.message}`));
+  wsClient.on("error", (err: Error) => console.log(`[WS ${chain.id}] Error: ${err.message}`));
 
   wsClient.on("close", () => {
-    console.log("[WS] Disconnected — reconnecting in 5s...");
-    setTimeout(connectWebSocket, 5_000);
+    console.log(`[WS ${chain.id}] Disconnected — reconnecting in 5s...`);
+    setTimeout(() => connectChainWebSocket(chain), 5_000);
   });
 }
 
@@ -179,12 +274,10 @@ function updateMemory(pool: GeckoPool, price: number): PairMemoryEntry {
   const symbol       = pool.attributes.name.split("/")[0]?.trim() ?? "?";
   const tokenAddress = pool.relationships.base_token.data.id ?? "";
   const now          = Date.now();
-
-  const m5  = Number(pool.attributes.price_change_percentage?.m5  ?? 0);
-  const h24 = Number(pool.attributes.price_change_percentage?.h24 ?? 0);
+  const m5           = Number(pool.attributes.price_change_percentage?.m5  ?? 0);
+  const h24          = Number(pool.attributes.price_change_percentage?.h24 ?? 0);
 
   const existing = memory.get(addr);
-
   if (!existing) {
     const mem: PairMemoryEntry = {
       pairAddress: addr, symbol, tokenAddress,
@@ -211,15 +304,10 @@ function updateMemory(pool: GeckoPool, price: number): PairMemoryEntry {
   if (price < existing.lowPrice)  existing.lowPrice  = price;
 
   existing.phase = detectPhase({
-    seenCount:         existing.seenCount,
-    consecutiveLosses: existing.consecutiveLosses,
+    seenCount: existing.seenCount, consecutiveLosses: existing.consecutiveLosses,
     m5, h24,
-    highPrice:    existing.highPrice,
-    lowPrice:     existing.lowPrice,
-    currentPrice: price,
-    totalEntries: existing.totalEntries,
-    wins24h:      existing.wins24h,
-    losses24h:    existing.losses24h,
+    highPrice: existing.highPrice, lowPrice: existing.lowPrice, currentPrice: price,
+    totalEntries: existing.totalEntries, wins24h: existing.wins24h, losses24h: existing.losses24h,
   });
 
   memory.set(addr, existing);
@@ -260,24 +348,38 @@ async function loadPairStats(): Promise<void> {
     mem.lastEntryPrice = Number(t.entry_price);
 
     if (t.exit_reason === "TP1 hit") {
-      mem.wins24h += 1;
-      mem.consecutiveLosses = 0;
-      mem.lastExitReason    = "TP1 hit";
-      mem.lastExitTime      = t.exited_at;
+      mem.wins24h += 1; mem.consecutiveLosses = 0;
+      mem.lastExitReason = "TP1 hit"; mem.lastExitTime = t.exited_at;
     } else if (t.exit_reason === "SL hit") {
-      mem.losses24h         += 1;
-      mem.consecutiveLosses += 1;
-      mem.lastExitReason     = "SL hit";
-      mem.lastExitTime       = t.exited_at;
+      mem.losses24h += 1; mem.consecutiveLosses += 1;
+      mem.lastExitReason = "SL hit"; mem.lastExitTime = t.exited_at;
     }
   }
 
   console.log(`[MEMORY] Loaded ${memory.size} pairs from last 24h`);
 }
 
-// ── Edge Score (worker-specific, GeckoPool input) ─────────────────────────────
+// ── Anti-FOMO ─────────────────────────────────────────────────────────────────
 
-function quickEdgeScore(pool: GeckoPool, mem: PairMemoryEntry, flow: FlowSignal): number {
+function checkFOMO(pool: GeckoPool): { blocked: boolean; reason: string | null } {
+  const h24 = Number(pool.attributes.price_change_percentage?.h24 ?? 0);
+  const m5  = Number(pool.attributes.price_change_percentage?.m5  ?? 0);
+
+  if (m5  > 30)  return { blocked: true, reason: `+${m5.toFixed(0)}% in 5m — vertical candle` };
+  if (h24 > 500) return { blocked: true, reason: `+${h24.toFixed(0)}% in 24h — extremely late` };
+  if (h24 > 200) return { blocked: true, reason: `+${h24.toFixed(0)}% in 24h — likely pumped` };
+
+  return { blocked: false, reason: null };
+}
+
+// ── Edge Score ────────────────────────────────────────────────────────────────
+
+function quickEdgeScore(
+  pool: GeckoPool,
+  mem:  PairMemoryEntry,
+  flow: FlowSignal,
+  lp:   LiquiditySignal,
+): number {
   let score = 50;
 
   const liq    = Number(pool.attributes.reserve_in_usd ?? 0);
@@ -297,58 +399,75 @@ function quickEdgeScore(pool: GeckoPool, mem: PairMemoryEntry, flow: FlowSignal)
   else if (vol24h > 100_000) score +=  5;
   else if (vol24h <  20_000) score -= 10;
 
-  // h24 sweet spot 10-80%
+  // h24 sweet spot
   if      (h24 > 10 && h24 < 80)   score += 15;
   else if (h24 >= 80 && h24 < 150) score +=  5;
   else if (h24 >= 150)             score -= 15;
   else if (h24 < 0)                score -= 10;
 
-  // 5m fresh dar nu vertical
+  // 5m momentum
   if      (m5 > 3 && m5 < 15) score += 10;
   else if (m5 >= 15)           score -= 10;
   else if (m5 < -5)            score -=  5;
 
-  // 1h confirmare trend
+  // 1h confirmare
   if      (h1 > 5 && h1 < 30) score += 10;
   else if (h1 >= 30)           score -=  5;
   else if (h1 < -10)           score -= 10;
 
-  // Flow
+  // Flow WS
   if (flow.hasData) {
     if (flow.pressure === "BUYING")  score += 15;
     if (flow.pressure === "SELLING") score -= 20;
   }
 
+  // LP signal
+  if (lp.hasData) {
+    if (lp.status === "ADDED")   score += 12;
+    if (lp.status === "REMOVED") score -= 25; // LP removed = danger
+  }
+
   // Phase memory
-  if (mem.phase === "RECOVERING")                                   score += 10;
-  if (mem.wins24h >= 2)                                             score += 10;
-  if (mem.losses24h > mem.wins24h && mem.losses24h > 2)            score -= 15;
-  if (mem.consecutiveLosses >= 3)                                   score -= 20;
-  if (mem.seenCount > 15 && mem.wins24h === 0)                     score -= 20;
+  if (mem.phase === "SECOND_WAVE") score += 20;
+  if (mem.phase === "RECOVERING")  score += 10;
+  if (mem.wins24h >= 2)            score += 10;
+  if (mem.losses24h > mem.wins24h && mem.losses24h > 2) score -= 15;
+  if (mem.consecutiveLosses >= 3)  score -= 20;
+  if (mem.seenCount > 15 && mem.wins24h === 0) score -= 20;
+
+  // Second wave bonus
+  const sw = detectSecondWave(mem, flow, m5, h1);
+  if (sw.isSecondWave) {
+    score += Math.round(sw.score * 0.15); // max +15 bonus
+  }
 
   return Math.max(0, Math.min(100, score));
 }
 
-// ── Anti-FOMO ─────────────────────────────────────────────────────────────────
+// ── Should enter? ─────────────────────────────────────────────────────────────
 
-function checkFOMO(pool: GeckoPool): { blocked: boolean; reason: string | null } {
-  const h24 = Number(pool.attributes.price_change_percentage?.h24 ?? 0);
-  const m5  = Number(pool.attributes.price_change_percentage?.m5  ?? 0);
+function getEntryGate(mem: PairMemoryEntry, flow: FlowSignal, lp: LiquiditySignal) {
+  // LP removed = hard block
+  if (lp.hasData && lp.status === "REMOVED") {
+    return { allowed: false, reason: `LP removed (${lp.lpRemoved5m.toFixed(3)} ETH in 5m)` };
+  }
 
-  if (m5  > 30)  return { blocked: true, reason: `+${m5.toFixed(0)}% in 5m — vertical candle` };
-  if (h24 > 500) return { blocked: true, reason: `+${h24.toFixed(0)}% in 24h — extremely late` };
-  if (h24 > 200) return { blocked: true, reason: `+${h24.toFixed(0)}% in 24h — likely pumped` };
+  // Second wave = cooldown redus la 1h
+  const sw = detectSecondWave(mem, flow);
+  if (sw.isSecondWave && sw.confidence !== "LOW") {
+    return checkEntryGate(mem, flow, MIN_SEEN_COUNT, SECOND_WAVE_COOLDOWN_MS);
+  }
 
-  return { blocked: false, reason: null };
+  return checkEntryGate(mem, flow, MIN_SEEN_COUNT, COOLDOWN_MS);
 }
 
 // ── Fetch trending ────────────────────────────────────────────────────────────
 
-async function fetchTrending(network: string): Promise<GeckoPool[]> {
+async function fetchTrending(chain: ChainConfig): Promise<GeckoPool[]> {
   try {
-    const res  = await fetch(`${GECKO_BASE}/networks/${network}/trending_pools?page=1`);
+    const res  = await fetch(`${GECKO_BASE}/networks/${chain.gecko}/trending_pools?page=1`);
     const data = await res.json();
-    return data.data ?? [];
+    return (data.data ?? []).map((p: GeckoPool) => ({ ...p, _chain: chain }));
   } catch { return []; }
 }
 
@@ -367,14 +486,15 @@ async function saveFOMOBlock(pool: GeckoPool, reason: string): Promise<void> {
 
   const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
   await supabase.from("fomo_blocks").insert({
-    id, timestamp: Date.now(), symbol, chain: "base",
+    id, timestamp: Date.now(), symbol,
+    chain:                     pool._chain.id,
     pair_address:              pool.attributes.address,
     price_at_block:            Number(pool.attributes.base_token_price_usd),
     price_change_24h_at_block: Number(pool.attributes.price_change_percentage?.h24 ?? 0),
     reason,
   });
 
-  console.log(`[FOMO] ${symbol} — ${reason}`);
+  console.log(`[FOMO] ${symbol} (${pool._chain.id}) — ${reason}`);
 }
 
 // ── Save shadow trade ─────────────────────────────────────────────────────────
@@ -384,34 +504,49 @@ async function saveShadowTrade(
   score: number,
   mem:   PairMemoryEntry,
   flow:  FlowSignal,
+  lp:    LiquiditySignal,
 ): Promise<void> {
   const price = mem.currentPrice;
   const id    = Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+  const sw    = detectSecondWave(mem, flow);
+
+  const note = [
+    `WORKER v4`,
+    `Edge ${score}`,
+    `seen:${mem.seenCount}x`,
+    `phase:${mem.phase}`,
+    `flow:${flow.pressure}`,
+    `lp:${lp.hasData ? lp.status : "?"}`,
+    sw.isSecondWave ? `2W:${sw.score}` : null,
+    `W${mem.wins24h}/L${mem.losses24h}`,
+  ].filter(Boolean).join(" | ");
 
   await supabase.from("shadow_trades").insert({
-    id,
-    timestamp:     Date.now(),
+    id, timestamp: Date.now(),
     symbol:        mem.symbol,
-    chain:         "base",
+    chain:         pool._chain.id,
     pair_address:  pool.attributes.address,
     token_address: mem.tokenAddress,
-    entry_price:   price,
-    current_price: price,
-    edge_score:    score,
-    flag_count:    0,
-    note: `WORKER v3 | Edge ${score} | seen:${mem.seenCount}x | phase:${mem.phase} | flow:${flow.pressure} | W${mem.wins24h}/L${mem.losses24h}`,
+    entry_price:   price, current_price: price,
+    edge_score:    score, flag_count: 0, note,
     sl:  price * (1 - (score >= 80 ? 0.15 : 0.18)),
     tp1: price * (1 + (score >= 80 ? 0.25 : 0.20)),
     tp2: price * (1 + (score >= 80 ? 0.60 : 0.50)),
     tp3: price * (1 + (score >= 80 ? 1.50 : 1.00)),
   });
 
-  mem.totalEntries  += 1;
-  mem.lastEntryTime  = Date.now();
-  mem.lastEntryPrice = price;
+  mem.totalEntries += 1; mem.lastEntryTime = Date.now(); mem.lastEntryPrice = price;
   memory.set(pool.attributes.address.toLowerCase(), mem);
 
-  console.log(`[SHADOW] ${mem.symbol} Edge ${score} | seen:${mem.seenCount}x | phase:${mem.phase} | flow:${flow.pressure}`);
+  const emoji = mem.phase === "SECOND_WAVE" ? "🌊" : mem.phase === "RECOVERING" ? "⚡" : "👁";
+  const msg = `${emoji} <b>SHADOW</b> ${mem.symbol} [${pool._chain.id.toUpperCase()}]\n`
+    + `Edge ${score} | ${mem.phase} | flow:${flow.pressure}\n`
+    + `LP: ${lp.hasData ? lp.status : "unknown"} | W${mem.wins24h}/L${mem.losses24h}\n`
+    + (sw.isSecondWave ? `🌊 Second Wave ${sw.score}/100 (${sw.confidence})\n` : "")
+    + `seen:${mem.seenCount}x`;
+
+  console.log(`[SHADOW] ${mem.symbol} (${pool._chain.id}) Edge ${score} | ${mem.phase} | flow:${flow.pressure} | lp:${lp.status}`);
+  await sendTelegram(msg);
 }
 
 // ── Update outcomes ───────────────────────────────────────────────────────────
@@ -452,34 +587,38 @@ async function updateOutcomes(pools: GeckoPool[]): Promise<void> {
 
     const ageMs  = Date.now() - trade.timestamp;
     const flow   = getWsFlow(trade.pair_address);
+    const lp     = getLpSignal(trade.pair_address);
     const update: Record<string, unknown> = { current_price: price };
-
-    const mem = memory.get(trade.pair_address?.toLowerCase());
+    const mem    = memory.get(trade.pair_address?.toLowerCase());
 
     if (price <= trade.sl) {
-      update.exited_at   = Date.now();
-      update.exit_price  = price;
-      update.exit_reason = "SL hit";
+      update.exited_at = Date.now(); update.exit_price = price; update.exit_reason = "SL hit";
       if (mem) { mem.losses24h += 1; mem.consecutiveLosses += 1; mem.lastExitReason = "SL hit"; mem.lastExitTime = Date.now(); }
+      await sendTelegram(`🔴 <b>SL HIT</b> ${trade.symbol} [${trade.chain?.toUpperCase()}]\n`
+        + `Entry: ${Number(trade.entry_price).toExponential(3)} → Exit: ${price.toExponential(3)}\n`
+        + `P&L: ${((price - trade.entry_price) / trade.entry_price * 100).toFixed(1)}%`);
 
     } else if (price >= trade.tp1) {
-      update.exited_at   = Date.now();
-      update.exit_price  = price;
-      update.exit_reason = "TP1 hit";
+      update.exited_at = Date.now(); update.exit_price = price; update.exit_reason = "TP1 hit";
       if (mem) { mem.wins24h += 1; mem.consecutiveLosses = 0; mem.lastExitReason = "TP1 hit"; mem.lastExitTime = Date.now(); }
+      await sendTelegram(`🟢 <b>TP1 HIT</b> ${trade.symbol} [${trade.chain?.toUpperCase()}]\n`
+        + `Entry: ${Number(trade.entry_price).toExponential(3)} → Exit: ${price.toExponential(3)}\n`
+        + `P&L: +${((price - trade.entry_price) / trade.entry_price * 100).toFixed(1)}%`);
+
+    } else if (lp.hasData && lp.status === "REMOVED" && lp.lpRemoved5m > 0.5 && ageMs > 10 * 60_000) {
+      // Exit anticipat dacă LP e scos agresiv
+      update.exited_at = Date.now(); update.exit_price = price; update.exit_reason = "LP REMOVED";
+      console.log(`[LP EXIT] ${trade.symbol} — LP removed ${lp.lpRemoved5m.toFixed(3)} ETH`);
+      await sendTelegram(`⚠️ <b>LP EXIT</b> ${trade.symbol}\nLP removed ${lp.lpRemoved5m.toFixed(3)} ETH in 5m`);
 
     } else if (flow.hasData && flow.pressure === "SELLING" && flow.sells5m >= 10 && ageMs > 15 * 60_000) {
-      // Exit anticipat pe sell pressure puternic
-      update.exited_at   = Date.now();
-      update.exit_price  = price;
-      update.exit_reason = "SELL PRESSURE";
-      console.log(`[FLOW EXIT] ${trade.symbol} — ${flow.sells5m}s vs ${flow.buys5m}b in 5m`);
+      update.exited_at = Date.now(); update.exit_price = price; update.exit_reason = "SELL PRESSURE";
+      console.log(`[FLOW EXIT] ${trade.symbol} — ${flow.sells5m}s vs ${flow.buys5m}b`);
 
     } else if (ageMs > MAX_HOLD_MS) {
-      update.exited_at   = Date.now();
-      update.exit_price  = price;
-      update.exit_reason = "MAX HOLD";
+      update.exited_at = Date.now(); update.exit_price = price; update.exit_reason = "MAX HOLD";
       console.log(`[ZOMBIE KILL] ${trade.symbol} held 4h with no exit`);
+      await sendTelegram(`💀 <b>ZOMBIE KILL</b> ${trade.symbol} — held 4h, no exit`);
     }
 
     await supabase.from("shadow_trades").update(update).eq("id", trade.id);
@@ -490,21 +629,27 @@ async function updateOutcomes(pools: GeckoPool[]): Promise<void> {
 
 async function scan(): Promise<void> {
   const ts = new Date().toISOString();
-  console.log(`[${ts}] Scanning BASE...`);
 
-  const pools = await fetchTrending("base");
-  if (!pools.length) { console.log("No pools fetched"); return; }
+  // Fetch toate chain-urile în paralel
+  const allPoolsPerChain = await Promise.all(CHAINS.map(c => fetchTrending(c)));
+  const allPools = allPoolsPerChain.flat();
 
-  await updateOutcomes(pools);
+  if (!allPools.length) { console.log("No pools fetched"); return; }
+
+  console.log(`[${ts}] Scanning ${CHAINS.map(c => c.id).join("+")} — ${allPools.length} pools total`);
+
+  await updateOutcomes(allPools);
 
   let shadowCount = 0;
+  const chainCounts: Record<string, number> = {};
 
-  for (const pool of pools) {
+  for (const pool of allPools) {
     const price = Number(pool.attributes.base_token_price_usd);
     if (!price || isNaN(price)) continue;
 
     const mem  = updateMemory(pool, price);
     const flow = getFlow(pool);
+    const lp   = getLpSignal(pool.attributes.address);
     const fomo = checkFOMO(pool);
 
     if (fomo.blocked && fomo.reason) {
@@ -514,32 +659,40 @@ async function scan(): Promise<void> {
 
     if (shadowCount >= MAX_SHADOW_PER_SCAN) continue;
 
-    const score = quickEdgeScore(pool, mem, flow);
+    const score = quickEdgeScore(pool, mem, flow, lp);
     if (score < 75) continue;
 
-    const gate = checkEntryGate(mem, flow, MIN_SEEN_COUNT, COOLDOWN_MS);
+    const gate = getEntryGate(mem, flow, lp);
     if (!gate.allowed) {
-      console.log(`[SKIP] ${mem.symbol} — ${gate.reason}`);
+      console.log(`[SKIP] ${mem.symbol} (${pool._chain.id}) — ${gate.reason}`);
       continue;
     }
 
-    await saveShadowTrade(pool, score, mem, flow);
+    await saveShadowTrade(pool, score, mem, flow, lp);
     shadowCount++;
+    chainCounts[pool._chain.id] = (chainCounts[pool._chain.id] ?? 0) + 1;
   }
 
   const vals = [...memory.values()];
+  const chainStr = Object.entries(chainCounts).map(([k, v]) => `${k}:${v}`).join(" ");
   console.log(
-    `[${ts}] Done — shadows:${shadowCount} | mem:${memory.size} | ws:${wsFlow.size} pairs` +
-    ` | zombies:${vals.filter(m => m.phase === "ZOMBIE").length}` +
-    ` | dead:${vals.filter(m => m.phase === "DEAD").length}` +
-    ` | recovering:${vals.filter(m => m.phase === "RECOVERING").length}`
+    `[${ts}] Done — shadows:${shadowCount} [${chainStr || "none"}]`
+    + ` | mem:${memory.size} | ws:${wsFlow.size}`
+    + ` | zombies:${vals.filter(m => m.phase === "ZOMBIE").length}`
+    + ` | dead:${vals.filter(m => m.phase === "DEAD").length}`
+    + ` | 2wave:${vals.filter(m => m.phase === "SECOND_WAVE").length}`
+    + ` | recovering:${vals.filter(m => m.phase === "RECOVERING").length}`
   );
 }
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 
-console.log("Supreme Trader Worker v3 starting...");
-connectWebSocket();
+console.log("Supreme Trader Worker v4 starting...");
+console.log(`Chains: ${CHAINS.map(c => c.id).join(", ")}`);
+
+// Conectează WS pentru fiecare chain
+CHAINS.forEach(c => connectChainWebSocket(c));
+
 loadPairStats().then(() => {
   scan();
   setInterval(scan, SCAN_INTERVAL);

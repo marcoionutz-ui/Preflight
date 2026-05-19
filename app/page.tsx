@@ -33,6 +33,9 @@ import { useLiveConfig } from "@/lib/trading/useLiveConfig";
 import { detectMarketRegime } from "@/lib/engines/marketRegime";
 import type { MarketRegime } from "@/lib/engines/marketRegime";
 import type { ChainId, AIAnalysis, Position, PaperTrade, OHLCVCandle, Pair } from "@/types";
+import { usePairMemory }            from "@/hooks/usePairMemory";
+import { checkEntryGate, emptyPairMemory } from "@/lib/engines/pairMemory";
+import { computeFlowFromTxns } from "@/lib/engines/flowTypes";
 
 type Tab = "oracle" | "chart" | "radar" | "trade" | "paper" | "portfolio" | "market" | "memory" | "proof";
 
@@ -79,21 +82,8 @@ export default function Page() {
   const [autoChains, setAutoChains] = useState<ChainId[]>(["base"]);
   const [allTrending, setAllTrending] = useState<Pair[]>([]);
   const goPlusCache = useRef<Map<string, GoPlusResult>>(new Map());
-  // Load with 24h cooldown — forget tokens older than 24h
-	const paperedPairs = useRef<Map<string, number>>(new Map((() => {
-      if (typeof window === "undefined") return [];
-      try {
-        const raw = JSON.parse(localStorage.getItem("paperedPairs") ?? "[]");
-        const records: Array<{ key: string; ts: number }> = Array.isArray(raw)
-          ? raw.map((k: string | { key: string; ts: number }) =>
-              typeof k === "string" ? { key: k, ts: 0 } : k
-          )
-          : [];
-        const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-        return records.filter(r => r.ts > cutoff).map(r => [r.key, r.ts] as [string, number]);
-      } catch { return []; }
-    })()));
-  
+    // Load with 24h cooldown — forget tokens older than 24h
+	const paperedPairs = useRef<Set<string>>(new Set()); // doar pentru sesiunea curentă  
 
   // GoPlus + Edge Score
   const [goPlus, setGoPlus]               = useState<GoPlusResult | null>(null);
@@ -103,6 +93,7 @@ export default function Page() {
   const [onChainLoading, setOnChainLoading] = useState(false);
   const [regime, setRegime] = useState<MarketRegime | null>(null);
   const { config } = useLiveConfig();
+  const { getPairMem } = usePairMemory();
 
   // Load OHLCV chart when pair changes
   useEffect(() => {
@@ -236,38 +227,54 @@ export default function Page() {
   // Auto-paper loop — scans trending every refresh
   useEffect(() => {
     if (!autoPaper || !allTrending.length) return;
-	  allTrending.forEach(p => {
-	  const price = Number(p.priceUsd);
+    allTrending.forEach(p => {
+      const price = Number(p.priceUsd);
       if (!price || Number.isNaN(price)) return;
-      const key = p.pairAddress;
-      const tokenKey = p.baseToken?.address?.toLowerCase() ?? key;
-	  if (!key || paperedPairs.current.has(key) || paperedPairs.current.has(tokenKey)) return;
-      const flags = computeRedFlags(p);
-      // market-only — GoPlus per-token cache is future work
-	  const addr = p.baseToken?.address?.toLowerCase();
-   	  const gp = (addr && goPlusCache.current.get(addr)?.dataAvailable)
-	  ? goPlusCache.current.get(addr)!
-	  : null;
-	  const es = computeEdgeScore(p, flags, gp);
-      const fomo = checkAntiFOMO(p, []);
+      const key  = p.pairAddress;
+      const addr = p.baseToken?.address?.toLowerCase();
+      if (!key) return;
+
+      const pairMem = getPairMem(key);
+      const flowSig = computeFlowFromTxns(
+        Number(p.txns?.m5?.buys  ?? 0),
+        Number(p.txns?.m5?.sells ?? 0),
+        Number(p.txns?.h1?.buys  ?? 0),
+        Number(p.txns?.h1?.sells ?? 0),
+      );
+
+      // Supabase gate — 24h cooldown
+      const gate = checkEntryGate(
+        pairMem ?? { ...emptyPairMemory(key, p.baseToken?.symbol ?? "?"), seenCount: 99 } as any,
+        flowSig, 0, 24 * 60 * 60_000
+      );
+      if (!gate.allowed) return;
+
+      // Dedup sesiune curentă
+      if (paperedPairs.current.has(key)) return;
+
+      const flags    = computeRedFlags(p);
+      const gp       = (addr && goPlusCache.current.get(addr)?.dataAvailable)
+        ? goPlusCache.current.get(addr)! : null;
+      const es       = computeEdgeScore(p, flags, gp, pairMem, flowSig);
+      const fomo     = checkAntiFOMO(p, []);
       const decision = classify(p, es, fomo, flags);
-	    // Salvează FOMO block și din auto-paper NO_CHASE
+
       if (decision.decision === "NO_CHASE" && fomo.blocked && fomo.reason) {
         saveFOMOBlock(
-          p.baseToken?.symbol ?? "?",
-          p.chainId ?? "?",
-          p.pairAddress ?? "",
-          Number(p.priceUsd),
-          Number(p.priceChange?.h24 ?? 0),
-          fomo.reason
+          p.baseToken?.symbol ?? "?", p.chainId ?? "?",
+          p.pairAddress ?? "", Number(p.priceUsd),
+          Number(p.priceChange?.h24 ?? 0), fomo.reason
         );
       }
-      if (decision.decision === "TRADE_CANDIDATE" || decision.decision === "PAPER_CANDIDATE") {
-        // Shadow mode — aplică constrângeri LIVE, salvează WOULD_BUY fără execuție
-        const now = Date.now();
-        if (config.mode === "shadow") {
+
+      if (decision.decision !== "TRADE_CANDIDATE" && decision.decision !== "PAPER_CANDIDATE") return;
+
+      const now = Date.now();
+
+      // ── Shadow mode ───────────────────────────────────────────────────────
+      if (config.mode === "shadow") {
         const requiredEdge = config.minEdgeScore;
-        const hasGoPlus = addr && goPlusCache.current.get(addr)?.dataAvailable;
+        const hasGoPlus    = addr && goPlusCache.current.get(addr)?.dataAvailable;
         if (
           es.total >= requiredEdge &&
           (!config.requireGoPlus || hasGoPlus) &&
@@ -275,81 +282,68 @@ export default function Page() {
           regime?.regime !== "DANGER" &&
           Number(p.liquidity?.usd ?? 0) >= config.minLiquidityUsd
         ) {
+          const shadowGate = pairMem
+            ? checkEntryGate(pairMem, flowSig, 3, 2 * 60 * 60_000)
+            : { allowed: true, reason: "no memory yet" };
+          if (!shadowGate.allowed) {
+            log(`[SKIP] ${p.baseToken?.symbol} — ${shadowGate.reason}`, "warn");
+            return;
+          }
           saveShadowTrade({
-            timestamp:    now,
-            symbol:       p.baseToken?.symbol ?? "?",
-            chain:        p.chainId ?? "?",
-            pairAddress:  key,
+            timestamp: now, symbol: p.baseToken?.symbol ?? "?",
+            chain: p.chainId ?? "?", pairAddress: key,
             tokenAddress: p.baseToken?.address ?? "",
-            entryPrice:   price,
-            currentPrice: price,
-            edgeScore:    es.total,
-            flagCount:    flags.filter(f => f.sev === "high").length,
-            note: `SHADOW | Edge ${es.total} | ${decision.reasons.slice(0,2).join(", ")}`,
+            entryPrice: price, currentPrice: price,
+            edgeScore: es.total, flagCount: flags.filter(f => f.sev === "high").length,
+            note: `SHADOW | Edge ${es.total} | flow:${flowSig.pressure} | ${decision.reasons.slice(0,2).join(", ")}`,
             sl:  price * (1 - (es.total >= 80 ? 0.15 : 0.18)),
             tp1: price * (1 + (es.total >= 80 ? 0.25 : 0.20)),
             tp2: price * (1 + (es.total >= 80 ? 0.60 : 0.50)),
             tp3: price * (1 + (es.total >= 80 ? 1.50 : 1.00)),
           });
-          log(`SHADOW: WOULD_BUY ${p.baseToken?.symbol} Edge ${es.total}`, "info");
+          paperedPairs.current.add(key);
+          log(`SHADOW: WOULD_BUY ${p.baseToken?.symbol} Edge ${es.total} | flow:${flowSig.pressure}`, "info");
         }
         return;
       }
-		
-		// Regime gate
-        if (regime && !regime.autoPaperEnabled) return;
-        const requiredEdge = 65 + (regime?.minEdgeScoreAdj ?? 0);
-        if (es.total < requiredEdge) return;
-       
-        paperedPairs.current.set(key, now);
-        paperedPairs.current.set(tokenKey, now);
-        // Salvează cu timestamp individual — nu mai resetează pe toți
-        const records = [...paperedPairs.current].map(([k, ts]) => ({ key: k, ts }));
-        localStorage.setItem("paperedPairs", JSON.stringify(records));
 
-        setPapers(prev => [...prev, {
+      // ── Paper mode ────────────────────────────────────────────────────────
+      if (regime && !regime.autoPaperEnabled) return;
+      const requiredEdge = 65 + (regime?.minEdgeScoreAdj ?? 0);
+      if (es.total < requiredEdge) return;
+
+      paperedPairs.current.add(key);
+
+      setPapers(prev => [...prev, {
+        id: Date.now() + Math.random(),
+        symbol: p.baseToken?.symbol ?? "?", chain: p.chainId ?? "?",
+        address: p.baseToken?.address ?? "", pairAddress: key,
+        entryPrice: price, currentPrice: price, entryTime: now,
+        score: es.total, flagCount: flags.filter(f => f.sev === "high").length,
+        note: `AUTO | Edge ${es.total} | ${decision.reasons.slice(0,2).join(", ")}`,
+        checkpoints: [],
+        sl:  price * (1 - (es.total >= 75 ? 0.22 : es.total >= 55 ? 0.18 : 0.15)),
+        tp1: price * (1 + (es.total >= 75 ? 0.35 : es.total >= 55 ? 0.28 : 0.22)),
+        tp2: price * (1 + (es.total >= 75 ? 0.90 : es.total >= 55 ? 0.70 : 0.50)),
+        tp3: price * (1 + (es.total >= 75 ? 2.00 : es.total >= 55 ? 1.50 : 1.00)),
+      }]);
+      log(`AUTO PAPER: ${p.baseToken?.symbol} Edge ${es.total} — ${decision.reasons[0]}`, "ok");
+      import("@/lib/db/sync").then(({ syncPaperTrade }) => {
+        syncPaperTrade({
           id: Date.now() + Math.random(),
-          symbol: p.baseToken?.symbol ?? "?",
-          chain: p.chainId ?? "?",
-          address: p.baseToken?.address ?? "",
-          pairAddress: key,
-          entryPrice: price,
-          currentPrice: price,
-          entryTime: now,
-          score: es.total,
-          flagCount: flags.filter(f => f.sev === "high").length,
-          note: `AUTO | Edge ${es.total} | ${decision.reasons.slice(0,2).join(", ")}`,
-          checkpoints: [],
-          sl:  price * (1 - (es.total >= 75 ? 0.22 : es.total >= 55 ? 0.18 : 0.15)),
-          tp1: price * (1 + (es.total >= 75 ? 0.35 : es.total >= 55 ? 0.28 : 0.22)),
-          tp2: price * (1 + (es.total >= 75 ? 0.90 : es.total >= 55 ? 0.70 : 0.50)),
-          tp3: price * (1 + (es.total >= 75 ? 2.00 : es.total >= 55 ? 1.50 : 1.00)),
-        }]);
-        log(`AUTO PAPER: ${p.baseToken?.symbol} Edge ${es.total} — ${decision.reasons[0]}`, "ok");
-        import("@/lib/db/sync").then(({ syncPaperTrade }) => {
-          syncPaperTrade({
-            id: Date.now() + Math.random(),
-            symbol: p.baseToken?.symbol ?? "?",
-            chain: p.chainId ?? "?",
-            address: p.baseToken?.address ?? "",
-            pairAddress: key,
-            entryPrice: price,
-            currentPrice: price,
-            entryTime: now,
-            score: es.total,
-            flagCount: flags.filter(f => f.sev === "high").length,
-            note: `AUTO | Edge ${es.total}`,
-            checkpoints: [],
-            sl:  price * (1 - (es.total >= 75 ? 0.22 : 0.18)),
-            tp1: price * (1 + (es.total >= 75 ? 0.35 : 0.22)),
-            tp2: price * (1 + (es.total >= 75 ? 0.90 : 0.50)),
-            tp3: price * (1 + (es.total >= 75 ? 2.00 : 1.00)),
-          });
+          symbol: p.baseToken?.symbol ?? "?", chain: p.chainId ?? "?",
+          address: p.baseToken?.address ?? "", pairAddress: key,
+          entryPrice: price, currentPrice: price, entryTime: now,
+          score: es.total, flagCount: flags.filter(f => f.sev === "high").length,
+          note: `AUTO | Edge ${es.total}`, checkpoints: [],
+          sl:  price * (1 - (es.total >= 75 ? 0.22 : 0.18)),
+          tp1: price * (1 + (es.total >= 75 ? 0.35 : 0.22)),
+          tp2: price * (1 + (es.total >= 75 ? 0.90 : 0.50)),
+          tp3: price * (1 + (es.total >= 75 ? 2.00 : 1.00)),
         });
-      }
+      });
     });
   }, [allTrending, autoPaper, regime, config]); // eslint-disable-line
-
   const handleSelectPair = (pair: typeof selectedPair) => {
     if (!pair) return;
     setSelectedPair(pair);

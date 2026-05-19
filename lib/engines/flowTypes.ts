@@ -28,3 +28,20 @@ export function computeFlowFromTxns(
   }
   return { buys1m, sells1m, buys5m, sells5m, pressure, hasData: total > 0 };
 }
+
+// ── Liquidity Signal ──────────────────────────────────────────────────────────
+
+export type LiquidityStatus = "ADDED" | "REMOVED" | "STABLE";
+
+export interface LiquiditySignal {
+  lpAdded5m:   number; // ETH adăugat în ultimele 5m
+  lpRemoved5m: number; // ETH scos în ultimele 5m
+  lpNet5m:     number; // net (pozitiv = adăugat)
+  status:      LiquidityStatus;
+  hasData:     boolean;
+}
+
+export const STABLE_LIQUIDITY: LiquiditySignal = {
+  lpAdded5m: 0, lpRemoved5m: 0, lpNet5m: 0,
+  status: "STABLE", hasData: false,
+};
