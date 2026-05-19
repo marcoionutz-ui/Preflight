@@ -43,7 +43,7 @@ export interface EdgeScore {
 export function computeEdgeScore(
   pair: Pair,
   flags: RedFlag[],
-  goPlus?: GoPlusResult | null
+  goPlus?: GoPlusResult | null,
   pairMem?: PairMemoryEntry | null,  // ← NOU
   flowSig?: FlowSignal | null,       // ← NOU
 ): EdgeScore {
