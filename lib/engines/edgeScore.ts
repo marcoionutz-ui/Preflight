@@ -8,6 +8,9 @@
  * Execution only runs if canEnterTrade === true.
  */
 
+import type { PairMemoryEntry } from "./pairMemory";
+import type { FlowSignal }      from "./flowTypes";
+
 import type { Pair, RedFlag } from "@/types";
 import type { GoPlusResult } from "@/lib/apis/goplus";
 import { ageHours } from "@/lib/utils";
@@ -41,6 +44,8 @@ export function computeEdgeScore(
   pair: Pair,
   flags: RedFlag[],
   goPlus?: GoPlusResult | null
+  pairMem?: PairMemoryEntry | null,  // ← NOU
+  flowSig?: FlowSignal | null,       // ← NOU
 ): EdgeScore {
   const liq     = Number(pair.liquidity?.usd   ?? 0);
   const vol24   = Number(pair.volume?.h24      ?? 0);
@@ -164,6 +169,12 @@ export function computeEdgeScore(
 
   if (t1h < 5) flow = Math.min(flow, 10); // too few txns to trust signal
   flow = Math.max(0, Math.min(20, flow));
+  
+  // Flow din WebSocket (worker) sau absent (app fără WS)
+  if (flowSig?.hasData) {
+    if (flowSig.pressure === "BUYING")  flow = Math.min(20, flow + 4);
+    if (flowSig.pressure === "SELLING") flow = Math.max(0,  flow - 8);
+  }
 
   // ── TIMING SCORE (0-10) ──────────────────────────────────────────────────
   let timing =
@@ -180,6 +191,17 @@ export function computeEdgeScore(
 
   if (ah < 0.25) warnings.push("Pair < 15min old");
   timing = Math.max(0, Math.min(10, timing));
+  
+  // ── PAIR MEMORY BONUS/PENALIZARE ────────────────────────────────────────
+  let memBonus = 0;
+  if (pairMem) {
+    if (pairMem.phase === "RECOVERING")                              memBonus += 5;
+    if (pairMem.wins24h >= 2)                                        memBonus += 5;
+    if (pairMem.losses24h > pairMem.wins24h && pairMem.losses24h > 2) memBonus -= 10;
+    if (pairMem.consecutiveLosses >= 3)                              memBonus -= 15;
+    if (pairMem.seenCount > 15 && pairMem.wins24h === 0)            memBonus -= 10;
+  }
+  timing = Math.max(0, Math.min(10, timing + Math.max(-5, Math.min(5, memBonus / 2))));
 
   // ── RED FLAG OVERRIDES ───────────────────────────────────────────────────
   if (highFlags >= 3) blockers.push(`${highFlags} HIGH severity flags`);
