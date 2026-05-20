@@ -25,7 +25,7 @@ import { getRedis } from "../lib/db/redis";
 // ── Config ────────────────────────────────────────────────────────────────────
 
 const SUPABASE_URL        = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const SUPABASE_KEY        = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+const SUPABASE_KEY        = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const TELEGRAM_TOKEN      = process.env.TELEGRAM_BOT_TOKEN  ?? "";
 const TELEGRAM_CHAT_ID    = process.env.TELEGRAM_CHAT_ID    ?? "";
 const GECKO_BASE          = "https://api.geckoterminal.com/api/v2";
@@ -258,24 +258,27 @@ function connectChainWebSocket(chain: ChainConfig): void {
       }
 
       // ── LP Mint Event (liquidity added) ─────────────────────────────────
-      if (topic0 === MINT_V2_TOPIC) {
-        const amount0 = BigInt("0x" + raw.slice(0,  64));
-        const amount1 = BigInt("0x" + raw.slice(64, 128));
-        const ethAmount = Number(amount0 > amount1 ? amount0 : amount1) / 1e18;
-        recordLp(pairAddress, true, ethAmount);
-        console.log(`[LP ADD] ${memory.get(pairAddress)?.symbol} +${ethAmount.toFixed(3)} ETH`);
-      }
+    const amount0 = BigInt("0x" + raw.slice(0,  64));
+    const amount1 = BigInt("0x" + raw.slice(64, 128));
+    const mem0 = memory.get(pairAddress);
+    const tokenAddr0 = mem0?.address?.toLowerCase() ?? "";
+    const wethIsToken0_lp = chain.weth.toLowerCase() < tokenAddr0;
+    const ethAmount = Number(wethIsToken0_lp ? amount0 : amount1) / 1e18;
+    recordLp(pairAddress, true, ethAmount);
+    console.log(`[LP ADD] ${mem0?.symbol} +${ethAmount.toFixed(3)} ETH`);
 
       // ── LP Burn Event (liquidity removed) ───────────────────────────────
-      if (topic0 === BURN_V2_TOPIC) {
-        const amount0 = BigInt("0x" + raw.slice(0,  64));
-        const amount1 = BigInt("0x" + raw.slice(64, 128));
-        const ethAmount = Number(amount0 > amount1 ? amount0 : amount1) / 1e18;
-        recordLp(pairAddress, false, ethAmount);
-        console.log(`[LP REMOVE] ${memory.get(pairAddress)?.symbol} -${ethAmount.toFixed(3)} ETH ⚠️`);
-      }
+    const amount0b = BigInt("0x" + raw.slice(0,  64));
+    const amount1b = BigInt("0x" + raw.slice(64, 128));
+    const mem1 = memory.get(pairAddress);
+    const tokenAddr1 = mem1?.address?.toLowerCase() ?? "";
+    const wethIsToken0_burn = chain.weth.toLowerCase() < tokenAddr1;
+    const ethAmountB = Number(wethIsToken0_burn ? amount0b : amount1b) / 1e18;
+    recordLp(pairAddress, false, ethAmountB);
+    console.log(`[LP REMOVE] ${mem1?.symbol} -${ethAmountB.toFixed(3)} ETH ⚠️`);
+        }
 
-    } catch { /* silent */ }
+      } catch { /* silent */ }
   });
 
   wsClient.on("error", (err: Error) => console.log(`[WS ${chain.id}] Error: ${err.message}`));
