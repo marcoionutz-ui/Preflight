@@ -510,6 +510,16 @@ async function fetchTrending(chain: ChainConfig): Promise<GeckoPool[]> {
   } catch { return []; }
 }
 
+async function fetchPoolByAddress(chain: ChainConfig, pairAddress: string): Promise<GeckoPool | null> {
+  try {
+    const res = await fetch(`${GECKO_BASE}/networks/${chain.gecko}/pools/${pairAddress}`);
+    if (!res.ok) return null;
+    const json = await res.json();
+    if (!json.data) return null;
+    return { ...json.data, _chain: chain };
+  } catch { return null; }
+}
+
 // ── Save FOMO block ───────────────────────────────────────────────────────────
 
 async function saveFOMOBlock(pool: GeckoPool, reason: string): Promise<void> {
@@ -791,6 +801,32 @@ async function scan(): Promise<void> {
   } catch { /* Redis optional — workerul merge fără */ }
 }
 
+// ── Monitor open trades ───────────────────────────────────────────────────────
+
+async function monitorOpenTrades(): Promise<void> {
+  const { data: trades } = await supabase
+    .from("shadow_trades")
+    .select("*")
+    .is("exited_at", null);
+
+  if (!trades?.length) return;
+
+  const pools: GeckoPool[] = [];
+
+  for (const trade of trades) {
+    if (!trade.chain || !trade.pair_address) continue;
+    const chainCfg = CHAINS.find(c => c.id === trade.chain || c.gecko === trade.chain);
+    if (!chainCfg) continue;
+    const pool = await fetchPoolByAddress(chainCfg, trade.pair_address);
+    if (pool) pools.push(pool);
+  }
+
+  if (pools.length) {
+    await updateOutcomes(pools);
+    console.log(`[MONITOR] Checked ${pools.length} open trades`);
+  }
+}
+
 // ── Start ─────────────────────────────────────────────────────────────────────
 
 console.log("Supreme Trader Worker v4 starting...");
@@ -802,4 +838,5 @@ CHAINS.forEach(c => connectChainWebSocket(c));
 loadPairStats().then(() => {
   scan();
   setInterval(scan, SCAN_INTERVAL);
+  setInterval(monitorOpenTrades, 10_000);
 });
