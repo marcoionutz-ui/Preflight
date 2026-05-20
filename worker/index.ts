@@ -18,6 +18,8 @@ import type { PairMemoryEntry }    from "../lib/engines/pairMemory";
 import { computeFlowFromTxns, NEUTRAL_FLOW, STABLE_LIQUIDITY } from "../lib/engines/flowTypes";
 import type { FlowSignal, LiquiditySignal } from "../lib/engines/flowTypes";
 import { detectSecondWave }        from "../lib/engines/secondWave";
+import { classifyNewPool } from "../lib/engines/newPoolDetector";
+import type { KnownPool }  from "../lib/engines/newPoolDetector";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -89,6 +91,19 @@ interface LpEvent   { ts: number; isAdd: boolean; ethAmount: number; }
 const memory   = new Map<string, PairMemoryEntry>();
 const wsFlow   = new Map<string, SwapEvent[]>();
 const lpEvents = new Map<string, LpEvent[]>();
+
+// ── New Pool Tracker ──────────────────────────────────────────────────────────
+// tokenAddress → Set<pairAddress> per chain
+const tokenPools = new Map<string, Set<string>>();
+
+function trackPool(tokenAddress: string, pairAddress: string, chain: string): boolean {
+  const key = `${chain}:${tokenAddress.toLowerCase()}`;
+  const known = tokenPools.get(key) ?? new Set<string>();
+  const isNew = !known.has(pairAddress.toLowerCase());
+  known.add(pairAddress.toLowerCase());
+  tokenPools.set(key, known);
+  return isNew && known.size > 1; // true doar dacă e pool NOU pentru token cunoscut
+}
 
 // ── Telegram ──────────────────────────────────────────────────────────────────
 
@@ -648,6 +663,32 @@ async function scan(): Promise<void> {
     if (!price || isNaN(price)) continue;
 
     const mem  = updateMemory(pool, price);
+	// New pool detection
+	const tokenAddr  = pool.relationships.base_token.data.id?.toLowerCase() ?? "";
+	const isNewPool  = tokenAddr ? trackPool(tokenAddr, pool.attributes.address, pool._chain.id) : false;
+
+	if (isNewPool) {
+	  const knownPools: KnownPool[] = [...(tokenPools.get(`${pool._chain.id}:${tokenAddr}`) ?? [])]
+		.filter(pa => pa !== pool.attributes.address.toLowerCase())
+		.map(pa => ({ pairAddress: pa, liquidityUsd: 0 }));
+
+	  const sig = classifyNewPool(
+		tokenAddr, mem.symbol, pool._chain.id,
+		pool.attributes.address,
+		Number(pool.attributes.reserve_in_usd ?? 0),
+		knownPools,
+	  );
+
+	  if (sig.classification !== "LOW_LIQ_NOISE" && sig.classification !== "CLONE_RISK") {
+		console.log(`[NEW POOL] ${mem.symbol} (${pool._chain.id}) — ${sig.classification} | $${(sig.newLiquidityUsd/1000).toFixed(1)}K liq | score:${sig.score}`);
+		await sendTelegram(
+		  `🆕 <b>NEW POOL</b> ${mem.symbol} [${pool._chain.id.toUpperCase()}]\n`
+		  + `${sig.classification}\n`
+		  + `Lichiditate: $${(sig.newLiquidityUsd/1000).toFixed(1)}K\n`
+		  + sig.reasons.join("\n")
+		);
+	  }
+}
     const flow = getFlow(pool);
     const lp   = getLpSignal(pool.attributes.address);
     const fomo = checkFOMO(pool);
