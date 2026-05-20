@@ -258,27 +258,30 @@ function connectChainWebSocket(chain: ChainConfig): void {
       }
 
       // ── LP Mint Event (liquidity added) ─────────────────────────────────
-    const amount0 = BigInt("0x" + raw.slice(0,  64));
-    const amount1 = BigInt("0x" + raw.slice(64, 128));
-    const mem0 = memory.get(pairAddress);
-    const tokenAddr0 = mem0?.address?.toLowerCase() ?? "";
-    const wethIsToken0_lp = chain.weth.toLowerCase() < tokenAddr0;
-    const ethAmount = Number(wethIsToken0_lp ? amount0 : amount1) / 1e18;
-    recordLp(pairAddress, true, ethAmount);
-    console.log(`[LP ADD] ${mem0?.symbol} +${ethAmount.toFixed(3)} ETH`);
+      if (topic0 === MINT_V2_TOPIC) {
+        const amount0      = BigInt("0x" + raw.slice(0,  64));
+        const amount1      = BigInt("0x" + raw.slice(64, 128));
+        const memLp        = memory.get(pairAddress);
+        const tokenAddrLp  = memLp?.tokenAddress.replace(`${chain.id}_`, "").toLowerCase() ?? "";
+        const wethIsToken0 = chain.weth.toLowerCase() < tokenAddrLp;
+        const ethAmount    = Number(wethIsToken0 ? amount0 : amount1) / 1e18;
+        recordLp(pairAddress, true, ethAmount);
+        console.log(`[LP ADD] ${memLp?.symbol} +${ethAmount.toFixed(3)} ETH`);
+      }
 
       // ── LP Burn Event (liquidity removed) ───────────────────────────────
-    const amount0b = BigInt("0x" + raw.slice(0,  64));
-    const amount1b = BigInt("0x" + raw.slice(64, 128));
-    const mem1 = memory.get(pairAddress);
-    const tokenAddr1 = mem1?.address?.toLowerCase() ?? "";
-    const wethIsToken0_burn = chain.weth.toLowerCase() < tokenAddr1;
-    const ethAmountB = Number(wethIsToken0_burn ? amount0b : amount1b) / 1e18;
-    recordLp(pairAddress, false, ethAmountB);
-    console.log(`[LP REMOVE] ${mem1?.symbol} -${ethAmountB.toFixed(3)} ETH ⚠️`);
-        }
+      if (topic0 === BURN_V2_TOPIC) {
+        const amount0      = BigInt("0x" + raw.slice(0,  64));
+        const amount1      = BigInt("0x" + raw.slice(64, 128));
+        const memLp        = memory.get(pairAddress);
+        const tokenAddrLp  = memLp?.tokenAddress.replace(`${chain.id}_`, "").toLowerCase() ?? "";
+        const wethIsToken0 = chain.weth.toLowerCase() < tokenAddrLp;
+        const ethAmount    = Number(wethIsToken0 ? amount0 : amount1) / 1e18;
+        recordLp(pairAddress, false, ethAmount);
+        console.log(`[LP REMOVE] ${memLp?.symbol} -${ethAmount.toFixed(3)} ETH ⚠️`);
+      }
 
-      } catch { /* silent */ }
+    } catch { /* silent */ }
   });
 
   wsClient.on("error", (err: Error) => console.log(`[WS ${chain.id}] Error: ${err.message}`));
