@@ -96,8 +96,11 @@ const lpEvents = new Map<string, LpEvent[]>();
 // ── New Pool Tracker ──────────────────────────────────────────────────────────
 // tokenAddress → Set<pairAddress> per chain
 const tokenPools = new Map<string, Set<string>>();
+const BLUECHIP_SYMBOLS = new Set(["usdc", "weth", "wbtc", "eth", "usdt", "dai", "arb", "pendle"]);
 
 function trackPool(tokenAddress: string, pairAddress: string, chain: string): boolean {
+  const sym = memory.get(pairAddress.toLowerCase())?.symbol?.trim().toLowerCase() ?? "";
+  if (BLUECHIP_SYMBOLS.has(sym)) return false; // skip tokens majori
   const key = `${chain}:${tokenAddress.toLowerCase()}`;
   const known = tokenPools.get(key) ?? new Set<string>();
   const isNew = !known.has(pairAddress.toLowerCase());
