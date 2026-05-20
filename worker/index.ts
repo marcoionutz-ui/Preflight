@@ -500,14 +500,47 @@ function getEntryGate(mem: PairMemoryEntry, flow: FlowSignal, lp: LiquiditySigna
   return checkEntryGate(mem, flow, MIN_SEEN_COUNT, COOLDOWN_MS);
 }
 
-// ── Fetch trending ────────────────────────────────────────────────────────────
+// ── Fetch trending + new pools ────────────────────────────────────────────────
 
 async function fetchTrending(chain: ChainConfig): Promise<GeckoPool[]> {
   try {
-    const res  = await fetch(`${GECKO_BASE}/networks/${chain.gecko}/trending_pools?page=1`);
-    const data = await res.json();
-    return (data.data ?? []).map((p: GeckoPool) => ({ ...p, _chain: chain }));
-  } catch { return []; }
+    const [trendingRes, newPoolsRes] = await Promise.allSettled([
+      fetch(`${GECKO_BASE}/networks/${chain.gecko}/trending_pools?page=1`),
+      fetch(`${GECKO_BASE}/networks/${chain.gecko}/new_pools?page=1`),
+    ]);
+
+    let trending: GeckoPool[] = [];
+    let newPools: GeckoPool[] = [];
+
+    if (trendingRes.status === "fulfilled" && trendingRes.value.ok) {
+      const trendingData = await trendingRes.value.json();
+      trending = (trendingData.data ?? []).map((p: GeckoPool) => ({ ...p, _chain: chain }));
+    }
+
+    if (newPoolsRes.status === "fulfilled" && newPoolsRes.value.ok) {
+      const newPoolsData = await newPoolsRes.value.json();
+      newPools = (newPoolsData.data ?? []).map((p: GeckoPool) => ({ ...p, _chain: chain }));
+    }
+
+    const seen = new Set<string>();
+    const merged: GeckoPool[] = [];
+
+    for (const p of [...trending, ...newPools]) {
+      const addr = p.attributes?.address?.toLowerCase();
+      if (addr && !seen.has(addr)) {
+        seen.add(addr);
+        merged.push(p);
+      }
+    }
+
+    console.log(
+      `[FETCH] ${chain.id}: ${trending.length} trending + ${newPools.length} new = ${merged.length} unique`
+    );
+
+    return merged;
+  } catch {
+    return [];
+  }
 }
 
 async function fetchPoolByAddress(chain: ChainConfig, pairAddress: string): Promise<GeckoPool | null> {
