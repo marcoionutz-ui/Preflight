@@ -40,9 +40,10 @@ interface RadarEntry {
   note:              string;
 }
 
-const PHASE_ORDER: Phase[] = ["RECOVERING", "TRENDING", "NEW", "PUMPING", "DUMPING", "ZOMBIE", "DEAD"];
+const PHASE_ORDER: Phase[] = ["SECOND_WAVE", "RECOVERING", "TRENDING", "NEW", "PUMPING", "DUMPING", "ZOMBIE", "DEAD"];
 
 const PHASE_LABEL: Record<Phase, string> = {
+  SECOND_WAVE: "2ND WAVE",
   RECOVERING: "RECOVERING",
   TRENDING:   "TRENDING",
   NEW:        "NEW",
@@ -121,6 +122,7 @@ async function loadRadarData(): Promise<RadarEntry[]> {
       totalEntries,
       wins24h:  wins,
       losses24h: losses,
+      badExits24h: 0,
     });
 
     entries.push({

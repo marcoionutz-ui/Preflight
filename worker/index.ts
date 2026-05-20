@@ -299,12 +299,12 @@ function updateMemory(pool: GeckoPool, price: number): PairMemoryEntry {
       firstSeen: now, lastSeen: now, seenCount: 1,
       priceAtFirstSeen: price, highPrice: price, lowPrice: price, currentPrice: price,
       totalEntries: 0, lastEntryTime: 0, lastEntryPrice: 0,
-      wins24h: 0, losses24h: 0, consecutiveLosses: 0,
+      wins24h: 0, losses24h: 0, badExits24h: 0, consecutiveLosses: 0,
       lastExitReason: null, lastExitTime: null,
       phase: detectPhase({
         seenCount: 1, consecutiveLosses: 0, m5, h24,
         highPrice: price, lowPrice: price, currentPrice: price,
-        totalEntries: 0, wins24h: 0, losses24h: 0,
+        totalEntries: 0, wins24h: 0, losses24h: 0, badExits24h: 0,
       }),
     };
     memory.set(addr, mem);
@@ -322,7 +322,7 @@ function updateMemory(pool: GeckoPool, price: number): PairMemoryEntry {
     seenCount: existing.seenCount, consecutiveLosses: existing.consecutiveLosses,
     m5, h24,
     highPrice: existing.highPrice, lowPrice: existing.lowPrice, currentPrice: price,
-    totalEntries: existing.totalEntries, wins24h: existing.wins24h, losses24h: existing.losses24h,
+    totalEntries: existing.totalEntries, wins24h: existing.wins24h, losses24h: existing.losses24h, badExits24h: existing.badExits24h,
   });
 
   memory.set(addr, existing);
@@ -352,7 +352,7 @@ async function loadPairStats(): Promise<void> {
         seenCount: 0, priceAtFirstSeen: ep,
         highPrice: cp, lowPrice: ep, currentPrice: cp,
         totalEntries: 0, lastEntryTime: 0, lastEntryPrice: ep,
-        wins24h: 0, losses24h: 0, consecutiveLosses: 0,
+        wins24h: 0, losses24h: 0, badExits24h: 0, consecutiveLosses: 0,
         lastExitReason: null, lastExitTime: null, phase: "TRENDING",
       });
     }
@@ -368,6 +368,12 @@ async function loadPairStats(): Promise<void> {
     } else if (t.exit_reason === "SL hit") {
       mem.losses24h += 1; mem.consecutiveLosses += 1;
       mem.lastExitReason = "SL hit"; mem.lastExitTime = t.exited_at;
+    } else if (
+      t.exit_reason === "MAX HOLD" ||
+      t.exit_reason === "SELL PRESSURE" ||
+      t.exit_reason === "LP REMOVED"
+    ) {
+      mem.badExits24h += 1;
     }
   }
 
@@ -449,6 +455,14 @@ function quickEdgeScore(
   if (mem.losses24h > mem.wins24h && mem.losses24h > 2) score -= 15;
   if (mem.consecutiveLosses >= 3)  score -= 20;
   if (mem.seenCount > 15 && mem.wins24h === 0) score -= 20;
+
+  // History penalty — include badExits24h (MAX HOLD / SELL PRESSURE / LP REMOVED)
+  const exitedCount = mem.wins24h + mem.losses24h + mem.badExits24h;
+  const winRate     = exitedCount > 0 ? mem.wins24h / exitedCount : 0.5;
+  if      (exitedCount >= 5 && mem.wins24h === 0)  score -= 40;
+  else if (exitedCount >= 5 && winRate < 0.20)      score -= 25;
+  else if (exitedCount >= 8 && winRate < 0.30)      score -= 15;
+  if (mem.badExits24h >= 3 && mem.wins24h === 0)    score -= 20;
 
   // Second wave bonus
   const sw = detectSecondWave(mem, flow, m5, h1);
@@ -545,9 +559,9 @@ async function saveShadowTrade(
     entry_price:   price, current_price: price,
     edge_score:    score, flag_count: 0, note,
     sl:  price * (1 - (score >= 80 ? 0.15 : 0.18)),
-    tp1: price * (1 + (score >= 80 ? 0.25 : 0.20)),
-    tp2: price * (1 + (score >= 80 ? 0.60 : 0.50)),
-    tp3: price * (1 + (score >= 80 ? 1.50 : 1.00)),
+    tp1: price * (!flow.hasData ? 1.10 : flow.pressure === "BUYING" ? 1.25 : flow.pressure === "NEUTRAL" ? 1.12 : flow.pressure === "SELLING" ? 1.08 : 1.15),
+    tp2: price * (score >= 80 ? 2.00 : 1.75),
+    tp3: price * (score >= 80 ? 4.00 : 3.00),
   });
 
   mem.totalEntries += 1; mem.lastEntryTime = Date.now(); mem.lastEntryPrice = price;
@@ -623,15 +637,18 @@ async function updateOutcomes(pools: GeckoPool[]): Promise<void> {
     } else if (lp.hasData && lp.status === "REMOVED" && lp.lpRemoved5m > 0.5 && ageMs > 10 * 60_000) {
       // Exit anticipat dacă LP e scos agresiv
       update.exited_at = Date.now(); update.exit_price = price; update.exit_reason = "LP REMOVED";
+      if (mem) { mem.badExits24h += 1; }
       console.log(`[LP EXIT] ${trade.symbol} — LP removed ${lp.lpRemoved5m.toFixed(3)} ETH`);
       await sendTelegram(`⚠️ <b>LP EXIT</b> ${trade.symbol}\nLP removed ${lp.lpRemoved5m.toFixed(3)} ETH in 5m`);
 
     } else if (flow.hasData && flow.pressure === "SELLING" && flow.sells5m >= 10 && ageMs > 15 * 60_000) {
       update.exited_at = Date.now(); update.exit_price = price; update.exit_reason = "SELL PRESSURE";
+      if (mem) { mem.badExits24h += 1; }
       console.log(`[FLOW EXIT] ${trade.symbol} — ${flow.sells5m}s vs ${flow.buys5m}b`);
 
     } else if (ageMs > MAX_HOLD_MS) {
       update.exited_at = Date.now(); update.exit_price = price; update.exit_reason = "MAX HOLD";
+      if (mem) { mem.badExits24h += 1; }
       console.log(`[ZOMBIE KILL] ${trade.symbol} held 4h with no exit`);
       await sendTelegram(`💀 <b>ZOMBIE KILL</b> ${trade.symbol} — held 4h, no exit`);
     }

@@ -45,6 +45,7 @@ export function usePairMemory() {
           lastEntryPrice:    ep,
           wins24h:           0,
           losses24h:         0,
+          badExits24h:       0,
           consecutiveLosses: 0,
           lastExitReason:    null,
           lastExitTime:      null,
@@ -85,6 +86,7 @@ export function usePairMemory() {
         totalEntries: mem.totalEntries,
         wins24h:      mem.wins24h,
         losses24h:    mem.losses24h,
+        badExits24h:  0,
       });
     }
 

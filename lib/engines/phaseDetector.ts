@@ -21,23 +21,24 @@ export interface PhaseInput {
   totalEntries:      number;
   wins24h:           number;
   losses24h:         number;
+  badExits24h:       number;
 }
 
 export function detectPhase(input: PhaseInput): Phase {
   const { seenCount, consecutiveLosses, m5, h24,
           highPrice, lowPrice, currentPrice,
-          totalEntries, wins24h, losses24h } = input;
+          totalEntries, wins24h, losses24h, badExits24h } = input;
 
   if (seenCount <= 2) return "NEW";
 
-  // Zombie: văzut des, are entries, zero outcomes, preț plat
-  if (seenCount > 8 && totalEntries > 0 && wins24h === 0 && losses24h === 0) {
-    const range = highPrice > 0 ? (highPrice - lowPrice) / highPrice * 100 : 0;
-    if (range < 15) return "ZOMBIE";
-  }
+  // DEAD: 3 SL consecutive SAU 5+ entries cu 0 wins și bleeding activ
+  if (consecutiveLosses >= 3)                                        return "DEAD";
+  if (totalEntries >= 5 && wins24h === 0 && losses24h >= 3)         return "DEAD";
 
-  if (consecutiveLosses >= 4)  return "DEAD";
-  if (m5 > 15 || h24 > 150)   return "PUMPING";
+  // ZOMBIE: 5+ entries, 0 wins, dar blocat în bad exits (nu bleeding sever)
+  if (totalEntries >= 5 && wins24h === 0 && losses24h < 3)          return "ZOMBIE";
+
+  if (m5 > 15 || h24 > 150)                                          return "PUMPING";
 
   // Dumping: scăzut față de high
   if (highPrice > 0 && currentPrice < highPrice * 0.70) {
