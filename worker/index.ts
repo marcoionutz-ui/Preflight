@@ -20,6 +20,7 @@ import type { FlowSignal, LiquiditySignal } from "../lib/engines/flowTypes";
 import { detectSecondWave }        from "../lib/engines/secondWave";
 import { classifyNewPool } from "../lib/engines/newPoolDetector";
 import type { KnownPool }  from "../lib/engines/newPoolDetector";
+import { getRedis } from "../lib/db/redis";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -740,7 +741,45 @@ async function scan(): Promise<void> {
     + ` | dead:${vals.filter(m => m.phase === "DEAD").length}`
     + ` | 2wave:${vals.filter(m => m.phase === "SECOND_WAVE").length}`
     + ` | recovering:${vals.filter(m => m.phase === "RECOVERING").length}`
-  );
+  );   
+
+  // Redis snapshot — pair states pentru UI instant
+  try {
+    const r = getRedis();
+    if (r) {
+      const states: Record<string, object> = {};
+      for (const [addr, mem] of memory.entries()) {
+        const flow = getWsFlow(addr);
+        const lp   = getLpSignal(addr);
+        states[addr] = {
+          symbol:            mem.symbol,
+          phase:             mem.phase,
+          seenCount:         mem.seenCount,
+          totalEntries:      mem.totalEntries,
+          wins24h:           mem.wins24h,
+          losses24h:         mem.losses24h,
+          badExits24h:       mem.badExits24h,
+          consecutiveLosses: mem.consecutiveLosses,
+          currentPrice:      mem.currentPrice,
+          lastEntryTime:     mem.lastEntryTime,
+          flow: {
+            pressure: flow.pressure,
+            buys5m:   flow.buys5m,
+            sells5m:  flow.sells5m,
+            hasData:  flow.hasData,
+          },
+          lp: {
+            status:  lp.status,
+            lpNet5m: lp.lpNet5m,
+            hasData: lp.hasData,
+          },
+          updatedAt: Date.now(),
+        };
+      }
+      await r.set("supreme:pair_states", JSON.stringify(states), "EX", 120);
+      console.log(`[REDIS] Wrote ${Object.keys(states).length} pair states`);
+    }
+  } catch { /* Redis optional — workerul merge fără */ }
 }
 
 // ── Start ─────────────────────────────────────────────────────────────────────
