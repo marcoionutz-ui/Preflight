@@ -99,6 +99,16 @@ const hotCandidates = new Map<string, { chain: string; promotedAt: number }>();
 const tokenPools = new Map<string, Set<string>>();
 const BLUECHIP_SYMBOLS = new Set(["usdc", "weth", "wbtc", "eth", "usdt", "dai", "arb", "pendle"]);
 
+const BLOCKED_SYMBOLS = new Set([
+  "usdc", "usdt", "dai", "weth", "wbtc", "eth",
+  "arb", "op", "matic", "bnb", "avax", "pendle",
+  "cbbtc", "cbeth", "usdbc",
+]);
+
+function isBlockedAsset(symbol: string): boolean {
+  return BLOCKED_SYMBOLS.has(symbol.trim().toLowerCase());
+}
+
 function trackPool(tokenAddress: string, pairAddress: string, chain: string): boolean {
   const sym = memory.get(pairAddress.toLowerCase())?.symbol?.trim().toLowerCase() ?? "";
   if (BLUECHIP_SYMBOLS.has(sym)) return false; // skip tokens majori
@@ -755,7 +765,10 @@ async function scan(): Promise<void> {
     const price = Number(pool.attributes.base_token_price_usd);
     if (!price || isNaN(price)) continue;
 
-    const mem  = updateMemory(pool, price);
+   const mem  = updateMemory(pool, price);
+
+    if (isBlockedAsset(mem.symbol)) continue;
+
 	// New pool detection
 	const tokenAddr  = pool.relationships.base_token.data.id?.toLowerCase() ?? "";
 	const isNewPool  = tokenAddr ? trackPool(tokenAddr, pool.attributes.address, pool._chain.id) : false;
