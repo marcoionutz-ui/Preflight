@@ -35,6 +35,7 @@ const MIN_SEEN_COUNT      = 5;
 const COOLDOWN_MS         = 2 * 60 * 60_000;
 const SECOND_WAVE_COOLDOWN_MS = 60 * 60_000; // 1h cooldown pentru second wave
 const MAX_HOLD_MS         = 4 * 60 * 60_000;
+const WORKER_VERSION      = "v5";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   realtime: { transport: WebSocket },
@@ -645,6 +646,7 @@ async function saveFOMOBlock(pool: GeckoPool, reason: string): Promise<void> {
   const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
   await supabase.from("fomo_blocks").insert({
     id, timestamp: Date.now(), symbol,
+    worker_version:            WORKER_VERSION,
     chain:                     pool._chain.id,
     pair_address:              pool.attributes.address,
     price_at_block:            Number(pool.attributes.base_token_price_usd),
@@ -681,7 +683,7 @@ async function saveShadowTrade(
   const sw    = detectSecondWave(mem, flow);
 
   const note = [
-    `WORKER v4`,
+    `WORKER ${WORKER_VERSION}`,
     `Edge ${score}`,
     `seen:${mem.seenCount}x`,
     `phase:${mem.phase}`,
@@ -693,8 +695,9 @@ async function saveShadowTrade(
 
   await supabase.from("shadow_trades").insert({
     id, timestamp: Date.now(),
-    symbol:        mem.symbol,
-    chain:         pool._chain.id,
+    symbol:         mem.symbol,
+    worker_version: WORKER_VERSION,
+    chain:          pool._chain.id,
     pair_address:  pool.attributes.address,
     token_address: mem.tokenAddress,
     entry_price:   price, current_price: price,
