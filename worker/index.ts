@@ -1025,7 +1025,7 @@ async function monitorOpenTrades(): Promise<void> {
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 
-console.log("Supreme Trader Worker v4 starting...");
+console.log(`Supreme Trader Worker ${WORKER_VERSION} starting...`);
 console.log(`Chains: ${CHAINS.map(c => c.id).join(", ")}`);
 
 // Conectează WS pentru fiecare chain
