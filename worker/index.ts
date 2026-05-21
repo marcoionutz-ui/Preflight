@@ -89,9 +89,10 @@ interface LpEvent   { ts: number; isAdd: boolean; ethAmount: number; }
 
 // ── In-memory stores ──────────────────────────────────────────────────────────
 
-const memory   = new Map<string, PairMemoryEntry>();
-const wsFlow   = new Map<string, SwapEvent[]>();
-const lpEvents = new Map<string, LpEvent[]>();
+const memory        = new Map<string, PairMemoryEntry>();
+const wsFlow        = new Map<string, SwapEvent[]>();
+const lpEvents      = new Map<string, LpEvent[]>();
+const hotCandidates = new Map<string, { chain: string; promotedAt: number }>();
 
 // ── New Pool Tracker ──────────────────────────────────────────────────────────
 // tokenAddress → Set<pairAddress> per chain
@@ -255,6 +256,16 @@ function connectChainWebSocket(chain: ChainConfig): void {
           ethAmount = Number(isBuy ? amount1In : amount0In) / 1e18;
         }
         recordSwap(pairAddress, isBuy, ethAmount);
+
+        // Promovează în hotCandidates dacă buy pressure e puternică
+        if (isBuy) {
+          const flow = getWsFlow(pairAddress);
+          if (flow.hasData && flow.pressure === "BUYING" && flow.buys5m >= 5) {
+            if (!hotCandidates.has(pairAddress)) {
+              hotCandidates.set(pairAddress, { chain: chain.id, promotedAt: Date.now() });
+            }
+          }
+        }
       }
 
       // ── LP Mint Event (liquidity added) ─────────────────────────────────
@@ -588,6 +599,18 @@ async function saveShadowTrade(
   flow:  FlowSignal,
   lp:    LiquiditySignal,
 ): Promise<void> {
+  const { data: existing } = await supabase
+    .from("shadow_trades")
+    .select("id")
+    .eq("pair_address", pool.attributes.address)
+    .is("exited_at", null)
+    .limit(1);
+
+  if (existing?.length) {
+    console.log(`[DUPLICATE BLOCK] ${mem.symbol} already has open shadow trade`);
+    return;
+  }
+
   const price = mem.currentPrice;
   const id    = Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
   const sw    = detectSecondWave(mem, flow);
@@ -834,29 +857,98 @@ async function scan(): Promise<void> {
   } catch { /* Redis optional — workerul merge fără */ }
 }
 
+// ── Hot candidates loop ───────────────────────────────────────────────────────
+
+let processingHotCandidates = false;
+
+async function hotCandidatesLoop(): Promise<void> {
+  if (processingHotCandidates || !hotCandidates.size) return;
+  processingHotCandidates = true;
+
+  try {
+    for (const [pairAddress, { chain: chainId, promotedAt }] of hotCandidates.entries()) {
+      if (Date.now() - promotedAt > 5 * 60_000) {
+        hotCandidates.delete(pairAddress); continue;
+      }
+
+      const chainCfg = CHAINS.find(c => c.id === chainId);
+      if (!chainCfg) { hotCandidates.delete(pairAddress); continue; }
+
+      const mem = memory.get(pairAddress);
+      if (!mem) { hotCandidates.delete(pairAddress); continue; }
+
+      const flow = getWsFlow(pairAddress);
+      const lp   = getLpSignal(pairAddress);
+
+      // Dacă pressure s-a stins între timp, nu mai intra
+      if (!flow.hasData || flow.pressure !== "BUYING" || flow.buys5m < 5) {
+        hotCandidates.delete(pairAddress); continue;
+      }
+
+      // Nu duplica dacă există deja trade deschis
+      const { data: existing } = await supabase
+        .from("shadow_trades")
+        .select("id")
+        .eq("pair_address", pairAddress)
+        .is("exited_at", null)
+        .limit(1);
+
+      if (existing?.length) { hotCandidates.delete(pairAddress); continue; }
+
+      // Date reale înainte de orice decizie
+      const pool = await fetchPoolByAddress(chainCfg, pairAddress);
+      if (!pool) { hotCandidates.delete(pairAddress); continue; }
+
+      const fomo = checkFOMO(pool);
+      if (fomo.blocked) { hotCandidates.delete(pairAddress); continue; }
+
+      const score = quickEdgeScore(pool, mem, flow, lp);
+      if (score < 75) { hotCandidates.delete(pairAddress); continue; }
+
+      const gate = getEntryGate(mem, flow, lp);
+      if (!gate.allowed) { hotCandidates.delete(pairAddress); continue; }
+
+      console.log(`[HOT] ${mem.symbol} (${chainId}) — promoted by WS, Edge ${score}`);
+      await saveShadowTrade(pool, score, mem, flow, lp);
+      hotCandidates.delete(pairAddress);
+    }
+  } finally {
+    processingHotCandidates = false;
+  }
+}
+
 // ── Monitor open trades ───────────────────────────────────────────────────────
 
+let monitoringOpenTrades = false;
+
 async function monitorOpenTrades(): Promise<void> {
-  const { data: trades } = await supabase
-    .from("shadow_trades")
-    .select("*")
-    .is("exited_at", null);
+  if (monitoringOpenTrades) return;
+  monitoringOpenTrades = true;
 
-  if (!trades?.length) return;
+  try {
+    const { data: trades } = await supabase
+      .from("shadow_trades")
+      .select("id, chain, pair_address")
+      .is("exited_at", null);
 
-  const pools: GeckoPool[] = [];
+    if (!trades?.length) return;
 
-  for (const trade of trades) {
-    if (!trade.chain || !trade.pair_address) continue;
-    const chainCfg = CHAINS.find(c => c.id === trade.chain || c.gecko === trade.chain);
-    if (!chainCfg) continue;
-    const pool = await fetchPoolByAddress(chainCfg, trade.pair_address);
-    if (pool) pools.push(pool);
-  }
+    const pools: GeckoPool[] = [];
 
-  if (pools.length) {
-    await updateOutcomes(pools);
-    console.log(`[MONITOR] Checked ${pools.length} open trades`);
+    for (const trade of trades) {
+      if (!trade.chain || !trade.pair_address) continue;
+      const chainCfg = CHAINS.find(c => c.id === trade.chain || c.gecko === trade.chain);
+      if (!chainCfg) continue;
+      const pool = await fetchPoolByAddress(chainCfg, trade.pair_address);
+      if (pool) pools.push(pool);
+    }
+
+    if (pools.length) {
+      await updateOutcomes(pools);
+      console.log(`[MONITOR] Checked ${pools.length} open trades`);
+    }
+  } finally {
+    monitoringOpenTrades = false;
   }
 }
 
@@ -872,4 +964,5 @@ loadPairStats().then(() => {
   scan();
   setInterval(scan, SCAN_INTERVAL);
   setInterval(monitorOpenTrades, 10_000);
+  setInterval(hotCandidatesLoop, 3_000);
 });
