@@ -504,6 +504,46 @@ function quickEdgeScore(
   return Math.max(0, Math.min(100, score));
 }
 
+// ── Evidence Score ────────────────────────────────────────────────────────────
+
+function computeEvidenceScore(mem: PairMemoryEntry, flow: FlowSignal, lp: LiquiditySignal): number {
+  let score = 0;
+
+  // Apariții în scan-uri
+  if (mem.seenCount >= 5) score += 3;
+  else if (mem.seenCount >= 3) score += 2;
+  else if (mem.seenCount >= 2) score += 1;
+
+  // Flow WS real
+  if (flow.hasData) {
+    if (flow.pressure === "BUYING")  score += 3;
+    if (flow.pressure === "NEUTRAL") score += 1;
+    if (flow.pressure === "SELLING") score -= 3;
+    if (flow.buys5m >= 8)  score += 1;
+    if (flow.sells5m > flow.buys5m) score -= 1;
+  }
+
+  // LP signal
+  if (lp.hasData) {
+    if (lp.status === "ADDED")   score += 2;
+    if (lp.status === "STABLE")  score += 1;
+    if (lp.status === "REMOVED") score -= 5;
+  }
+
+  // Phase
+  if (mem.phase === "SECOND_WAVE") score += 2;
+  if (mem.phase === "RECOVERING")  score += 1;
+  if (mem.phase === "PUMPING")     score -= 1;
+  if (mem.phase === "DEAD")        score -= 5;
+  if (mem.phase === "ZOMBIE")      score -= 3;
+
+  // History
+  if (mem.wins24h >= 2)            score += 1;
+  if (mem.consecutiveLosses >= 2)  score -= 2;
+
+  return score;
+}
+
 // ── Should enter? ─────────────────────────────────────────────────────────────
 
 function getEntryGate(mem: PairMemoryEntry, flow: FlowSignal, lp: LiquiditySignal) {
@@ -512,13 +552,28 @@ function getEntryGate(mem: PairMemoryEntry, flow: FlowSignal, lp: LiquiditySigna
     return { allowed: false, reason: `LP removed (${lp.lpRemoved5m.toFixed(3)} ETH in 5m)` };
   }
 
-  // Second wave = cooldown redus la 1h
-  const sw = detectSecondWave(mem, flow);
-  if (sw.isSecondWave && sw.confidence !== "LOW") {
-    return checkEntryGate(mem, flow, MIN_SEEN_COUNT, SECOND_WAVE_COOLDOWN_MS);
+  const evidence = computeEvidenceScore(mem, flow, lp);
+  const sw       = detectSecondWave(mem, flow);
+
+  // HOT — promovat de WS: mai permisiv dar evidence mai mare
+  if (hotCandidates.has(mem.pairAddress.toLowerCase())) {
+    if (mem.seenCount < 2)          return { allowed: false, reason: `HOT but too new (seen ${mem.seenCount}x, need 2)` };
+    if (evidence < 7)               return { allowed: false, reason: `HOT but evidence too low (${evidence}/7)` };
+    if (flow.pressure !== "BUYING") return { allowed: false, reason: `HOT but flow not BUYING` };
+    return checkEntryGate(mem, flow, 2, SECOND_WAVE_COOLDOWN_MS);
   }
 
-  return checkEntryGate(mem, flow, MIN_SEEN_COUNT, COOLDOWN_MS);
+  // SECOND_WAVE / RECOVERING
+  if (sw.isSecondWave && sw.confidence !== "LOW") {
+    if (mem.seenCount < 3)  return { allowed: false, reason: `2W but too new (seen ${mem.seenCount}x, need 3)` };
+    if (evidence < 9)       return { allowed: false, reason: `2W but evidence too low (${evidence}/9)` };
+    return checkEntryGate(mem, flow, 3, SECOND_WAVE_COOLDOWN_MS);
+  }
+
+  // Normal scan
+  if (mem.seenCount < 3)  return { allowed: false, reason: `too new (seen ${mem.seenCount}x, need 3)` };
+  if (evidence < 8)       return { allowed: false, reason: `evidence too low (${evidence}/8)` };
+  return checkEntryGate(mem, flow, 3, COOLDOWN_MS);
 }
 
 // ── Fetch trending + new pools ────────────────────────────────────────────────
