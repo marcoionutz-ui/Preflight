@@ -37,8 +37,8 @@ const SECOND_WAVE_COOLDOWN_MS = 60 * 60_000; // 1h cooldown pentru second wave
 const MAX_HOLD_MS         = 4 * 60 * 60_000;
 const MIN_LP_REMOVE_ETH   = 0.05;  // ignoră dust burns
 const INSTANT_LP_EXIT_PCT = 0.30;  // 30%+ din pool = instant exit
-const ETH_PRICE_ROUGH     = 3500;  // estimare — TODO: fetch dinamic mai târziu
-const WORKER_VERSION      = "v5.1";
+let ethPriceCached = 2500;
+const WORKER_VERSION      = "v5.2";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   realtime: { transport: WebSocket },
@@ -140,6 +140,42 @@ async function sendTelegram(msg: string): Promise<void> {
       }),
     });
   } catch { /* silent */ }
+}
+
+const CHAINLINK_ETH_USD           = "0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70";
+const CHAINLINK_LATEST_ROUND_DATA = "0xfeaf968c";
+
+async function refreshEthPrice(): Promise<void> {
+  try {
+    const rpcUrl = process.env.ALCHEMY_BASE_RPC ?? process.env.ALCHEMY_ARB_RPC ?? "";
+    if (!rpcUrl) {
+      console.log(`[ETH PRICE] No RPC URL, using cached: $${ethPriceCached}`);
+      return;
+    }
+    const res = await fetch(rpcUrl, {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0", id: 1,
+        method: "eth_call",
+        params: [
+          { to: CHAINLINK_ETH_USD, data: CHAINLINK_LATEST_ROUND_DATA },
+          "latest",
+        ],
+      }),
+    });
+    const json   = await res.json();
+    const result = json?.result;
+    if (!result || result === "0x") throw new Error("Empty Chainlink result");
+    const answerHex = "0x" + result.slice(66, 130);
+    const price     = Number(BigInt(answerHex)) / 1e8;
+    if (Number.isFinite(price) && price > 500) {
+      ethPriceCached = price;
+      console.log(`[ETH PRICE] Chainlink: $${price.toFixed(2)}`);
+    }
+  } catch {
+    console.log(`[ETH PRICE] Using cached fallback: $${ethPriceCached}`);
+  }
 }
 
 // ── Flow helpers ──────────────────────────────────────────────────────────────
@@ -365,7 +401,7 @@ if (!poolEth) {
 function updatePoolReserveEth(addr: string, pool: GeckoPool): void {
   const reserveUsd = Number(pool.attributes.reserve_in_usd ?? 0);
   if (reserveUsd > 0) {
-    poolReserveEth.set(addr, reserveUsd / 2 / ETH_PRICE_ROUGH);
+    poolReserveEth.set(addr, reserveUsd / 2 / ethPriceCached);
   }
 }
 
@@ -468,6 +504,77 @@ async function loadPairStats(): Promise<void> {
   }
 
   console.log(`[MEMORY] Loaded ${memory.size} pairs from last 24h`);
+}
+
+async function saveMemoryToRedis(): Promise<void> {
+  try {
+    const r = getRedis();
+    if (!r) return;
+
+    const memoryObj: Record<string, PairMemoryEntry> = {};
+    for (const [addr, mem] of memory.entries()) memoryObj[addr] = mem;
+
+    const reserveObj: Record<string, number> = {};
+    for (const [addr, eth] of poolReserveEth.entries()) reserveObj[addr] = eth;
+
+    await r.set(
+      "supreme:worker_snapshot:v5_1",
+      JSON.stringify({
+        version:       "v5.1",
+        savedAt:       Date.now(),
+        memory:        memoryObj,
+        poolReserveEth: reserveObj,
+      }),
+      "EX", 24 * 60 * 60
+    );
+    console.log(`[REDIS] Worker snapshot saved: ${memory.size} pairs, ${poolReserveEth.size} reserves`);
+  } catch {
+    console.log(`[REDIS] Snapshot save failed`);
+  }
+}
+
+async function loadMemoryFromRedis(): Promise<void> {
+  try {
+    const r = getRedis();
+    if (!r) return;
+
+    const raw = await r.get("supreme:worker_snapshot:v5_1");
+    if (!raw) return;
+
+    const snap = JSON.parse(raw) as {
+      version?:       string;
+      savedAt?:       number;
+      memory?:        Record<string, PairMemoryEntry>;
+      poolReserveEth?: Record<string, number>;
+    };
+
+    let count = 0;
+    for (const [addr, mem] of Object.entries(snap.memory ?? {})) {
+      memory.set(addr, mem);
+      count++;
+
+      // Reconstruiește tokenPools
+      const chainPrefix = mem.tokenAddress.split("_")[0] ?? "";
+      const rawToken    = mem.tokenAddress.includes("_")
+        ? mem.tokenAddress.split("_")[1]
+        : mem.tokenAddress;
+      const tokenKey1 = `${chainPrefix}:${mem.tokenAddress.toLowerCase()}`;
+      const tokenKey2 = `${chainPrefix}:${rawToken.toLowerCase()}`;
+      if (!tokenPools.has(tokenKey1)) tokenPools.set(tokenKey1, new Set());
+      tokenPools.get(tokenKey1)!.add(addr);
+      if (!tokenPools.has(tokenKey2)) tokenPools.set(tokenKey2, new Set());
+      tokenPools.get(tokenKey2)!.add(addr);
+    }
+
+    for (const [addr, eth] of Object.entries(snap.poolReserveEth ?? {})) {
+      const val = Number(eth);
+      if (Number.isFinite(val) && val > 0) poolReserveEth.set(addr, val);
+    }
+
+    console.log(`[REDIS] Worker snapshot loaded: ${count} pairs, ${poolReserveEth.size} reserves`);
+  } catch {
+    console.log(`[REDIS] Snapshot load failed`);
+  }
 }
 
 // ── Anti-FOMO ─────────────────────────────────────────────────────────────────
@@ -1014,6 +1121,7 @@ async function scan(): Promise<void> {
       console.log(`[REDIS] Wrote ${Object.keys(states).length} pair states`);
     }
   } catch { /* Redis optional — workerul merge fără */ }
+  await saveMemoryToRedis();
 }
 
 // ── Hot candidates loop ───────────────────────────────────────────────────────
@@ -1119,7 +1227,11 @@ console.log(`Chains: ${CHAINS.map(c => c.id).join(", ")}`);
 // Conectează WS pentru fiecare chain
 CHAINS.forEach(c => connectChainWebSocket(c));
 
-loadPairStats().then(() => {
+loadPairStats().then(async () => {
+  await loadMemoryFromRedis();
+  await refreshEthPrice();
+  setInterval(refreshEthPrice, 60 * 60_000);
+  setInterval(saveMemoryToRedis, 60_000);    // ← save la fiecare minut
   scan();
   setInterval(scan, SCAN_INTERVAL);
   setInterval(monitorOpenTrades, 10_000);
