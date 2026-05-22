@@ -610,6 +610,19 @@ function getEntryGate(mem: PairMemoryEntry, flow: FlowSignal, lp: LiquiditySigna
   if (lp.hasData && lp.status === "REMOVED") {
     return { allowed: false, reason: `LP removed (${lp.lpRemoved5m.toFixed(3)} ETH in 5m)` };
   }
+  
+  // Prea multe pool-uri pentru același token = clone / liquidity fragmentation risk
+  const chainPrefix = mem.tokenAddress.split("_")[0] ?? "";
+  const rawToken    = mem.tokenAddress.includes("_")
+    ? mem.tokenAddress.split("_").slice(1).join("_")
+    : mem.tokenAddress;
+  const poolCount =
+    tokenPools.get(`${chainPrefix}:${mem.tokenAddress.toLowerCase()}`)?.size ??
+    tokenPools.get(`${chainPrefix}:${rawToken.toLowerCase()}`)?.size ??
+    1;
+  if (poolCount >= 5) {
+    return { allowed: false, reason: `too many pools for token (${poolCount}) — clone/fragmentation risk` };
+  }
 
   const evidence = computeEvidenceScore(mem, flow, lp);
   const sw       = detectSecondWave(mem, flow);
@@ -816,13 +829,13 @@ async function updateOutcomes(pools: GeckoPool[]): Promise<void> {
     const price = priceMap.get(trade.pair_address?.toLowerCase());
     if (!price) continue;
 
-    const ageMs  = Date.now() - trade.timestamp;
-    const flow   = getWsFlow(trade.pair_address);
-    const lp     = getLpSignal(trade.pair_address);
+    const ageMs                           = Date.now() - trade.timestamp;
+    const flow                            = getWsFlow(trade.pair_address);
+    const lp                              = getLpSignal(trade.pair_address);
     const update: Record<string, unknown> = { current_price: price };
-    const mem    = memory.get(trade.pair_address?.toLowerCase());
-	const entry     = Number(trade.entry_price);
-    const priceDrop = (entry - price) / entry;
+    const mem                             = memory.get(trade.pair_address?.toLowerCase());
+	const entry                           = Number(trade.entry_price);
+    const priceDrop                       = (entry - price) / entry;
 
     // 1. LP removed — WS a prins event-ul, exit imediat fără age limit
     if (lp.hasData && lp.status === "REMOVED" && lp.lpRemoved5m > 0.5) {
