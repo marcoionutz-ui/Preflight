@@ -1228,8 +1228,9 @@ console.log(`Chains: ${CHAINS.map(c => c.id).join(", ")}`);
 CHAINS.forEach(c => connectChainWebSocket(c));
 
 loadPairStats().then(async () => {
-  await loadMemoryFromRedis();
   await refreshEthPrice();
+  await new Promise(res => setTimeout(res, 2000)); // lasă Redis să se conecteze
+  await loadMemoryFromRedis();
   setInterval(refreshEthPrice, 60 * 60_000);
   setInterval(saveMemoryToRedis, 60_000);    // ← save la fiecare minut
   scan();
