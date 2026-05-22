@@ -38,7 +38,7 @@ const MAX_HOLD_MS         = 4 * 60 * 60_000;
 const MIN_LP_REMOVE_ETH   = 0.05;  // ignoră dust burns
 const INSTANT_LP_EXIT_PCT = 0.30;  // 30%+ din pool = instant exit
 const ETH_PRICE_ROUGH     = 3500;  // estimare — TODO: fetch dinamic mai târziu
-const WORKER_VERSION      = "v5";
+const WORKER_VERSION      = "v5.1";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   realtime: { transport: WebSocket },
