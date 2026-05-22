@@ -518,9 +518,9 @@ async function saveMemoryToRedis(): Promise<void> {
     for (const [addr, eth] of poolReserveEth.entries()) reserveObj[addr] = eth;
 
     await r.set(
-      "supreme:worker_snapshot:v5_1",
+      `supreme:worker_snapshot:latest`,
       JSON.stringify({
-        version:       "v5.1",
+        version:       WORKER_VERSION,
         savedAt:       Date.now(),
         memory:        memoryObj,
         poolReserveEth: reserveObj,
@@ -538,7 +538,7 @@ async function loadMemoryFromRedis(): Promise<void> {
     const r = getRedis();
     if (!r) return;
 
-    const raw = await r.get("supreme:worker_snapshot:v5_1");
+    const raw = await r.get("supreme:worker_snapshot:latest");
     if (!raw) return;
 
     const snap = JSON.parse(raw) as {
