@@ -572,8 +572,8 @@ async function loadMemoryFromRedis(): Promise<void> {
     }
 
     console.log(`[REDIS] Worker snapshot loaded: ${count} pairs, ${poolReserveEth.size} reserves`);
-  } catch {
-    console.log(`[REDIS] Snapshot load failed: ${err}`);
+  } catch (e) {
+    console.log(`[REDIS] Snapshot load failed: ${e}`);
   }
 }
 
