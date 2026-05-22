@@ -35,6 +35,9 @@ const MIN_SEEN_COUNT      = 5;
 const COOLDOWN_MS         = 2 * 60 * 60_000;
 const SECOND_WAVE_COOLDOWN_MS = 60 * 60_000; // 1h cooldown pentru second wave
 const MAX_HOLD_MS         = 4 * 60 * 60_000;
+const MIN_LP_REMOVE_ETH   = 0.05;  // ignoră dust burns
+const INSTANT_LP_EXIT_PCT = 0.30;  // 30%+ din pool = instant exit
+const ETH_PRICE_ROUGH     = 3500;  // estimare — TODO: fetch dinamic mai târziu
 const WORKER_VERSION      = "v5";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -90,10 +93,11 @@ interface LpEvent   { ts: number; isAdd: boolean; ethAmount: number; }
 
 // ── In-memory stores ──────────────────────────────────────────────────────────
 
-const memory        = new Map<string, PairMemoryEntry>();
-const wsFlow        = new Map<string, SwapEvent[]>();
-const lpEvents      = new Map<string, LpEvent[]>();
-const hotCandidates = new Map<string, { chain: string; promotedAt: number }>();
+const memory         = new Map<string, PairMemoryEntry>();
+const wsFlow         = new Map<string, SwapEvent[]>();
+const lpEvents       = new Map<string, LpEvent[]>();
+const hotCandidates  = new Map<string, { chain: string; promotedAt: number }>();
+const poolReserveEth = new Map<string, number>(); // pairAddress → estimated WETH side (ETH)
 
 // ── New Pool Tracker ──────────────────────────────────────────────────────────
 // tokenAddress → Set<pairAddress> per chain
@@ -230,7 +234,7 @@ function connectChainWebSocket(chain: ChainConfig): void {
     }));
   });
 
-  wsClient.on("message", (data: Buffer) => {
+  wsClient.on("message", async (data: Buffer) => {
     try {
       const msg = JSON.parse(data.toString());
       if (!msg.params?.result) return;
@@ -300,7 +304,51 @@ function connectChainWebSocket(chain: ChainConfig): void {
         const wethIsToken0 = chain.weth.toLowerCase() < tokenAddrLp;
         const ethAmount    = Number(wethIsToken0 ? amount0 : amount1) / 1e18;
         recordLp(pairAddress, false, ethAmount);
-        console.log(`[LP REMOVE] ${memLp?.symbol} -${ethAmount.toFixed(3)} ETH ⚠️`);
+        const poolEth    = poolReserveEth.get(pairAddress) ?? 0;
+const removedPct = poolEth > 0 ? ethAmount / poolEth : 0;
+
+console.log(
+  `[LP REMOVE] ${memLp?.symbol} -${ethAmount.toFixed(3)} ETH`
+  + (poolEth > 0 ? ` (${(removedPct * 100).toFixed(1)}% of pool)` : " (no reserve estimate)")
+  + ` ⚠️`
+);
+
+if (!poolEth) {
+  // Nu putem calcula procentul, skip instant exit
+} else if (ethAmount >= MIN_LP_REMOVE_ETH && removedPct >= INSTANT_LP_EXIT_PCT) {
+  const { data: openTrades } = await supabase
+    .from("shadow_trades")
+    .select("id, symbol, entry_price, current_price, chain")
+    .eq("pair_address", pairAddress)
+    .is("exited_at", null);
+
+  if (openTrades?.length) {
+    for (const trade of openTrades) {
+      const exitPrice = memLp?.currentPrice ?? Number(trade.current_price);
+      const entry     = Number(trade.entry_price);
+      await supabase.from("shadow_trades").update({
+        exited_at:   Date.now(),
+        exit_price:  exitPrice,
+        exit_reason: "LP REMOVED",
+      }).eq("id", trade.id);
+
+      const mem = memory.get(pairAddress);
+      if (mem) {
+        mem.badExits24h      += 1;
+        mem.consecutiveLosses += 1;
+        mem.lastExitReason    = "LP REMOVED";
+        mem.lastExitTime      = Date.now();
+      }
+
+      console.log(`[LP EXIT INSTANT] ${trade.symbol} — ${ethAmount.toFixed(3)} ETH (${(removedPct * 100).toFixed(1)}%) removed`);
+      await sendTelegram(
+        `⚡ <b>LP EXIT INSTANT</b> ${trade.symbol} [${chain.id.toUpperCase()}]\n`
+        + `LP removed ${ethAmount.toFixed(3)} ETH (${(removedPct * 100).toFixed(1)}% of pool)\n`
+        + `P&L: ${((exitPrice - entry) / entry * 100).toFixed(1)}%`
+      );
+    }
+  }
+}
       }
 
     } catch { /* silent */ }
@@ -312,6 +360,13 @@ function connectChainWebSocket(chain: ChainConfig): void {
     console.log(`[WS ${chain.id}] Disconnected — reconnecting in 5s...`);
     setTimeout(() => connectChainWebSocket(chain), 5_000);
   });
+}
+
+function updatePoolReserveEth(addr: string, pool: GeckoPool): void {
+  const reserveUsd = Number(pool.attributes.reserve_in_usd ?? 0);
+  if (reserveUsd > 0) {
+    poolReserveEth.set(addr, reserveUsd / 2 / ETH_PRICE_ROUGH);
+  }
 }
 
 // ── Pair Memory ───────────────────────────────────────────────────────────────
@@ -340,6 +395,7 @@ function updateMemory(pool: GeckoPool, price: number): PairMemoryEntry {
       }),
     };
     memory.set(addr, mem);
+    updatePoolReserveEth(addr, pool);
     return mem;
   }
 
@@ -358,6 +414,7 @@ function updateMemory(pool: GeckoPool, price: number): PairMemoryEntry {
   });
 
   memory.set(addr, existing);
+  updatePoolReserveEth(addr, pool);
   return existing;
 }
 
@@ -403,7 +460,8 @@ async function loadPairStats(): Promise<void> {
     } else if (
       t.exit_reason === "MAX HOLD" ||
       t.exit_reason === "SELL PRESSURE" ||
-      t.exit_reason === "LP REMOVED"
+      t.exit_reason === "LP REMOVED" ||
+      t.exit_reason === "RUGPULL"
     ) {
       mem.badExits24h += 1;
     }
@@ -763,33 +821,50 @@ async function updateOutcomes(pools: GeckoPool[]): Promise<void> {
     const lp     = getLpSignal(trade.pair_address);
     const update: Record<string, unknown> = { current_price: price };
     const mem    = memory.get(trade.pair_address?.toLowerCase());
+	const entry     = Number(trade.entry_price);
+    const priceDrop = (entry - price) / entry;
 
-    if (price <= trade.sl) {
-      update.exited_at = Date.now(); update.exit_price = price; update.exit_reason = "SL hit";
-      if (mem) { mem.losses24h += 1; mem.consecutiveLosses += 1; mem.lastExitReason = "SL hit"; mem.lastExitTime = Date.now(); }
-      await sendTelegram(`🔴 <b>SL HIT</b> ${trade.symbol} [${trade.chain?.toUpperCase()}]\n`
-        + `Entry: ${Number(trade.entry_price).toExponential(3)} → Exit: ${price.toExponential(3)}\n`
-        + `P&L: ${((price - trade.entry_price) / trade.entry_price * 100).toFixed(1)}%`);
+    // 1. LP removed — WS a prins event-ul, exit imediat fără age limit
+    if (lp.hasData && lp.status === "REMOVED" && lp.lpRemoved5m > 0.5) {
+      update.exited_at = Date.now(); update.exit_price = price; update.exit_reason = "LP REMOVED";
+      if (mem) { mem.badExits24h += 1; mem.consecutiveLosses += 1; mem.lastExitReason = "LP REMOVED"; mem.lastExitTime = Date.now(); }
+      console.log(`[LP EXIT] ${trade.symbol} — LP removed ${lp.lpRemoved5m.toFixed(3)} ETH`);
+      await sendTelegram(`⚠️ <b>LP REMOVED</b> ${trade.symbol} [${trade.chain?.toUpperCase()}]\n`
+        + `LP removed ${lp.lpRemoved5m.toFixed(3)} ETH in 5m\n`
+        + `P&L: ${((price - entry) / entry * 100).toFixed(1)}%`);
 
+    // 2. Rugpull — preț -90%+ fără LP event
+    } else if (priceDrop > 0.90) {
+      update.exited_at = Date.now(); update.exit_price = price; update.exit_reason = "RUGPULL";
+      if (mem) { mem.badExits24h += 1; mem.consecutiveLosses += 1; mem.lastExitReason = "RUGPULL"; mem.lastExitTime = Date.now(); }
+      console.log(`[RUGPULL] ${trade.symbol} — price dropped ${(priceDrop * 100).toFixed(0)}%`);
+      await sendTelegram(`☠️ <b>RUGPULL</b> ${trade.symbol} [${trade.chain?.toUpperCase()}]\n`
+        + `Price dropped ${(priceDrop * 100).toFixed(0)}%\n`
+        + `Entry: ${entry.toExponential(3)} → Exit: ${price.toExponential(3)}`);
+
+    // 3. TP1
     } else if (price >= trade.tp1) {
       update.exited_at = Date.now(); update.exit_price = price; update.exit_reason = "TP1 hit";
       if (mem) { mem.wins24h += 1; mem.consecutiveLosses = 0; mem.lastExitReason = "TP1 hit"; mem.lastExitTime = Date.now(); }
       await sendTelegram(`🟢 <b>TP1 HIT</b> ${trade.symbol} [${trade.chain?.toUpperCase()}]\n`
-        + `Entry: ${Number(trade.entry_price).toExponential(3)} → Exit: ${price.toExponential(3)}\n`
-        + `P&L: +${((price - trade.entry_price) / trade.entry_price * 100).toFixed(1)}%`);
+        + `Entry: ${entry.toExponential(3)} → Exit: ${price.toExponential(3)}\n`
+        + `P&L: +${((price - entry) / entry * 100).toFixed(1)}%`);
 
-    } else if (lp.hasData && lp.status === "REMOVED" && lp.lpRemoved5m > 0.5 && ageMs > 10 * 60_000) {
-      // Exit anticipat dacă LP e scos agresiv
-      update.exited_at = Date.now(); update.exit_price = price; update.exit_reason = "LP REMOVED";
-      if (mem) { mem.badExits24h += 1; }
-      console.log(`[LP EXIT] ${trade.symbol} — LP removed ${lp.lpRemoved5m.toFixed(3)} ETH`);
-      await sendTelegram(`⚠️ <b>LP EXIT</b> ${trade.symbol}\nLP removed ${lp.lpRemoved5m.toFixed(3)} ETH in 5m`);
+    // 4. SL normal
+    } else if (price <= trade.sl) {
+      update.exited_at = Date.now(); update.exit_price = price; update.exit_reason = "SL hit";
+      if (mem) { mem.losses24h += 1; mem.consecutiveLosses += 1; mem.lastExitReason = "SL hit"; mem.lastExitTime = Date.now(); }
+      await sendTelegram(`🔴 <b>SL HIT</b> ${trade.symbol} [${trade.chain?.toUpperCase()}]\n`
+        + `Entry: ${entry.toExponential(3)} → Exit: ${price.toExponential(3)}\n`
+        + `P&L: ${((price - entry) / entry * 100).toFixed(1)}%`);
 
+    // 5. Sell pressure
     } else if (flow.hasData && flow.pressure === "SELLING" && flow.sells5m >= 10 && ageMs > 15 * 60_000) {
       update.exited_at = Date.now(); update.exit_price = price; update.exit_reason = "SELL PRESSURE";
       if (mem) { mem.badExits24h += 1; }
       console.log(`[FLOW EXIT] ${trade.symbol} — ${flow.sells5m}s vs ${flow.buys5m}b`);
 
+    // 6. Max hold
     } else if (ageMs > MAX_HOLD_MS) {
       update.exited_at = Date.now(); update.exit_price = price; update.exit_reason = "MAX HOLD";
       if (mem) { mem.badExits24h += 1; }
