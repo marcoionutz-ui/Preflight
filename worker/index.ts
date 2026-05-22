@@ -534,47 +534,51 @@ async function saveMemoryToRedis(): Promise<void> {
 }
 
 async function loadMemoryFromRedis(): Promise<void> {
-  try {
-    const r = getRedis();
-    if (!r) return;
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    try {
+      const r = getRedis();
+      if (!r) return;
 
-    const raw = await r.get("supreme:worker_snapshot:latest");
-    if (!raw) return;
+      const raw = await r.get("supreme:worker_snapshot:latest");
+      if (!raw) return;
 
-    const snap = JSON.parse(raw) as {
-      version?:       string;
-      savedAt?:       number;
-      memory?:        Record<string, PairMemoryEntry>;
-      poolReserveEth?: Record<string, number>;
-    };
+      const snap = JSON.parse(raw) as {
+        version?:        string;
+        savedAt?:        number;
+        memory?:         Record<string, PairMemoryEntry>;
+        poolReserveEth?: Record<string, number>;
+      };
 
-    let count = 0;
-    for (const [addr, mem] of Object.entries(snap.memory ?? {})) {
-      memory.set(addr, mem);
-      count++;
+      let count = 0;
+      for (const [addr, mem] of Object.entries(snap.memory ?? {})) {
+        memory.set(addr, mem);
+        count++;
+        const chainPrefix = mem.tokenAddress.split("_")[0] ?? "";
+        const rawToken    = mem.tokenAddress.includes("_")
+          ? mem.tokenAddress.split("_")[1]
+          : mem.tokenAddress;
+        const tokenKey1 = `${chainPrefix}:${mem.tokenAddress.toLowerCase()}`;
+        const tokenKey2 = `${chainPrefix}:${rawToken.toLowerCase()}`;
+        if (!tokenPools.has(tokenKey1)) tokenPools.set(tokenKey1, new Set());
+        tokenPools.get(tokenKey1)!.add(addr);
+        if (!tokenPools.has(tokenKey2)) tokenPools.set(tokenKey2, new Set());
+        tokenPools.get(tokenKey2)!.add(addr);
+      }
 
-      // Reconstruiește tokenPools
-      const chainPrefix = mem.tokenAddress.split("_")[0] ?? "";
-      const rawToken    = mem.tokenAddress.includes("_")
-        ? mem.tokenAddress.split("_")[1]
-        : mem.tokenAddress;
-      const tokenKey1 = `${chainPrefix}:${mem.tokenAddress.toLowerCase()}`;
-      const tokenKey2 = `${chainPrefix}:${rawToken.toLowerCase()}`;
-      if (!tokenPools.has(tokenKey1)) tokenPools.set(tokenKey1, new Set());
-      tokenPools.get(tokenKey1)!.add(addr);
-      if (!tokenPools.has(tokenKey2)) tokenPools.set(tokenKey2, new Set());
-      tokenPools.get(tokenKey2)!.add(addr);
+      for (const [addr, eth] of Object.entries(snap.poolReserveEth ?? {})) {
+        const val = Number(eth);
+        if (Number.isFinite(val) && val > 0) poolReserveEth.set(addr, val);
+      }
+
+      console.log(`[REDIS] Worker snapshot loaded: ${count} pairs, ${poolReserveEth.size} reserves`);
+      return;
+
+    } catch (e) {
+      console.log(`[REDIS] Snapshot load attempt ${attempt}/5 failed: ${e}`);
+      if (attempt < 5) await new Promise(res => setTimeout(res, attempt * 1000));
     }
-
-    for (const [addr, eth] of Object.entries(snap.poolReserveEth ?? {})) {
-      const val = Number(eth);
-      if (Number.isFinite(val) && val > 0) poolReserveEth.set(addr, val);
-    }
-
-    console.log(`[REDIS] Worker snapshot loaded: ${count} pairs, ${poolReserveEth.size} reserves`);
-  } catch (e) {
-    console.log(`[REDIS] Snapshot load failed: ${e}`);
   }
+  console.log(`[REDIS] Snapshot load gave up after 5 attempts`);
 }
 
 // ── Anti-FOMO ─────────────────────────────────────────────────────────────────
@@ -1229,7 +1233,6 @@ CHAINS.forEach(c => connectChainWebSocket(c));
 
 loadPairStats().then(async () => {
   await refreshEthPrice();
-  await new Promise(res => setTimeout(res, 2000)); // lasă Redis să se conecteze
   await loadMemoryFromRedis();
   setInterval(refreshEthPrice, 60 * 60_000);
   setInterval(saveMemoryToRedis, 60_000);    // ← save la fiecare minut
