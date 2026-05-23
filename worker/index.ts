@@ -1,5 +1,5 @@
 /**
- * Supreme Trader Worker v4
+ * Supreme Trader Worker v5.3
  * P1: Multi-chain (BASE + ARB)
  * P2: Second Wave Detection
  * P3: LP Events Monitoring (Mint/Burn)
@@ -35,10 +35,12 @@ const MIN_SEEN_COUNT      = 5;
 const COOLDOWN_MS         = 2 * 60 * 60_000;
 const SECOND_WAVE_COOLDOWN_MS = 60 * 60_000; // 1h cooldown pentru second wave
 const MAX_HOLD_MS         = 4 * 60 * 60_000;
+const WATCH_TTL_MS    = 10 * 60_000;
+const WATCH_MIN_SCORE = 70;
 const MIN_LP_REMOVE_ETH   = 0.05;  // ignoră dust burns
 const INSTANT_LP_EXIT_PCT = 0.30;  // 30%+ din pool = instant exit
 let ethPriceCached = 2500;
-const WORKER_VERSION      = "v5.2";
+const WORKER_VERSION      = "v5.3";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   realtime: { transport: WebSocket },
@@ -60,12 +62,12 @@ const CHAINS: ChainConfig[] = [
     weth:  "0x4200000000000000000000000000000000000006",
     wsUrl: process.env.ALCHEMY_BASE_WS ?? "",
   },
-  {
-    id:    "arbitrum",
-    gecko: "arbitrum",
-    weth:  "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
-    wsUrl: process.env.ALCHEMY_ARB_WS ?? "",
-  },
+ // {
+ //   id:    "arbitrum",
+ //   gecko: "arbitrum",
+ //   weth:  "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
+ //   wsUrl: process.env.ALCHEMY_ARB_WS ?? "",
+ // },
 ].filter(c => c.wsUrl || c.gecko); // include chain dacă are cel puțin gecko
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -93,11 +95,15 @@ interface LpEvent   { ts: number; isAdd: boolean; ethAmount: number; }
 
 // ── In-memory stores ──────────────────────────────────────────────────────────
 
-const memory         = new Map<string, PairMemoryEntry>();
-const wsFlow         = new Map<string, SwapEvent[]>();
-const lpEvents       = new Map<string, LpEvent[]>();
-const hotCandidates  = new Map<string, { chain: string; promotedAt: number }>();
-const poolReserveEth = new Map<string, number>(); // pairAddress → estimated WETH side (ETH)
+const memory          = new Map<string, PairMemoryEntry>();
+const wsFlow          = new Map<string, SwapEvent[]>();
+const lpEvents        = new Map<string, LpEvent[]>();
+const hotCandidates   = new Map<string, { chain: string; promotedAt: number }>();
+const poolReserveEth  = new Map<string, number>(); // pairAddress → estimated WETH side (ETH)
+const activeWatch     = new Map<string, { chain: string; addedAt: number }>();
+const wsClients       = new Map<string, WebSocket>();
+const swapSubIds      = new Map<string, string>();
+const swapSubSnapshot = new Map<string, string>();
 
 // ── New Pool Tracker ──────────────────────────────────────────────────────────
 // tokenAddress → Set<pairAddress> per chain
@@ -237,6 +243,64 @@ const SWAP_V2_TOPIC = "0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d1308
 const MINT_V2_TOPIC = "0x4c209b5fc8ad50758f13e2e1088ba56a560dff690a1c6fef26394f4c03821c4f";
 const BURN_V2_TOPIC = "0xdccd412f0b1252819cb1fd330b93224ca42612892bb3f4f789976e6d81936496";
 
+function cleanupActiveWatch(): void {
+  const now = Date.now();
+  for (const [addr, info] of activeWatch.entries()) {
+    if (now - info.addedAt > WATCH_TTL_MS) {
+      activeWatch.delete(addr);
+    }
+  }
+}
+
+function updateScopedSwap(chain: ChainConfig): void {
+  const ws = wsClients.get(chain.id);
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+  cleanupActiveWatch();
+
+  const addresses = new Set<string>();
+
+  for (const [addr, info] of activeWatch.entries()) {
+    if (info.chain === chain.id) addresses.add(addr);
+  }
+
+  for (const [addr, mem] of memory.entries()) {
+    if (mem.totalEntries > 0 && Date.now() - mem.lastEntryTime < MAX_HOLD_MS) {
+      addresses.add(addr);
+    }
+  }
+
+  if (addresses.size === 0) {
+    const oldId = swapSubIds.get(chain.id);
+    if (oldId) {
+      ws.send(JSON.stringify({ jsonrpc: "2.0", id: 99, method: "eth_unsubscribe", params: [oldId] }));
+      swapSubIds.delete(chain.id);
+      swapSubSnapshot.delete(chain.id);
+      console.log(`[WS] Scoped SWAP cleared (${chain.id})`);
+    }
+    return;
+  }
+
+  const snapshot = [...addresses].sort().join(",");
+  if (swapSubSnapshot.get(chain.id) === snapshot) return;
+  swapSubSnapshot.set(chain.id, snapshot);
+
+  const oldId = swapSubIds.get(chain.id);
+  if (oldId) {
+    ws.send(JSON.stringify({ jsonrpc: "2.0", id: 99, method: "eth_unsubscribe", params: [oldId] }));
+    swapSubIds.delete(chain.id);
+  }
+
+  const addrList = [...addresses].slice(0, 50);
+  ws.send(JSON.stringify({
+    jsonrpc: "2.0", id: 1,
+    method: "eth_subscribe",
+    params: ["logs", { address: addrList, topics: [SWAP_V2_TOPIC] }],
+  }));
+
+  console.log(`[WS] Scoped SWAP updated: ${addrList.length} pairs watched (${chain.id})`);
+}
+
 function connectChainWebSocket(chain: ChainConfig): void {
   if (!chain.wsUrl) {
     console.log(`[WS] No WS URL for ${chain.id} — flow layer disabled for this chain`);
@@ -244,35 +308,34 @@ function connectChainWebSocket(chain: ChainConfig): void {
   }
 
   const wsClient = new WebSocket(chain.wsUrl);
+  wsClients.set(chain.id, wsClient);
 
   wsClient.on("open", () => {
-    console.log(`[WS] Connected to Alchemy ${chain.id.toUpperCase()}`);
+  console.log(`[WS] Connected to Alchemy ${chain.id.toUpperCase()}`);
 
-    // Subscribe Swap events
-    wsClient.send(JSON.stringify({
-      jsonrpc: "2.0", id: 1,
-      method: "eth_subscribe",
-      params: ["logs", { topics: [SWAP_V2_TOPIC] }],
-    }));
+  wsClient.send(JSON.stringify({
+    jsonrpc: "2.0", id: 2,
+    method: "eth_subscribe",
+    params: ["logs", { topics: [MINT_V2_TOPIC] }],
+  }));
 
-    // Subscribe LP Mint events
-    wsClient.send(JSON.stringify({
-      jsonrpc: "2.0", id: 2,
-      method: "eth_subscribe",
-      params: ["logs", { topics: [MINT_V2_TOPIC] }],
-    }));
+  wsClient.send(JSON.stringify({
+    jsonrpc: "2.0", id: 3,
+    method: "eth_subscribe",
+    params: ["logs", { topics: [BURN_V2_TOPIC] }],
+  }));
 
-    // Subscribe LP Burn events
-    wsClient.send(JSON.stringify({
-      jsonrpc: "2.0", id: 3,
-      method: "eth_subscribe",
-      params: ["logs", { topics: [BURN_V2_TOPIC] }],
-    }));
-  });
+  setTimeout(() => updateScopedSwap(chain), 2000);
+});
 
   wsClient.on("message", async (data: Buffer) => {
     try {
       const msg = JSON.parse(data.toString());
+	  if (msg.id === 1 && msg.result && typeof msg.result === "string") {
+		  swapSubIds.set(chain.id, msg.result);
+		  console.log(`[WS] Scoped SWAP sub active: ${msg.result} (${chain.id})`);
+		  return;
+		}
       if (!msg.params?.result) return;
 
       const log         = msg.params.result;
@@ -648,6 +711,7 @@ function quickEdgeScore(
     if (lp.status === "ADDED")   score += 12;
     if (lp.status === "REMOVED") score -= 25; // LP removed = danger
   }
+  if (!lp.hasData) score -= 10;
 
   // Phase memory
   if (mem.phase === "SECOND_WAVE") score += 20;
@@ -1004,6 +1068,7 @@ async function updateOutcomes(pools: GeckoPool[]): Promise<void> {
 
 async function scan(): Promise<void> {
   const ts = new Date().toISOString();
+  cleanupActiveWatch();
 
   // Fetch toate chain-urile în paralel
   const allPoolsPerChain = await Promise.all(CHAINS.map(c => fetchTrending(c)));
@@ -1052,27 +1117,47 @@ async function scan(): Promise<void> {
 		);
 	  }
 }
-    const flow = getFlow(pool);
-    const lp   = getLpSignal(pool.attributes.address);
+    const wsFlowReal = getWsFlow(pool.attributes.address);
+	const flow       = getFlow(pool);
+	const lp         = getLpSignal(pool.attributes.address);
     const fomo = checkFOMO(pool);
 
     if (fomo.blocked && fomo.reason) {
       await saveFOMOBlock(pool, fomo.reason);
       continue;
     }
+	
+	const prelScore = quickEdgeScore(pool, mem, flow, lp);
+	if (
+	  prelScore >= WATCH_MIN_SCORE &&
+	  !wsFlowReal.hasData &&
+	  !activeWatch.has(pool.attributes.address.toLowerCase())
+	) {
+	  activeWatch.set(pool.attributes.address.toLowerCase(), {
+		chain:   pool._chain.id,
+		addedAt: Date.now(),
+	  });
+	  console.log(`[WATCH] ${mem.symbol} (${pool._chain.id}) — added, prelScore ${prelScore}`);
+	  updateScopedSwap(pool._chain);
+	}
+
+	if (!wsFlowReal.hasData) {
+	  console.log(`[WATCH WAIT] ${mem.symbol} (${pool._chain.id}) — waiting for scoped WS flow`);
+	  continue;
+	}
 
     if (shadowCount >= MAX_SHADOW_PER_SCAN) continue;
 
-    const score = quickEdgeScore(pool, mem, flow, lp);
-    if (score < 75) continue;
+    const score = quickEdgeScore(pool, mem, wsFlowReal, lp);
+	if (score < 75) continue;
 
-    const gate = getEntryGate(mem, flow, lp);
-    if (!gate.allowed) {
-      console.log(`[SKIP] ${mem.symbol} (${pool._chain.id}) — ${gate.reason}`);
-      continue;
-    }
+	const gate = getEntryGate(mem, wsFlowReal, lp);
+	if (!gate.allowed) {
+	  console.log(`[SKIP] ${mem.symbol} (${pool._chain.id}) — ${gate.reason}`);
+	  continue;
+	}
 
-    await saveShadowTrade(pool, score, mem, flow, lp);
+	await saveShadowTrade(pool, score, mem, wsFlowReal, lp);
     shadowCount++;
     chainCounts[pool._chain.id] = (chainCounts[pool._chain.id] ?? 0) + 1;
   }
@@ -1125,6 +1210,8 @@ async function scan(): Promise<void> {
       console.log(`[REDIS] Wrote ${Object.keys(states).length} pair states`);
     }
   } catch { /* Redis optional — workerul merge fără */ }
+  CHAINS.forEach(c => updateScopedSwap(c));
+  console.log(`[WATCH] Active: ${activeWatch.size} pairs`);
   await saveMemoryToRedis();
 }
 
