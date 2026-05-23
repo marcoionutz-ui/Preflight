@@ -336,6 +336,7 @@ function connectChainWebSocket(chain: ChainConfig): void {
   wsClient.on("message", async (data: Buffer) => {
     try {
       const msg = JSON.parse(data.toString());
+	  if (msg.id !== undefined) console.log(`[WS DEBUG] id=${msg.id} result=${JSON.stringify(msg.result)?.slice(0,50)}`);
 	  if (msg.result && typeof msg.result === "string" && msg.result.startsWith("0x")) {
 		  swapSubIds.set(chain.id, msg.result);
 		  console.log(`[WS] Scoped SWAP sub active: ${msg.result} (${chain.id})`);
