@@ -269,7 +269,7 @@ function updateScopedSwap(chain: ChainConfig): void {
     if (info.chain === chain.id) addresses.add(addr);
   }
 
-  for (const [addr, mem] of memory.entries()) {
+  for (const [addr, mem] of dmemory.entries()) {
     if (mem.totalEntries > 0 && Date.now() - mem.lastEntryTime < MAX_HOLD_MS) {
       addresses.add(addr);
     }
@@ -298,7 +298,7 @@ function updateScopedSwap(chain: ChainConfig): void {
 
   const addrList = [...addresses].slice(0, 50);
   ws.send(JSON.stringify({
-    jsonrpc: "2.0", id: 1,
+    jsonrpc: "2.0", id: 10,
     method: "eth_subscribe",
     params: ["logs", { address: addrList, topics: [SWAP_V2_TOPIC] }],
   }));
@@ -336,8 +336,7 @@ function connectChainWebSocket(chain: ChainConfig): void {
   wsClient.on("message", async (data: Buffer) => {
     try {
       const msg = JSON.parse(data.toString());
-	  if (msg.id !== undefined) console.log(`[WS DEBUG] id=${msg.id} result=${JSON.stringify(msg.result)?.slice(0,50)}`);
-	  if (msg.result && typeof msg.result === "string" && msg.result.startsWith("0x")) {
+	  if (msg.id === 10 && msg.result && typeof msg.result === "string" && msg.result.startsWith("0x")) {
 		  swapSubIds.set(chain.id, msg.result);
 		  console.log(`[WS] Scoped SWAP sub active: ${msg.result} (${chain.id})`);
 		  return;
