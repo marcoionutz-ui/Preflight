@@ -204,14 +204,19 @@ function recordLp(pairAddress: string, isAdd: boolean, ethAmount: number): void 
 
 function getWsFlow(pairAddress: string): FlowSignal {
   const addr   = pairAddress.toLowerCase();
-  const events = wsFlow.get(addr) ?? [];
-  if (!events.length) return NEUTRAL_FLOW;
-  const now = Date.now();
+  const now    = Date.now();
+  const events = (wsFlow.get(addr) ?? []).filter(e => now - e.ts < 5 * 60_000);
+  if (!events.length) {
+    wsFlow.delete(addr);
+    return NEUTRAL_FLOW;
+  }
+  wsFlow.set(addr, events);
   const e1m = events.filter(e => now - e.ts < 60_000);
-  const e5m = events.filter(e => now - e.ts < 5 * 60_000);
   return computeFlowFromTxns(
-    e5m.filter(e =>  e.isBuy).length, e5m.filter(e => !e.isBuy).length,
-    e1m.filter(e =>  e.isBuy).length, e1m.filter(e => !e.isBuy).length,
+    events.filter(e =>  e.isBuy).length,
+    events.filter(e => !e.isBuy).length,
+    e1m.filter(e =>  e.isBuy).length,
+    e1m.filter(e => !e.isBuy).length,
   );
 }
 
@@ -1138,7 +1143,6 @@ async function scan(): Promise<void> {
 		addedAt: Date.now(),
 	  });
 	  console.log(`[WATCH] ${mem.symbol} (${pool._chain.id}) — added, prelScore ${prelScore}`);
-	  updateScopedSwap(pool._chain);
 	}
 
 	if (!wsFlowReal.hasData) {
