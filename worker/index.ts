@@ -122,6 +122,10 @@ function isBlockedAsset(symbol: string): boolean {
   return BLOCKED_SYMBOLS.has(symbol.trim().toLowerCase());
 }
 
+function isEvmAddress(addr: string | undefined | null): boolean {
+  return typeof addr === "string" && /^0x[a-fA-F0-9]{40}$/.test(addr);
+}
+
 function trackPool(tokenAddress: string, pairAddress: string, chain: string): boolean {
   const sym = memory.get(pairAddress.toLowerCase())?.symbol?.trim().toLowerCase() ?? "";
   if (BLUECHIP_SYMBOLS.has(sym)) return false; // skip tokens majori
@@ -269,11 +273,13 @@ function updateScopedSwap(chain: ChainConfig): void {
   const watchAddresses = new Set<string>();
 
   for (const [addr, mem] of memory.entries()) {
+    if (!isEvmAddress(addr)) continue;
     if (mem.totalEntries > 0 && Date.now() - mem.lastEntryTime < MAX_HOLD_MS) {
       openTradeAddresses.add(addr);
     }
   }
   for (const [addr, info] of activeWatch.entries()) {
+    if (!isEvmAddress(addr)) continue;
     if (info.chain === chain.id) watchAddresses.add(addr);
   }
 
@@ -1122,6 +1128,11 @@ async function scan(): Promise<void> {
     if (!price || isNaN(price)) continue;
 
    const mem  = updateMemory(pool, price);
+   const pairAddr = pool.attributes.address.toLowerCase();
+    if (!isEvmAddress(pairAddr)) {
+      console.log(`[SKIP] ${mem.symbol} (${pool._chain.id}) — non-EVM pair address`);
+      continue;
+    }
 
     if (isBlockedAsset(mem.symbol)) continue;
 
