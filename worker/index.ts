@@ -102,7 +102,9 @@ const hotCandidates   = new Map<string, { chain: string; promotedAt: number }>()
 const poolReserveEth  = new Map<string, number>(); // pairAddress → estimated WETH side (ETH)
 const activeWatch     = new Map<string, { chain: string; addedAt: number }>();
 const wsClients       = new Map<string, WebSocket>();
-const swapSubIds      = new Map<string, string>();
+const swapSubIds       = new Map<string, string[]>();
+const pendingSwapSubs  = new Map<number, string>();
+let   swapSubReqId     = 10_000;
 const swapSubSnapshot = new Map<string, string>();
 
 // ── New Pool Tracker ──────────────────────────────────────────────────────────
@@ -263,22 +265,29 @@ function updateScopedSwap(chain: ChainConfig): void {
 
   cleanupActiveWatch();
 
-  const addresses = new Set<string>();
-
-  for (const [addr, info] of activeWatch.entries()) {
-    if (info.chain === chain.id) addresses.add(addr);
-  }
+  const openTradeAddresses = new Set<string>();
+  const watchAddresses = new Set<string>();
 
   for (const [addr, mem] of memory.entries()) {
     if (mem.totalEntries > 0 && Date.now() - mem.lastEntryTime < MAX_HOLD_MS) {
-      addresses.add(addr);
+      openTradeAddresses.add(addr);
     }
   }
+  for (const [addr, info] of activeWatch.entries()) {
+    if (info.chain === chain.id) watchAddresses.add(addr);
+  }
 
-  if (addresses.size === 0) {
-    const oldId = swapSubIds.get(chain.id);
-    if (oldId) {
-      ws.send(JSON.stringify({ jsonrpc: "2.0", id: 99, method: "eth_unsubscribe", params: [oldId] }));
+  const addrList = [
+    ...openTradeAddresses,
+    ...[...watchAddresses].sort().filter(a => !openTradeAddresses.has(a)),
+  ].slice(0, 20);
+
+  if (addrList.length === 0) {
+    const oldIds = swapSubIds.get(chain.id) ?? [];
+    if (oldIds.length) {
+      for (const oldId of oldIds) {
+        ws.send(JSON.stringify({ jsonrpc: "2.0", id: 99, method: "eth_unsubscribe", params: [oldId] }));
+      }
       swapSubIds.delete(chain.id);
       swapSubSnapshot.delete(chain.id);
       console.log(`[WS] Scoped SWAP cleared (${chain.id})`);
@@ -286,24 +295,27 @@ function updateScopedSwap(chain: ChainConfig): void {
     return;
   }
 
-  const snapshot = [...addresses].sort().join(",");
+  const snapshot = addrList.join(",");
   if (swapSubSnapshot.get(chain.id) === snapshot) return;
   swapSubSnapshot.set(chain.id, snapshot);
 
-  const oldId = swapSubIds.get(chain.id);
-  if (oldId) {
+  const oldIds = swapSubIds.get(chain.id) ?? [];
+  for (const oldId of oldIds) {
     ws.send(JSON.stringify({ jsonrpc: "2.0", id: 99, method: "eth_unsubscribe", params: [oldId] }));
-    swapSubIds.delete(chain.id);
+  }
+  swapSubIds.delete(chain.id);
+
+  for (const addr of addrList) {
+    const reqId = swapSubReqId++;
+    pendingSwapSubs.set(reqId, chain.id);
+    ws.send(JSON.stringify({
+      jsonrpc: "2.0", id: reqId,
+      method: "eth_subscribe",
+      params: ["logs", { address: addr, topics: [SWAP_V2_TOPIC] }],
+    }));
   }
 
-  const addrList = [...addresses].slice(0, 50);
-  ws.send(JSON.stringify({
-	  jsonrpc: "2.0", id: 10,
-	  method: "eth_subscribe",
-	  params: ["logs", { address: addrList, topics: [[SWAP_V2_TOPIC]] }],
-	}));
-
-  console.log(`[WS] Scoped SWAP updated: ${addrList.length} pairs watched (${chain.id})`);
+  console.log(`[WS] Scoped SWAP updated: ${addrList.length} pair subscriptions requested (${chain.id})`);
 }
 
 function connectChainWebSocket(chain: ChainConfig): void {
@@ -338,22 +350,26 @@ function connectChainWebSocket(chain: ChainConfig): void {
   wsClient.on("message", async (data: Buffer) => {
     try {
       const msg = JSON.parse(data.toString());
-	  if (msg.id === 10) {
-	  console.log(`[WS DEBUG id10] ${data.toString()}`);
+	  if (typeof msg.id === "number" && pendingSwapSubs.has(msg.id)) {
+        const subChain = pendingSwapSubs.get(msg.id)!;
+        pendingSwapSubs.delete(msg.id);
 
-	  if (msg.error) {
-		swapSubIds.delete(chain.id);
-		swapSubSnapshot.delete(chain.id);
-		console.log(`[WS] Scoped SWAP subscribe failed (${chain.id}) — will retry`);
-		return;
-	  }
-  
-	}
-	  if (msg.id === 10 && msg.result && typeof msg.result === "string" && msg.result.startsWith("0x")) {
-		  swapSubIds.set(chain.id, msg.result);
-		  console.log(`[WS] Scoped SWAP sub active: ${msg.result} (${chain.id})`);
-		  return;
-		}
+        console.log(`[WS DEBUG scoped] ${data.toString()}`);
+
+        if (msg.error) {
+          swapSubSnapshot.delete(subChain);
+          console.log(`[WS] Scoped SWAP subscribe failed (${subChain}) — will retry`);
+          return;
+        }
+
+        if (msg.result && typeof msg.result === "string") {
+          const ids = swapSubIds.get(subChain) ?? [];
+          ids.push(msg.result);
+          swapSubIds.set(subChain, ids);
+          console.log(`[WS] Scoped SWAP sub active: ${msg.result} (${subChain})`);
+          return;
+        }
+      }
       if (!msg.params?.result) return;
 
       const log         = msg.params.result;
