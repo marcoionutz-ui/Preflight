@@ -269,7 +269,7 @@ function updateScopedSwap(chain: ChainConfig): void {
     if (info.chain === chain.id) addresses.add(addr);
   }
 
-  for (const [addr, mem] of dmemory.entries()) {
+  for (const [addr, mem] of memory.entries()) {
     if (mem.totalEntries > 0 && Date.now() - mem.lastEntryTime < MAX_HOLD_MS) {
       addresses.add(addr);
     }
