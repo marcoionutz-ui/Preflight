@@ -298,10 +298,10 @@ function updateScopedSwap(chain: ChainConfig): void {
 
   const addrList = [...addresses].slice(0, 50);
   ws.send(JSON.stringify({
-    jsonrpc: "2.0", id: 10,
-    method: "eth_subscribe",
-    params: ["logs", { address: addrList, topics: [SWAP_V2_TOPIC] }],
-  }));
+	  jsonrpc: "2.0", id: 10,
+	  method: "eth_subscribe",
+	  params: ["logs", { address: addrList, topics: [[SWAP_V2_TOPIC]] }],
+	}));
 
   console.log(`[WS] Scoped SWAP updated: ${addrList.length} pairs watched (${chain.id})`);
 }
