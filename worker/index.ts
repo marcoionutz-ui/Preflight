@@ -317,6 +317,8 @@ function connectChainWebSocket(chain: ChainConfig): void {
 
   wsClient.on("open", () => {
   console.log(`[WS] Connected to Alchemy ${chain.id.toUpperCase()}`);
+  swapSubIds.delete(chain.id);
+  swapSubSnapshot.delete(chain.id);
 
   wsClient.send(JSON.stringify({
     jsonrpc: "2.0", id: 2,
@@ -336,7 +338,17 @@ function connectChainWebSocket(chain: ChainConfig): void {
   wsClient.on("message", async (data: Buffer) => {
     try {
       const msg = JSON.parse(data.toString());
-	  if (msg.id === 10) console.log(`[WS DEBUG id10] result=${JSON.stringify(msg.result)}`);
+	  if (msg.id === 10) {
+	  console.log(`[WS DEBUG id10] ${data.toString()}`);
+
+	  if (msg.error) {
+		swapSubIds.delete(chain.id);
+		swapSubSnapshot.delete(chain.id);
+		console.log(`[WS] Scoped SWAP subscribe failed (${chain.id}) — will retry`);
+		return;
+	  }
+  
+	}
 	  if (msg.id === 10 && msg.result && typeof msg.result === "string" && msg.result.startsWith("0x")) {
 		  swapSubIds.set(chain.id, msg.result);
 		  console.log(`[WS] Scoped SWAP sub active: ${msg.result} (${chain.id})`);
