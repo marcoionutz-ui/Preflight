@@ -122,8 +122,19 @@ function isBlockedAsset(symbol: string): boolean {
   return BLOCKED_SYMBOLS.has(symbol.trim().toLowerCase());
 }
 
+function cleanEvmAddress(addr: string | undefined | null): string | null {
+  if (!addr) return null;
+  const raw = addr.toLowerCase().trim();
+  const cleaned = raw.includes("_")
+    ? raw.split("_").pop()!
+    : raw.includes(":")
+      ? raw.split(":").pop()!
+      : raw;
+  return /^0x[a-f0-9]{40}$/.test(cleaned) ? cleaned : null;
+}
+
 function isEvmAddress(addr: string | undefined | null): boolean {
-  return typeof addr === "string" && /^0x[a-fA-F0-9]{40}$/.test(addr);
+  return cleanEvmAddress(addr) !== null;
 }
 
 function trackPool(tokenAddress: string, pairAddress: string, chain: string): boolean {
@@ -273,14 +284,16 @@ function updateScopedSwap(chain: ChainConfig): void {
   const watchAddresses = new Set<string>();
 
   for (const [addr, mem] of memory.entries()) {
-    if (!isEvmAddress(addr)) continue;
+    const cleanAddr = cleanEvmAddress(addr);
+    if (!cleanAddr) continue;
     if (mem.totalEntries > 0 && Date.now() - mem.lastEntryTime < MAX_HOLD_MS) {
-      openTradeAddresses.add(addr);
+      openTradeAddresses.add(cleanAddr);
     }
   }
   for (const [addr, info] of activeWatch.entries()) {
-    if (!isEvmAddress(addr)) continue;
-    if (info.chain === chain.id) watchAddresses.add(addr);
+    const cleanAddr = cleanEvmAddress(addr);
+    if (!cleanAddr) continue;
+    if (info.chain === chain.id) watchAddresses.add(cleanAddr);
   }
 
   const addrList = [
@@ -511,7 +524,7 @@ function updatePoolReserveEth(addr: string, pool: GeckoPool): void {
 // ── Pair Memory ───────────────────────────────────────────────────────────────
 
 function updateMemory(pool: GeckoPool, price: number): PairMemoryEntry {
-  const addr         = pool.attributes.address.toLowerCase();
+  const addr         = cleanEvmAddress(pool.attributes.address) ?? pool.attributes.address.toLowerCase();
   const symbol       = pool.attributes.name.split("/")[0]?.trim() ?? "?";
   const tokenAddress = pool.relationships.base_token.data.id ?? "";
   const now          = Date.now();
@@ -871,7 +884,7 @@ async function fetchTrending(chain: ChainConfig): Promise<GeckoPool[]> {
       fetch(`${GECKO_BASE}/networks/${chain.gecko}/trending_pools?page=1`),
       fetch(`${GECKO_BASE}/networks/${chain.gecko}/new_pools?page=1`),
     ]);
-
+	
     let trending: GeckoPool[] = [];
     let newPools: GeckoPool[] = [];
 
@@ -896,11 +909,13 @@ async function fetchTrending(chain: ChainConfig): Promise<GeckoPool[]> {
       }
     }
 
+    const filtered = merged.filter(p => cleanEvmAddress(p.attributes.address) !== null);
+
     console.log(
-      `[FETCH] ${chain.id}: ${trending.length} trending + ${newPools.length} new = ${merged.length} unique`
+      `[FETCH] ${chain.id}: ${trending.length} trending + ${newPools.length} new = ${merged.length} unique (${filtered.length} EVM-compatible after V4 filter)`
     );
 
-    return merged;
+    return filtered;
   } catch {
     return [];
   }
@@ -964,6 +979,7 @@ async function saveShadowTrade(
     return;
   }
 
+  const pairAddr = cleanEvmAddress(pool.attributes.address) ?? pool.attributes.address.toLowerCase();
   const price = mem.currentPrice;
   const id    = Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
   const sw    = detectSecondWave(mem, flow);
@@ -984,7 +1000,7 @@ async function saveShadowTrade(
     symbol:         mem.symbol,
     worker_version: WORKER_VERSION,
     chain:          pool._chain.id,
-    pair_address:  pool.attributes.address,
+    pair_address:  pairAddr,
     token_address: mem.tokenAddress,
     entry_price:   price, current_price: price,
     edge_score:    score, flag_count: 0, note,
@@ -995,7 +1011,7 @@ async function saveShadowTrade(
   });
 
   mem.totalEntries += 1; mem.lastEntryTime = Date.now(); mem.lastEntryPrice = price;
-  memory.set(pool.attributes.address.toLowerCase(), mem);
+  memory.set(pairAddr, mem);
 
   const emoji = mem.phase === "SECOND_WAVE" ? "🌊" : mem.phase === "RECOVERING" ? "⚡" : "👁";
   const msg = `${emoji} <b>SHADOW</b> ${mem.symbol} [${pool._chain.id.toUpperCase()}]\n`
@@ -1128,9 +1144,9 @@ async function scan(): Promise<void> {
     if (!price || isNaN(price)) continue;
 
    const mem  = updateMemory(pool, price);
-   const pairAddr = pool.attributes.address.toLowerCase();
-    if (!isEvmAddress(pairAddr)) {
-      console.log(`[SKIP] ${mem.symbol} (${pool._chain.id}) — non-EVM pair address`);
+   const pairAddr = cleanEvmAddress(pool.attributes.address);
+    if (!pairAddr) {
+      console.log(`[SKIP] ${mem.symbol} (${pool._chain.id}) — non-EVM pair address: ${pool.attributes.address}`);
       continue;
     }
 
@@ -1162,9 +1178,9 @@ async function scan(): Promise<void> {
 		);
 	  }
 }
-    const wsFlowReal = getWsFlow(pool.attributes.address);
+    const wsFlowReal = getWsFlow(pairAddr);
 	const flow       = getFlow(pool);
-	const lp         = getLpSignal(pool.attributes.address);
+	const lp         = getLpSignal(pairAddr);
     const fomo = checkFOMO(pool);
 
     if (fomo.blocked && fomo.reason) {
@@ -1176,9 +1192,9 @@ async function scan(): Promise<void> {
 	if (
 	  prelScore >= WATCH_MIN_SCORE &&
 	  !wsFlowReal.hasData &&
-	  !activeWatch.has(pool.attributes.address.toLowerCase())
+	  !activeWatch.has(pairAddr)
 	) {
-	  activeWatch.set(pool.attributes.address.toLowerCase(), {
+	  activeWatch.set(pairAddr, {
 		chain:   pool._chain.id,
 		addedAt: Date.now(),
 	  });
@@ -1289,11 +1305,11 @@ async function hotCandidatesLoop(): Promise<void> {
 
       // Nu duplica dacă există deja trade deschis
       const { data: existing } = await supabase
-        .from("shadow_trades")
-        .select("id")
-        .eq("pair_address", pairAddress)
-        .is("exited_at", null)
-        .limit(1);
+		.from("shadow_trades")
+		.select("id")
+		.eq("pair_address", pairAddress)
+		.is("exited_at", null)
+		.limit(1);
 
       if (existing?.length) { hotCandidates.delete(pairAddress); continue; }
 
