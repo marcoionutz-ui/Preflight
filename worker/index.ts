@@ -1,5 +1,5 @@
 /**
- * Supreme Trader Worker v5.3
+ * Supreme Trader Worker v5.4-local-v4
  * P1: Multi-chain (BASE + ARB)
  * P2: Second Wave Detection
  * P3: LP Events Monitoring (Mint/Burn)
@@ -40,7 +40,7 @@ const WATCH_MIN_SCORE = 70;
 const MIN_LP_REMOVE_ETH   = 0.05;  // ignoră dust burns
 const INSTANT_LP_EXIT_PCT = 0.30;  // 30%+ din pool = instant exit
 let ethPriceCached = 2500;
-const WORKER_VERSION      = "v5.3";
+const WORKER_VERSION      = "v5.4-local-v4";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   realtime: { transport: WebSocket },
@@ -86,7 +86,11 @@ interface GeckoPool {
       h1?: { buys: number; sells: number };
     };
   };
-  relationships: { base_token: { data: { id: string } } };
+  relationships: {
+    base_token:   { data: { id: string } };
+    quote_token?: { data: { id: string } };
+    dex?:         { data: { id: string } };
+  };
   _chain: ChainConfig; // adăugat de noi
 }
 
@@ -106,6 +110,7 @@ const swapSubIds       = new Map<string, string[]>();
 const pendingSwapSubs  = new Map<number, string>();
 let   swapSubReqId     = 10_000;
 const swapSubSnapshot = new Map<string, string>();
+const v4PoolMap = new Map<string, GeckoPool>();
 
 // ── New Pool Tracker ──────────────────────────────────────────────────────────
 // tokenAddress → Set<pairAddress> per chain
@@ -251,7 +256,8 @@ function getLpSignal(pairAddress: string): LiquiditySignal {
 }
 
 function getFlow(pool: GeckoPool): FlowSignal {
-  const ws = getWsFlow(pool.attributes.address);
+  const pairAddr = cleanEvmAddress(pool.attributes.address) ?? pool.attributes.address.toLowerCase();
+  const ws = getWsFlow(pairAddr);
   if (ws.hasData) return ws;
   const buys5m  = pool.attributes.transactions?.m5?.buys  ?? 0;
   const sells5m = pool.attributes.transactions?.m5?.sells ?? 0;
@@ -264,6 +270,17 @@ function getFlow(pool: GeckoPool): FlowSignal {
 const SWAP_V2_TOPIC = "0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822";
 const MINT_V2_TOPIC = "0x4c209b5fc8ad50758f13e2e1088ba56a560dff690a1c6fef26394f4c03821c4f";
 const BURN_V2_TOPIC = "0xdccd412f0b1252819cb1fd330b93224ca42612892bb3f4f789976e6d81936496";
+const SWAP_V3_TOPIC = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67";
+const V3_DEXES = new Set(["uniswap-v3-base", "aerodrome-slipstream", "pancakeswap-v3-base"]);
+const v3PoolMap = new Map<string, GeckoPool>();
+const UNISWAP_V4_POOL_MANAGER   = "0x498581ff718922c3f8e6a244956af099b2652b2b";
+const SWAP_V4_TOPIC             = "0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f";
+const MODIFY_LIQUIDITY_V4_TOPIC = "0x26f6a048ee9138f2c0ce266f322cb99228e8d619ae2bff30c67f8dcf9d2377b4";
+
+function int256FromWord(hex64: string): bigint {
+  const x = BigInt("0x" + hex64);
+  return x >= (1n << 255n) ? x - (1n << 256n) : x;
+}
 
 function cleanupActiveWatch(): void {
   const now = Date.now();
@@ -283,13 +300,13 @@ function updateScopedSwap(chain: ChainConfig): void {
   const openTradeAddresses = new Set<string>();
   const watchAddresses = new Set<string>();
 
-  for (const [addr, mem] of memory.entries()) {
-    const cleanAddr = cleanEvmAddress(addr);
-    if (!cleanAddr) continue;
-    if (mem.totalEntries > 0 && Date.now() - mem.lastEntryTime < MAX_HOLD_MS) {
-      openTradeAddresses.add(cleanAddr);
-    }
-  }
+//  for (const [addr, mem] of memory.entries()) {
+//    const cleanAddr = cleanEvmAddress(addr);
+//    if (!cleanAddr) continue;
+//    if (mem.totalEntries > 0 && Date.now() - mem.lastEntryTime < MAX_HOLD_MS) {
+//     openTradeAddresses.add(cleanAddr);
+//    }
+//  }
   for (const [addr, info] of activeWatch.entries()) {
     const cleanAddr = cleanEvmAddress(addr);
     if (!cleanAddr) continue;
@@ -337,6 +354,50 @@ function updateScopedSwap(chain: ChainConfig): void {
   console.log(`[WS] Scoped SWAP updated: ${addrList.length} pair subscriptions requested (${chain.id})`);
 }
 
+const v3SwapSubIds = new Map<string, string>();
+
+function subscribeV3Scoped(chain: ChainConfig): void {
+  const ws = wsClients.get(chain.id);
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const addrs = Array.from(v3PoolMap.keys()).slice(0, 30);
+  if (!addrs.length) return;
+  const snapshot = addrs.join(",");
+  if (v3SwapSubIds.get(chain.id + "_snap") === snapshot) return;
+  v3SwapSubIds.set(chain.id + "_snap", snapshot);
+  const oldId = v3SwapSubIds.get(chain.id);
+  if (oldId) {
+    ws.send(JSON.stringify({ jsonrpc: "2.0", id: 51, method: "eth_unsubscribe", params: [oldId] }));
+  }
+  ws.send(JSON.stringify({
+    jsonrpc: "2.0", id: 7,
+    method: "eth_subscribe",
+    params: ["logs", { address: addrs, topics: [SWAP_V3_TOPIC] }],
+  }));
+  console.log(`[V3] Scoped subscribe: ${addrs.length} pools`);
+}
+
+const v4SwapSubIds = new Map<string, string>();
+
+function subscribeV4Scoped(chain: ChainConfig): void {
+  const ws = wsClients.get(chain.id);
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const poolIds = Array.from(v4PoolMap.keys()).slice(0, 50);
+  if (!poolIds.length) return;
+  const snapshot = poolIds.join(",");
+  if (v4SwapSubIds.get(chain.id + "_snap") === snapshot) return;
+  v4SwapSubIds.set(chain.id + "_snap", snapshot);
+  const oldId = v4SwapSubIds.get(chain.id);
+  if (oldId) {
+    ws.send(JSON.stringify({ jsonrpc: "2.0", id: 50, method: "eth_unsubscribe", params: [oldId] }));
+  }
+  ws.send(JSON.stringify({
+    jsonrpc: "2.0", id: 5,
+    method: "eth_subscribe",
+    params: ["logs", { address: UNISWAP_V4_POOL_MANAGER, topics: [SWAP_V4_TOPIC, poolIds] }],
+  }));
+  console.log(`[V4] Scoped subscribe: ${poolIds.length} pools`);
+}
+
 function connectChainWebSocket(chain: ChainConfig): void {
   if (!chain.wsUrl) {
     console.log(`[WS] No WS URL for ${chain.id} — flow layer disabled for this chain`);
@@ -345,30 +406,31 @@ function connectChainWebSocket(chain: ChainConfig): void {
 
   const wsClient = new WebSocket(chain.wsUrl);
   wsClients.set(chain.id, wsClient);
+  const pingInterval = setInterval(() => {
+    if (wsClient.readyState === WebSocket.OPEN) wsClient.ping();
+  }, 30_000);
 
   wsClient.on("open", () => {
-  console.log(`[WS] Connected to Alchemy ${chain.id.toUpperCase()}`);
-  swapSubIds.delete(chain.id);
-  swapSubSnapshot.delete(chain.id);
-
-  wsClient.send(JSON.stringify({
-    jsonrpc: "2.0", id: 2,
-    method: "eth_subscribe",
-    params: ["logs", { topics: [MINT_V2_TOPIC] }],
-  }));
-
-  wsClient.send(JSON.stringify({
-    jsonrpc: "2.0", id: 3,
-    method: "eth_subscribe",
-    params: ["logs", { topics: [BURN_V2_TOPIC] }],
-  }));
-
-  setTimeout(() => updateScopedSwap(chain), 2000);
-});
+    console.log(`[WS] Connected to Alchemy ${chain.id.toUpperCase()}`);
+    swapSubIds.delete(chain.id);
+    swapSubSnapshot.delete(chain.id);
+    v4SwapSubIds.delete(chain.id);
+    v4SwapSubIds.delete(chain.id + "_snap");
+    v3SwapSubIds.delete(chain.id);
+    v3SwapSubIds.delete(chain.id + "_snap");
+    setTimeout(() => subscribeV4Scoped(chain), 2500);
+    setTimeout(() => subscribeV3Scoped(chain), 3000);
+  });
 
   wsClient.on("message", async (data: Buffer) => {
     try {
       const msg = JSON.parse(data.toString());
+	 if (msg.id === 5 || msg.id === 6 || msg.id === 7) {
+        if (msg.id === 5 && msg.result) v4SwapSubIds.set(chain.id, msg.result);
+        if (msg.id === 7 && msg.result) v3SwapSubIds.set(chain.id, msg.result);
+        console.log(`[V3/V4 SUB DEBUG] ${data.toString()}`);
+        return;
+      }
 	  if (typeof msg.id === "number" && pendingSwapSubs.has(msg.id)) {
         const subChain = pendingSwapSubs.get(msg.id)!;
         pendingSwapSubs.delete(msg.id);
@@ -389,6 +451,103 @@ function connectChainWebSocket(chain: ChainConfig): void {
           return;
         }
       }
+      // ── V4 Swap ──────────────────────────────────────────────────────────
+      if (chain.id === "base" && msg.params?.result?.topics?.[0] === SWAP_V4_TOPIC) {
+        const log4   = msg.params.result;
+        const raw4   = log4.data?.slice(2) ?? "";
+        const poolId = log4.topics?.[1]?.toLowerCase();
+        if (!poolId || raw4.length < 128) return;
+
+        const pool  = v4PoolMap.get(poolId);
+        const memV4 = memory.get(poolId);
+        if (!pool || !memV4) {
+	    if (pool && !memV4) console.log(`[V4 NO MEM] poolId=${poolId} pool=${pool.attributes.name}`);
+		  return;
+		}
+
+        const amount0 = int256FromWord(raw4.slice(0,  64));
+        const amount1 = int256FromWord(raw4.slice(64, 128));
+
+        const baseToken    = pool.relationships.base_token.data.id.replace(`${chain.id}_`, "").toLowerCase();
+        const quoteToken   = pool.relationships.quote_token?.data.id?.replace(`${chain.id}_`, "").toLowerCase() ?? "";
+        if (!quoteToken) {
+           console.log(`[V4 SKIP] ${memV4.symbol} missing quote token for poolId=${poolId}`);
+           return;
+         }
+
+        const wrapped = chain.weth.toLowerCase();
+
+        if (baseToken !== wrapped && quoteToken !== wrapped) {
+          console.log(`[V4 SKIP] ${memV4.symbol} no WETH side base=${baseToken} quote=${quoteToken}`);
+          return;
+        }
+
+        const wethIsToken0 = wrapped === baseToken ? baseToken < quoteToken : quoteToken < baseToken;
+        const wethAmount   = wethIsToken0 ? amount0 : amount1;
+        const ethAmount    = Number(wethAmount < 0n ? -wethAmount : wethAmount) / 1e18;
+
+        const isBuy = wethAmount > 0n;
+
+        if (ethAmount > 0) {
+          recordSwap(poolId, isBuy, ethAmount);
+          console.log(
+            `[V4 SWAP] ${memV4.symbol} ${isBuy ? "BUY" : "SELL"} `
+            + `eth=${ethAmount.toFixed(4)} amount0=${amount0} amount1=${amount1} `
+            + `base=${baseToken} quote=${quoteToken} tx=${log4.transactionHash}`
+          );
+
+          if (isBuy && ethAmount >= 0.005) {
+            const flow = getWsFlow(poolId);
+            if (flow.hasData && flow.pressure === "BUYING" && flow.buys5m >= 5) {
+              if (!hotCandidates.has(poolId)) {
+                hotCandidates.set(poolId, { chain: chain.id, promotedAt: Date.now() });
+              }
+            }
+          }
+        }
+        return;
+      }
+
+      // ── V4 ModifyLiquidity (log-only) ────────────────────────────────────
+      if (chain.id === "base" && msg.params?.result?.topics?.[0] === MODIFY_LIQUIDITY_V4_TOPIC) {
+        const log4   = msg.params.result;
+        const poolId = log4.topics?.[1]?.toLowerCase();
+        console.log(`[V4 LIQ RAW] poolId=${poolId} data=${log4.data?.slice(0, 258)} tx=${log4.transactionHash}`);
+        return;
+      }
+
+	  // ── V3 Swap ──────────────────────────────────────────────────────────
+      if (msg.params?.result?.topics?.[0] === SWAP_V3_TOPIC) {
+        const log3       = msg.params.result;
+        const pairAddr3  = log3.address?.toLowerCase();
+        const pool3      = v3PoolMap.get(pairAddr3);
+        const mem3       = memory.get(pairAddr3);
+        if (!pool3 || !mem3) return;
+        const raw3 = log3.data?.slice(2) ?? "";
+        if (raw3.length < 128) return;
+        const amount0  = int256FromWord(raw3.slice(0,  64));
+        const amount1  = int256FromWord(raw3.slice(64, 128));
+        const base3    = pool3.relationships.base_token.data.id.replace(`${chain.id}_`, "").toLowerCase();
+        const quote3   = pool3.relationships.quote_token?.data.id?.replace(`${chain.id}_`, "").toLowerCase() ?? "";
+        const wrapped  = chain.weth.toLowerCase();
+        if (base3 !== wrapped && quote3 !== wrapped) return;
+        const wethIsToken0 = wrapped < (base3 === wrapped ? quote3 : base3);
+        const wethAmount   = wethIsToken0 ? amount0 : amount1;
+        const ethAmount    = Number(wethAmount < 0n ? -wethAmount : wethAmount) / 1e18;
+        const isBuy        = wethAmount > 0n;
+        if (ethAmount > 0) {
+          recordSwap(pairAddr3, isBuy, ethAmount);
+          console.log(`[V3 SWAP] ${mem3.symbol} ${isBuy ? "BUY" : "SELL"} eth=${ethAmount.toFixed(4)} tx=${log3.transactionHash}`);
+          if (isBuy && ethAmount >= 0.005) {
+            const flow3 = getWsFlow(pairAddr3);
+            if (flow3.hasData && flow3.pressure === "BUYING" && flow3.buys5m >= 5) {
+              if (!hotCandidates.has(pairAddr3)) hotCandidates.set(pairAddr3, { chain: chain.id, promotedAt: Date.now() });
+            }
+          }
+        }
+        return;
+      }
+	  
       if (!msg.params?.result) return;
 
       const log         = msg.params.result;
@@ -509,6 +668,11 @@ if (!poolEth) {
   wsClient.on("error", (err: Error) => console.log(`[WS ${chain.id}] Error: ${err.message}`));
 
   wsClient.on("close", () => {
+    clearInterval(pingInterval);
+    v4SwapSubIds.delete(chain.id);
+    v4SwapSubIds.delete(chain.id + "_snap");
+    v3SwapSubIds.delete(chain.id);
+    v3SwapSubIds.delete(chain.id + "_snap");
     console.log(`[WS ${chain.id}] Disconnected — reconnecting in 5s...`);
     setTimeout(() => connectChainWebSocket(chain), 5_000);
   });
@@ -833,7 +997,11 @@ function computeEvidenceScore(mem: PairMemoryEntry, flow: FlowSignal, lp: Liquid
 
 // ── Should enter? ─────────────────────────────────────────────────────────────
 
-function getEntryGate(mem: PairMemoryEntry, flow: FlowSignal, lp: LiquiditySignal) {
+function getEntryGate(mem: PairMemoryEntry, flow: FlowSignal, lp: LiquiditySignal, score: number) {
+  if (!lp.hasData && !poolReserveEth.has(mem.pairAddress)) {
+    console.log(`[ENTRY BLOCK] ${mem.symbol} — no LP context / rug risk`);
+    return { allowed: false, reason: "no LP context — rug risk" };
+  }
   // LP removed = hard block
   if (lp.hasData && lp.status === "REMOVED") {
     return { allowed: false, reason: `LP removed (${lp.lpRemoved5m.toFixed(3)} ETH in 5m)` };
@@ -870,9 +1038,15 @@ function getEntryGate(mem: PairMemoryEntry, flow: FlowSignal, lp: LiquiditySigna
     return checkEntryGate(mem, flow, 3, SECOND_WAVE_COOLDOWN_MS);
   }
 
-  // Normal scan
-  if (mem.seenCount < 3)  return { allowed: false, reason: `too new (seen ${mem.seenCount}x, need 3)` };
-  if (evidence < 8)       return { allowed: false, reason: `evidence too low (${evidence}/8)` };
+   const isV4 = mem.pairAddress.length === 66;
+  const requiredEvidence = isV4 ? 6 : 8;
+
+  if (mem.seenCount < 3) return { allowed: false, reason: `too new (seen ${mem.seenCount}x, need 3)` };
+  if (evidence < requiredEvidence) return { allowed: false, reason: `evidence too low (${evidence}/${requiredEvidence})` };
+
+  if (isV4 && score < 90)      return { allowed: false, reason: `V4 score too low (${score}/90)` };
+  if (isV4 && flow.buys5m < 5) return { allowed: false, reason: `V4 flow weak (${flow.buys5m} buys/5m)` };
+
   return checkEntryGate(mem, flow, 3, COOLDOWN_MS);
 }
 
@@ -880,42 +1054,31 @@ function getEntryGate(mem: PairMemoryEntry, flow: FlowSignal, lp: LiquiditySigna
 
 async function fetchTrending(chain: ChainConfig): Promise<GeckoPool[]> {
   try {
-    const [trendingRes, newPoolsRes] = await Promise.allSettled([
-      fetch(`${GECKO_BASE}/networks/${chain.gecko}/trending_pools?page=1`),
-      fetch(`${GECKO_BASE}/networks/${chain.gecko}/new_pools?page=1`),
-    ]);
+    const res = await fetch(`${GECKO_BASE}/networks/${chain.gecko}/trending_pools?page=1`);
+    if (!res.ok) return [];
+
+    const data = await res.json();
+
+    const pools: GeckoPool[] = (data.data ?? []).map((p: GeckoPool) => ({
+      ...p,
+      _chain: chain,
+    }));
 	
-    let trending: GeckoPool[] = [];
-    let newPools: GeckoPool[] = [];
+	const v3Pools = pools.filter(p => {
+      const dexId = (p as any).relationships?.dex?.data?.id ?? "";
+      return cleanEvmAddress(p.attributes.address) !== null && V3_DEXES.has(dexId);
+    });
+    const v4Pools = pools.filter(p => cleanEvmAddress(p.attributes.address) === null);
 
-    if (trendingRes.status === "fulfilled" && trendingRes.value.ok) {
-      const trendingData = await trendingRes.value.json();
-      trending = (trendingData.data ?? []).map((p: GeckoPool) => ({ ...p, _chain: chain }));
-    }
+    v3PoolMap.clear();
+    for (const p of v3Pools) v3PoolMap.set(p.attributes.address.toLowerCase(), p);
 
-    if (newPoolsRes.status === "fulfilled" && newPoolsRes.value.ok) {
-      const newPoolsData = await newPoolsRes.value.json();
-      newPools = (newPoolsData.data ?? []).map((p: GeckoPool) => ({ ...p, _chain: chain }));
-    }
+    v4PoolMap.clear();
+    for (const p of v4Pools) v4PoolMap.set(p.attributes.address.toLowerCase(), p);
 
-    const seen = new Set<string>();
-    const merged: GeckoPool[] = [];
+    console.log(`[FETCH] ${chain.id}: ${pools.length} trending → ${v3Pools.length} V3 + ${v4Pools.length} V4`);
 
-    for (const p of [...trending, ...newPools]) {
-      const addr = p.attributes?.address?.toLowerCase();
-      if (addr && !seen.has(addr)) {
-        seen.add(addr);
-        merged.push(p);
-      }
-    }
-
-    const filtered = merged.filter(p => cleanEvmAddress(p.attributes.address) !== null);
-
-    console.log(
-      `[FETCH] ${chain.id}: ${trending.length} trending + ${newPools.length} new = ${merged.length} unique (${filtered.length} EVM-compatible after V4 filter)`
-    );
-
-    return filtered;
+    return [...v3Pools, ...v4Pools];
   } catch {
     return [];
   }
@@ -967,10 +1130,12 @@ async function saveShadowTrade(
   flow:  FlowSignal,
   lp:    LiquiditySignal,
 ): Promise<void> {
+  const pairAddr = cleanEvmAddress(pool.attributes.address) ?? pool.attributes.address.toLowerCase();
+
   const { data: existing } = await supabase
     .from("shadow_trades")
     .select("id")
-    .eq("pair_address", pool.attributes.address)
+    .eq("pair_address", pairAddr)
     .is("exited_at", null)
     .limit(1);
 
@@ -978,8 +1143,6 @@ async function saveShadowTrade(
     console.log(`[DUPLICATE BLOCK] ${mem.symbol} already has open shadow trade`);
     return;
   }
-
-  const pairAddr = cleanEvmAddress(pool.attributes.address) ?? pool.attributes.address.toLowerCase();
   const price = mem.currentPrice;
   const id    = Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
   const sw    = detectSecondWave(mem, flow);
@@ -1027,11 +1190,11 @@ async function saveShadowTrade(
 // ── Update outcomes ───────────────────────────────────────────────────────────
 
 async function updateOutcomes(pools: GeckoPool[]): Promise<void> {
-  const priceMap = new Map<string, number>();
-  pools.forEach(p => priceMap.set(
-    p.attributes.address.toLowerCase(),
-    Number(p.attributes.base_token_price_usd),
-  ));
+ const priceMap = new Map<string, number>();
+  pools.forEach(p => {
+    const key = cleanEvmAddress(p.attributes.address) ?? p.attributes.address.toLowerCase();
+    priceMap.set(key, Number(p.attributes.base_token_price_usd));
+  });
 
   // FOMO blocks
   const { data: blocks } = await supabase
@@ -1144,11 +1307,7 @@ async function scan(): Promise<void> {
     if (!price || isNaN(price)) continue;
 
    const mem  = updateMemory(pool, price);
-   const pairAddr = cleanEvmAddress(pool.attributes.address);
-    if (!pairAddr) {
-      console.log(`[SKIP] ${mem.symbol} (${pool._chain.id}) — non-EVM pair address: ${pool.attributes.address}`);
-      continue;
-    }
+  const pairAddr = cleanEvmAddress(pool.attributes.address) ?? pool.attributes.address.toLowerCase();
 
     if (isBlockedAsset(mem.symbol)) continue;
 
@@ -1211,7 +1370,7 @@ async function scan(): Promise<void> {
     const score = quickEdgeScore(pool, mem, wsFlowReal, lp);
 	if (score < 75) continue;
 
-	const gate = getEntryGate(mem, wsFlowReal, lp);
+	const gate = getEntryGate(mem, wsFlowReal, lp, score);
 	if (!gate.allowed) {
 	  console.log(`[SKIP] ${mem.symbol} (${pool._chain.id}) — ${gate.reason}`);
 	  continue;
@@ -1270,7 +1429,9 @@ async function scan(): Promise<void> {
       console.log(`[REDIS] Wrote ${Object.keys(states).length} pair states`);
     }
   } catch { /* Redis optional — workerul merge fără */ }
-  CHAINS.forEach(c => updateScopedSwap(c));
+//  CHAINS.forEach(c => updateScopedSwap(c));
+  CHAINS.forEach(c => subscribeV4Scoped(c));
+  CHAINS.forEach(c => subscribeV3Scoped(c));
   console.log(`[WATCH] Active: ${activeWatch.size} pairs`);
   await saveMemoryToRedis();
 }
@@ -1314,7 +1475,7 @@ async function hotCandidatesLoop(): Promise<void> {
       if (existing?.length) { hotCandidates.delete(pairAddress); continue; }
 
       // Date reale înainte de orice decizie
-      const pool = await fetchPoolByAddress(chainCfg, pairAddress);
+      const pool = v4PoolMap.get(pairAddress) ?? v3PoolMap.get(pairAddress) ?? await fetchPoolByAddress(chainCfg, pairAddress);
       if (!pool) { hotCandidates.delete(pairAddress); continue; }
 
       const fomo = checkFOMO(pool);
@@ -1323,7 +1484,7 @@ async function hotCandidatesLoop(): Promise<void> {
       const score = quickEdgeScore(pool, mem, flow, lp);
       if (score < 75) { hotCandidates.delete(pairAddress); continue; }
 
-      const gate = getEntryGate(mem, flow, lp);
+      const gate = getEntryGate(mem, flow, lp, score);
       if (!gate.allowed) { hotCandidates.delete(pairAddress); continue; }
 
       console.log(`[HOT] ${mem.symbol} (${chainId}) — promoted by WS, Edge ${score}`);
@@ -1357,7 +1518,9 @@ async function monitorOpenTrades(): Promise<void> {
       if (!trade.chain || !trade.pair_address) continue;
       const chainCfg = CHAINS.find(c => c.id === trade.chain || c.gecko === trade.chain);
       if (!chainCfg) continue;
-      const pool = await fetchPoolByAddress(chainCfg, trade.pair_address);
+      const pool = v4PoolMap.get(trade.pair_address.toLowerCase())
+        ?? v3PoolMap.get(trade.pair_address.toLowerCase())
+        ?? await fetchPoolByAddress(chainCfg, trade.pair_address);
       if (pool) pools.push(pool);
     }
 
