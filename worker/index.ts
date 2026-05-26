@@ -1,5 +1,5 @@
 /**
- * Supreme Trader Worker v5.9c
+ * Supreme Trader Worker v5.9d
  * P1: Multi-chain (BASE + ARB)
  * P2: Second Wave Detection
  * P3: LP Events Monitoring (Mint/Burn)
@@ -43,7 +43,7 @@ let ethPriceCached = 2500;
 const MIN_FLOW_ETH        = 0.001;
 const MIN_TOTAL_FLOW_ETH  = 0.01;
 const FLOW_IMBALANCE      = 0.20;
-const WORKER_VERSION      = "v5.9c";
+const WORKER_VERSION      = "v5.9d";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   realtime: { transport: WebSocket },
@@ -1500,7 +1500,32 @@ async function scan(): Promise<void> {
 
     if (fomo.blocked && fomo.reason) {
       await saveFOMOBlock(pool, fomo.reason);
-      continue;
+
+      const sw2      = detectSecondWave(mem, wsFlowReal);
+      const m5f      = Number(pool.attributes.price_change_percentage?.m5  ?? 0);
+      const h1f      = Number(pool.attributes.price_change_percentage?.h1  ?? 0);
+      const buyVolF  = (wsFlowReal as any).buyVol5m  ?? 0;
+      const netVolF  = (wsFlowReal as any).netVol5m  ?? 0;
+      const sellVolF = (wsFlowReal as any).sellVol5m ?? 0;
+
+      const lateSecondWave =
+        wsFlowReal.hasData &&
+        wsFlowReal.pressure === "BUYING" &&
+        sw2.isSecondWave &&
+        sw2.confidence !== "LOW" &&
+        m5f  >  3 &&
+        h1f  > 10 &&
+        buyVolF  >= 0.20 &&
+        netVolF  >= 0.15 &&
+        sellVolF >= 0.01;
+
+      if (!lateSecondWave) continue;
+
+      console.log(
+        `[LATE 2W] ${mem.symbol} (${pool._chain.id}) — FOMO exception: ${fomo.reason}`
+        + ` | m5:${m5f.toFixed(1)} h1:${h1f.toFixed(1)}`
+        + ` | buyVol:${buyVolF.toFixed(3)} netVol:${netVolF.toFixed(3)} sellVol:${sellVolF.toFixed(3)}`
+      );
     }
 	
 	const prelScore = quickEdgeScore(pool, mem, flow, lp);
