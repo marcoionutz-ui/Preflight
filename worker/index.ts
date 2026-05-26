@@ -1,5 +1,5 @@
 /**
- * Supreme Trader Worker v5.9e
+ * Supreme Trader Worker v5.10-armed
  * P1: Multi-chain (BASE + ARB)
  * P2: Second Wave Detection
  * P3: LP Events Monitoring (Mint/Burn)
@@ -43,7 +43,7 @@ let ethPriceCached = 2500;
 const MIN_FLOW_ETH        = 0.001;
 const MIN_TOTAL_FLOW_ETH  = 0.01;
 const FLOW_IMBALANCE      = 0.20;
-const WORKER_VERSION      = "v5.9e";
+const WORKER_VERSION      = "v5.10-armed";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   realtime: { transport: WebSocket },
@@ -120,6 +120,15 @@ const swapSubSnapshot = new Map<string, string>();
 const v3SwapSubIds = new Map<string, string>();
 const v4SwapSubIds = new Map<string, string>();
 const v4PoolMap = new Map<string, GeckoPool>();
+const armedEntries = new Map<string, {
+  armedAt:       number;
+  price:         number;
+  score:         number;
+  flowPressure:  string;
+}>();
+const ARM_CONFIRM_MS        = 30_000;
+const ARM_TTL_MS            = 2 * 60_000;
+const ARM_MIN_PRICE_CONFIRM = 0.997;
 
 // ── New Pool Tracker ──────────────────────────────────────────────────────────
 // tokenAddress → Set<pairAddress> per chain
@@ -339,6 +348,16 @@ function cleanupActiveWatch(): void {
   for (const [addr, info] of activeWatch.entries()) {
     if (now - info.addedAt > WATCH_TTL_MS) {
       activeWatch.delete(addr);
+    }
+  }
+}
+
+function clearExpiredArmedEntries(): void {
+  const now = Date.now();
+  for (const [addr, armed] of armedEntries.entries()) {
+    if (now - armed.armedAt > ARM_TTL_MS) {
+      console.log(`[ARM EXPIRE] ${addr} — confirmation window expired`);
+      armedEntries.delete(addr);
     }
   }
 }
@@ -1446,6 +1465,7 @@ async function updateOutcomes(pools: GeckoPool[]): Promise<void> {
 async function scan(): Promise<void> {
   const ts = new Date().toISOString();
   cleanupActiveWatch();
+  clearExpiredArmedEntries();
 
   // Fetch toate chain-urile în paralel
   const allPoolsPerChain = await Promise.all(CHAINS.map(c => fetchTrending(c)));
@@ -1556,13 +1576,62 @@ async function scan(): Promise<void> {
 	const gate = getEntryGate(mem, wsFlowReal, lp, score);
 	if (!gate.allowed) {
 	  console.log(`[SKIP] ${mem.symbol} (${pool._chain.id}) — ${gate.reason}`);
+	  armedEntries.delete(pairAddr);
 	  continue;
 	}
+
+	const armed = armedEntries.get(pairAddr);
+
+	if (!armed) {
+	  armedEntries.set(pairAddr, {
+		armedAt:      Date.now(),
+		price,
+		score,
+		flowPressure: wsFlowReal.pressure,
+	  });
+	  console.log(
+		`[ARMED] ${mem.symbol} (${pool._chain.id}) — waiting confirmation`
+		+ ` price:${price.toExponential(4)} score:${score}`
+		+ ` flow:${wsFlowReal.pressure} net:${((wsFlowReal as any).netVol5m ?? 0).toFixed(3)}ETH`
+	  );
+	  continue;
+	}
+
+	if (Date.now() - armed.armedAt < ARM_CONFIRM_MS) {
+	  console.log(`[ARM WAIT] ${mem.symbol} (${pool._chain.id}) — confirmation pending`);
+	  continue;
+	}
+
+	if (price < armed.price * ARM_MIN_PRICE_CONFIRM) {
+	  console.log(`[ARM SKIP] ${mem.symbol} (${pool._chain.id}) — price failed confirmation ${price.toExponential(4)} < ${armed.price.toExponential(4)}`);
+	  armedEntries.delete(pairAddr);
+	  continue;
+	}
+
+	if (!wsFlowReal.hasData || wsFlowReal.pressure !== "BUYING") {
+	  console.log(`[ARM SKIP] ${mem.symbol} (${pool._chain.id}) — flow faded (${wsFlowReal.pressure})`);
+	  armedEntries.delete(pairAddr);
+	  continue;
+	}
+
+	const currentNetVol = (wsFlowReal as any).netVol5m ?? 0;
+	if (currentNetVol < 0.05) {
+	  console.log(`[ARM SKIP] ${mem.symbol} (${pool._chain.id}) — netVol faded ${currentNetVol.toFixed(3)}ETH`);
+	  armedEntries.delete(pairAddr);
+	  continue;
+	}
+
+	console.log(
+	  `[ARM CONFIRMED] ${mem.symbol} (${pool._chain.id}) — entering`
+	  + ` armed:${armed.price.toExponential(4)} now:${price.toExponential(4)}`
+	  + ` net:${currentNetVol.toFixed(3)}ETH`
+	);
+	armedEntries.delete(pairAddr);
 
 	await saveShadowTrade(pool, score, mem, wsFlowReal, lp);
     shadowCount++;
     chainCounts[pool._chain.id] = (chainCounts[pool._chain.id] ?? 0) + 1;
-  }
+    }
 
   const vals = [...memory.values()];
   const chainStr = Object.entries(chainCounts).map(([k, v]) => `${k}:${v}`).join(" ");
