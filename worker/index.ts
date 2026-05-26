@@ -1,5 +1,5 @@
 /**
- * Supreme Trader Worker v5.10-armed
+ * Supreme Trader Worker v5.10b
  * P1: Multi-chain (BASE + ARB)
  * P2: Second Wave Detection
  * P3: LP Events Monitoring (Mint/Burn)
@@ -43,7 +43,7 @@ let ethPriceCached = 2500;
 const MIN_FLOW_ETH        = 0.001;
 const MIN_TOTAL_FLOW_ETH  = 0.01;
 const FLOW_IMBALANCE      = 0.20;
-const WORKER_VERSION      = "v5.10-armed";
+const WORKER_VERSION      = "v5.10b";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   realtime: { transport: WebSocket },
@@ -1183,6 +1183,10 @@ function getEntryGate(mem: PairMemoryEntry, flow: FlowSignal, lp: LiquiditySigna
     return { allowed: false, reason: `too many pools for token (${poolCount}) — clone/fragmentation risk` };
   }
 
+ if (mem.seenCount > 40 && mem.totalEntries === 0) {
+    return { allowed: false, reason: `stale with no history (seen ${mem.seenCount}x, never entered)` };
+  }
+
   const evidence = computeEvidenceScore(mem, flow, lp);
   
   if (hotCandidates.has(mem.pairAddress.toLowerCase())) {
@@ -1571,7 +1575,7 @@ async function scan(): Promise<void> {
     if (shadowCount >= MAX_SHADOW_PER_SCAN) continue;
 
     const score = quickEdgeScore(pool, mem, wsFlowReal, lp);
-	if (score < 75) continue;
+	if (score < 80) continue;
 
 	const gate = getEntryGate(mem, wsFlowReal, lp, score);
 	if (!gate.allowed) {
@@ -1738,7 +1742,7 @@ async function hotCandidatesLoop(): Promise<void> {
       if (fomo.blocked) { hotCandidates.delete(pairAddress); continue; }
 
       const score = quickEdgeScore(pool, mem, flow, lp);
-      if (score < 75) { hotCandidates.delete(pairAddress); continue; }
+      if (score < 80) { hotCandidates.delete(pairAddress); continue; }
 
       const gate = getEntryGate(mem, flow, lp, score);
       if (!gate.allowed) { hotCandidates.delete(pairAddress); continue; }
