@@ -1,5 +1,5 @@
 /**
- * Supreme Trader Worker v5.9d
+ * Supreme Trader Worker v5.9e
  * P1: Multi-chain (BASE + ARB)
  * P2: Second Wave Detection
  * P3: LP Events Monitoring (Mint/Burn)
@@ -43,7 +43,7 @@ let ethPriceCached = 2500;
 const MIN_FLOW_ETH        = 0.001;
 const MIN_TOTAL_FLOW_ETH  = 0.01;
 const FLOW_IMBALANCE      = 0.20;
-const WORKER_VERSION      = "v5.9d";
+const WORKER_VERSION      = "v5.9e";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   realtime: { transport: WebSocket },
@@ -1131,9 +1131,10 @@ function getEntryGate(mem: PairMemoryEntry, flow: FlowSignal, lp: LiquiditySigna
   }
 
   // Piață unilaterală — zero sell-uri = spike fără rezistență reală
-  const sellVol = (flow as any).sellVol5m ?? 0;
-  if (flow.pressure === "BUYING" && sellVol < 0.01) {
-    return { allowed: false, reason: `one-sided spike — no sell presence (${sellVol.toFixed(3)} ETH sells)` };
+  const sellVol   = (flow as any).sellVol5m ?? 0;
+  const sellRatio = buyVol > 0 ? sellVol / buyVol : 0;
+  if (flow.pressure === "BUYING" && (sellVol < 0.01 || sellRatio < 0.03)) {
+    return { allowed: false, reason: `one-sided spike — sell ratio ${(sellRatio * 100).toFixed(1)}% (min 3%)` };
   }
 
   // RECOVERING hard block — excepție doar pentru second wave confirmat
@@ -1307,6 +1308,7 @@ async function saveShadowTrade(
     `buyVol:${((flow as any).buyVol5m ?? 0).toFixed(3)}ETH`,
     `sellVol:${((flow as any).sellVol5m ?? 0).toFixed(3)}ETH`,
     `netVol:${((flow as any).netVol5m ?? 0).toFixed(3)}ETH`,
+	`sellRatio:${(((flow as any).sellVol5m ?? 0) / Math.max((flow as any).buyVol5m ?? 0.001, 0.001) * 100).toFixed(1)}%`,
     `lpEvent:${lp.hasData ? lp.status : "NONE"}`,
     `liq:${liq.status}`,
     `reserve:$${Math.round(liq.reserveUsd / 1000)}K`,
