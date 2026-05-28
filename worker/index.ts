@@ -1,5 +1,5 @@
 /**
- * Supreme Trader Worker v5.12-dex
+ * Supreme Trader Worker v5.13-usdc
  * P1: Multi-chain (BASE + ARB)
  * P2: Second Wave Detection
  * P3: LP Events Monitoring (Mint/Burn)
@@ -43,7 +43,7 @@ let ethPriceCached = 2500;
 const MIN_FLOW_ETH        = 0.001;
 const MIN_TOTAL_FLOW_ETH  = 0.01;
 const FLOW_IMBALANCE      = 0.20;
-const WORKER_VERSION      = "v5.12-dex";
+const WORKER_VERSION      = "v5.13-usdc";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   realtime: { transport: WebSocket },
@@ -52,10 +52,12 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
 // ── Multi-chain Config ────────────────────────────────────────────────────────
 
 interface ChainConfig {
-  id:    string;
-  gecko: string;
-  weth:  string;
-  wsUrl: string;
+  id:          string;
+  gecko:       string;
+  weth:        string;
+  usdc:        string;
+  usdcLegacy?: string;
+  wsUrl:       string;
 }
 
 const CHAINS: ChainConfig[] = [
@@ -63,13 +65,16 @@ const CHAINS: ChainConfig[] = [
     id:    "base",
     gecko: "base",
     weth:  "0x4200000000000000000000000000000000000006",
+    usdc:  "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
     wsUrl: process.env.ALCHEMY_BASE_WS ?? "",
   },
   {
-    id:    "arbitrum",
-    gecko: "arbitrum",
-    weth:  "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
-    wsUrl: process.env.ALCHEMY_ARB_WS ?? "",
+    id:          "arbitrum",
+    gecko:       "arbitrum",
+    weth:        "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
+    usdc:        "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+    usdcLegacy:  "0xff970a61a04b1ca14834a43f5de4533ebddb5cc8",
+    wsUrl:       process.env.ALCHEMY_ARB_WS ?? "",
   },
 ].filter(c => c.wsUrl || c.gecko); // include chain dacă are cel puțin gecko
 
@@ -351,6 +356,34 @@ function rebuildPoolMaps(pools: GeckoPool[]): void {
   }
 }
 
+function getQuoteFlowAsEth(
+  chain:      ChainConfig,
+  baseToken:  string,
+  quoteToken: string,
+  amount0:    bigint,
+  amount1:    bigint,
+): { ok: boolean; ethAmount: number; isBuy: boolean; quote: "WETH" | "USDC" | "USDC.e" | null } {
+  const base   = baseToken.toLowerCase();
+  const quoteT = quoteToken.toLowerCase();
+  const weth   = chain.weth.toLowerCase();
+  const usdc   = chain.usdc.toLowerCase();
+  const usdcLegacy = chain.usdcLegacy?.toLowerCase();
+  const token0 = base < quoteT ? base : quoteT;
+  const amountFor = (t: string) => t === token0 ? amount0 : amount1;
+
+  if (base === weth || quoteT === weth) {
+    const amt = amountFor(weth);
+    return { ok: true, ethAmount: Number(amt < 0n ? -amt : amt) / 1e18, isBuy: amt > 0n, quote: "WETH" };
+  }
+  if (base === usdc || quoteT === usdc || (usdcLegacy && (base === usdcLegacy || quoteT === usdcLegacy))) {
+    const stable = (base === usdc || quoteT === usdc) ? usdc : usdcLegacy!;
+    const amt    = amountFor(stable);
+    const usdAmt = Number(amt < 0n ? -amt : amt) / 1e6;
+    return { ok: true, ethAmount: usdAmt / ethPriceCached, isBuy: amt > 0n, quote: stable === usdc ? "USDC" : "USDC.e" };
+  }
+  return { ok: false, ethAmount: 0, isBuy: false, quote: null };
+}
+
 // ── WebSocket per chain ───────────────────────────────────────────────────────
 
 const SWAP_V2_TOPIC = "0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822";
@@ -608,25 +641,21 @@ function connectChainWebSocket(chain: ChainConfig): void {
            return;
          }
 
-        const wrapped = chain.weth.toLowerCase();
-
-        if (baseToken !== wrapped && quoteToken !== wrapped) {
-          console.log(`[V4 SKIP] ${memV4.symbol} no WETH side base=${baseToken} quote=${quoteToken}`);
+        const qflow4 = getQuoteFlowAsEth(chain, baseToken, quoteToken, amount0, amount1);
+        if (!qflow4.ok) {
+          console.log(`[V4 SKIP] ${memV4.symbol} no WETH/USDC side base=${baseToken} quote=${quoteToken}`);
           return;
         }
-
-        const wethIsToken0 = wrapped === baseToken ? baseToken < quoteToken : quoteToken < baseToken;
-        const wethAmount   = wethIsToken0 ? amount0 : amount1;
-        const ethAmount    = Number(wethAmount < 0n ? -wethAmount : wethAmount) / 1e18;
-
-        const isBuy = wethAmount > 0n;
+        const ethAmount = qflow4.ethAmount;
+        const isBuy     = qflow4.isBuy;
 
         if (ethAmount > 0) {
           recordSwap(poolId, isBuy, ethAmount);
           console.log(
-            `[V4 SWAP] ${memV4.symbol} ${isBuy ? "BUY" : "SELL"} `
-            + `eth=${ethAmount.toFixed(4)} amount0=${amount0} amount1=${amount1} `
-            + `base=${baseToken} quote=${quoteToken} tx=${log4.transactionHash}`
+           `[V4 SWAP] ${memV4.symbol} ${isBuy ? "BUY" : "SELL"} `
+            + `quote=${qflow4.quote} eth=${ethAmount.toFixed(4)} `
+            + `amount0=${amount0} amount1=${amount1} `
+            + `base=${baseToken} quoteToken=${quoteToken} tx=${log4.transactionHash}`
           );
 
           if (isBuy && ethAmount >= 0.005) {
@@ -663,15 +692,13 @@ function connectChainWebSocket(chain: ChainConfig): void {
         const amount1  = int256FromWord(raw3.slice(64, 128));
         const base3    = pool3.relationships.base_token.data.id.replace(`${chain.id}_`, "").toLowerCase();
         const quote3   = pool3.relationships.quote_token?.data.id?.replace(`${chain.id}_`, "").toLowerCase() ?? "";
-        const wrapped  = chain.weth.toLowerCase();
-        if (base3 !== wrapped && quote3 !== wrapped) return;
-        const wethIsToken0 = wrapped < (base3 === wrapped ? quote3 : base3);
-        const wethAmount   = wethIsToken0 ? amount0 : amount1;
-        const ethAmount    = Number(wethAmount < 0n ? -wethAmount : wethAmount) / 1e18;
-        const isBuy        = wethAmount > 0n;
+        const qflow3 = getQuoteFlowAsEth(chain, base3, quote3, amount0, amount1);
+        if (!qflow3.ok) return;
+        const ethAmount = qflow3.ethAmount;
+        const isBuy     = qflow3.isBuy;
         if (ethAmount > 0) {
           recordSwap(pairAddr3, isBuy, ethAmount);
-          console.log(`[V3 SWAP] ${mem3.symbol} ${isBuy ? "BUY" : "SELL"} eth=${ethAmount.toFixed(4)} tx=${log3.transactionHash}`);
+          console.log(`[V3 SWAP] ${mem3.symbol} ${isBuy ? "BUY" : "SELL"} quote=${qflow3.quote} eth=${ethAmount.toFixed(4)} tx=${log3.transactionHash}`);
           if (isBuy && ethAmount >= 0.005) {
             const flow3 = getWsFlow(pairAddr3);
             if (flow3.hasData && flow3.pressure === "BUYING" && flow3.buys5m >= 5) {
