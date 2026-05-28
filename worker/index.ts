@@ -342,7 +342,7 @@ function rebuildPoolMaps(pools: GeckoPool[]): void {
     if (isBlockedAsset(sym)) continue;
     const dexId = (p as any).relationships?.dex?.data?.id ?? "";
     const addr  = p.attributes.address.toLowerCase();
-    if (cleanEvmAddress(p.attributes.address) !== null && V3_DEXES.has(dexId)) {
+	if (cleanEvmAddress(p.attributes.address) !== null && V3_DEXES.has(dexId)) {
       v3PoolMap.set(addr, p);
     }
     if (p._chain.id === "base" && cleanEvmAddress(p.attributes.address) === null) {
@@ -361,9 +361,11 @@ const V3_DEXES = new Set([
   "uniswap-v3-base",
   "aerodrome-slipstream",
   "pancakeswap-v3-base",
-  "uniswap-v3-arbitrum",
+  "uniswap_v3_arbitrum",
   "pancakeswap-v3-arbitrum",
   "camelot-v3",
+  "ramses-v3-arbitrum",
+  "sushiswap_arbitrum",
 ]);
 const v3PoolMap = new Map<string, GeckoPool>();
 const UNISWAP_V4_POOL_MANAGER   = "0x498581ff718922c3f8e6a244956af099b2652b2b";
