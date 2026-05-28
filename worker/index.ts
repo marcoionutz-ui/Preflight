@@ -1251,9 +1251,9 @@ function getEntryGate(mem: PairMemoryEntry, flow: FlowSignal, lp: LiquiditySigna
 async function fetchTrending(chain: ChainConfig): Promise<GeckoPool[]> {
   try {
     const res1   = await fetch(`${GECKO_BASE}/networks/${chain.gecko}/trending_pools?page=1`);
-    await new Promise(r => setTimeout(r, 400));
+    await new Promise(r => setTimeout(r, 600));
     const res2   = await fetch(`${GECKO_BASE}/networks/${chain.gecko}/trending_pools?page=2`);
-    await new Promise(r => setTimeout(r, 400));
+    await new Promise(r => setTimeout(r, 600));
     const resNew = await fetch(`${GECKO_BASE}/networks/${chain.gecko}/new_pools?page=1`);
 
     const d1   = res1.ok   ? await res1.json()   : { data: [] };
