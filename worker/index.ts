@@ -1,5 +1,5 @@
 /**
- * Supreme Trader Worker v5.10b
+ * Supreme Trader Worker v5.12-dex
  * P1: Multi-chain (BASE + ARB)
  * P2: Second Wave Detection
  * P3: LP Events Monitoring (Mint/Burn)
@@ -43,7 +43,7 @@ let ethPriceCached = 2500;
 const MIN_FLOW_ETH        = 0.001;
 const MIN_TOTAL_FLOW_ETH  = 0.01;
 const FLOW_IMBALANCE      = 0.20;
-const WORKER_VERSION      = "v5.10b";
+const WORKER_VERSION      = "v5.12-dex";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   realtime: { transport: WebSocket },
@@ -65,12 +65,12 @@ const CHAINS: ChainConfig[] = [
     weth:  "0x4200000000000000000000000000000000000006",
     wsUrl: process.env.ALCHEMY_BASE_WS ?? "",
   },
- // {
- //   id:    "arbitrum",
- //   gecko: "arbitrum",
- //   weth:  "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
- //   wsUrl: process.env.ALCHEMY_ARB_WS ?? "",
- // },
+  {
+    id:    "arbitrum",
+    gecko: "arbitrum",
+    weth:  "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
+    wsUrl: process.env.ALCHEMY_ARB_WS ?? "",
+  },
 ].filter(c => c.wsUrl || c.gecko); // include chain dacă are cel puțin gecko
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -326,13 +326,37 @@ function getLiquidityContext(pairAddress: string): {
   return { ...ctx, freshnessMs, status: "MISSING" };
 }
 
+function rebuildPoolMaps(pools: GeckoPool[]): void {
+  v3PoolMap.clear();
+  v4PoolMap.clear();
+  for (const p of pools) {
+    const sym   = p.attributes.name.split("/")[0]?.trim().toLowerCase() ?? "";
+    if (isBlockedAsset(sym)) continue;
+    const dexId = (p as any).relationships?.dex?.data?.id ?? "";
+    const addr  = p.attributes.address.toLowerCase();
+    if (cleanEvmAddress(p.attributes.address) !== null && V3_DEXES.has(dexId)) {
+      v3PoolMap.set(addr, p);
+    }
+    if (p._chain.id === "base" && cleanEvmAddress(p.attributes.address) === null) {
+      v4PoolMap.set(addr, p);
+    }
+  }
+}
+
 // ── WebSocket per chain ───────────────────────────────────────────────────────
 
 const SWAP_V2_TOPIC = "0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822";
 const MINT_V2_TOPIC = "0x4c209b5fc8ad50758f13e2e1088ba56a560dff690a1c6fef26394f4c03821c4f";
 const BURN_V2_TOPIC = "0xdccd412f0b1252819cb1fd330b93224ca42612892bb3f4f789976e6d81936496";
 const SWAP_V3_TOPIC = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67";
-const V3_DEXES = new Set(["uniswap-v3-base", "aerodrome-slipstream", "pancakeswap-v3-base"]);
+const V3_DEXES = new Set([
+  "uniswap-v3-base",
+  "aerodrome-slipstream",
+  "pancakeswap-v3-base",
+  "uniswap-v3-arbitrum",
+  "pancakeswap-v3-arbitrum",
+  "camelot-v3",
+]);
 const v3PoolMap = new Map<string, GeckoPool>();
 const UNISWAP_V4_POOL_MANAGER   = "0x498581ff718922c3f8e6a244956af099b2652b2b";
 const SWAP_V4_TOPIC             = "0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f";
@@ -1053,6 +1077,7 @@ function quickEdgeScore(
   if (mem.wins24h >= 2)            score += 10;
   if (mem.losses24h > mem.wins24h && mem.losses24h > 2) score -= 15;
   if (mem.consecutiveLosses >= 3)  score -= 20;
+  if (mem.seenCount > 100) score -= 15;
   if      (mem.seenCount > 50 && mem.totalEntries === 0) score -= 35;
   else if (mem.seenCount > 25 && mem.totalEntries === 0) score -= 25;
   else if (mem.seenCount > 15 && mem.wins24h === 0)      score -= 20;
@@ -1217,37 +1242,88 @@ function getEntryGate(mem: PairMemoryEntry, flow: FlowSignal, lp: LiquiditySigna
 
 async function fetchTrending(chain: ChainConfig): Promise<GeckoPool[]> {
   try {
-    const res = await fetch(`${GECKO_BASE}/networks/${chain.gecko}/trending_pools?page=1`);
-    if (!res.ok) return [];
+    const [res1, res2, resNew] = await Promise.all([
+      fetch(`${GECKO_BASE}/networks/${chain.gecko}/trending_pools?page=1`),
+      fetch(`${GECKO_BASE}/networks/${chain.gecko}/trending_pools?page=2`),
+      fetch(`${GECKO_BASE}/networks/${chain.gecko}/new_pools?page=1`),
+    ]);
 
+    const d1   = res1.ok   ? await res1.json()   : { data: [] };
+    const d2   = res2.ok   ? await res2.json()   : { data: [] };
+    const dNew = resNew.ok ? await resNew.json() : { data: [] };
+
+    const seen = new Set<string>();
+    const allRaw = [...(d1.data ?? []), ...(d2.data ?? []), ...(dNew.data ?? [])];
+    const deduped = allRaw.filter((p: any) => {
+      const addr = p.attributes?.address?.toLowerCase();
+      if (!addr || seen.has(addr)) return false;
+      seen.add(addr);
+      return true;
+    });
+
+    const pools: GeckoPool[] = deduped.map((p: any) => ({ ...p, _chain: chain }));
+  
+    console.log(`[FETCH] ${chain.id}: ${pools.length} pools (trend p1+p2 + new)`);
+    return pools;
+  } catch {
+    return [];
+  }
+}
+ 
+async function fetchDexScreener(chain: ChainConfig): Promise<GeckoPool[]> {
+  try {
+    const chainName = chain.id === "base" ? "base" : "arbitrum";
+    const res = await fetch(
+      `https://api.dexscreener.com/token-profiles/latest/v1`,
+      { headers: { "Accept": "application/json" } }
+    );
+    if (!res.ok) return [];
     const data = await res.json();
 
-    const pools: GeckoPool[] = (data.data ?? []).map((p: GeckoPool) => ({
-      ...p,
+    const filtered = (Array.isArray(data) ? data : [])
+      .filter((p: any) => p.chainId === chainName && p.url)
+      .slice(0, 20);
+
+    if (!filtered.length) return [];
+
+    const pairAddresses = filtered
+      .map((p: any) => p.tokenAddress)
+      .filter(Boolean)
+      .join(",");
+
+    const res2 = await fetch(
+      `https://api.dexscreener.com/latest/dex/tokens/${pairAddresses}`
+    );
+    if (!res2.ok) return [];
+    const data2 = await res2.json();
+
+    const pairs = (data2.pairs ?? []).filter((p: any) => p.chainId === chainName);
+
+    return pairs.map((p: any): GeckoPool => ({
+      id: p.pairAddress,
+      attributes: {
+        name:                    `${p.baseToken?.symbol ?? "?"}/${p.quoteToken?.symbol ?? "?"}`,
+        base_token_price_usd:    p.priceUsd ?? "0",
+        price_change_percentage: {
+          m5:  String(p.priceChange?.m5  ?? 0),
+          h1:  String(p.priceChange?.h1  ?? 0),
+          h24: String(p.priceChange?.h24 ?? 0),
+        },
+        reserve_in_usd: String(p.liquidity?.usd ?? 0),
+        volume_usd:     { h24: String(p.volume?.h24 ?? 0) },
+        address:        p.pairAddress,
+        transactions: {
+          m5: { buys: p.txns?.m5?.buys ?? 0, sells: p.txns?.m5?.sells ?? 0 },
+          h1: { buys: p.txns?.h1?.buys ?? 0, sells: p.txns?.h1?.sells ?? 0 },
+        },
+      },
+      relationships: {
+        base_token:  { data: { id: `${chainName}_${p.baseToken?.address ?? ""}` } },
+        quote_token: { data: { id: `${chainName}_${p.quoteToken?.address ?? ""}` } },
+        dex:         { data: { id: p.dexId ?? "" } },
+      },
       _chain: chain,
     }));
-	
-	const v3Pools = pools.filter(p => {
-      const dexId = (p as any).relationships?.dex?.data?.id ?? "";
-      return cleanEvmAddress(p.attributes.address) !== null && V3_DEXES.has(dexId);
-    });
-    const v4Pools = pools.filter(p => cleanEvmAddress(p.attributes.address) === null);
-
-    v3PoolMap.clear();
-    for (const p of v3Pools) {
-      const sym = p.attributes.name.split("/")[0]?.trim().toLowerCase() ?? "";
-      if (!isBlockedAsset(sym)) v3PoolMap.set(p.attributes.address.toLowerCase(), p);
-    }
-
-    v4PoolMap.clear();
-    for (const p of v4Pools) {
-      const sym = p.attributes.name.split("/")[0]?.trim().toLowerCase() ?? "";
-      if (!isBlockedAsset(sym)) v4PoolMap.set(p.attributes.address.toLowerCase(), p);
-    }
-
-    console.log(`[FETCH] ${chain.id}: ${pools.length} trending → ${v3Pools.length} V3 + ${v4Pools.length} V4`);
-
-    return [...v3Pools, ...v4Pools];
   } catch {
     return [];
   }
@@ -1473,9 +1549,18 @@ async function scan(): Promise<void> {
 
   // Fetch toate chain-urile în paralel
   const allPoolsPerChain = await Promise.all(CHAINS.map(c => fetchTrending(c)));
-  const allPools = allPoolsPerChain.flat();
+  const dexPools         = await Promise.all(CHAINS.map(c => fetchDexScreener(c)));
+
+  const seenInScan = new Set<string>();
+  const allPools = [...allPoolsPerChain.flat(), ...dexPools.flat()].filter(p => {
+    const addr = `${p._chain.id}:${p.attributes.address?.toLowerCase()}`;
+    if (!addr || seenInScan.has(addr)) return false;
+    seenInScan.add(addr);
+    return true;
+  });
 
   if (!allPools.length) { console.log("No pools fetched"); return; }
+  rebuildPoolMaps(allPools);
 
   console.log(`[${ts}] Scanning ${CHAINS.map(c => c.id).join("+")} — ${allPools.length} pools total`);
 
