@@ -327,8 +327,16 @@ function getLiquidityContext(pairAddress: string): {
 }
 
 function rebuildPoolMaps(pools: GeckoPool[]): void {
-  v3PoolMap.clear();
-  v4PoolMap.clear();
+  const chainsPresent = new Set(pools.map(p => p._chain.id));
+  
+  // Șterge doar mapurile pentru chain-urile care au date noi
+  for (const [addr, p] of v3PoolMap.entries()) {
+    if (chainsPresent.has(p._chain.id)) v3PoolMap.delete(addr);
+  }
+  for (const [addr, p] of v4PoolMap.entries()) {
+    if (chainsPresent.has(p._chain.id)) v4PoolMap.delete(addr);
+  }
+  
   for (const p of pools) {
     const sym   = p.attributes.name.split("/")[0]?.trim().toLowerCase() ?? "";
     if (isBlockedAsset(sym)) continue;
@@ -1242,11 +1250,11 @@ function getEntryGate(mem: PairMemoryEntry, flow: FlowSignal, lp: LiquiditySigna
 
 async function fetchTrending(chain: ChainConfig): Promise<GeckoPool[]> {
   try {
-    const [res1, res2, resNew] = await Promise.all([
-      fetch(`${GECKO_BASE}/networks/${chain.gecko}/trending_pools?page=1`),
-      fetch(`${GECKO_BASE}/networks/${chain.gecko}/trending_pools?page=2`),
-      fetch(`${GECKO_BASE}/networks/${chain.gecko}/new_pools?page=1`),
-    ]);
+    const res1   = await fetch(`${GECKO_BASE}/networks/${chain.gecko}/trending_pools?page=1`);
+    await new Promise(r => setTimeout(r, 400));
+    const res2   = await fetch(`${GECKO_BASE}/networks/${chain.gecko}/trending_pools?page=2`);
+    await new Promise(r => setTimeout(r, 400));
+    const resNew = await fetch(`${GECKO_BASE}/networks/${chain.gecko}/new_pools?page=1`);
 
     const d1   = res1.ok   ? await res1.json()   : { data: [] };
     const d2   = res2.ok   ? await res2.json()   : { data: [] };
