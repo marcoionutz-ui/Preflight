@@ -1,5 +1,5 @@
 /**
- * Supreme Trader Worker v5.13-usdc
+ * Supreme Trader Worker v5.14b
  * P1: Multi-chain (BASE + ARB)
  * P2: Second Wave Detection
  * P3: LP Events Monitoring (Mint/Burn)
@@ -36,6 +36,9 @@ const COOLDOWN_MS         = 2 * 60 * 60_000;
 const SECOND_WAVE_COOLDOWN_MS = 60 * 60_000; // 1h cooldown pentru second wave
 const MAX_HOLD_MS         = 4 * 60 * 60_000;
 const WATCH_TTL_MS    = 10 * 60_000;
+const FOMO_WATCH_TTL_MS = 90_000;
+const MAX_FOMO_WATCH    = 5;
+const MAX_ACTIVE_WATCH  = 20;
 const WATCH_MIN_SCORE = 70;
 const MIN_LP_REMOVE_ETH   = 0.05;  // ignoră dust burns
 const INSTANT_LP_EXIT_PCT = 0.30;  // 30%+ din pool = instant exit
@@ -43,7 +46,7 @@ let ethPriceCached = 2500;
 const MIN_FLOW_ETH        = 0.001;
 const MIN_TOTAL_FLOW_ETH  = 0.01;
 const FLOW_IMBALANCE      = 0.20;
-const WORKER_VERSION      = "v5.13-usdc";
+const WORKER_VERSION      = "v5.14b";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   realtime: { transport: WebSocket },
@@ -116,7 +119,7 @@ const poolLiquidity = new Map<string, {
   reserveEth: number;
   updatedAt:  number;
 }>();
-const activeWatch     = new Map<string, { chain: string; addedAt: number }>();
+const activeWatch     = new Map<string, { chain: string; addedAt: number; kind?: "NORMAL" | "FOMO" }>();
 const wsClients       = new Map<string, WebSocket>();
 const swapSubIds       = new Map<string, string[]>();
 const pendingSwapSubs  = new Map<number, string>();
@@ -413,10 +416,9 @@ function int256FromWord(hex64: string): bigint {
 function cleanupActiveWatch(): void {
   const now = Date.now();
   for (const [addr, info] of activeWatch.entries()) {
-    if (now - info.addedAt > WATCH_TTL_MS) {
-      activeWatch.delete(addr);
-    }
-  }
+    const ttl = info.kind === "FOMO" ? FOMO_WATCH_TTL_MS : WATCH_TTL_MS;
+    if (now - info.addedAt > ttl) activeWatch.delete(addr);
+	}
 }
 
 function clearExpiredArmedEntries(): void {
@@ -1264,7 +1266,7 @@ function getEntryGate(mem: PairMemoryEntry, flow: FlowSignal, lp: LiquiditySigna
     return checkEntryGate(mem, flow, 3, SECOND_WAVE_COOLDOWN_MS);
   }
 
-  const requiredEvidence = isV4 ? 6 : 8;
+  const requiredEvidence = 6;
 
   if (mem.seenCount < 3)           return { allowed: false, reason: `too new (seen ${mem.seenCount}x, need 3)` };
   if (evidence < requiredEvidence) return { allowed: false, reason: `evidence too low (${evidence}/${requiredEvidence})` };
@@ -1645,7 +1647,8 @@ async function scan(): Promise<void> {
 	const flow       = getFlow(pool);
 	const lp         = getLpSignal(pairAddr);
     const fomo = checkFOMO(pool);
-
+	
+	const prelScore = quickEdgeScore(pool, mem, flow, lp);
     if (fomo.blocked && fomo.reason) {
       await saveFOMOBlock(pool, fomo.reason);
 
@@ -1655,6 +1658,23 @@ async function scan(): Promise<void> {
       const buyVolF  = (wsFlowReal as any).buyVol5m  ?? 0;
       const netVolF  = (wsFlowReal as any).netVol5m  ?? 0;
       const sellVolF = (wsFlowReal as any).sellVol5m ?? 0;
+
+      const currentFomoWatch = [...activeWatch.values()].filter(w => w.kind === "FOMO").length;
+		const h24f = Number(pool.attributes.price_change_percentage?.h24 ?? 0);
+		const fomoWatchable =
+		  !wsFlowReal.hasData &&
+		  !activeWatch.has(pairAddr) &&
+		  activeWatch.size < MAX_ACTIVE_WATCH &&
+		  currentFomoWatch < MAX_FOMO_WATCH &&
+		  prelScore >= 75 &&
+		  (
+			(m5f > 30 && m5f < 150 && h24f < 500) ||
+			(h24f > 200 && h24f < 800 && m5f < 30)
+		  );
+		if (fomoWatchable) {
+		  activeWatch.set(pairAddr, { chain: pool._chain.id, addedAt: Date.now(), kind: "FOMO" });
+		  console.log(`[FOMO WATCH] ${mem.symbol} (${pool._chain.id}) — tracking after block: ${fomo.reason}`);
+		}	  
 
       const lateSecondWave =
         wsFlowReal.hasData &&
@@ -1675,16 +1695,17 @@ async function scan(): Promise<void> {
         + ` | buyVol:${buyVolF.toFixed(3)} netVol:${netVolF.toFixed(3)} sellVol:${sellVolF.toFixed(3)}`
       );
     }
-	
-	const prelScore = quickEdgeScore(pool, mem, flow, lp);
+		
 	if (
 	  prelScore >= WATCH_MIN_SCORE &&
 	  !wsFlowReal.hasData &&
-	  !activeWatch.has(pairAddr)
+	  !activeWatch.has(pairAddr) &&
+	  activeWatch.size < MAX_ACTIVE_WATCH
 	) {
 	  activeWatch.set(pairAddr, {
 		chain:   pool._chain.id,
 		addedAt: Date.now(),
+		kind:    "NORMAL",
 	  });
 	  console.log(`[WATCH] ${mem.symbol} (${pool._chain.id}) — added, prelScore ${prelScore}`);
 	}
@@ -1697,7 +1718,10 @@ async function scan(): Promise<void> {
     if (shadowCount >= MAX_SHADOW_PER_SCAN) continue;
 
     const score = quickEdgeScore(pool, mem, wsFlowReal, lp);
-	if (score < 80) continue;
+    if (score < 80) {
+      console.log(`[LOW SCORE] ${mem.symbol} (${pool._chain.id}) score=${score} flow=${wsFlowReal.pressure} liq=${getLiquidityContext(pairAddr).status}`);
+      continue;
+    }
 
 	const gate = getEntryGate(mem, wsFlowReal, lp, score);
 	if (!gate.allowed) {
@@ -1843,6 +1867,14 @@ async function hotCandidatesLoop(): Promise<void> {
 
       // Dacă pressure s-a stins între timp, nu mai intra
       if (!flow.hasData || flow.pressure !== "BUYING" || flow.buys5m < 5) {
+        hotCandidates.delete(pairAddress); continue;
+      }
+	  
+	  // HOT trebuie să fie deja armat de scan
+      const armed = armedEntries.get(pairAddress);
+      if (!armed) { hotCandidates.delete(pairAddress); continue; }
+      if (mem.currentPrice < armed.price * ARM_MIN_PRICE_CONFIRM) {
+        console.log(`[HOT SKIP] ${mem.symbol} — price dropped vs armed`);
         hotCandidates.delete(pairAddress); continue;
       }
 
