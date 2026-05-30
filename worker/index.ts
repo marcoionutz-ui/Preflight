@@ -1,5 +1,5 @@
 /**
- * Supreme Trader Worker v5.14b
+ * Supreme Trader Worker v5.14c
  * P1: Multi-chain (BASE + ARB)
  * P2: Second Wave Detection
  * P3: LP Events Monitoring (Mint/Burn)
@@ -46,7 +46,7 @@ let ethPriceCached = 2500;
 const MIN_FLOW_ETH        = 0.001;
 const MIN_TOTAL_FLOW_ETH  = 0.01;
 const FLOW_IMBALANCE      = 0.20;
-const WORKER_VERSION      = "v5.14b";
+const WORKER_VERSION      = "v5.14c";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   realtime: { transport: WebSocket },
@@ -1646,7 +1646,9 @@ async function scan(): Promise<void> {
     const wsFlowReal = getWsFlow(pairAddr);
 	const flow       = getFlow(pool);
 	const lp         = getLpSignal(pairAddr);
-    const fomo = checkFOMO(pool);
+	const isV3pool   = v3PoolMap.has(pairAddr);
+	const isV4pool   = v4PoolMap.has(pairAddr);
+    const fomo       = checkFOMO(pool);
 	
 	const prelScore = quickEdgeScore(pool, mem, flow, lp);
     if (fomo.blocked && fomo.reason) {
@@ -1660,17 +1662,20 @@ async function scan(): Promise<void> {
       const sellVolF = (wsFlowReal as any).sellVol5m ?? 0;
 
       const currentFomoWatch = [...activeWatch.values()].filter(w => w.kind === "FOMO").length;
-		const h24f = Number(pool.attributes.price_change_percentage?.h24 ?? 0);
-		const fomoWatchable =
-		  !wsFlowReal.hasData &&
-		  !activeWatch.has(pairAddr) &&
-		  activeWatch.size < MAX_ACTIVE_WATCH &&
-		  currentFomoWatch < MAX_FOMO_WATCH &&
-		  prelScore >= 75 &&
-		  (
-			(m5f > 30 && m5f < 150 && h24f < 500) ||
-			(h24f > 200 && h24f < 800 && m5f < 30)
-		  );
+	  const h24f = Number(pool.attributes.price_change_percentage?.h24 ?? 0);
+   	  const reserveUsdF = Number(pool.attributes.reserve_in_usd ?? 0);
+	  const fomoWatchable =
+		!wsFlowReal.hasData &&
+		!activeWatch.has(pairAddr) &&
+		activeWatch.size < MAX_ACTIVE_WATCH &&
+		currentFomoWatch < MAX_FOMO_WATCH &&
+		prelScore >= 75 &&
+		reserveUsdF >= 8_000 &&
+		(isV3pool || isV4pool) &&
+		(
+		(m5f > 30 && m5f < 150 && h24f < 500) ||
+		(h24f > 200 && h24f < 800 && m5f < 30)
+		);
 		if (fomoWatchable) {
 		  activeWatch.set(pairAddr, { chain: pool._chain.id, addedAt: Date.now(), kind: "FOMO" });
 		  console.log(`[FOMO WATCH] ${mem.symbol} (${pool._chain.id}) — tracking after block: ${fomo.reason}`);
@@ -1700,7 +1705,8 @@ async function scan(): Promise<void> {
 	  prelScore >= WATCH_MIN_SCORE &&
 	  !wsFlowReal.hasData &&
 	  !activeWatch.has(pairAddr) &&
-	  activeWatch.size < MAX_ACTIVE_WATCH
+	  activeWatch.size < MAX_ACTIVE_WATCH &&
+	  (isV3pool || isV4pool)
 	) {
 	  activeWatch.set(pairAddr, {
 		chain:   pool._chain.id,
