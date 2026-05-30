@@ -1,5 +1,5 @@
 /**
- * Supreme Trader Worker v5.14c
+ * Supreme Trader Worker v5.15
  * P1: Multi-chain (BASE + ARB)
  * P2: Second Wave Detection
  * P3: LP Events Monitoring (Mint/Burn)
@@ -46,7 +46,7 @@ let ethPriceCached = 2500;
 const MIN_FLOW_ETH        = 0.001;
 const MIN_TOTAL_FLOW_ETH  = 0.01;
 const FLOW_IMBALANCE      = 0.20;
-const WORKER_VERSION      = "v5.14c";
+const WORKER_VERSION      = "v5.15";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   realtime: { transport: WebSocket },
@@ -1216,9 +1216,10 @@ function getEntryGate(mem: PairMemoryEntry, flow: FlowSignal, lp: LiquiditySigna
   // Piață unilaterală — zero sell-uri = spike fără rezistență reală
   const sellVol   = (flow as any).sellVol5m ?? 0;
   const sellRatio = buyVol > 0 ? sellVol / buyVol : 0;
-  if (flow.pressure === "BUYING" && (sellVol < 0.01 || sellRatio < 0.03)) {
-    return { allowed: false, reason: `one-sided spike — sell ratio ${(sellRatio * 100).toFixed(1)}% (min 3%)` };
-  }
+  const isLargeConfirmedPool = liq.status === "CONFIRMED" && liq.reserveUsd >= 100_000;
+	if (!isLargeConfirmedPool && flow.pressure === "BUYING" && (sellVol < 0.01 || sellRatio < 0.03)) {
+		return { allowed: false, reason: `one-sided spike — sell ratio ${(sellRatio * 100).toFixed(1)}% (min 3%)` };
+	}
 
   // RECOVERING hard block — excepție doar pentru second wave confirmat
   if (mem.phase === "RECOVERING" && !(sw.isSecondWave && sw.confidence !== "LOW")) {
@@ -1606,6 +1607,11 @@ async function scan(): Promise<void> {
   await updateOutcomes(allPools);
 
   let shadowCount = 0;
+  let fomoBlockCount = 0;
+  let fomoWatchAddedCount = 0;
+  let fomoNoSlotCount = 0;
+  let fomoLowScoreCount = 0;
+  let fomoNoDexCount = 0;
   const chainCounts: Record<string, number> = {};
 
   for (const pool of allPools) {
@@ -1653,6 +1659,7 @@ async function scan(): Promise<void> {
 	const prelScore = quickEdgeScore(pool, mem, flow, lp);
     if (fomo.blocked && fomo.reason) {
       await saveFOMOBlock(pool, fomo.reason);
+	  fomoBlockCount++;
 
       const sw2      = detectSecondWave(mem, wsFlowReal);
       const m5f      = Number(pool.attributes.price_change_percentage?.m5  ?? 0);
@@ -1664,12 +1671,16 @@ async function scan(): Promise<void> {
       const currentFomoWatch = [...activeWatch.values()].filter(w => w.kind === "FOMO").length;
 	  const h24f = Number(pool.attributes.price_change_percentage?.h24 ?? 0);
    	  const reserveUsdF = Number(pool.attributes.reserve_in_usd ?? 0);
+	  if (!wsFlowReal.hasData && !activeWatch.has(pairAddr)) {
+	  if (currentFomoWatch >= MAX_FOMO_WATCH) fomoNoSlotCount++;
+	  else if (prelScore < 75) fomoLowScoreCount++;
+	  else if (!(isV3pool || isV4pool)) fomoNoDexCount++;
+	}
 	  const fomoWatchable =
 		!wsFlowReal.hasData &&
 		!activeWatch.has(pairAddr) &&
-		activeWatch.size < MAX_ACTIVE_WATCH &&
 		currentFomoWatch < MAX_FOMO_WATCH &&
-		prelScore >= 75 &&
+		prelScore >= 60 &&
 		reserveUsdF >= 8_000 &&
 		(isV3pool || isV4pool) &&
 		(
@@ -1678,6 +1689,7 @@ async function scan(): Promise<void> {
 		);
 		if (fomoWatchable) {
 		  activeWatch.set(pairAddr, { chain: pool._chain.id, addedAt: Date.now(), kind: "FOMO" });
+		  fomoWatchAddedCount++;
 		  console.log(`[FOMO WATCH] ${mem.symbol} (${pool._chain.id}) — tracking after block: ${fomo.reason}`);
 		}	  
 
@@ -1843,6 +1855,10 @@ async function scan(): Promise<void> {
 //  CHAINS.forEach(c => updateScopedSwap(c));
   CHAINS.forEach(c => subscribeV4Scoped(c));
   CHAINS.forEach(c => subscribeV3Scoped(c));
+  console.log(
+	  `[FOMO SUMMARY] blocked:${fomoBlockCount} watched:${fomoWatchAddedCount}`
+	  + ` noSlot:${fomoNoSlotCount} lowScore:${fomoLowScoreCount} noDex:${fomoNoDexCount}`
+	);
   console.log(`[WATCH] Active: ${activeWatch.size} pairs`);
   await saveMemoryToRedis();
 }
