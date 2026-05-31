@@ -1,5 +1,5 @@
 /**
- * Supreme Trader Worker v5.15
+ * Supreme Trader Worker v5.15b
  * P1: Multi-chain (BASE + ARB)
  * P2: Second Wave Detection
  * P3: LP Events Monitoring (Mint/Burn)
@@ -46,7 +46,7 @@ let ethPriceCached = 2500;
 const MIN_FLOW_ETH        = 0.001;
 const MIN_TOTAL_FLOW_ETH  = 0.01;
 const FLOW_IMBALANCE      = 0.20;
-const WORKER_VERSION      = "v5.15";
+const WORKER_VERSION      = "v5.15b";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   realtime: { transport: WebSocket },
@@ -1501,8 +1501,15 @@ async function updateOutcomes(pools: GeckoPool[]): Promise<void> {
 
   if (blocks) {
     for (const b of blocks) {
-      const price = priceMap.get(b.pair_address?.toLowerCase());
-      if (!price || Date.now() - b.timestamp < 60 * 60_000) continue;
+    let price = priceMap.get(b.pair_address?.toLowerCase());
+    if (!price) {
+    const chainCfg = CHAINS.find(c => c.id === b.chain || c.gecko === b.chain);
+    if (chainCfg) {
+      const fetched = await fetchPoolByAddress(chainCfg, b.pair_address);
+      if (fetched) price = Number(fetched.attributes.base_token_price_usd);
+     }
+   }
+    if (!price || Date.now() - b.timestamp < 60 * 60_000) continue;
       const pct = (price - b.price_at_block) / b.price_at_block * 100;
       await supabase.from("fomo_blocks").update({
         outcome_1h_price: price, outcome_1h_pct: pct, outcome_1h_ts: Date.now(),
@@ -1563,7 +1570,17 @@ async function updateOutcomes(pools: GeckoPool[]): Promise<void> {
         + `P&L: ${((price - entry) / entry * 100).toFixed(1)}%`);
 
     // 5. Sell pressure
-    } else if (flow.hasData && flow.pressure === "SELLING" && ((flow as any).sellVol5m ?? 0) >= 0.05 && ((flow as any).netVol5m ?? 0) <= -0.05 && ageMs > 15 * 60_000 && price <= entry) {
+    } else if ((() => {
+	  const pnlPct = (price - entry) / entry;
+	  const liqCtx = mem ? getLiquidityContext(mem.pairAddress) : { reserveUsd: 0, status: "MISSING" as const };
+	  const isLargePool = liqCtx.reserveUsd >= 500_000;
+	  return flow.hasData &&
+		flow.pressure === "SELLING" &&
+		((flow as any).sellVol5m ?? 0) >= (isLargePool ? 0.30 : 0.05) &&
+		((flow as any).netVol5m ?? 0) <= (isLargePool ? -0.25 : -0.05) &&
+		ageMs > 15 * 60_000 &&
+		pnlPct <= (isLargePool ? -0.025 : 0);
+	})()) {
       update.exited_at = Date.now(); update.exit_price = price; update.exit_reason = "SELL PRESSURE";
       if (mem) { mem.badExits24h += 1; mem.lastExitReason = "SELL PRESSURE"; mem.lastExitTime = Date.now(); }
       console.log(`[FLOW EXIT] ${trade.symbol} — sellVol:${((flow as any).sellVol5m ?? 0).toFixed(3)} netVol:${((flow as any).netVol5m ?? 0).toFixed(3)}`);
@@ -1673,7 +1690,7 @@ async function scan(): Promise<void> {
    	  const reserveUsdF = Number(pool.attributes.reserve_in_usd ?? 0);
 	  if (!wsFlowReal.hasData && !activeWatch.has(pairAddr)) {
 	  if (currentFomoWatch >= MAX_FOMO_WATCH) fomoNoSlotCount++;
-	  else if (prelScore < 75) fomoLowScoreCount++;
+	  else if (prelScore < 60) fomoLowScoreCount++;
 	  else if (!(isV3pool || isV4pool)) fomoNoDexCount++;
 	}
 	  const fomoWatchable =
