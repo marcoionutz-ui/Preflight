@@ -1,5 +1,5 @@
 /**
- * Supreme Trader Worker v5.20
+ * Supreme Trader Worker v5.21
  * P1: Multi-chain (BASE + ARB)
  * P2: Second Wave Detection
  * P3: LP Events Monitoring (Mint/Burn)
@@ -46,7 +46,7 @@ let ethPriceCached = 2500;
 const MIN_FLOW_ETH        = 0.001;
 const MIN_TOTAL_FLOW_ETH  = 0.01;
 const FLOW_IMBALANCE      = 0.20;
-const WORKER_VERSION      = "v5.20";
+const WORKER_VERSION      = "v5.21";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   realtime: { transport: WebSocket },
@@ -119,21 +119,22 @@ const poolLiquidity = new Map<string, {
   reserveEth: number;
   updatedAt:  number;
 }>();
-const activeWatch     = new Map<string, { chain: string; addedAt: number; kind?: "NORMAL" | "FOMO" }>();
-const wsClients       = new Map<string, WebSocket>();
+const activeWatch      = new Map<string, { chain: string; addedAt: number; kind?: "NORMAL" | "FOMO" }>();
+const wsClients        = new Map<string, WebSocket>();
 const swapSubIds       = new Map<string, string[]>();
 const pendingSwapSubs  = new Map<number, string>();
 let   swapSubReqId     = 10_000;
-const swapSubSnapshot = new Map<string, string>();
-const v3SwapSubIds = new Map<string, string>();
-const v4SwapSubIds = new Map<string, string>();
-const v4PoolMap = new Map<string, GeckoPool>();
-const armedEntries = new Map<string, {
+const swapSubSnapshot  = new Map<string, string>();
+const v3SwapSubIds     = new Map<string, string>();
+const v4SwapSubIds     = new Map<string, string>();
+const v4PoolMap        = new Map<string, GeckoPool>();
+const armedEntries     = new Map<string, {
   armedAt:       number;
   price:         number;
   score:         number;
   flowPressure:  string;
 }>();
+const watchedPoolCache = new Map<string, GeckoPool>();
 const ARM_CONFIRM_MS        = 30_000;
 const ARM_TTL_MS            = 2 * 60_000;
 const ARM_MIN_PRICE_CONFIRM = 0.997;
@@ -418,6 +419,7 @@ function cleanupActiveWatch(): void {
   for (const [addr, info] of activeWatch.entries()) {
     const ttl = info.kind === "FOMO" ? FOMO_WATCH_TTL_MS : WATCH_TTL_MS;
     if (now - info.addedAt > ttl) activeWatch.delete(addr);
+	watchedPoolCache.delete(addr);
 	}
 }
 
@@ -1616,8 +1618,31 @@ async function scan(): Promise<void> {
     return true;
   });
 
-  if (!allPools.length) { console.log("No pools fetched"); return; }
-  rebuildPoolMaps(allPools);
+  const primaryPoolCount = allPoolsPerChain.flat().length;
+
+	if (primaryPoolCount > 0) {
+	  rebuildPoolMaps(allPools);
+	} else {
+	  console.log(`[MAPS] Keeping previous V3/V4 maps — Gecko returned empty`);
+	  const seenAddrs = new Set(
+		allPools.map(p => cleanEvmAddress(p.attributes.address) ?? p.attributes.address.toLowerCase())
+	  );
+	  for (const [addr] of activeWatch.entries()) {
+		const flow = getWsFlow(addr);
+		if (flow.hasData && !seenAddrs.has(addr)) {
+		  const cached = watchedPoolCache.get(addr);
+		  if (cached) {
+			allPools.push(cached);
+			seenAddrs.add(addr);
+			console.log(`[MAPS] Injected cached ${memory.get(addr)?.symbol ?? addr} — has WS flow`);
+		  }
+		}
+	  }
+	  if (!allPools.length) {
+		console.log("No pools fetched and no cached watched pools with WS flow");
+		return;
+	  }
+	}
 
   console.log(`[${ts}] Scanning ${CHAINS.map(c => c.id).join("+")} — ${allPools.length} pools total`);
 
@@ -1718,6 +1743,7 @@ async function scan(): Promise<void> {
 		);
 		if (fomoWatchable) {
 		  activeWatch.set(pairAddr, { chain: pool._chain.id, addedAt: Date.now(), kind: "FOMO" });
+		  watchedPoolCache.set(pairAddr, pool);
 		  fomoWatchAddedCount++;
 		  console.log(`[FOMO WATCH] ${mem.symbol} (${pool._chain.id}) — tracking after block: ${fomo.reason}`);
 		}	  
@@ -1765,6 +1791,7 @@ async function scan(): Promise<void> {
 		addedAt: Date.now(),
 		kind:    "NORMAL",
 	  });
+	  watchedPoolCache.set(pairAddr, pool);
 	  console.log(`[WATCH] ${mem.symbol} (${pool._chain.id}) — added, prelScore ${prelScore}`);
 	}
 
