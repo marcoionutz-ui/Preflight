@@ -1,5 +1,5 @@
 /**
- * Supreme Trader Worker v5.21
+ * Supreme Trader Worker v5.22
  * P1: Multi-chain (BASE + ARB)
  * P2: Second Wave Detection
  * P3: LP Events Monitoring (Mint/Burn)
@@ -46,7 +46,7 @@ let ethPriceCached = 2500;
 const MIN_FLOW_ETH        = 0.001;
 const MIN_TOTAL_FLOW_ETH  = 0.01;
 const FLOW_IMBALANCE      = 0.20;
-const WORKER_VERSION      = "v5.21";
+const WORKER_VERSION      = "v5.22";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   realtime: { transport: WebSocket },
@@ -1627,21 +1627,24 @@ async function scan(): Promise<void> {
 	  const seenAddrs = new Set(
 		allPools.map(p => cleanEvmAddress(p.attributes.address) ?? p.attributes.address.toLowerCase())
 	  );
-	  for (const [addr] of activeWatch.entries()) {
-		const flow = getWsFlow(addr);
-		if (flow.hasData && !seenAddrs.has(addr)) {
+	  let injectedWithFlow = 0;
+		let injectedNoFlow = 0;
+		for (const [addr] of activeWatch.entries()) {
+		  if (seenAddrs.has(addr)) continue;
 		  const cached = watchedPoolCache.get(addr);
-		  if (cached) {
-			allPools.push(cached);
-			seenAddrs.add(addr);
-			console.log(`[MAPS] Injected cached ${memory.get(addr)?.symbol ?? addr} — has WS flow`);
-		  }
+		  if (!cached) continue;
+		  allPools.push(cached);
+		  seenAddrs.add(addr);
+		  const flow = getWsFlow(addr);
+		  if (flow.hasData) injectedWithFlow++;
+		  else injectedNoFlow++;
+		  console.log(`[MAPS] Injected cached ${memory.get(addr)?.symbol ?? addr} — ${flow.hasData ? flow.pressure : "no WS flow yet"}`);
 		}
-	  }
-	  if (!allPools.length) {
-		console.log("No pools fetched and no cached watched pools with WS flow");
-		return;
-	  }
+		console.log(`[MAPS] Cached fallback injected:${injectedWithFlow + injectedNoFlow} withFlow:${injectedWithFlow} noFlow:${injectedNoFlow}`);
+		if (!allPools.length) {
+		  console.log("No pools fetched and no cached watched pools");
+		  return;
+		}
 	}
 
   console.log(`[${ts}] Scanning ${CHAINS.map(c => c.id).join("+")} — ${allPools.length} pools total`);
