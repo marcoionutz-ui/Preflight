@@ -1,5 +1,5 @@
 /**
- * Supreme Trader Worker v5.16
+ * Supreme Trader Worker v5.17
  * P1: Multi-chain (BASE + ARB)
  * P2: Second Wave Detection
  * P3: LP Events Monitoring (Mint/Burn)
@@ -46,7 +46,7 @@ let ethPriceCached = 2500;
 const MIN_FLOW_ETH        = 0.001;
 const MIN_TOTAL_FLOW_ETH  = 0.01;
 const FLOW_IMBALANCE      = 0.20;
-const WORKER_VERSION      = "v5.16";
+const WORKER_VERSION      = "v5.17";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   realtime: { transport: WebSocket },
@@ -825,7 +825,7 @@ if (!poolEth) {
 }
       }
 
-    } catch { /* silent */ }
+    } catch (e) { console.log(`[WS ERR ${chain.id}]`, e); }
   });
 
   wsClient.on("error", (err: Error) => console.log(`[WS ${chain.id}] Error: ${err.message}`));
@@ -1119,7 +1119,7 @@ function quickEdgeScore(
   if (mem.seenCount > 100) score -= 15;
   if      (mem.seenCount > 50 && mem.totalEntries === 0) score -= 35;
   else if (mem.seenCount > 25 && mem.totalEntries === 0) score -= 25;
-  else if (mem.seenCount > 15 && mem.wins24h === 0)      score -= 20;
+  else if (mem.seenCount > 15 && mem.wins24h === 0 && h1 <= 0) score -= 20;
 
   // History penalty — include badExits24h (MAX HOLD / SELL PRESSURE / LP REMOVED)
   const exitedCount = mem.wins24h + mem.losses24h + mem.badExits24h;
