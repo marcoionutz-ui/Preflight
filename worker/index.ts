@@ -1,5 +1,5 @@
 /**
- * Supreme Trader Worker v5.15b
+ * Supreme Trader Worker v5.16
  * P1: Multi-chain (BASE + ARB)
  * P2: Second Wave Detection
  * P3: LP Events Monitoring (Mint/Burn)
@@ -46,7 +46,7 @@ let ethPriceCached = 2500;
 const MIN_FLOW_ETH        = 0.001;
 const MIN_TOTAL_FLOW_ETH  = 0.01;
 const FLOW_IMBALANCE      = 0.20;
-const WORKER_VERSION      = "v5.15b";
+const WORKER_VERSION      = "v5.16";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   realtime: { transport: WebSocket },
@@ -1711,23 +1711,34 @@ async function scan(): Promise<void> {
 		}	  
 
       const lateSecondWave =
-        wsFlowReal.hasData &&
-        wsFlowReal.pressure === "BUYING" &&
-        sw2.isSecondWave &&
-        sw2.confidence !== "LOW" &&
-        m5f  >  3 &&
-        h1f  > 10 &&
-        buyVolF  >= 0.20 &&
-        netVolF  >= 0.15 &&
-        sellVolF >= 0.01;
+	  wsFlowReal.hasData &&
+	  wsFlowReal.pressure === "BUYING" &&
+	  sw2.isSecondWave &&
+	  sw2.confidence !== "LOW" &&
+	  m5f  >  3 &&
+	  h1f  > 10 &&
+	  buyVolF  >= 0.20 &&
+	  netVolF  >= 0.15 &&
+	  sellVolF >= 0.01;
 
-      if (!lateSecondWave) continue;
+	const fomoContinuation =
+	  wsFlowReal.hasData &&
+	  wsFlowReal.pressure === "BUYING" &&
+	  m5f > 5 && m5f < 80 &&
+	  h1f > 15 &&
+	  buyVolF >= 0.15 &&
+	  netVolF >= 0.10 &&
+	  sellVolF >= 0.01 &&
+	  sellVolF / Math.max(buyVolF, 0.001) >= 0.05 &&
+	  wsFlowReal.buys5m >= 3;
 
-      console.log(
-        `[LATE 2W] ${mem.symbol} (${pool._chain.id}) — FOMO exception: ${fomo.reason}`
-        + ` | m5:${m5f.toFixed(1)} h1:${h1f.toFixed(1)}`
-        + ` | buyVol:${buyVolF.toFixed(3)} netVol:${netVolF.toFixed(3)} sellVol:${sellVolF.toFixed(3)}`
-      );
+	if (!lateSecondWave && !fomoContinuation) continue;
+	  console.log(
+		  `[FOMO CONTINUE] ${mem.symbol} (${pool._chain.id}) — ${lateSecondWave ? "lateSecondWave" : "continuation"}`
+		  + ` | ${fomo.reason}`
+		  + ` | m5:${m5f.toFixed(1)} h1:${h1f.toFixed(1)}`
+		  + ` | buyVol:${buyVolF.toFixed(3)} netVol:${netVolF.toFixed(3)} sellVol:${sellVolF.toFixed(3)}`
+		);
     }
 		
 	if (
