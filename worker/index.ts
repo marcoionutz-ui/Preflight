@@ -1,5 +1,5 @@
 /**
- * Supreme Trader Worker v5.18
+ * Supreme Trader Worker v5.19
  * P1: Multi-chain (BASE + ARB)
  * P2: Second Wave Detection
  * P3: LP Events Monitoring (Mint/Burn)
@@ -46,7 +46,7 @@ let ethPriceCached = 2500;
 const MIN_FLOW_ETH        = 0.001;
 const MIN_TOTAL_FLOW_ETH  = 0.01;
 const FLOW_IMBALANCE      = 0.20;
-const WORKER_VERSION      = "v5.18";
+const WORKER_VERSION      = "v5.19";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   realtime: { transport: WebSocket },
@@ -1248,9 +1248,9 @@ function getEntryGate(mem: PairMemoryEntry, flow: FlowSignal, lp: LiquiditySigna
     return { allowed: false, reason: `too many pools for token (${poolCount}) — clone/fragmentation risk` };
   }
 
- if (mem.seenCount > 40 && mem.totalEntries === 0) {
-    return { allowed: false, reason: `stale with no history (seen ${mem.seenCount}x, never entered)` };
-  }
+ if (mem.seenCount > 40 && mem.totalEntries === 0 && liq.reserveUsd < 250_000) {
+  return { allowed: false, reason: `stale with no history (seen ${mem.seenCount}x, never entered)` };
+}
 
   const evidence = computeEvidenceScore(mem, flow, lp);
   
@@ -1630,7 +1630,8 @@ async function scan(): Promise<void> {
   let fomoLowScoreCount = 0;
   let fomoNoDexCount = 0;
   const chainCounts: Record<string, number> = {};
-  let v3v4Seen = 0;
+  let v3Seen = 0;
+  let v4Seen = 0;
   let noWsCount = 0;
   let lowScoreCount2 = 0;
   let entryGateCount = 0;
@@ -1677,8 +1678,9 @@ async function scan(): Promise<void> {
 	const lp         = getLpSignal(pairAddr);
 	const isV3pool   = v3PoolMap.has(pairAddr);
 	const isV4pool   = v4PoolMap.has(pairAddr);
-	if (isV3pool || isV4pool) v3v4Seen++;
-    const fomo       = checkFOMO(pool);
+	if (isV3pool) v3Seen++;
+	if (isV4pool) v4Seen++;
+	const fomo       = checkFOMO(pool);
 	
 	const prelScore = quickEdgeScore(pool, mem, flow, lp);
     if (fomo.blocked && fomo.reason) {
@@ -1764,8 +1766,10 @@ async function scan(): Promise<void> {
 	}
 
 	if (!wsFlowReal.hasData) {
-	  noWsCount++;
-	  console.log(`[WATCH WAIT] ${mem.symbol} (${pool._chain.id}) — waiting for scoped WS flow`);
+	  if (activeWatch.has(pairAddr)) {
+		noWsCount++;
+		console.log(`[WATCH WAIT] ${mem.symbol} (${pool._chain.id}) — subscribed, waiting for WS flow`);
+	  }
 	  continue;
 	}
 
@@ -1902,7 +1906,7 @@ async function scan(): Promise<void> {
 	  + ` noSlot:${fomoNoSlotCount} lowScore:${fomoLowScoreCount} noDex:${fomoNoDexCount}`
 	);
   console.log(
-  `[NO TRADE SUMMARY] v3v4Seen:${v3v4Seen} watched:${activeWatch.size}`
+  `[NO TRADE SUMMARY] v3:${v3Seen} v4:${v4Seen} watched:${activeWatch.size}`
   + ` noWs:${noWsCount} lowScore:${lowScoreCount2} entryGate:${entryGateCount}`
   + ` armed:${armedCount} armFail:${armFailCount} entered:${shadowCount}`
 );
