@@ -1,5 +1,5 @@
 /**
- * Supreme Trader Worker v5.17
+ * Supreme Trader Worker v5.18
  * P1: Multi-chain (BASE + ARB)
  * P2: Second Wave Detection
  * P3: LP Events Monitoring (Mint/Burn)
@@ -46,7 +46,7 @@ let ethPriceCached = 2500;
 const MIN_FLOW_ETH        = 0.001;
 const MIN_TOTAL_FLOW_ETH  = 0.01;
 const FLOW_IMBALANCE      = 0.20;
-const WORKER_VERSION      = "v5.17";
+const WORKER_VERSION      = "v5.18";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   realtime: { transport: WebSocket },
@@ -1630,6 +1630,12 @@ async function scan(): Promise<void> {
   let fomoLowScoreCount = 0;
   let fomoNoDexCount = 0;
   const chainCounts: Record<string, number> = {};
+  let v3v4Seen = 0;
+  let noWsCount = 0;
+  let lowScoreCount2 = 0;
+  let entryGateCount = 0;
+  let armedCount = 0;
+  let armFailCount = 0;
 
   for (const pool of allPools) {
     const price = Number(pool.attributes.base_token_price_usd);
@@ -1671,6 +1677,7 @@ async function scan(): Promise<void> {
 	const lp         = getLpSignal(pairAddr);
 	const isV3pool   = v3PoolMap.has(pairAddr);
 	const isV4pool   = v4PoolMap.has(pairAddr);
+	if (isV3pool || isV4pool) v3v4Seen++;
     const fomo       = checkFOMO(pool);
 	
 	const prelScore = quickEdgeScore(pool, mem, flow, lp);
@@ -1757,6 +1764,7 @@ async function scan(): Promise<void> {
 	}
 
 	if (!wsFlowReal.hasData) {
+	  noWsCount++;
 	  console.log(`[WATCH WAIT] ${mem.symbol} (${pool._chain.id}) — waiting for scoped WS flow`);
 	  continue;
 	}
@@ -1765,12 +1773,14 @@ async function scan(): Promise<void> {
 
     const score = quickEdgeScore(pool, mem, wsFlowReal, lp);
     if (score < 80) {
+	  lowScoreCount2++;
       console.log(`[LOW SCORE] ${mem.symbol} (${pool._chain.id}) score=${score} flow=${wsFlowReal.pressure} liq=${getLiquidityContext(pairAddr).status}`);
       continue;
     }
 
 	const gate = getEntryGate(mem, wsFlowReal, lp, score);
 	if (!gate.allowed) {
+	  entryGateCount++;
 	  console.log(`[SKIP] ${mem.symbol} (${pool._chain.id}) — ${gate.reason}`);
 	  armedEntries.delete(pairAddr);
 	  continue;
@@ -1785,6 +1795,7 @@ async function scan(): Promise<void> {
 		score,
 		flowPressure: wsFlowReal.pressure,
 	  });
+	  armedCount++;
 	  console.log(
 		`[ARMED] ${mem.symbol} (${pool._chain.id}) — waiting confirmation`
 		+ ` price:${price.toExponential(4)} score:${score}`
@@ -1801,12 +1812,14 @@ async function scan(): Promise<void> {
 	if (price < armed.price * ARM_MIN_PRICE_CONFIRM) {
 	  console.log(`[ARM SKIP] ${mem.symbol} (${pool._chain.id}) — price failed confirmation ${price.toExponential(4)} < ${armed.price.toExponential(4)}`);
 	  armedEntries.delete(pairAddr);
+	  armFailCount++;
 	  continue;
 	}
 
 	if (!wsFlowReal.hasData || wsFlowReal.pressure !== "BUYING") {
 	  console.log(`[ARM SKIP] ${mem.symbol} (${pool._chain.id}) — flow faded (${wsFlowReal.pressure})`);
 	  armedEntries.delete(pairAddr);
+	  armFailCount++;
 	  continue;
 	}
 
@@ -1814,6 +1827,7 @@ async function scan(): Promise<void> {
 	if (currentNetVol < 0.05) {
 	  console.log(`[ARM SKIP] ${mem.symbol} (${pool._chain.id}) — netVol faded ${currentNetVol.toFixed(3)}ETH`);
 	  armedEntries.delete(pairAddr);
+	  armFailCount++;
 	  continue;
 	}
 
@@ -1887,7 +1901,11 @@ async function scan(): Promise<void> {
 	  `[FOMO SUMMARY] blocked:${fomoBlockCount} watched:${fomoWatchAddedCount}`
 	  + ` noSlot:${fomoNoSlotCount} lowScore:${fomoLowScoreCount} noDex:${fomoNoDexCount}`
 	);
-  console.log(`[WATCH] Active: ${activeWatch.size} pairs`);
+  console.log(
+  `[NO TRADE SUMMARY] v3v4Seen:${v3v4Seen} watched:${activeWatch.size}`
+  + ` noWs:${noWsCount} lowScore:${lowScoreCount2} entryGate:${entryGateCount}`
+  + ` armed:${armedCount} armFail:${armFailCount} entered:${shadowCount}`
+);
   await saveMemoryToRedis();
 }
 
