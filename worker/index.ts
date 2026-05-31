@@ -1,5 +1,5 @@
 /**
- * Supreme Trader Worker v5.22
+ * Supreme Trader Worker v5.22b
  * P1: Multi-chain (BASE + ARB)
  * P2: Second Wave Detection
  * P3: LP Events Monitoring (Mint/Burn)
@@ -46,7 +46,7 @@ let ethPriceCached = 2500;
 const MIN_FLOW_ETH        = 0.001;
 const MIN_TOTAL_FLOW_ETH  = 0.01;
 const FLOW_IMBALANCE      = 0.20;
-const WORKER_VERSION      = "v5.22";
+const WORKER_VERSION      = "v5.22b";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   realtime: { transport: WebSocket },
@@ -418,9 +418,11 @@ function cleanupActiveWatch(): void {
   const now = Date.now();
   for (const [addr, info] of activeWatch.entries()) {
     const ttl = info.kind === "FOMO" ? FOMO_WATCH_TTL_MS : WATCH_TTL_MS;
-    if (now - info.addedAt > ttl) activeWatch.delete(addr);
-	watchedPoolCache.delete(addr);
+    if (now - info.addedAt > ttl) {
+	  activeWatch.delete(addr);
+	  watchedPoolCache.delete(addr);
 	}
+  }
 }
 
 function clearExpiredArmedEntries(): void {
