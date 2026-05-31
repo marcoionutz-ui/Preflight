@@ -1,5 +1,5 @@
 /**
- * Supreme Trader Worker v5.19
+ * Supreme Trader Worker v5.20
  * P1: Multi-chain (BASE + ARB)
  * P2: Second Wave Detection
  * P3: LP Events Monitoring (Mint/Burn)
@@ -46,7 +46,7 @@ let ethPriceCached = 2500;
 const MIN_FLOW_ETH        = 0.001;
 const MIN_TOTAL_FLOW_ETH  = 0.01;
 const FLOW_IMBALANCE      = 0.20;
-const WORKER_VERSION      = "v5.19";
+const WORKER_VERSION      = "v5.20";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   realtime: { transport: WebSocket },
@@ -1637,6 +1637,9 @@ async function scan(): Promise<void> {
   let entryGateCount = 0;
   let armedCount = 0;
   let armFailCount = 0;
+  let flowBuyingCount = 0;
+  let flowNeutralCount = 0;
+  let flowSellingCount = 0;
 
   for (const pool of allPools) {
     const price = Number(pool.attributes.base_token_price_usd);
@@ -1772,7 +1775,9 @@ async function scan(): Promise<void> {
 	  }
 	  continue;
 	}
-
+    if (wsFlowReal.pressure === "BUYING") flowBuyingCount++;
+	else if (wsFlowReal.pressure === "NEUTRAL") flowNeutralCount++;
+	else if (wsFlowReal.pressure === "SELLING") flowSellingCount++;
     if (shadowCount >= MAX_SHADOW_PER_SCAN) continue;
 
     const score = quickEdgeScore(pool, mem, wsFlowReal, lp);
@@ -1907,7 +1912,8 @@ async function scan(): Promise<void> {
 	);
   console.log(
   `[NO TRADE SUMMARY] v3:${v3Seen} v4:${v4Seen} watched:${activeWatch.size}`
-  + ` noWs:${noWsCount} lowScore:${lowScoreCount2} entryGate:${entryGateCount}`
+  + ` noWs:${noWsCount} buying:${flowBuyingCount} neutral:${flowNeutralCount} selling:${flowSellingCount}`
+  + ` lowScore:${lowScoreCount2} entryGate:${entryGateCount}`
   + ` armed:${armedCount} armFail:${armFailCount} entered:${shadowCount}`
 );
   await saveMemoryToRedis();
