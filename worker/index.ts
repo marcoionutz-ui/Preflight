@@ -2123,10 +2123,18 @@ async function hotCandidatesLoop(): Promise<void> {
       }
 
       const score = quickEdgeScore(pool, mem, flow, lp);
-      if (score < 80) { hotCandidates.delete(pairAddress); continue; }
+      if (score < 80) {
+        console.log(`[HOT LOW SCORE] ${mem.symbol} — score:${score} source:${source ?? "WS"} flow:${flow.pressure}`);
+        hotCandidates.delete(pairAddress);
+        continue;
+      }
 
       const gate = getEntryGate(mem, flow, lp, score);
-      if (!gate.allowed) { hotCandidates.delete(pairAddress); continue; }
+      if (!gate.allowed) {
+        console.log(`[HOT GATE] ${mem.symbol} — ${gate.reason} source:${source ?? "WS"} score:${score}`);
+        hotCandidates.delete(pairAddress);
+        continue;
+      }
 
       console.log(`[HOT] ${mem.symbol} (${chainId}) — promoted by WS, Edge ${score}`);
       await saveShadowTrade(pool, score, mem, flow, lp);
