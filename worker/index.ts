@@ -1967,11 +1967,20 @@ async function fomoCandidatesLoop(): Promise<void> {
       continue;
     }
 
-    const pool = watchedPoolCache.get(pairAddr);
-    const mem  = memory.get(pairAddr);
-    const flow = getWsFlow(pairAddr);
+    const cachedPool = watchedPoolCache.get(pairAddr);
+    const mem        = memory.get(pairAddr);
+    const flow       = getWsFlow(pairAddr);
 
-    if (!pool || !mem) continue;
+    if (!cachedPool || !mem) continue;
+
+    const chainCfg  = CHAINS.find(c => c.id === info.chain || c.gecko === info.chain);
+    const freshPool = chainCfg ? await fetchPoolByAddress(chainCfg, pairAddr) : null;
+    const pool      = freshPool ?? cachedPool;
+
+    if (freshPool) {
+      watchedPoolCache.set(pairAddr, freshPool);
+      updateMemory(freshPool, Number(freshPool.attributes.base_token_price_usd));
+    }
 
     const currentPrice = Number(pool.attributes.base_token_price_usd);
     const blockPrice   = info.entryPrice ?? currentPrice;
