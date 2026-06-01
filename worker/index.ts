@@ -1,5 +1,5 @@
 /**
- * Supreme Trader Worker v5.22b
+ * Supreme Trader Worker v5.23
  * P1: Multi-chain (BASE + ARB)
  * P2: Second Wave Detection
  * P3: LP Events Monitoring (Mint/Burn)
@@ -46,7 +46,7 @@ let ethPriceCached = 2500;
 const MIN_FLOW_ETH        = 0.001;
 const MIN_TOTAL_FLOW_ETH  = 0.01;
 const FLOW_IMBALANCE      = 0.20;
-const WORKER_VERSION      = "v5.22b";
+const WORKER_VERSION      = "v5.23";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   realtime: { transport: WebSocket },
@@ -582,7 +582,7 @@ function connectChainWebSocket(chain: ChainConfig): void {
     if (wsClient.readyState === WebSocket.OPEN) wsClient.ping();
   }, 30_000);
 
-  wsClient.on("open", () => {
+    wsClient.on("open", () => {
     console.log(`[WS] Connected to Alchemy ${chain.id.toUpperCase()}`);
     swapSubIds.delete(chain.id);
     swapSubSnapshot.delete(chain.id);
@@ -590,6 +590,10 @@ function connectChainWebSocket(chain: ChainConfig): void {
     v4SwapSubIds.delete(chain.id + "_snap");
     v3SwapSubIds.delete(chain.id);
     v3SwapSubIds.delete(chain.id + "_snap");
+    // Cleanup orfane pendingSwapSubs pentru chain-ul ăsta
+    for (const [reqId, reqChain] of pendingSwapSubs.entries()) {
+      if (reqChain === chain.id) pendingSwapSubs.delete(reqId);
+    }
     setTimeout(() => subscribeV4Scoped(chain), 2500);
     setTimeout(() => subscribeV3Scoped(chain), 3000);
   });
@@ -767,7 +771,7 @@ function connectChainWebSocket(chain: ChainConfig): void {
         const amount1      = BigInt("0x" + raw.slice(64, 128));
         const memLp        = memory.get(pairAddress);
         const tokenAddrLp  = memLp?.tokenAddress.replace(`${chain.id}_`, "").toLowerCase() ?? "";
-        const wethIsToken0 = chain.weth.toLowerCase() < tokenAddrLp;
+        const wethIsToken0 = chain.weth.toLowerCase() < tokenAddrLp.replace(/^[a-z]+_/, "");
         const ethAmount    = Number(wethIsToken0 ? amount0 : amount1) / 1e18;
         recordLp(pairAddress, true, ethAmount);
         console.log(`[LP ADD] ${memLp?.symbol} +${ethAmount.toFixed(3)} ETH`);
@@ -779,7 +783,7 @@ function connectChainWebSocket(chain: ChainConfig): void {
         const amount1      = BigInt("0x" + raw.slice(64, 128));
         const memLp        = memory.get(pairAddress);
         const tokenAddrLp  = memLp?.tokenAddress.replace(`${chain.id}_`, "").toLowerCase() ?? "";
-        const wethIsToken0 = chain.weth.toLowerCase() < tokenAddrLp;
+        const wethIsToken0 = chain.weth.toLowerCase() < tokenAddrLp.replace(/^[a-z]+_/, "");
         const ethAmount    = Number(wethIsToken0 ? amount0 : amount1) / 1e18;
         recordLp(pairAddress, false, ethAmount);
         const poolEth    = poolLiquidity.get(pairAddress)?.reserveEth ?? 0;
@@ -1245,9 +1249,7 @@ function getEntryGate(mem: PairMemoryEntry, flow: FlowSignal, lp: LiquiditySigna
     ? mem.tokenAddress.split("_").slice(1).join("_")
     : mem.tokenAddress;
   const poolCount =
-    tokenPools.get(`${chainPrefix}:${mem.tokenAddress.toLowerCase()}`)?.size ??
-    tokenPools.get(`${chainPrefix}:${rawToken.toLowerCase()}`)?.size ??
-    1;
+    tokenPools.get(`${chainPrefix}:${rawToken.toLowerCase()}`)?.size ?? 1;
   if (poolCount >= 5) {
     return { allowed: false, reason: `too many pools for token (${poolCount}) — clone/fragmentation risk` };
   }
@@ -1309,65 +1311,6 @@ async function fetchTrending(chain: ChainConfig): Promise<GeckoPool[]> {
   
     console.log(`[FETCH] ${chain.id}: ${pools.length} pools (trend p1+p2 + new)`);
     return pools;
-  } catch {
-    return [];
-  }
-}
- 
-async function fetchDexScreener(chain: ChainConfig): Promise<GeckoPool[]> {
-  try {
-    const chainName = chain.id === "base" ? "base" : "arbitrum";
-    const res = await fetch(
-      `https://api.dexscreener.com/token-profiles/latest/v1`,
-      { headers: { "Accept": "application/json" } }
-    );
-    if (!res.ok) return [];
-    const data = await res.json();
-
-    const filtered = (Array.isArray(data) ? data : [])
-      .filter((p: any) => p.chainId === chainName && p.url)
-      .slice(0, 20);
-
-    if (!filtered.length) return [];
-
-    const pairAddresses = filtered
-      .map((p: any) => p.tokenAddress)
-      .filter(Boolean)
-      .join(",");
-
-    const res2 = await fetch(
-      `https://api.dexscreener.com/latest/dex/tokens/${pairAddresses}`
-    );
-    if (!res2.ok) return [];
-    const data2 = await res2.json();
-
-    const pairs = (data2.pairs ?? []).filter((p: any) => p.chainId === chainName);
-
-    return pairs.map((p: any): GeckoPool => ({
-      id: p.pairAddress,
-      attributes: {
-        name:                    `${p.baseToken?.symbol ?? "?"}/${p.quoteToken?.symbol ?? "?"}`,
-        base_token_price_usd:    p.priceUsd ?? "0",
-        price_change_percentage: {
-          m5:  String(p.priceChange?.m5  ?? 0),
-          h1:  String(p.priceChange?.h1  ?? 0),
-          h24: String(p.priceChange?.h24 ?? 0),
-        },
-        reserve_in_usd: String(p.liquidity?.usd ?? 0),
-        volume_usd:     { h24: String(p.volume?.h24 ?? 0) },
-        address:        p.pairAddress,
-        transactions: {
-          m5: { buys: p.txns?.m5?.buys ?? 0, sells: p.txns?.m5?.sells ?? 0 },
-          h1: { buys: p.txns?.h1?.buys ?? 0, sells: p.txns?.h1?.sells ?? 0 },
-        },
-      },
-      relationships: {
-        base_token:  { data: { id: `${chainName}_${p.baseToken?.address ?? ""}` } },
-        quote_token: { data: { id: `${chainName}_${p.quoteToken?.address ?? ""}` } },
-        dex:         { data: { id: p.dexId ?? "" } },
-      },
-      _chain: chain,
-    }));
   } catch {
     return [];
   }
@@ -1610,10 +1553,9 @@ async function scan(): Promise<void> {
 
   // Fetch toate chain-urile în paralel
   const allPoolsPerChain = await Promise.all(CHAINS.map(c => fetchTrending(c)));
-  const dexPools         = await Promise.all(CHAINS.map(c => fetchDexScreener(c)));
-
+  
   const seenInScan = new Set<string>();
-  const allPools = [...allPoolsPerChain.flat(), ...dexPools.flat()].filter(p => {
+  const allPools = [...allPoolsPerChain.flat()].filter(p => {
     const addr = `${p._chain.id}:${p.attributes.address?.toLowerCase()}`;
     if (!addr || seenInScan.has(addr)) return false;
     seenInScan.add(addr);
@@ -1810,11 +1752,14 @@ async function scan(): Promise<void> {
     if (wsFlowReal.pressure === "BUYING") flowBuyingCount++;
 	else if (wsFlowReal.pressure === "NEUTRAL") flowNeutralCount++;
 	else if (wsFlowReal.pressure === "SELLING") flowSellingCount++;
-    if (shadowCount >= MAX_SHADOW_PER_SCAN) continue;
+    if (shadowCount >= MAX_SHADOW_PER_SCAN) {
+      lowScoreCount2++; // contorizat și după limită
+      continue;
+    }
 
     const score = quickEdgeScore(pool, mem, wsFlowReal, lp);
     if (score < 80) {
-	  lowScoreCount2++;
+      lowScoreCount2++;
       console.log(`[LOW SCORE] ${mem.symbol} (${pool._chain.id}) score=${score} flow=${wsFlowReal.pressure} liq=${getLiquidityContext(pairAddr).status}`);
       continue;
     }
@@ -1975,17 +1920,17 @@ async function hotCandidatesLoop(): Promise<void> {
       const flow = getWsFlow(pairAddress);
       const lp   = getLpSignal(pairAddress);
 
-      // Dacă pressure s-a stins între timp, nu mai intra
+      // HOT: flow trebuie activ — dacă s-a stins, șterge și continuă
       if (!flow.hasData || flow.pressure !== "BUYING" || flow.buys5m < 5) {
-        hotCandidates.delete(pairAddress); continue;
+        console.log(`[HOT SKIP] ${mem.symbol} — no buying flow (${flow.pressure})`);
+        hotCandidates.delete(pairAddress);
+        continue;
       }
-	  
-	  // HOT trebuie să fie deja armat de scan
-      const armed = armedEntries.get(pairAddress);
-      if (!armed) { hotCandidates.delete(pairAddress); continue; }
-      if (mem.currentPrice < armed.price * ARM_MIN_PRICE_CONFIRM) {
-        console.log(`[HOT SKIP] ${mem.symbol} — price dropped vs armed`);
-        hotCandidates.delete(pairAddress); continue;
+
+      // HOT: minim 30s de la promovare înainte să intrăm
+      if (Date.now() - promotedAt < 30_000) {
+        console.log(`[HOT WAIT] ${mem.symbol} — too fresh (${Math.round((Date.now() - promotedAt)/1000)}s)`);
+        continue;
       }
 
       // Nu duplica dacă există deja trade deschis
@@ -2003,7 +1948,17 @@ async function hotCandidatesLoop(): Promise<void> {
       if (!pool) { hotCandidates.delete(pairAddress); continue; }
 
       const fomo = checkFOMO(pool);
-      if (fomo.blocked) { hotCandidates.delete(pairAddress); continue; }
+      if (fomo.blocked) {
+        console.log(
+          `[HOT FOMO BLOCK] ${mem.symbol} (${chainId}) — ${fomo.reason}`
+          + ` | flow:${flow.pressure}`
+          + ` buys:${flow.buys5m}/5m`
+          + ` buyVol:${((flow as any).buyVol5m ?? 0).toFixed(3)}ETH`
+          + ` netVol:${((flow as any).netVol5m ?? 0).toFixed(3)}ETH`
+        );
+        hotCandidates.delete(pairAddress);
+        continue;
+      }
 
       const score = quickEdgeScore(pool, mem, flow, lp);
       if (score < 80) { hotCandidates.delete(pairAddress); continue; }
