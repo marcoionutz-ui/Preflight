@@ -1049,6 +1049,21 @@ async function loadMemoryFromRedis(): Promise<void> {
         poolReserveEth?: Record<string, number>;
       };
 
+      // Nu încărca snapshot din versiuni anterioare — memoria veche contaminează
+      if (snap.version && snap.version !== WORKER_VERSION) {
+        console.log(`[REDIS] Snapshot from ${snap.version} ignored — current is ${WORKER_VERSION}`);
+        return;
+      }
+
+      // Nu încărca snapshot prea vechi nici dacă e aceeași versiune
+      const SNAPSHOT_MAX_AGE_MS = 6 * 60 * 60_000;
+      if (snap.savedAt && Date.now() - snap.savedAt > SNAPSHOT_MAX_AGE_MS) {
+        console.log(
+          `[REDIS] Snapshot too old ignored — age:${Math.round((Date.now() - snap.savedAt) / 60_000)}m`
+        );
+        return;
+      }
+
       let count = 0;
       for (const [addr, mem] of Object.entries(snap.memory ?? {})) {
         memory.set(addr, mem);
