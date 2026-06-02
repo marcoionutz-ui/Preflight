@@ -41,6 +41,7 @@ const WATCH_SELLING_MAX_AGE_MS =  5 * 60_000;
 const FOMO_WATCH_TTL_MS        = 10 * 60_000;
 const FOMO_RECHECK_MIN_AGE_MS  =  2 * 60_000;
 const FOMO_RECHECK_MAX_AGE_MS  = 10 * 60_000;
+const FOMO_NO_WS_DROP_MS       =  3 * 60_000;
 const MAX_FOMO_WATCH    = 5;
 const MAX_ACTIVE_WATCH  = 20;
 const WATCH_MIN_SCORE = 70;
@@ -1997,6 +1998,37 @@ async function fomoCandidatesLoop(): Promise<void> {
     const sellVolF = Number((flow as any).sellVol5m ?? 0);
     const netVolF  = Number((flow as any).netVol5m  ?? buyVolF - sellVolF);
 
+	// Evict rapid dacă nu are WS flow după 3 minute
+    if (!flow.hasData && ageMs > FOMO_NO_WS_DROP_MS) {
+      console.log(
+        `[FOMO DROP] ${mem.symbol}`
+        + ` — no WS confirmation after ${Math.round(ageMs / 60_000)}m`
+      );
+      activeWatch.delete(pairAddr);
+      hotCandidates.delete(pairAddr);
+      watchedPoolCache.delete(pairAddr);
+      continue;
+    }
+
+    // Evict rapid dacă flow e activ SELLING cu presiune negativă
+	if (
+      flow.hasData &&
+      flow.pressure === "SELLING" &&
+      netVolF < -0.03 &&
+      ageMs > FOMO_RECHECK_MIN_AGE_MS
+    ) {
+      console.log(
+        `[FOMO DROP] ${mem.symbol}`
+        + ` — selling confirmation`
+        + ` netVol:${netVolF.toFixed(3)}`
+        + ` sellRatio:${(sellVolF / Math.max(buyVolF, 0.001) * 100).toFixed(1)}%`
+      );
+      activeWatch.delete(pairAddr);
+      hotCandidates.delete(pairAddr);
+      watchedPoolCache.delete(pairAddr);
+      continue;
+    }
+	
     const survivedPump =
       Number.isFinite(currentPrice) &&
       Number.isFinite(blockPrice) &&
