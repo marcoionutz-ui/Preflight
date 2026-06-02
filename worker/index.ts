@@ -44,6 +44,7 @@ const FOMO_NO_WS_DROP_MS       =  3 * 60_000;
 const MAX_FOMO_WATCH    = 5;
 const MAX_ACTIVE_WATCH  = 20;
 const WATCH_MIN_SCORE = 70;
+const FOMO_WATCH_MIN_SCORE = 45;
 const MIN_LP_REMOVE_ETH   = 0.05;  // ignoră dust burns
 const INSTANT_LP_EXIT_PCT = 0.30;  // 30%+ din pool = instant exit
 let ethPriceCached = 2500;
@@ -1381,9 +1382,16 @@ function getEntryGate(mem: PairMemoryEntry, flow: FlowSignal, lp: LiquiditySigna
   const evidence = computeEvidenceScore(mem, flow, lp);
   
   if (hotCandidates.has(mem.pairAddress.toLowerCase())) {
-    if (mem.seenCount < 2)          return { allowed: false, reason: `HOT but too new (seen ${mem.seenCount}x, need 2)` };
-    if (evidence < 7)               return { allowed: false, reason: `HOT but evidence too low (${evidence}/7)` };
-    if (flow.pressure !== "BUYING") return { allowed: false, reason: `HOT but flow not BUYING` };
+    const requiredHotEvidence = entrySource === "FOMO" ? 5 : 7;
+    if (mem.seenCount < 2) {
+      return { allowed: false, reason: `HOT but too new (seen ${mem.seenCount}x, need 2)` };
+    }
+    if (evidence < requiredHotEvidence) {
+      return { allowed: false, reason: `HOT but evidence too low (${evidence}/${requiredHotEvidence})` };
+    }
+    if (flow.pressure !== "BUYING") {
+      return { allowed: false, reason: `HOT but flow not BUYING` };
+    }
     return checkEntryGate(mem, flow, 2, SECOND_WAVE_COOLDOWN_MS);
   }
 
@@ -1819,7 +1827,17 @@ async function scan(): Promise<void> {
 
 	  if (activeWatch.has(pairAddr)) fomoAlreadyWatchCount++;
 	  else if (currentFomoWatch >= MAX_FOMO_WATCH) fomoNoSlotCount++;
-	  else if (prelScore < 50) fomoLowScoreCount++;
+	 else if (prelScore < FOMO_WATCH_MIN_SCORE) {
+	    fomoLowScoreCount++;
+	    console.log(
+	      `[FOMO WATCH REJECT] ${mem.symbol} (${pool._chain.id})`
+	      + ` score:${prelScore}/${FOMO_WATCH_MIN_SCORE}`
+	      + ` reason:${fomo.reason}`
+	      + ` m5:${m5f.toFixed(1)} h24:${h24f.toFixed(1)}`
+	      + ` reserve:$${Math.round(reserveUsdF / 1000)}K`
+	      + ` dex:${isV3pool ? "V3" : isV4pool ? "V4" : "OTHER"}`
+	    );
+	  }
 	  else if (reserveUsdF < 20_000) fomoLowReserveCount++;
 	  else if (!(isV3pool || isV4pool)) fomoNoDexCount++;
 	  else if (!fomoPatternOk) fomoPatternCount++;
@@ -1827,7 +1845,7 @@ async function scan(): Promise<void> {
 	  const fomoWatchable =
 		!activeWatch.has(pairAddr) &&
 		currentFomoWatch < MAX_FOMO_WATCH &&
-		prelScore >= 50 &&
+		prelScore >= FOMO_WATCH_MIN_SCORE &&
 		reserveUsdF >= 20_000 &&
 		(isV3pool || isV4pool) &&
 		fomoPatternOk;
