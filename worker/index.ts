@@ -1,5 +1,5 @@
 /**
- * Supreme Trader Worker v5.25
+ * Supreme Trader Worker v5.26
  * P1: Multi-chain (BASE + ARB)
  * P2: Second Wave Detection
  * P3: LP Events Monitoring (Mint/Burn)
@@ -31,7 +31,6 @@ const TELEGRAM_CHAT_ID    = process.env.TELEGRAM_CHAT_ID    ?? "";
 const GECKO_BASE          = "https://api.geckoterminal.com/api/v2";
 const SCAN_INTERVAL       = 30_000;
 const MAX_SHADOW_PER_SCAN = 5;
-const MIN_SEEN_COUNT      = 5;
 const COOLDOWN_MS         = 2 * 60 * 60_000;
 const SECOND_WAVE_COOLDOWN_MS = 60 * 60_000; // 1h cooldown pentru second wave
 const MAX_HOLD_MS         = 4 * 60 * 60_000;
@@ -51,7 +50,7 @@ let ethPriceCached = 2500;
 const MIN_FLOW_ETH        = 0.001;
 const MIN_TOTAL_FLOW_ETH  = 0.01;
 const FLOW_IMBALANCE      = 0.20;
-const WORKER_VERSION      = "v5.25";
+const WORKER_VERSION      = "v5.26";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   realtime: { transport: WebSocket },
@@ -184,10 +183,29 @@ function isEvmAddress(addr: string | undefined | null): boolean {
   return cleanEvmAddress(addr) !== null;
 }
 
+async function fetchWithTimeout(url: string, ms = 8_000): Promise<Response> {
+  const ctrl = new AbortController();
+  const t    = setTimeout(() => ctrl.abort(), ms);
+  try {
+    return await fetch(url, { signal: ctrl.signal });
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+function tokenPoolKey(chain: string, tokenId: string): string {
+  const clean = cleanEvmAddress(tokenId);
+  if (clean) return `${chain}:${clean}`;
+  const raw = tokenId.includes("_")
+    ? tokenId.split("_").slice(1).join("_").toLowerCase()
+    : tokenId.toLowerCase();
+  return `${chain}:${raw}`;
+}
+
 function trackPool(tokenAddress: string, pairAddress: string, chain: string): boolean {
   const sym = memory.get(pairAddress.toLowerCase())?.symbol?.trim().toLowerCase() ?? "";
-  if (BLUECHIP_SYMBOLS.has(sym)) return false; // skip tokens majori
-  const key = `${chain}:${tokenAddress.toLowerCase()}`;
+  if (BLUECHIP_SYMBOLS.has(sym)) return false;
+  const key = tokenPoolKey(chain, tokenAddress);
   const known = tokenPools.get(key) ?? new Set<string>();
   const isNew = !known.has(pairAddress.toLowerCase());
   known.add(pairAddress.toLowerCase());
@@ -216,17 +234,23 @@ const CHAINLINK_ETH_USD           = "0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70"
 const CHAINLINK_LATEST_ROUND_DATA = "0xfeaf968c";
 
 async function refreshEthPrice(): Promise<void> {
+  const rpcUrl = process.env.ALCHEMY_BASE_RPC ?? process.env.ALCHEMY_ARB_RPC ?? "";
+  if (!rpcUrl) {
+    console.log(`[ETH PRICE] No RPC URL, using cached: $${ethPriceCached}`);
+    return;
+  }
+
+  const ctrl = new AbortController();
+  const t    = setTimeout(() => ctrl.abort(), 8_000);
+
   try {
-    const rpcUrl = process.env.ALCHEMY_BASE_RPC ?? process.env.ALCHEMY_ARB_RPC ?? "";
-    if (!rpcUrl) {
-      console.log(`[ETH PRICE] No RPC URL, using cached: $${ethPriceCached}`);
-      return;
-    }
     const res = await fetch(rpcUrl, {
       method:  "POST",
       headers: { "Content-Type": "application/json" },
+      signal:  ctrl.signal,
       body: JSON.stringify({
-        jsonrpc: "2.0", id: 1,
+        jsonrpc: "2.0",
+        id: 1,
         method: "eth_call",
         params: [
           { to: CHAINLINK_ETH_USD, data: CHAINLINK_LATEST_ROUND_DATA },
@@ -234,17 +258,22 @@ async function refreshEthPrice(): Promise<void> {
         ],
       }),
     });
+
     const json   = await res.json();
     const result = json?.result;
     if (!result || result === "0x") throw new Error("Empty Chainlink result");
+
     const answerHex = "0x" + result.slice(66, 130);
     const price     = Number(BigInt(answerHex)) / 1e8;
+
     if (Number.isFinite(price) && price > 500) {
       ethPriceCached = price;
       console.log(`[ETH PRICE] Chainlink: $${price.toFixed(2)}`);
     }
   } catch {
     console.log(`[ETH PRICE] Using cached fallback: $${ethPriceCached}`);
+  } finally {
+    clearTimeout(t);
   }
 }
 
@@ -312,7 +341,11 @@ function getLpSignal(pairAddress: string): LiquiditySignal {
   const events = lpEvents.get(addr) ?? [];
   if (!events.length) return STABLE_LIQUIDITY;
   const now    = Date.now();
-  const e5m    = events.filter(e => now - e.ts < 5 * 60_000);
+  const e5m = events.filter(e => now - e.ts < 5 * 60_000);
+  if (!e5m.length) {
+    lpEvents.delete(addr);
+    return STABLE_LIQUIDITY;
+  }
   const added  = e5m.filter(e =>  e.isAdd).reduce((s, e) => s + e.ethAmount, 0);
   const removed = e5m.filter(e => !e.isAdd).reduce((s, e) => s + e.ethAmount, 0);
   const net    = added - removed;
@@ -478,6 +511,28 @@ function clearExpiredArmedEntries(): void {
   }
 }
 
+function pruneMemory(): void {
+  const now    = Date.now();
+  let   pruned = 0;
+
+  for (const [addr, mem] of memory.entries()) {
+    if (activeWatch.has(addr) || hotCandidates.has(addr) || armedEntries.has(addr)) continue;
+
+    const ageMs         = now - mem.lastSeen;
+    const noRecentTrade = !mem.lastEntryTime || now - mem.lastEntryTime > 48 * 60 * 60_000;
+
+    if (ageMs > 48 * 60 * 60_000 && noRecentTrade) {
+      memory.delete(addr);
+      poolLiquidity.delete(addr);
+      wsFlow.delete(addr);
+      lpEvents.delete(addr);
+      pruned++;
+    }
+  }
+
+  if (pruned > 0) console.log(`[MEMORY PRUNE] Removed ${pruned} stale pairs`);
+}
+
 function updateScopedSwap(chain: ChainConfig): void {
   const ws = wsClients.get(chain.id);
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
@@ -615,9 +670,10 @@ function subscribeV4Scoped(chain: ChainConfig): void {
 
 function connectChainWebSocket(chain: ChainConfig): void {
   if (!chain.wsUrl) {
-    console.log(`[WS] No WS URL for ${chain.id} — flow layer disabled for this chain`);
+    console.log(`[CHAIN MODE] ${chain.id.toUpperCase()} — scan-only, WS/flow disabled`);
     return;
   }
+  console.log(`[CHAIN MODE] ${chain.id.toUpperCase()} — full mode (scan + WS flow)`);
 
   const wsClient = new WebSocket(chain.wsUrl);
   wsClients.set(chain.id, wsClient);
@@ -1069,15 +1125,9 @@ async function loadMemoryFromRedis(): Promise<void> {
         memory.set(addr, mem);
         count++;
         const chainPrefix = mem.tokenAddress.split("_")[0] ?? "";
-        const rawToken    = mem.tokenAddress.includes("_")
-          ? mem.tokenAddress.split("_")[1]
-          : mem.tokenAddress;
-        const tokenKey1 = `${chainPrefix}:${mem.tokenAddress.toLowerCase()}`;
-        const tokenKey2 = `${chainPrefix}:${rawToken.toLowerCase()}`;
-        if (!tokenPools.has(tokenKey1)) tokenPools.set(tokenKey1, new Set());
-        tokenPools.get(tokenKey1)!.add(addr);
-        if (!tokenPools.has(tokenKey2)) tokenPools.set(tokenKey2, new Set());
-        tokenPools.get(tokenKey2)!.add(addr);
+        const key = tokenPoolKey(chainPrefix, mem.tokenAddress);
+        if (!tokenPools.has(key)) tokenPools.set(key, new Set());
+        tokenPools.get(key)!.add(addr);
       }
 
       for (const [addr, eth] of Object.entries(snap.poolReserveEth ?? {})) {
@@ -1247,7 +1297,7 @@ function computeEvidenceScore(mem: PairMemoryEntry, flow: FlowSignal, lp: Liquid
 
 // ── Should enter? ─────────────────────────────────────────────────────────────
 
-function getEntryGate(mem: PairMemoryEntry, flow: FlowSignal, lp: LiquiditySignal, score: number) {
+function getEntryGate(mem: PairMemoryEntry, flow: FlowSignal, lp: LiquiditySignal, score: number, entrySource: "WS" | "FOMO" | "SCAN" = "SCAN") {
   const liq = getLiquidityContext(mem.pairAddress);
   if (liq.status === "MISSING") {
     return { allowed: false, reason: "missing liquidity context — skip" };
@@ -1294,7 +1344,7 @@ function getEntryGate(mem: PairMemoryEntry, flow: FlowSignal, lp: LiquiditySigna
 
   // Token cu history pur de bad exits — niciodată un winner
   const recentBadExit = mem.lastExitTime && Date.now() - mem.lastExitTime < 6 * 60 * 60_000;
-  if (mem.badExits24h >= 2 && mem.wins24h === 0 && mem.losses24h === 0 && recentBadExit) {
+  if (entrySource !== "FOMO" && mem.badExits24h >= 2 && mem.wins24h === 0 && mem.losses24h === 0 && recentBadExit) {
     return { allowed: false, reason: `bad exits only (${mem.badExits24h} bad, 0 wins/losses)` };
   }
  
@@ -1304,11 +1354,7 @@ function getEntryGate(mem: PairMemoryEntry, flow: FlowSignal, lp: LiquiditySigna
   }
 
   const chainPrefix = mem.tokenAddress.split("_")[0] ?? "";
-  const rawToken    = mem.tokenAddress.includes("_")
-    ? mem.tokenAddress.split("_").slice(1).join("_")
-    : mem.tokenAddress;
-  const poolCount =
-    tokenPools.get(`${chainPrefix}:${rawToken.toLowerCase()}`)?.size ?? 1;
+  const poolCount   = tokenPools.get(tokenPoolKey(chainPrefix, mem.tokenAddress))?.size ?? 1;
   if (poolCount >= 5) {
     return { allowed: false, reason: `too many pools for token (${poolCount}) — clone/fragmentation risk` };
   }
@@ -1347,11 +1393,11 @@ function getEntryGate(mem: PairMemoryEntry, flow: FlowSignal, lp: LiquiditySigna
 
 async function fetchTrending(chain: ChainConfig): Promise<GeckoPool[]> {
   try {
-    const res1   = await fetch(`${GECKO_BASE}/networks/${chain.gecko}/trending_pools?page=1`);
+    const res1   = await fetchWithTimeout(`${GECKO_BASE}/networks/${chain.gecko}/trending_pools?page=1`);
     await new Promise(r => setTimeout(r, 600));
-    const res2   = await fetch(`${GECKO_BASE}/networks/${chain.gecko}/trending_pools?page=2`);
+    const res2   = await fetchWithTimeout(`${GECKO_BASE}/networks/${chain.gecko}/trending_pools?page=2`);
     await new Promise(r => setTimeout(r, 600));
-    const resNew = await fetch(`${GECKO_BASE}/networks/${chain.gecko}/new_pools?page=1`);
+    const resNew = await fetchWithTimeout(`${GECKO_BASE}/networks/${chain.gecko}/new_pools?page=1`);
 
     const d1   = res1.ok   ? await res1.json()   : { data: [] };
     const d2   = res2.ok   ? await res2.json()   : { data: [] };
@@ -1377,7 +1423,7 @@ async function fetchTrending(chain: ChainConfig): Promise<GeckoPool[]> {
 
 async function fetchPoolByAddress(chain: ChainConfig, pairAddress: string): Promise<GeckoPool | null> {
   try {
-    const res = await fetch(`${GECKO_BASE}/networks/${chain.gecko}/pools/${pairAddress}`);
+    const res = await fetchWithTimeout(`${GECKO_BASE}/networks/${chain.gecko}/pools/${pairAddress}`);
     if (!res.ok) return null;
     const json = await res.json();
     if (!json.data) return null;
@@ -1415,11 +1461,12 @@ async function saveFOMOBlock(pool: GeckoPool, reason: string): Promise<void> {
 // ── Save shadow trade ─────────────────────────────────────────────────────────
 
 async function saveShadowTrade(
-  pool:  GeckoPool,
-  score: number,
-  mem:   PairMemoryEntry,
-  flow:  FlowSignal,
-  lp:    LiquiditySignal,
+  pool:        GeckoPool,
+  score:       number,
+  mem:         PairMemoryEntry,
+  flow:        FlowSignal,
+  lp:          LiquiditySignal,
+  entrySource: "WS" | "FOMO" | "SCAN" = "SCAN",
 ): Promise<void> {
   const pairAddr = cleanEvmAddress(pool.attributes.address) ?? pool.attributes.address.toLowerCase();
 
@@ -1434,10 +1481,12 @@ async function saveShadowTrade(
     console.log(`[DUPLICATE BLOCK] ${mem.symbol} already has open shadow trade`);
     return;
   }
-  const isV4note = pairAddr.length === 66;
-  const isV3note = !isV4note && v3PoolMap.has(pairAddr.toLowerCase());
-  const dexType  = isV4note ? "V4" : isV3note ? "V3" : "V2";
-  const price    = mem.currentPrice;
+  const isV4note   = pairAddr.length === 66;
+  const isV3note   = !isV4note && v3PoolMap.has(pairAddr.toLowerCase());
+  const dexType    = isV4note ? "V4" : isV3note ? "V3" : "V2";
+  const freshPrice = Number(pool.attributes.base_token_price_usd);
+  const price      = Number.isFinite(freshPrice) && freshPrice > 0 ? freshPrice : mem.currentPrice;
+  if (Number.isFinite(freshPrice) && freshPrice > 0) mem.currentPrice = freshPrice;
   const id       = Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
   const sw       = detectSecondWave(mem, flow);
 
@@ -1458,10 +1507,11 @@ async function saveShadowTrade(
     `liq:${liq.status}`,
     `reserve:$${Math.round(liq.reserveUsd / 1000)}K`,
     sw.isSecondWave ? `2W:${sw.score}` : null,
+    `source:${entrySource}`,
     `W${mem.wins24h}/L${mem.losses24h}`,
   ].filter(Boolean).join(" | ");
 
-  await supabase.from("shadow_trades").insert({
+  const { error: insertError } = await supabase.from("shadow_trades").insert({
     id, timestamp: Date.now(),
     symbol:         mem.symbol,
     worker_version: WORKER_VERSION,
@@ -1475,6 +1525,11 @@ async function saveShadowTrade(
     tp2: price * (score >= 80 ? 2.00 : 1.75),
     tp3: price * (score >= 80 ? 4.00 : 3.00),
   });
+
+  if (insertError) {
+    console.error(`[DB INSERT ERROR] ${mem.symbol} — ${insertError.message}`);
+    return;
+  }
 
   mem.totalEntries += 1; mem.lastEntryTime = Date.now(); mem.lastEntryPrice = price;
   memory.set(pairAddr, mem);
@@ -1599,7 +1654,11 @@ async function updateOutcomes(pools: GeckoPool[]): Promise<void> {
       await sendTelegram(`💀 <b>ZOMBIE KILL</b> ${trade.symbol} — held 4h, no exit`);
     }
 
-    await supabase.from("shadow_trades").update(update).eq("id", trade.id);
+    const { error: updateError } = await supabase
+      .from("shadow_trades").update(update).eq("id", trade.id);
+    if (updateError) {
+      console.error(`[DB UPDATE ERROR] ${trade.symbol} — ${updateError.message}`);
+    }
   }
 }
 
@@ -1609,6 +1668,7 @@ async function scan(): Promise<void> {
   const ts = new Date().toISOString();
   cleanupActiveWatch();
   clearExpiredArmedEntries();
+  pruneMemory();
 
   // Fetch toate chain-urile în paralel
   const allPoolsPerChain = await Promise.all(CHAINS.map(c => fetchTrending(c)));
@@ -1667,7 +1727,8 @@ async function scan(): Promise<void> {
   let v3Seen = 0;
   let v4Seen = 0;
   let noWsCount = 0;
-  let lowScoreCount2 = 0;
+  let lowScoreCount2          = 0;
+  let maxShadowBlockedCount   = 0;
   let entryGateCount = 0;
   let armedCount = 0;
   let armFailCount = 0;
@@ -1689,9 +1750,12 @@ async function scan(): Promise<void> {
 	const isNewPool  = tokenAddr ? trackPool(tokenAddr, pool.attributes.address, pool._chain.id) : false;
 
 	if (isNewPool) {
-	  const knownPools: KnownPool[] = [...(tokenPools.get(`${pool._chain.id}:${tokenAddr}`) ?? [])]
+	  const knownPools: KnownPool[] = [...(tokenPools.get(tokenPoolKey(pool._chain.id, tokenAddr)) ?? [])]
 		.filter(pa => pa !== pool.attributes.address.toLowerCase())
-		.map(pa => ({ pairAddress: pa, liquidityUsd: 0 }));
+		.map(pa => ({
+		  pairAddress:  pa,
+		  liquidityUsd: poolLiquidity.get(pa)?.reserveUsd ?? 0,
+		}));
 
 	  const sig = classifyNewPool(
 		tokenAddr, mem.symbol, pool._chain.id,
@@ -1823,7 +1887,7 @@ async function scan(): Promise<void> {
 	else if (wsFlowReal.pressure === "NEUTRAL") flowNeutralCount++;
 	else if (wsFlowReal.pressure === "SELLING") flowSellingCount++;
     if (shadowCount >= MAX_SHADOW_PER_SCAN) {
-      lowScoreCount2++; // contorizat și după limită
+      maxShadowBlockedCount++;
       continue;
     }
 
@@ -1834,7 +1898,7 @@ async function scan(): Promise<void> {
       continue;
     }
 
-	const gate = getEntryGate(mem, wsFlowReal, lp, score);
+	const gate = getEntryGate(mem, wsFlowReal, lp, score, "SCAN");
 	if (!gate.allowed) {
 	  entryGateCount++;
 	  console.log(`[SKIP] ${mem.symbol} (${pool._chain.id}) — ${gate.reason}`);
@@ -1894,7 +1958,7 @@ async function scan(): Promise<void> {
 	);
 	armedEntries.delete(pairAddr);
 
-	await saveShadowTrade(pool, score, mem, wsFlowReal, lp);
+	await saveShadowTrade(pool, score, mem, wsFlowReal, lp, "SCAN");
     shadowCount++;
     chainCounts[pool._chain.id] = (chainCounts[pool._chain.id] ?? 0) + 1;
     }
@@ -1962,7 +2026,7 @@ async function scan(): Promise<void> {
   console.log(
   `[NO TRADE SUMMARY] v3:${v3Seen} v4:${v4Seen} watched:${activeWatch.size}`
   + ` noWs:${noWsCount} buying:${flowBuyingCount} neutral:${flowNeutralCount} selling:${flowSellingCount}`
-  + ` lowScore:${lowScoreCount2} entryGate:${entryGateCount}`
+  + ` lowScore:${lowScoreCount2} entryGate:${entryGateCount} maxBlock:${maxShadowBlockedCount}`
   + ` armed:${armedCount} armFail:${armFailCount} entered:${shadowCount}`
 );
   await saveMemoryToRedis();
@@ -2193,7 +2257,7 @@ async function hotCandidatesLoop(): Promise<void> {
         continue;
       }
 
-      const gate = getEntryGate(mem, flow, lp, score);
+      const gate = getEntryGate(mem, flow, lp, score, source ?? "WS");
       if (!gate.allowed) {
         console.log(`[HOT GATE] ${mem.symbol} — ${gate.reason} source:${source ?? "WS"} score:${score}`);
         hotCandidates.delete(pairAddress);
@@ -2201,7 +2265,7 @@ async function hotCandidatesLoop(): Promise<void> {
       }
 
       console.log(`[HOT] ${mem.symbol} (${chainId}) — promoted by WS, Edge ${score}`);
-      await saveShadowTrade(pool, score, mem, flow, lp);
+      await saveShadowTrade(pool, score, mem, flow, lp, source ?? "WS");
       hotCandidates.delete(pairAddress);
     }
   } finally {
@@ -2254,14 +2318,31 @@ console.log(`Chains: ${CHAINS.map(c => c.id).join(", ")}`);
 // Conectează WS pentru fiecare chain
 CHAINS.forEach(c => connectChainWebSocket(c));
 
+let scanning = false;
+
+async function safeScan(): Promise<void> {
+  if (scanning) {
+    console.log("[SCAN SKIP] previous scan still running");
+    return;
+  }
+  scanning = true;
+  try {
+    await scan();
+  } catch (err) {
+    console.error("[SCAN ERROR]", err);
+  } finally {
+    scanning = false;
+  }
+}
+
 loadPairStats().then(async () => {
   await refreshEthPrice();
   await loadMemoryFromRedis();
   setInterval(refreshEthPrice, 60 * 60_000);
-  setInterval(saveMemoryToRedis, 60_000);    // ← save la fiecare minut
-  scan();
-  setInterval(scan, SCAN_INTERVAL);
-  setInterval(monitorOpenTrades, 10_000);
-  setInterval(hotCandidatesLoop, 3_000);
+  setInterval(saveMemoryToRedis, 60_000);
+  safeScan();
+  setInterval(safeScan, SCAN_INTERVAL);
+  setInterval(() => { monitorOpenTrades().catch(err => console.error("[MONITOR ERROR]", err)); }, 10_000);
+  setInterval(() => { hotCandidatesLoop().catch(err => console.error("[HOT LOOP ERROR]", err)); }, 3_000);
   setInterval(() => { fomoCandidatesLoop().catch(err => console.error("[FOMO LOOP ERROR]", err)); }, 30_000);
 });
