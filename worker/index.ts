@@ -1644,6 +1644,9 @@ async function scan(): Promise<void> {
   let fomoNoSlotCount = 0;
   let fomoLowScoreCount = 0;
   let fomoNoDexCount = 0;
+  let fomoLowReserveCount = 0;
+  let fomoPatternCount = 0;
+  let fomoAlreadyWatchCount = 0;
   const chainCounts: Record<string, number> = {};
   let v3Seen = 0;
   let v4Seen = 0;
@@ -1715,21 +1718,24 @@ async function scan(): Promise<void> {
       const currentFomoWatch = [...activeWatch.values()].filter(w => w.kind === "FOMO").length;
 	  const h24f = Number(pool.attributes.price_change_percentage?.h24 ?? 0);
    	  const reserveUsdF = Number(pool.attributes.reserve_in_usd ?? 0);
-	  if (!wsFlowReal.hasData && !activeWatch.has(pairAddr)) {
-	  if (currentFomoWatch >= MAX_FOMO_WATCH) fomoNoSlotCount++;
-	  else if (prelScore < 60) fomoLowScoreCount++;
+	  const fomoPatternOk =
+		(m5f > 30 && m5f < 150 && h24f < 500) ||
+		(h24f > 200 && h24f < 800 && m5f < 30);
+
+	  if (activeWatch.has(pairAddr)) fomoAlreadyWatchCount++;
+	  else if (currentFomoWatch >= MAX_FOMO_WATCH) fomoNoSlotCount++;
+	  else if (prelScore < 50) fomoLowScoreCount++;
+	  else if (reserveUsdF < 20_000) fomoLowReserveCount++;
 	  else if (!(isV3pool || isV4pool)) fomoNoDexCount++;
-	}
+	  else if (!fomoPatternOk) fomoPatternCount++;
+
 	  const fomoWatchable =
 		!activeWatch.has(pairAddr) &&
 		currentFomoWatch < MAX_FOMO_WATCH &&
 		prelScore >= 50 &&
 		reserveUsdF >= 20_000 &&
 		(isV3pool || isV4pool) &&
-		(
-		(m5f > 30 && m5f < 150 && h24f < 500) ||
-		(h24f > 200 && h24f < 800 && m5f < 30)
-		);
+		fomoPatternOk;
 		if (fomoWatchable) {
 		  activeWatch.set(pairAddr, {
 		    chain:       pool._chain.id,
@@ -1933,7 +1939,9 @@ async function scan(): Promise<void> {
   CHAINS.forEach(c => subscribeV3Scoped(c));
   console.log(
 	  `[FOMO SUMMARY] blocked:${fomoBlockCount} watched:${fomoWatchAddedCount}`
-	  + ` noSlot:${fomoNoSlotCount} lowScore:${fomoLowScoreCount} noDex:${fomoNoDexCount}`
+	  + ` noSlot:${fomoNoSlotCount} lowScore:${fomoLowScoreCount}`
+	  + ` lowReserve:${fomoLowReserveCount} noDex:${fomoNoDexCount}`
+	  + ` pattern:${fomoPatternCount} already:${fomoAlreadyWatchCount}`
 	);
   console.log(
   `[NO TRADE SUMMARY] v3:${v3Seen} v4:${v4Seen} watched:${activeWatch.size}`
