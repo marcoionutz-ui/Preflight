@@ -38,7 +38,7 @@ const WATCH_MAX_AGE_MS         = 20 * 60_000;
 const WATCH_NO_FLOW_MAX_AGE_MS =  8 * 60_000;
 const WATCH_SELLING_MAX_AGE_MS =  5 * 60_000;
 const FOMO_WATCH_TTL_MS        = 10 * 60_000;
-const FOMO_RECHECK_MIN_AGE_MS  =  2 * 60_000;
+const FOMO_RECHECK_MIN_AGE_MS  = 60_000;
 const FOMO_RECHECK_MAX_AGE_MS  = 10 * 60_000;
 const FOMO_NO_WS_DROP_MS       =  3 * 60_000;
 const MAX_FOMO_WATCH    = 5;
@@ -1320,8 +1320,9 @@ function getEntryGate(mem: PairMemoryEntry, flow: FlowSignal, lp: LiquiditySigna
   if (flow.pressure === "BUYING" && buyVol < 0.05) {
     return { allowed: false, reason: `buy volume too low (${buyVol.toFixed(3)} ETH)` };
   }
-  if ((isV3 || isV4) && flow.pressure === "BUYING" && netVol < 0.05) {
-    return { allowed: false, reason: `V3/V4 net buy volume too low (${netVol.toFixed(3)} ETH)` };
+  const minNetVol = entrySource === "FOMO" ? 0.03 : 0.05;
+  if ((isV3 || isV4) && flow.pressure === "BUYING" && netVol < minNetVol) {
+    return { allowed: false, reason: `V3/V4 net buy volume too low (${netVol.toFixed(3)} ETH, min ${minNetVol})` };
   }
 
   // Un singur whale nu e trend
@@ -1333,7 +1334,21 @@ function getEntryGate(mem: PairMemoryEntry, flow: FlowSignal, lp: LiquiditySigna
   const sellVol   = (flow as any).sellVol5m ?? 0;
   const sellRatio = buyVol > 0 ? sellVol / buyVol : 0;
   const isLargeConfirmedPool = liq.status === "CONFIRMED" && liq.reserveUsd >= 100_000;
-	if (!isLargeConfirmedPool && flow.pressure === "BUYING" && (sellVol < 0.01 || sellRatio < 0.03)) {
+	if (
+		entrySource === "FOMO" &&
+		!isLargeConfirmedPool &&
+		flow.pressure === "BUYING" &&
+		(sellVol < 0.01 || sellRatio < 0.03)
+	) {
+		console.log(`[FOMO BYPASS] one-sided spike allowed — sellRatio ${(sellRatio * 100).toFixed(1)}%`);
+	}
+
+	if (
+		entrySource !== "FOMO" &&
+		!isLargeConfirmedPool &&
+		flow.pressure === "BUYING" &&
+		(sellVol < 0.01 || sellRatio < 0.03)
+	) {
 		return { allowed: false, reason: `one-sided spike — sell ratio ${(sellRatio * 100).toFixed(1)}% (min 3%)` };
 	}
 
@@ -2251,8 +2266,9 @@ async function hotCandidatesLoop(): Promise<void> {
       }
 
       const score = quickEdgeScore(pool, mem, flow, lp);
-      if (score < 80) {
-        console.log(`[HOT LOW SCORE] ${mem.symbol} — score:${score} source:${source ?? "WS"} flow:${flow.pressure}`);
+      const minHotScore = source === "FOMO" ? 75 : 80;
+      if (score < minHotScore) {
+        console.log(`[HOT LOW SCORE] ${mem.symbol} — score:${score}/${minHotScore} source:${source ?? "WS"} flow:${flow.pressure}`);
         hotCandidates.delete(pairAddress);
         continue;
       }
