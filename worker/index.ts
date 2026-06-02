@@ -1,5 +1,5 @@
 /**
- * Supreme Trader Worker v5.24
+ * Supreme Trader Worker v5.25
  * P1: Multi-chain (BASE + ARB)
  * P2: Second Wave Detection
  * P3: LP Events Monitoring (Mint/Burn)
@@ -38,9 +38,9 @@ const MAX_HOLD_MS         = 4 * 60 * 60_000;
 const WATCH_MAX_AGE_MS         = 20 * 60_000;
 const WATCH_NO_FLOW_MAX_AGE_MS =  8 * 60_000;
 const WATCH_SELLING_MAX_AGE_MS =  5 * 60_000;
-const FOMO_WATCH_TTL_MS        = 15 * 60_000;
-const FOMO_RECHECK_MIN_AGE_MS  =  8 * 60_000;
-const FOMO_RECHECK_MAX_AGE_MS  = 15 * 60_000;
+const FOMO_WATCH_TTL_MS        = 10 * 60_000;
+const FOMO_RECHECK_MIN_AGE_MS  =  2 * 60_000;
+const FOMO_RECHECK_MAX_AGE_MS  = 10 * 60_000;
 const MAX_FOMO_WATCH    = 5;
 const MAX_ACTIVE_WATCH  = 20;
 const WATCH_MIN_SCORE = 70;
@@ -50,7 +50,7 @@ let ethPriceCached = 2500;
 const MIN_FLOW_ETH        = 0.001;
 const MIN_TOTAL_FLOW_ETH  = 0.01;
 const FLOW_IMBALANCE      = 0.20;
-const WORKER_VERSION      = "v5.24";
+const WORKER_VERSION      = "v5.25";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   realtime: { transport: WebSocket },
@@ -1277,10 +1277,11 @@ function getEntryGate(mem: PairMemoryEntry, flow: FlowSignal, lp: LiquiditySigna
   }
 
   // Token cu history pur de bad exits — niciodată un winner
-  if (mem.badExits24h >= 2 && mem.wins24h === 0 && mem.losses24h === 0) {
+  const recentBadExit = mem.lastExitTime && Date.now() - mem.lastExitTime < 6 * 60 * 60_000;
+  if (mem.badExits24h >= 2 && mem.wins24h === 0 && mem.losses24h === 0 && recentBadExit) {
     return { allowed: false, reason: `bad exits only (${mem.badExits24h} bad, 0 wins/losses)` };
   }
-
+ 
   // RECOVERING pe V3/V4 cere participare mai puternică
   if ((isV3 || isV4) && mem.phase === "RECOVERING" && flow.buys5m < 5) {
     return { allowed: false, reason: `RECOVERING needs stronger participation (${flow.buys5m}/5 buys)` };
@@ -1720,11 +1721,10 @@ async function scan(): Promise<void> {
 	  else if (!(isV3pool || isV4pool)) fomoNoDexCount++;
 	}
 	  const fomoWatchable =
-		!wsFlowReal.hasData &&
 		!activeWatch.has(pairAddr) &&
 		currentFomoWatch < MAX_FOMO_WATCH &&
-		prelScore >= 60 &&
-		reserveUsdF >= 8_000 &&
+		prelScore >= 50 &&
+		reserveUsdF >= 20_000 &&
 		(isV3pool || isV4pool) &&
 		(
 		(m5f > 30 && m5f < 150 && h24f < 500) ||
@@ -1992,22 +1992,28 @@ async function fomoCandidatesLoop(): Promise<void> {
     const survivedPump =
       Number.isFinite(currentPrice) &&
       Number.isFinite(blockPrice) &&
-      currentPrice >= blockPrice * 0.55;
+      currentPrice >= blockPrice * 0.82;
 
     const flowConfirmed =
       flow.hasData &&
       flow.pressure === "BUYING" &&
-      buyVolF >= 0.10 &&
-      netVolF >= 0.08 &&
-      flow.buys5m >= 3 &&
-      sellVolF / Math.max(buyVolF, 0.001) < 0.45;
+      survivedPump &&
+      buyVolF >= 0.05 &&
+      netVolF >= 0.03 &&
+      flow.buys5m >= 2 &&
+      sellVolF / Math.max(buyVolF, 0.001) < 0.55;
 
     if (!survivedPump) {
+      const priceMovePct =
+        Number.isFinite(currentPrice) && Number.isFinite(blockPrice) && blockPrice > 0
+          ? (((currentPrice / blockPrice) - 1) * 100).toFixed(1)
+          : "NaN";
       console.log(
         `[FOMO FAIL] ${mem.symbol}`
         + ` — dumped after block`
         + ` current:${currentPrice}`
         + ` block:${blockPrice}`
+        + ` pricePct:${priceMovePct}%`
       );
       activeWatch.delete(pairAddr);
       hotCandidates.delete(pairAddr);
@@ -2017,26 +2023,29 @@ async function fomoCandidatesLoop(): Promise<void> {
 
     if (!flowConfirmed) {
       console.log(
-        `[FOMO WAIT] ${mem.symbol}`
-        + ` age:${Math.round(ageMs / 60_000)}m`
+        `[FOMO REJECT] ${mem.symbol}`
+        + ` price:${currentPrice}`
+        + ` block:${blockPrice}`
         + ` survived:${survivedPump ? 1 : 0}`
         + ` flow:${flow.hasData ? flow.pressure : "NO_WS"}`
-        + ` buys5m:${flow.buys5m ?? 0}`
+        + ` buys:${flow.buys5m ?? 0}`
         + ` buyVol:${buyVolF.toFixed(3)}`
-        + ` sellVol:${sellVolF.toFixed(3)}`
         + ` netVol:${netVolF.toFixed(3)}`
+        + ` sellRatio:${(sellVolF / Math.max(buyVolF, 0.001) * 100).toFixed(1)}%`
       );
       continue;
     }
 
+    const priceMovePct =
+      Number.isFinite(currentPrice) && Number.isFinite(blockPrice) && blockPrice > 0
+        ? (((currentPrice / blockPrice) - 1) * 100).toFixed(1)
+        : "NaN";
     console.log(
       `[FOMO CONTINUATION] ${mem.symbol}`
       + ` age:${Math.round(ageMs / 60_000)}m`
-      + ` reason:${info.reason ?? "unknown"}`
-      + ` flow:${flow.pressure}`
-      + ` buys5m:${flow.buys5m ?? 0}`
+      + ` priceMove:${priceMovePct}%`
+      + ` buys:${flow.buys5m ?? 0}`
       + ` buyVol:${buyVolF.toFixed(3)}`
-      + ` sellVol:${sellVolF.toFixed(3)}`
       + ` netVol:${netVolF.toFixed(3)}`
     );
 
