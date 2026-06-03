@@ -3,12 +3,15 @@
 export type FlowPressure = "BUYING" | "SELLING" | "NEUTRAL";
 
 export interface FlowSignal {
-  buys1m:   number;
-  sells1m:  number;
-  buys5m:   number;
-  sells5m:  number;
-  pressure: FlowPressure;
-  hasData:  boolean; // false dacă nu avem WS sau txns data
+  buys1m:    number;
+  sells1m:   number;
+  buys5m:    number;
+  sells5m:   number;
+  pressure:  FlowPressure;
+  hasData:   boolean; // false dacă nu avem WS sau txns data
+  buyVol5m?:  number;
+  sellVol5m?: number;
+  netVol5m?:  number;
 }
 
 export const NEUTRAL_FLOW: FlowSignal = {

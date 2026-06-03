@@ -49,6 +49,7 @@ export function checkEntryGate(
   flow: FlowSignal,
   minSeenCount = 5,
   cooldownMs   = 2 * 60 * 60_000,
+  options?: { allowPumping?: boolean },
 ): EntryGateResult {
   // Max 3 intrări per token per 24h (totalEntries = last 24h din Supabase)
   if (mem.totalEntries >= 3)
@@ -68,7 +69,7 @@ export function checkEntryGate(
     return { allowed: false, reason: `cooldown ${minsLeft}m left` };
   }
 
-  if (mem.phase === "PUMPING")
+  if (mem.phase === "PUMPING" && !options?.allowPumping)
     return { allowed: false, reason: "vertical pump phase" };
 
   if (flow.hasData && flow.pressure === "SELLING")

@@ -1,9 +1,7 @@
 /**
- * Supreme Trader Worker v5.26
+ * Supreme Trader Worker v5.27
  * P1: Multi-chain (BASE + ARB)
  * P2: Second Wave Detection
- * P3: LP Events Monitoring (Mint/Burn)
- * P5: Telegram Alerts
  */
 
 import * as dotenv from "dotenv";
@@ -41,8 +39,12 @@ const FOMO_WATCH_TTL_MS        = 10 * 60_000;
 const FOMO_RECHECK_MIN_AGE_MS  = 60_000;
 const FOMO_RECHECK_MAX_AGE_MS  = 10 * 60_000;
 const FOMO_NO_WS_DROP_MS       =  3 * 60_000;
-const MAX_FOMO_WATCH    = 5;
-const MAX_ACTIVE_WATCH  = 20;
+const MAX_FOMO_WATCH     = 15;
+const MAX_ACTIVE_WATCH   = 40;
+const MAX_VERTICAL_WATCH = 20;
+const MAX_LATE_WATCH     = 10;
+const MAX_V3_WATCH       = 30;
+const MAX_V4_WATCH       = 60;
 const WATCH_MIN_SCORE = 70;
 const FOMO_WATCH_MIN_SCORE = 45;
 const MIN_LP_REMOVE_ETH   = 0.05;  // ignoră dust burns
@@ -51,10 +53,10 @@ let ethPriceCached = 2500;
 const MIN_FLOW_ETH        = 0.001;
 const MIN_TOTAL_FLOW_ETH  = 0.01;
 const FLOW_IMBALANCE      = 0.20;
-const WORKER_VERSION      = "v5.26";
+const WORKER_VERSION      = "v5.27";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
-  realtime: { transport: WebSocket },
+  realtime: { transport: WebSocket as any },
 });
 
 // ── Multi-chain Config ────────────────────────────────────────────────────────
@@ -118,10 +120,13 @@ interface LpEvent   { ts: number; isAdd: boolean; ethAmount: number; }
 const memory          = new Map<string, PairMemoryEntry>();
 const wsFlow          = new Map<string, SwapEvent[]>();
 const lpEvents        = new Map<string, LpEvent[]>();
+type EntrySource = "WS" | "FOMO" | "SCAN" | "VERTICAL" | "LATE";
+type WatchKind   = "NORMAL" | "FOMO" | "VERTICAL" | "LATE";
+
 const hotCandidates   = new Map<string, {
   chain:      string;
   promotedAt: number;
-  source?:    "WS" | "FOMO";
+  source?:    EntrySource;
 }>();
 const poolLiquidity = new Map<string, {
   reserveUsd: number;
@@ -131,7 +136,7 @@ const poolLiquidity = new Map<string, {
 const activeWatch      = new Map<string, {
   chain:       string;
   addedAt:     number;
-  kind?:       "NORMAL" | "FOMO";
+  kind?:       WatchKind;
   entryPrice?: number;
   reason?:     string;
 }>();
@@ -311,16 +316,13 @@ function getWsFlow(pairAddress: string): FlowSignal {
 
   const buyVol5m  = m5.filter(e =>  e.isBuy).reduce((s, e) => s + e.ethAmount, 0);
   const sellVol5m = m5.filter(e => !e.isBuy).reduce((s, e) => s + e.ethAmount, 0);
-  const buyVol1m  = m1.filter(e =>  e.isBuy).reduce((s, e) => s + e.ethAmount, 0);
-  const sellVol1m = m1.filter(e => !e.isBuy).reduce((s, e) => s + e.ethAmount, 0);
-
   const buyCount5m  = m5.filter(e =>  e.isBuy).length;
   const sellCount5m = m5.filter(e => !e.isBuy).length;
-
+  const buyCount1m  = m1.filter(e =>  e.isBuy).length;
+  const sellCount1m = m1.filter(e => !e.isBuy).length;
   const totalVol  = buyVol5m + sellVol5m;
   const netVol    = buyVol5m - sellVol5m;
   const imbalance = totalVol > 0 ? netVol / totalVol : 0;
-
   const pressure: "BUYING" | "SELLING" | "NEUTRAL" =
     totalVol < MIN_TOTAL_FLOW_ETH ? "NEUTRAL" :
     imbalance >  FLOW_IMBALANCE   ? "BUYING"  :
@@ -329,12 +331,14 @@ function getWsFlow(pairAddress: string): FlowSignal {
   return {
     hasData:   true,
     pressure,
+    buys1m:    buyCount1m,
+    sells1m:   sellCount1m,
     buys5m:    buyCount5m,
     sells5m:   sellCount5m,
     buyVol5m:  Math.round(buyVol5m  * 1000) / 1000,
     sellVol5m: Math.round(sellVol5m * 1000) / 1000,
     netVol5m:  Math.round(netVol    * 1000) / 1000,
-  } as FlowSignal;
+  };
 }
 
 function getLpSignal(pairAddress: string): LiquiditySignal {
@@ -468,6 +472,26 @@ function cleanupActiveWatch(): void {
 
   for (const [addr, info] of activeWatch.entries()) {
     const ageMs = now - info.addedAt;
+
+    if (info.kind === "VERTICAL") {
+      if (ageMs > 3 * 60_000) {
+        console.log(`[WATCH EVICT] ${memory.get(addr)?.symbol ?? addr} — kind:VERTICAL age:${Math.round(ageMs/1000)}s`);
+        activeWatch.delete(addr);
+        hotCandidates.delete(addr);
+        watchedPoolCache.delete(addr);
+      }
+      continue;
+    }
+
+    if (info.kind === "LATE") {
+      if (ageMs > 8 * 60_000) {
+        console.log(`[WATCH EVICT] ${memory.get(addr)?.symbol ?? addr} — kind:LATE age:${Math.round(ageMs/60_000)}m`);
+        activeWatch.delete(addr);
+        hotCandidates.delete(addr);
+        watchedPoolCache.delete(addr);
+      }
+      continue;
+    }
 
     if (info.kind === "FOMO") {
       if (ageMs > FOMO_WATCH_TTL_MS) {
@@ -603,8 +627,14 @@ function subscribeV3Scoped(chain: ChainConfig): void {
 
   const addrs = [...activeWatch.entries()]
     .filter(([addr, info]) => info.chain === chain.id && v3PoolMap.has(addr))
+    .sort((a, b) => {
+      const pa = watchPriority(a[1].kind);
+      const pb = watchPriority(b[1].kind);
+      if (pa !== pb) return pa - pb;
+      return b[1].addedAt - a[1].addedAt;
+    })
     .map(([addr]) => addr)
-    .slice(0, 20);
+    .slice(0, MAX_V3_WATCH);
 
   if (!addrs.length) {
     const oldId = v3SwapSubIds.get(chain.id);
@@ -639,8 +669,14 @@ function subscribeV4Scoped(chain: ChainConfig): void {
 
   const poolIds = [...activeWatch.entries()]
     .filter(([addr, info]) => info.chain === chain.id && v4PoolMap.has(addr))
+    .sort((a, b) => {
+      const pa = watchPriority(a[1].kind);
+      const pb = watchPriority(b[1].kind);
+      if (pa !== pb) return pa - pb;
+      return b[1].addedAt - a[1].addedAt;
+    })
     .map(([addr]) => addr)
-    .slice(0, 50);
+    .slice(0, MAX_V4_WATCH);
 
   if (!poolIds.length) {
     const oldId = v4SwapSubIds.get(chain.id);
@@ -1166,6 +1202,22 @@ function checkFOMO(pool: GeckoPool): { blocked: boolean; reason: string | null }
   return { blocked: false, reason: null };
 }
 
+// ── FOMO type + watch priority ────────────────────────────────────────────────
+
+function getFomoType(reason: string | null): "VERTICAL_5M" | "LATE_24H" | "OTHER" {
+  if (!reason) return "OTHER";
+  if (reason.includes("5m")) return "VERTICAL_5M";
+  if (reason.includes("24h")) return "LATE_24H";
+  return "OTHER";
+}
+
+function watchPriority(kind?: string): number {
+  if (kind === "VERTICAL") return 0;
+  if (kind === "FOMO")     return 1;
+  if (kind === "LATE")     return 2;
+  return 3;
+}
+
 // ── Edge Score ────────────────────────────────────────────────────────────────
 
 function quickEdgeScore(
@@ -1298,7 +1350,7 @@ function computeEvidenceScore(mem: PairMemoryEntry, flow: FlowSignal, lp: Liquid
 
 // ── Should enter? ─────────────────────────────────────────────────────────────
 
-function getEntryGate(mem: PairMemoryEntry, flow: FlowSignal, lp: LiquiditySignal, score: number, entrySource: "WS" | "FOMO" | "SCAN" = "SCAN") {
+function getEntryGate(mem: PairMemoryEntry, flow: FlowSignal, lp: LiquiditySignal, score: number, entrySource: EntrySource = "SCAN") {
   const liq = getLiquidityContext(mem.pairAddress);
   if (liq.status === "MISSING") {
     return { allowed: false, reason: "missing liquidity context — skip" };
@@ -1321,37 +1373,49 @@ function getEntryGate(mem: PairMemoryEntry, flow: FlowSignal, lp: LiquiditySigna
   if (flow.pressure === "BUYING" && buyVol < 0.05) {
     return { allowed: false, reason: `buy volume too low (${buyVol.toFixed(3)} ETH)` };
   }
-  const minNetVol = entrySource === "FOMO" ? 0.03 : 0.05;
+  const minNetVol =
+    entrySource === "FOMO" || entrySource === "VERTICAL" ? 0.03 :
+    entrySource === "LATE" ? 0.10 :
+    0.05;
   if ((isV3 || isV4) && flow.pressure === "BUYING" && netVol < minNetVol) {
     return { allowed: false, reason: `V3/V4 net buy volume too low (${netVol.toFixed(3)} ETH, min ${minNetVol})` };
   }
 
   // Un singur whale nu e trend
-  if (flow.pressure === "BUYING" && flow.buys5m < 3) {
-    return { allowed: false, reason: `single buyer pattern (${flow.buys5m} buys/5m, need 3)` };
+  const minBuyCount =
+    entrySource === "VERTICAL" ? 2 :
+    3;
+
+  if (flow.pressure === "BUYING" && flow.buys5m < minBuyCount) {
+    return { allowed: false, reason: `single buyer pattern (${flow.buys5m} buys/5m, need ${minBuyCount})` };
   }
 
   // Piață unilaterală — zero sell-uri = spike fără rezistență reală
   const sellVol   = (flow as any).sellVol5m ?? 0;
   const sellRatio = buyVol > 0 ? sellVol / buyVol : 0;
   const isLargeConfirmedPool = liq.status === "CONFIRMED" && liq.reserveUsd >= 100_000;
-	if (
-		entrySource === "FOMO" &&
-		!isLargeConfirmedPool &&
-		flow.pressure === "BUYING" &&
-		(sellVol < 0.01 || sellRatio < 0.03)
-	) {
-		console.log(`[FOMO BYPASS] one-sided spike allowed — sellRatio ${(sellRatio * 100).toFixed(1)}%`);
-	}
+	const bypassOneSided =
+    entrySource === "FOMO" ||
+    entrySource === "VERTICAL" ||
+    entrySource === "LATE";
 
-	if (
-		entrySource !== "FOMO" &&
-		!isLargeConfirmedPool &&
-		flow.pressure === "BUYING" &&
-		(sellVol < 0.01 || sellRatio < 0.03)
-	) {
-		return { allowed: false, reason: `one-sided spike — sell ratio ${(sellRatio * 100).toFixed(1)}% (min 3%)` };
-	}
+  if (
+    bypassOneSided &&
+    !isLargeConfirmedPool &&
+    flow.pressure === "BUYING" &&
+    (sellVol < 0.01 || sellRatio < 0.03)
+  ) {
+    console.log(`[${entrySource} BYPASS] one-sided spike allowed — sellRatio ${(sellRatio * 100).toFixed(1)}%`);
+  }
+
+  if (
+    !bypassOneSided &&
+    !isLargeConfirmedPool &&
+    flow.pressure === "BUYING" &&
+    (sellVol < 0.01 || sellRatio < 0.03)
+  ) {
+    return { allowed: false, reason: `one-sided spike — sell ratio ${(sellRatio * 100).toFixed(1)}% (min 3%)` };
+  }
 
   // RECOVERING hard block — excepție doar pentru second wave confirmat
   if (mem.phase === "RECOVERING" && !(sw.isSecondWave && sw.confidence !== "LOW")) {
@@ -1382,7 +1446,10 @@ function getEntryGate(mem: PairMemoryEntry, flow: FlowSignal, lp: LiquiditySigna
   const evidence = computeEvidenceScore(mem, flow, lp);
   
   if (hotCandidates.has(mem.pairAddress.toLowerCase())) {
-    const requiredHotEvidence = entrySource === "FOMO" ? 5 : 7;
+    const requiredHotEvidence =
+      entrySource === "VERTICAL" ? 4 :
+      entrySource === "FOMO" || entrySource === "LATE" ? 5 :
+      7;
     if (mem.seenCount < 2) {
       return { allowed: false, reason: `HOT but too new (seen ${mem.seenCount}x, need 2)` };
     }
@@ -1392,7 +1459,13 @@ function getEntryGate(mem: PairMemoryEntry, flow: FlowSignal, lp: LiquiditySigna
     if (flow.pressure !== "BUYING") {
       return { allowed: false, reason: `HOT but flow not BUYING` };
     }
-    return checkEntryGate(mem, flow, 2, SECOND_WAVE_COOLDOWN_MS);
+    return checkEntryGate(
+      mem,
+      flow,
+      2,
+      SECOND_WAVE_COOLDOWN_MS,
+      { allowPumping: entrySource === "VERTICAL" || entrySource === "LATE" || entrySource === "FOMO" },
+    );
   }
 
   if (sw.isSecondWave && sw.confidence !== "LOW") {
@@ -1489,7 +1562,7 @@ async function saveShadowTrade(
   mem:         PairMemoryEntry,
   flow:        FlowSignal,
   lp:          LiquiditySignal,
-  entrySource: "WS" | "FOMO" | "SCAN" = "SCAN",
+  entrySource: EntrySource = "SCAN",
 ): Promise<void> {
   const pairAddr = cleanEvmAddress(pool.attributes.address) ?? pool.attributes.address.toLowerCase();
 
@@ -1534,6 +1607,22 @@ async function saveShadowTrade(
     `W${mem.wins24h}/L${mem.losses24h}`,
   ].filter(Boolean).join(" | ");
 
+  const slPrice =
+    entrySource === "VERTICAL" ? price * 0.88 :
+    entrySource === "LATE"     ? price * 0.90 :
+    price * (1 - (score >= 80 ? 0.15 : 0.18));
+
+  const tp1Price =
+    entrySource === "VERTICAL" ? price * 1.15 :
+    entrySource === "LATE"     ? price * 1.12 :
+    price * (
+      !flow.hasData               ? 1.10 :
+      flow.pressure === "BUYING"  ? 1.25 :
+      flow.pressure === "NEUTRAL" ? 1.12 :
+      flow.pressure === "SELLING" ? 1.08 :
+      1.15
+    );
+
   const { error: insertError } = await supabase.from("shadow_trades").insert({
     id, timestamp: Date.now(),
     symbol:         mem.symbol,
@@ -1543,8 +1632,8 @@ async function saveShadowTrade(
     token_address: mem.tokenAddress,
     entry_price:   price, current_price: price,
     edge_score:    score, flag_count: 0, note,
-    sl:  price * (1 - (score >= 80 ? 0.15 : 0.18)),
-    tp1: price * (!flow.hasData ? 1.10 : flow.pressure === "BUYING" ? 1.25 : flow.pressure === "NEUTRAL" ? 1.12 : flow.pressure === "SELLING" ? 1.08 : 1.15),
+    sl:  slPrice,
+    tp1: tp1Price,
     tp2: price * (score >= 80 ? 2.00 : 1.75),
     tp3: price * (score >= 80 ? 4.00 : 3.00),
   });
@@ -1557,10 +1646,10 @@ async function saveShadowTrade(
   mem.totalEntries += 1; mem.lastEntryTime = Date.now(); mem.lastEntryPrice = price;
   memory.set(pairAddr, mem);
 
-  const emoji = mem.phase === "SECOND_WAVE" ? "🌊" : mem.phase === "RECOVERING" ? "⚡" : "👁";
+  const emoji = entrySource === "VERTICAL" ? "🚀" : entrySource === "LATE" ? "🔄" : mem.phase === "SECOND_WAVE" ? "🌊" : mem.phase === "RECOVERING" ? "⚡" : "👁";
   const msg = `${emoji} <b>SHADOW</b> ${mem.symbol} [${pool._chain.id.toUpperCase()}]\n`
     + `Edge ${score} | ${mem.phase} | flow:${flow.pressure}\n`
-    + `LP: ${lp.hasData ? lp.status : "unknown"} | W${mem.wins24h}/L${mem.losses24h}\n`
+    + `Source: ${entrySource} | LP: ${lp.hasData ? lp.status : "unknown"} | W${mem.wins24h}/L${mem.losses24h}\n`
     + (sw.isSecondWave ? `🌊 Second Wave ${sw.score}/100 (${sw.confidence})\n` : "")
     + `seen:${mem.seenCount}x`;
 
@@ -1670,11 +1759,17 @@ async function updateOutcomes(pools: GeckoPool[]): Promise<void> {
       console.log(`[FLOW EXIT] ${trade.symbol} — sellVol:${((flow as any).sellVol5m ?? 0).toFixed(3)} netVol:${((flow as any).netVol5m ?? 0).toFixed(3)}`);
 
     // 6. Max hold
-    } else if (ageMs > MAX_HOLD_MS) {
+    } else if (ageMs > (() => {
+      const src = (trade.note ?? "").includes("source:VERTICAL") ? "VERTICAL"
+                : (trade.note ?? "").includes("source:LATE")     ? "LATE"
+                : "NORMAL";
+      return src === "VERTICAL" || src === "LATE" ? 60 * 60_000 : MAX_HOLD_MS;
+    })()) {
       update.exited_at = Date.now(); update.exit_price = price; update.exit_reason = "MAX HOLD";
       if (mem) { mem.badExits24h += 1; mem.lastExitReason = "MAX HOLD"; mem.lastExitTime = Date.now(); }
-      console.log(`[ZOMBIE KILL] ${trade.symbol} held 4h with no exit`);
-      await sendTelegram(`💀 <b>ZOMBIE KILL</b> ${trade.symbol} — held 4h, no exit`);
+      const holdLabel = (trade.note ?? "").includes("source:VERTICAL") || (trade.note ?? "").includes("source:LATE") ? "1h" : "4h";
+      console.log(`[ZOMBIE KILL] ${trade.symbol} held ${holdLabel} with no exit`);
+      await sendTelegram(`💀 <b>ZOMBIE KILL</b> ${trade.symbol} — held ${holdLabel}, no exit`);
     }
 
     const { error: updateError } = await supabase
@@ -1745,7 +1840,9 @@ async function scan(): Promise<void> {
   let fomoNoDexCount = 0;
   let fomoLowReserveCount = 0;
   let fomoPatternCount = 0;
-  let fomoAlreadyWatchCount = 0;
+  let fomoAlreadyWatchCount  = 0;
+  let verticalNoSlotCount    = 0;
+  let lateNoSlotCount        = 0;
   const chainCounts: Record<string, number> = {};
   let v3Seen = 0;
   let v4Seen = 0;
@@ -1811,86 +1908,66 @@ async function scan(): Promise<void> {
       await saveFOMOBlock(pool, fomo.reason);
 	  fomoBlockCount++;
 
-      const sw2      = detectSecondWave(mem, wsFlowReal);
       const m5f      = Number(pool.attributes.price_change_percentage?.m5  ?? 0);
       const h1f      = Number(pool.attributes.price_change_percentage?.h1  ?? 0);
-      const buyVolF  = (wsFlowReal as any).buyVol5m  ?? 0;
-      const netVolF  = (wsFlowReal as any).netVol5m  ?? 0;
-      const sellVolF = (wsFlowReal as any).sellVol5m ?? 0;
+      const fomoType             = getFomoType(fomo.reason);
+      const h24f                 = Number(pool.attributes.price_change_percentage?.h24 ?? 0);
+      const reserveUsdF          = Number(pool.attributes.reserve_in_usd ?? 0);
+      const currentVerticalWatch = [...activeWatch.values()].filter(w => w.kind === "VERTICAL").length;
+      const currentLateWatch     = [...activeWatch.values()].filter(w => w.kind === "LATE").length;
 
-      const currentFomoWatch = [...activeWatch.values()].filter(w => w.kind === "FOMO").length;
-	  const h24f = Number(pool.attributes.price_change_percentage?.h24 ?? 0);
-   	  const reserveUsdF = Number(pool.attributes.reserve_in_usd ?? 0);
-	  const fomoPatternOk =
-		(m5f > 30 && m5f < 150 && h24f < 500) ||
-		(h24f > 200 && h24f < 800 && m5f < 30);
+      if (activeWatch.has(pairAddr)) {
+        fomoAlreadyWatchCount++;
+      } else if (fomoType === "VERTICAL_5M") {
+        if (!( (isV3pool || isV4pool) && reserveUsdF >= 10_000 )) {
+          if (!(isV3pool || isV4pool)) fomoNoDexCount++;
+          else fomoLowReserveCount++;
+        } else if (currentVerticalWatch >= MAX_VERTICAL_WATCH) {
+          verticalNoSlotCount++;
+        } else {
+          activeWatch.set(pairAddr, {
+            chain:      pool._chain.id,
+            addedAt:    Date.now(),
+            kind:       "VERTICAL",
+            entryPrice: price,
+            reason:     fomo.reason ?? undefined,
+          });
+          watchedPoolCache.set(pairAddr, pool);
+          fomoWatchAddedCount++;
+          console.log(`[VERTICAL WATCH] ${mem.symbol} (${pool._chain.id}) — m5:${m5f.toFixed(1)}% reserve:$${Math.round(reserveUsdF/1000)}K score:${prelScore}`);
+        }
+      } else if (fomoType === "LATE_24H") {
+        const lateOk =
+          (isV3pool || isV4pool) &&
+          reserveUsdF >= 50_000 &&
+          m5f > 3 && m5f < 30 &&
+          h1f > 10 &&
+          h24f < 800 &&
+          prelScore >= FOMO_WATCH_MIN_SCORE;
+        if (!lateOk) {
+          if (!(isV3pool || isV4pool)) fomoNoDexCount++;
+          else if (reserveUsdF < 50_000) fomoLowReserveCount++;
+          else if (prelScore < FOMO_WATCH_MIN_SCORE) fomoLowScoreCount++;
+          else fomoPatternCount++;
+        } else if (currentLateWatch >= MAX_LATE_WATCH) {
+          lateNoSlotCount++;
+        } else {
+          activeWatch.set(pairAddr, {
+            chain:      pool._chain.id,
+            addedAt:    Date.now(),
+            kind:       "LATE",
+            entryPrice: price,
+            reason:     fomo.reason ?? undefined,
+          });
+          watchedPoolCache.set(pairAddr, pool);
+          fomoWatchAddedCount++;
+          console.log(`[LATE WATCH] ${mem.symbol} (${pool._chain.id}) — h24:${h24f.toFixed(0)}% m5:${m5f.toFixed(1)}% h1:${h1f.toFixed(1)}% reserve:$${Math.round(reserveUsdF/1000)}K`);
+        }
+      } else {
+        fomoPatternCount++;
+      }  
 
-	  if (activeWatch.has(pairAddr)) fomoAlreadyWatchCount++;
-	  else if (currentFomoWatch >= MAX_FOMO_WATCH) fomoNoSlotCount++;
-	 else if (prelScore < FOMO_WATCH_MIN_SCORE) {
-	    fomoLowScoreCount++;
-	    console.log(
-	      `[FOMO WATCH REJECT] ${mem.symbol} (${pool._chain.id})`
-	      + ` score:${prelScore}/${FOMO_WATCH_MIN_SCORE}`
-	      + ` reason:${fomo.reason}`
-	      + ` m5:${m5f.toFixed(1)} h24:${h24f.toFixed(1)}`
-	      + ` reserve:$${Math.round(reserveUsdF / 1000)}K`
-	      + ` dex:${isV3pool ? "V3" : isV4pool ? "V4" : "OTHER"}`
-	    );
-	  }
-	  else if (reserveUsdF < 20_000) fomoLowReserveCount++;
-	  else if (!(isV3pool || isV4pool)) fomoNoDexCount++;
-	  else if (!fomoPatternOk) fomoPatternCount++;
-
-	  const fomoWatchable =
-		!activeWatch.has(pairAddr) &&
-		currentFomoWatch < MAX_FOMO_WATCH &&
-		prelScore >= FOMO_WATCH_MIN_SCORE &&
-		reserveUsdF >= 20_000 &&
-		(isV3pool || isV4pool) &&
-		fomoPatternOk;
-		if (fomoWatchable) {
-		  activeWatch.set(pairAddr, {
-		    chain:       pool._chain.id,
-		    addedAt:     Date.now(),
-		    kind:        "FOMO",
-		    entryPrice:  Number(pool.attributes.base_token_price_usd),
-		    reason:      fomo.reason ?? undefined,
-		  });
-		  watchedPoolCache.set(pairAddr, pool);
-		  fomoWatchAddedCount++;
-		  console.log(`[FOMO WATCH] ${mem.symbol} (${pool._chain.id}) — tracking after block: ${fomo.reason}`);
-		}  
-
-      const lateSecondWave =
-	  wsFlowReal.hasData &&
-	  wsFlowReal.pressure === "BUYING" &&
-	  sw2.isSecondWave &&
-	  sw2.confidence !== "LOW" &&
-	  m5f  >  3 &&
-	  h1f  > 10 &&
-	  buyVolF  >= 0.20 &&
-	  netVolF  >= 0.15 &&
-	  sellVolF >= 0.01;
-
-	const fomoContinuation =
-	  wsFlowReal.hasData &&
-	  wsFlowReal.pressure === "BUYING" &&
-	  m5f > 5 && m5f < 80 &&
-	  h1f > 15 &&
-	  buyVolF >= 0.15 &&
-	  netVolF >= 0.10 &&
-	  sellVolF >= 0.01 &&
-	  sellVolF / Math.max(buyVolF, 0.001) >= 0.05 &&
-	  wsFlowReal.buys5m >= 3;
-
-	if (!lateSecondWave && !fomoContinuation) continue;
-	  console.log(
-		  `[FOMO CONTINUE] ${mem.symbol} (${pool._chain.id}) — ${lateSecondWave ? "lateSecondWave" : "continuation"}`
-		  + ` | ${fomo.reason}`
-		  + ` | m5:${m5f.toFixed(1)} h1:${h1f.toFixed(1)}`
-		  + ` | buyVol:${buyVolF.toFixed(3)} netVol:${netVolF.toFixed(3)} sellVol:${sellVolF.toFixed(3)}`
-		);
+      continue;
     }
 		
 	if (
@@ -2055,6 +2132,7 @@ async function scan(): Promise<void> {
 	  + ` noSlot:${fomoNoSlotCount} lowScore:${fomoLowScoreCount}`
 	  + ` lowReserve:${fomoLowReserveCount} noDex:${fomoNoDexCount}`
 	  + ` pattern:${fomoPatternCount} already:${fomoAlreadyWatchCount}`
+	  + ` vertNoSlot:${verticalNoSlotCount} lateNoSlot:${lateNoSlotCount}`
 	);
   console.log(
   `[NO TRADE SUMMARY] v3:${v3Seen} v4:${v4Seen} watched:${activeWatch.size}`
@@ -2063,6 +2141,264 @@ async function scan(): Promise<void> {
   + ` armed:${armedCount} armFail:${armFailCount} entered:${shadowCount}`
 );
   await saveMemoryToRedis();
+}
+
+// ── Vertical candidates loop ──────────────────────────────────────────────────
+
+let processingVerticalCandidates = false;
+
+async function verticalCandidatesLoop(): Promise<void> {
+  if (processingVerticalCandidates) return;
+  processingVerticalCandidates = true;
+
+  try {
+    const now = Date.now();
+
+    for (const [pairAddr, info] of activeWatch.entries()) {
+      if (info.kind !== "VERTICAL") continue;
+
+      const ageMs = now - info.addedAt;
+      if (ageMs < 15_000) continue;
+
+      if (ageMs > 3 * 60_000) {
+        console.log(`[VERTICAL EXPIRE] ${memory.get(pairAddr)?.symbol ?? pairAddr} — no confirmation in 3m`);
+        activeWatch.delete(pairAddr);
+        hotCandidates.delete(pairAddr);
+        watchedPoolCache.delete(pairAddr);
+        continue;
+      }
+
+      const mem  = memory.get(pairAddr);
+      const flow = getWsFlow(pairAddr);
+      if (!mem) continue;
+
+      if (flow.hasData && flow.pressure === "SELLING") {
+        console.log(`[VERTICAL DROP] ${mem.symbol} — flow turned SELLING`);
+        activeWatch.delete(pairAddr);
+        hotCandidates.delete(pairAddr);
+        watchedPoolCache.delete(pairAddr);
+        continue;
+      }
+
+      if (!flow.hasData && ageMs > 90_000) {
+        console.log(`[VERTICAL DROP] ${mem.symbol} — no WS flow after ${Math.round(ageMs/1000)}s`);
+        activeWatch.delete(pairAddr);
+        hotCandidates.delete(pairAddr);
+        watchedPoolCache.delete(pairAddr);
+        continue;
+      }
+
+      if (!flow.hasData) continue;
+
+      const chainCfg  = CHAINS.find(c => c.id === info.chain);
+      const freshPool = chainCfg ? await fetchPoolByAddress(chainCfg, pairAddr) : null;
+      if (!freshPool) continue;
+
+      watchedPoolCache.set(pairAddr, freshPool);
+      updateMemory(freshPool, Number(freshPool.attributes.base_token_price_usd));
+
+      const currentPrice = Number(freshPool.attributes.base_token_price_usd);
+      const blockPrice   = info.entryPrice ?? currentPrice;
+
+      if (!Number.isFinite(currentPrice) || currentPrice <= 0 || !Number.isFinite(blockPrice) || blockPrice <= 0) {
+        console.log(`[VERTICAL DROP] ${mem.symbol} — invalid price current:${currentPrice} block:${blockPrice}`);
+        activeWatch.delete(pairAddr);
+        hotCandidates.delete(pairAddr);
+        watchedPoolCache.delete(pairAddr);
+        continue;
+      }
+
+      const currentVsBlock = currentPrice / blockPrice;
+
+      if (currentVsBlock > 1.40) {
+        console.log(`[VERTICAL LATE] ${mem.symbol} — +${((currentVsBlock-1)*100).toFixed(0)}% from block, too late`);
+        activeWatch.delete(pairAddr);
+        watchedPoolCache.delete(pairAddr);
+        continue;
+      }
+
+      if (currentVsBlock < 0.75) {
+        console.log(`[VERTICAL DUMP] ${mem.symbol} — -${((1-currentVsBlock)*100).toFixed(0)}% from block, evict`);
+        activeWatch.delete(pairAddr);
+        hotCandidates.delete(pairAddr);
+        watchedPoolCache.delete(pairAddr);
+        continue;
+      }
+
+      const buyVolF  = (flow as any).buyVol5m  ?? 0;
+      const netVolF  = (flow as any).netVol5m  ?? 0;
+      const sellVolF = (flow as any).sellVol5m ?? 0;
+
+      const flowConfirmed =
+        flow.pressure === "BUYING" &&
+        buyVolF  >= 0.05 &&
+        netVolF  >= 0.03 &&
+        flow.buys5m >= 2 &&
+        sellVolF / Math.max(buyVolF, 0.001) < 0.65;
+
+      if (!flowConfirmed) {
+        console.log(
+          `[VERTICAL REJECT] ${mem.symbol}`
+          + ` flow:${flow.pressure} buys:${flow.buys5m}`
+          + ` buyVol:${buyVolF.toFixed(3)} netVol:${netVolF.toFixed(3)}`
+          + ` priceVsBlock:+${((currentVsBlock-1)*100).toFixed(1)}%`
+        );
+        continue;
+      }
+
+      console.log(
+        `[VERTICAL CONFIRMED] ${mem.symbol} (${info.chain})`
+        + ` age:${Math.round(ageMs/1000)}s`
+        + ` priceVsBlock:+${((currentVsBlock-1)*100).toFixed(1)}%`
+        + ` buyVol:${buyVolF.toFixed(3)} netVol:${netVolF.toFixed(3)} buys:${flow.buys5m}`
+      );
+
+      hotCandidates.set(pairAddr, {
+        chain:      info.chain,
+        promotedAt: now,
+        source:     "VERTICAL",
+      });
+
+      activeWatch.delete(pairAddr);
+      watchedPoolCache.delete(pairAddr);
+    }
+  } finally {
+    processingVerticalCandidates = false;
+  }
+}
+
+// ── Late candidates loop ──────────────────────────────────────────────────────
+
+let processingLateCandidates = false;
+
+async function lateCandidatesLoop(): Promise<void> {
+  if (processingLateCandidates) return;
+  processingLateCandidates = true;
+
+  try {
+    const now = Date.now();
+
+    for (const [pairAddr, info] of activeWatch.entries()) {
+      if (info.kind !== "LATE") continue;
+
+      const ageMs = now - info.addedAt;
+      if (ageMs < 30_000) continue;
+
+      if (ageMs > 8 * 60_000) {
+        console.log(`[LATE EXPIRE] ${memory.get(pairAddr)?.symbol ?? pairAddr} — no confirmation in 8m`);
+        activeWatch.delete(pairAddr);
+        hotCandidates.delete(pairAddr);
+        watchedPoolCache.delete(pairAddr);
+        continue;
+      }
+
+      const mem  = memory.get(pairAddr);
+      const flow = getWsFlow(pairAddr);
+      if (!mem) continue;
+
+      if (flow.hasData && flow.pressure === "SELLING") {
+        console.log(`[LATE DROP] ${mem.symbol} — flow turned SELLING`);
+        activeWatch.delete(pairAddr);
+        hotCandidates.delete(pairAddr);
+        watchedPoolCache.delete(pairAddr);
+        continue;
+      }
+
+      if (!flow.hasData && ageMs > 4 * 60_000) {
+        console.log(`[LATE DROP] ${mem.symbol} — no WS flow after ${Math.round(ageMs/60_000)}m`);
+        activeWatch.delete(pairAddr);
+        hotCandidates.delete(pairAddr);
+        watchedPoolCache.delete(pairAddr);
+        continue;
+      }
+
+      if (!flow.hasData) continue;
+
+      const chainCfg  = CHAINS.find(c => c.id === info.chain);
+      const freshPool = chainCfg ? await fetchPoolByAddress(chainCfg, pairAddr) : null;
+      if (!freshPool) continue;
+
+      watchedPoolCache.set(pairAddr, freshPool);
+      updateMemory(freshPool, Number(freshPool.attributes.base_token_price_usd));
+
+      const currentPrice = Number(freshPool.attributes.base_token_price_usd);
+      const blockPrice   = info.entryPrice ?? currentPrice;
+
+      if (!Number.isFinite(currentPrice) || currentPrice <= 0 || !Number.isFinite(blockPrice) || blockPrice <= 0) {
+        console.log(`[LATE DROP] ${mem.symbol} — invalid price`);
+        activeWatch.delete(pairAddr);
+        hotCandidates.delete(pairAddr);
+        watchedPoolCache.delete(pairAddr);
+        continue;
+      }
+
+      const currentVsBlock = currentPrice / blockPrice;
+
+      if (currentVsBlock > 1.30) {
+        console.log(`[LATE SKIP] ${mem.symbol} — +${((currentVsBlock-1)*100).toFixed(0)}% from block, too late`);
+        activeWatch.delete(pairAddr);
+        watchedPoolCache.delete(pairAddr);
+        continue;
+      }
+
+      if (currentVsBlock < 0.85) {
+        console.log(`[LATE DUMP] ${mem.symbol} — -${((1-currentVsBlock)*100).toFixed(0)}% from block, evict`);
+        activeWatch.delete(pairAddr);
+        hotCandidates.delete(pairAddr);
+        watchedPoolCache.delete(pairAddr);
+        continue;
+      }
+
+      const buyVolF  = (flow as any).buyVol5m  ?? 0;
+      const netVolF  = (flow as any).netVol5m  ?? 0;
+      const sellVolF = (flow as any).sellVol5m ?? 0;
+      const h24f     = Number(freshPool.attributes.price_change_percentage?.h24 ?? 0);
+      const m5f      = Number(freshPool.attributes.price_change_percentage?.m5  ?? 0);
+      const h1f      = Number(freshPool.attributes.price_change_percentage?.h1  ?? 0);
+      const reserveF = Number(freshPool.attributes.reserve_in_usd ?? 0);
+
+      const flowConfirmed =
+        flow.pressure === "BUYING" &&
+        buyVolF  >= 0.15 &&
+        netVolF  >= 0.10 &&
+        flow.buys5m >= 4 &&
+        sellVolF / Math.max(buyVolF, 0.001) < 0.60 &&
+        h24f < 800 &&
+        m5f > 3 && m5f < 30 &&
+        h1f > 10 &&
+        reserveF >= 50_000;
+
+      if (!flowConfirmed) {
+        console.log(
+          `[LATE REJECT] ${mem.symbol}`
+          + ` flow:${flow.pressure} buys:${flow.buys5m}`
+          + ` buyVol:${buyVolF.toFixed(3)} netVol:${netVolF.toFixed(3)}`
+          + ` m5:${m5f.toFixed(1)} h1:${h1f.toFixed(1)} h24:${h24f.toFixed(0)}`
+          + ` reserve:$${Math.round(reserveF/1000)}K`
+        );
+        continue;
+      }
+
+      console.log(
+        `[LATE CONFIRMED] ${mem.symbol} (${info.chain})`
+        + ` age:${Math.round(ageMs/1000)}s`
+        + ` priceVsBlock:+${((currentVsBlock-1)*100).toFixed(1)}%`
+        + ` buyVol:${buyVolF.toFixed(3)} netVol:${netVolF.toFixed(3)} buys:${flow.buys5m}`
+        + ` h24:${h24f.toFixed(0)}% m5:${m5f.toFixed(1)}% h1:${h1f.toFixed(1)}%`
+      );
+
+      hotCandidates.set(pairAddr, {
+        chain:      info.chain,
+        promotedAt: now,
+        source:     "LATE",
+      });
+
+      activeWatch.delete(pairAddr);
+      watchedPoolCache.delete(pairAddr);
+    }
+  } finally {
+    processingLateCandidates = false;
+  }
 }
 
 // ── FOMO candidates loop ─────────────────────────────────────────────────────
@@ -2237,7 +2573,10 @@ async function hotCandidatesLoop(): Promise<void> {
       const lp   = getLpSignal(pairAddress);
 
       // HOT: flow trebuie activ — dacă s-a stins, șterge și continuă
-      const minHotBuys = source === "FOMO" ? 3 : 5;
+      const minHotBuys =
+        source === "VERTICAL" ? 2 :
+        source === "FOMO" || source === "LATE" ? 3 :
+        5;
       if (!flow.hasData || flow.pressure !== "BUYING" || flow.buys5m < minHotBuys) {
         console.log(`[HOT SKIP] ${mem.symbol} — no buying flow (${flow.pressure}) buys:${flow.buys5m}/${minHotBuys}`);
         hotCandidates.delete(pairAddress);
@@ -2265,7 +2604,7 @@ async function hotCandidatesLoop(): Promise<void> {
       if (!pool) { hotCandidates.delete(pairAddress); continue; }
 
       const fomo = checkFOMO(pool);
-      if (fomo.blocked && source !== "FOMO") {
+      if (fomo.blocked && source !== "FOMO" && source !== "VERTICAL" && source !== "LATE") {
         console.log(
           `[HOT FOMO BLOCK] ${mem.symbol} (${chainId}) — ${fomo.reason}`
           + ` | flow:${flow.pressure}`
@@ -2277,14 +2616,17 @@ async function hotCandidatesLoop(): Promise<void> {
         continue;
       }
 
-      if (fomo.blocked && source === "FOMO") {
+      if (fomo.blocked && (source === "FOMO" || source === "VERTICAL" || source === "LATE")) {
         console.log(
-          `[HOT FOMO BYPASS] ${mem.symbol} (${chainId}) — confirmed continuation despite ${fomo.reason}`
+          `[HOT BYPASS] ${mem.symbol} (${chainId}) source:${source} — continuation despite ${fomo.reason}`
         );
       }
 
       const score = quickEdgeScore(pool, mem, flow, lp);
-      const minHotScore = source === "FOMO" ? 75 : 80;
+      const minHotScore =
+        source === "VERTICAL" ? 70 :
+        source === "FOMO" || source === "LATE" ? 75 :
+        80;
       if (score < minHotScore) {
         console.log(`[HOT LOW SCORE] ${mem.symbol} — score:${score}/${minHotScore} source:${source ?? "WS"} flow:${flow.pressure}`);
         hotCandidates.delete(pairAddress);
@@ -2298,7 +2640,7 @@ async function hotCandidatesLoop(): Promise<void> {
         continue;
       }
 
-      console.log(`[HOT] ${mem.symbol} (${chainId}) — promoted by WS, Edge ${score}`);
+      console.log(`[HOT] ${mem.symbol} (${chainId}) — source:${source ?? "WS"} Edge ${score}`);
       await saveShadowTrade(pool, score, mem, flow, lp, source ?? "WS");
       hotCandidates.delete(pairAddress);
     }
@@ -2378,5 +2720,7 @@ loadPairStats().then(async () => {
   setInterval(safeScan, SCAN_INTERVAL);
   setInterval(() => { monitorOpenTrades().catch(err => console.error("[MONITOR ERROR]", err)); }, 10_000);
   setInterval(() => { hotCandidatesLoop().catch(err => console.error("[HOT LOOP ERROR]", err)); }, 3_000);
+  setInterval(() => { verticalCandidatesLoop().catch(err => console.error("[VERTICAL LOOP ERROR]", err)); }, 15_000);
+  setInterval(() => { lateCandidatesLoop().catch(err => console.error("[LATE LOOP ERROR]", err)); }, 30_000);
   setInterval(() => { fomoCandidatesLoop().catch(err => console.error("[FOMO LOOP ERROR]", err)); }, 30_000);
 });
