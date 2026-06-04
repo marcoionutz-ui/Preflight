@@ -1,5 +1,5 @@
 /**
- * Supreme Trader Worker v5.27
+ * Supreme Trader Worker v5.28
  * P1: Multi-chain (BASE + ARB)
  * P2: Second Wave Detection
  */
@@ -53,7 +53,7 @@ let ethPriceCached = 2500;
 const MIN_FLOW_ETH        = 0.001;
 const MIN_TOTAL_FLOW_ETH  = 0.01;
 const FLOW_IMBALANCE      = 0.20;
-const WORKER_VERSION      = "v5.27";
+const WORKER_VERSION      = "v5.28";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   realtime: { transport: WebSocket as any },
@@ -155,6 +155,7 @@ const armedEntries     = new Map<string, {
   flowPressure:  string;
 }>();
 const watchedPoolCache = new Map<string, GeckoPool>();
+const lastImmediateSub = new Map<string, number>();
 const ARM_CONFIRM_MS        = 30_000;
 const ARM_TTL_MS            = 2 * 60_000;
 const ARM_MIN_PRICE_CONFIRM = 0.997;
@@ -320,6 +321,8 @@ function getWsFlow(pairAddress: string): FlowSignal {
   const sellCount5m = m5.filter(e => !e.isBuy).length;
   const buyCount1m  = m1.filter(e =>  e.isBuy).length;
   const sellCount1m = m1.filter(e => !e.isBuy).length;
+  const buyVol1m    = m1.filter(e =>  e.isBuy).reduce((s, e) => s + e.ethAmount, 0);
+  const sellVol1m   = m1.filter(e => !e.isBuy).reduce((s, e) => s + e.ethAmount, 0);
   const totalVol  = buyVol5m + sellVol5m;
   const netVol    = buyVol5m - sellVol5m;
   const imbalance = totalVol > 0 ? netVol / totalVol : 0;
@@ -328,16 +331,27 @@ function getWsFlow(pairAddress: string): FlowSignal {
     imbalance >  FLOW_IMBALANCE   ? "BUYING"  :
     imbalance < -FLOW_IMBALANCE   ? "SELLING" : "NEUTRAL";
 
+  const netVol1m = buyVol1m - sellVol1m;
+  const totalVol1m = buyVol1m + sellVol1m;
+  const pressure1m: "BUYING" | "SELLING" | "NEUTRAL" =
+    totalVol1m < MIN_TOTAL_FLOW_ETH ? "NEUTRAL" :
+    (buyVol1m - sellVol1m) / totalVol1m >  FLOW_IMBALANCE ? "BUYING"  :
+    (buyVol1m - sellVol1m) / totalVol1m < -FLOW_IMBALANCE ? "SELLING" : "NEUTRAL";
+
   return {
-    hasData:   true,
+    hasData:    true,
     pressure,
-    buys1m:    buyCount1m,
-    sells1m:   sellCount1m,
-    buys5m:    buyCount5m,
-    sells5m:   sellCount5m,
-    buyVol5m:  Math.round(buyVol5m  * 1000) / 1000,
-    sellVol5m: Math.round(sellVol5m * 1000) / 1000,
-    netVol5m:  Math.round(netVol    * 1000) / 1000,
+    pressure1m,
+    buys1m:     buyCount1m,
+    sells1m:    sellCount1m,
+    buys5m:     buyCount5m,
+    sells5m:    sellCount5m,
+    buyVol5m:   Math.round(buyVol5m  * 1000) / 1000,
+    sellVol5m:  Math.round(sellVol5m * 1000) / 1000,
+    netVol5m:   Math.round(netVol    * 1000) / 1000,
+    buyVol1m:   Math.round(buyVol1m  * 1000) / 1000,
+    sellVol1m:  Math.round(sellVol1m * 1000) / 1000,
+    netVol1m:   Math.round(netVol1m  * 1000) / 1000,
   };
 }
 
@@ -1218,6 +1232,16 @@ function watchPriority(kind?: string): number {
   return 3;
 }
 
+function requestImmediateScopedSubscribe(chain: ChainConfig): void {
+  const now = Date.now();
+  const last = lastImmediateSub.get(chain.id) ?? 0;
+  if (now - last < 2_000) return;
+  lastImmediateSub.set(chain.id, now);
+  subscribeV4Scoped(chain);
+  subscribeV3Scoped(chain);
+  console.log(`[VERTICAL SUB NOW] immediate subscription triggered (${chain.id})`);
+}
+
 // ── Edge Score ────────────────────────────────────────────────────────────────
 
 function quickEdgeScore(
@@ -1935,6 +1959,8 @@ async function scan(): Promise<void> {
           watchedPoolCache.set(pairAddr, pool);
           fomoWatchAddedCount++;
           console.log(`[VERTICAL WATCH] ${mem.symbol} (${pool._chain.id}) — m5:${m5f.toFixed(1)}% reserve:$${Math.round(reserveUsdF/1000)}K score:${prelScore}`);
+          const chainCfgImm = CHAINS.find(c => c.id === pool._chain.id);
+          if (chainCfgImm) requestImmediateScopedSubscribe(chainCfgImm);
         }
       } else if (fomoType === "LATE_24H") {
         const lateOk =
@@ -2229,12 +2255,30 @@ async function verticalCandidatesLoop(): Promise<void> {
       const netVolF  = (flow as any).netVol5m  ?? 0;
       const sellVolF = (flow as any).sellVol5m ?? 0;
 
+      const flowPressure = (flow as any).pressure1m ?? flow.pressure;
+      const buyVolV  = (flow as any).buyVol1m  ?? buyVolF;
+      const netVolV  = (flow as any).netVol1m  ?? netVolF;
+      const sellVolV = (flow as any).sellVol1m ?? sellVolF;
+
+      const liqF = getLiquidityContext(pairAddr);
+      const minVerticalBuys = liqF.reserveUsd < 30_000 ? 1 : 2;
+      const minVerticalBuyVol = liqF.reserveUsd < 30_000 ? 0.03 : 0.05;
+      const minVerticalNetVol = liqF.reserveUsd < 30_000 ? 0.02 : 0.03;
+
       const flowConfirmed =
-        flow.pressure === "BUYING" &&
-        buyVolF  >= 0.05 &&
-        netVolF  >= 0.03 &&
-        flow.buys5m >= 2 &&
-        sellVolF / Math.max(buyVolF, 0.001) < 0.65;
+        flowPressure === "BUYING" &&
+        buyVolV  >= minVerticalBuyVol &&
+        netVolV  >= minVerticalNetVol &&
+        flow.buys5m >= minVerticalBuys &&
+        sellVolV / Math.max(buyVolV, 0.001) < 0.65;
+
+      console.log(
+        `[VERTICAL CHECK] ${mem.symbol} age:${Math.round(ageMs/1000)}s`
+        + ` pressure1m:${flowPressure} buys:${flow.buys5m}`
+        + ` buyVol1m:${buyVolV.toFixed(3)} netVol1m:${netVolV.toFixed(3)}`
+		+ ` reserve:$${Math.round(liqF.reserveUsd / 1000)}K`
+        + ` priceVsBlock:+${((currentVsBlock-1)*100).toFixed(1)}%`
+      );
 
       if (!flowConfirmed) {
         console.log(

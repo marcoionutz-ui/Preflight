@@ -9,9 +9,13 @@ export interface FlowSignal {
   sells5m:   number;
   pressure:  FlowPressure;
   hasData:   boolean; // false dacă nu avem WS sau txns data
-  buyVol5m?:  number;
-  sellVol5m?: number;
-  netVol5m?:  number;
+  buyVol5m?:   number;
+  sellVol5m?:  number;
+  netVol5m?:   number;
+  pressure1m?: "BUYING" | "SELLING" | "NEUTRAL";
+  buyVol1m?:   number;
+  sellVol1m?:  number;
+  netVol1m?:   number;
 }
 
 export const NEUTRAL_FLOW: FlowSignal = {
