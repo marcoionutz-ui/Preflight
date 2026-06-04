@@ -1,7 +1,5 @@
 /**
- * Supreme Trader Worker v5.28
- * P1: Multi-chain (BASE + ARB)
- * P2: Second Wave Detection
+ * Supreme Trader Worker v5.29
  */
 
 import * as dotenv from "dotenv";
@@ -53,7 +51,7 @@ let ethPriceCached = 2500;
 const MIN_FLOW_ETH        = 0.001;
 const MIN_TOTAL_FLOW_ETH  = 0.01;
 const FLOW_IMBALANCE      = 0.20;
-const WORKER_VERSION      = "v5.28";
+const WORKER_VERSION      = "v5.29";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   realtime: { transport: WebSocket as any },
@@ -425,6 +423,22 @@ function rebuildPoolMaps(pools: GeckoPool[]): void {
       v4PoolMap.set(addr, p);
     }
   }
+
+  // Păstrează pool-urile din hotCandidates alive în maps
+  for (const [pairAddr, info] of hotCandidates.entries()) {
+    const cached = watchedPoolCache.get(pairAddr);
+    if (!cached) continue;
+    if (!chainsPresent.has(info.chain)) continue;
+    const addr = pairAddr.toLowerCase();
+    const isV4 = addr.length === 66;
+    const dexId = (cached as any).relationships?.dex?.data?.id ?? "";
+    if (!isV4 && V3_DEXES.has(dexId) && cleanEvmAddress(cached.attributes.address) !== null) {
+      v3PoolMap.set(addr, cached);
+    }
+    if (isV4) {
+      v4PoolMap.set(addr, cached);
+    }
+  }
 }
 
 function getQuoteFlowAsEth(
@@ -639,16 +653,22 @@ function subscribeV3Scoped(chain: ChainConfig): void {
   const ws = wsClients.get(chain.id);
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
 
-  const addrs = [...activeWatch.entries()]
+  const hotV3Addrs = [...hotCandidates.entries()]
     .filter(([addr, info]) => info.chain === chain.id && v3PoolMap.has(addr))
-    .sort((a, b) => {
-      const pa = watchPriority(a[1].kind);
-      const pb = watchPriority(b[1].kind);
-      if (pa !== pb) return pa - pb;
-      return b[1].addedAt - a[1].addedAt;
-    })
-    .map(([addr]) => addr)
-    .slice(0, MAX_V3_WATCH);
+    .map(([addr]) => addr);
+
+  const addrs = [...new Set([
+    ...hotV3Addrs,
+    ...[...activeWatch.entries()]
+      .filter(([addr, info]) => info.chain === chain.id && v3PoolMap.has(addr))
+      .sort((a, b) => {
+        const pa = watchPriority(a[1].kind);
+        const pb = watchPriority(b[1].kind);
+        if (pa !== pb) return pa - pb;
+        return b[1].addedAt - a[1].addedAt;
+      })
+      .map(([addr]) => addr),
+  ])].slice(0, MAX_V3_WATCH);
 
   if (!addrs.length) {
     const oldId = v3SwapSubIds.get(chain.id);
@@ -681,16 +701,22 @@ function subscribeV4Scoped(chain: ChainConfig): void {
   const ws = wsClients.get(chain.id);
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
 
-  const poolIds = [...activeWatch.entries()]
+  const hotV4Ids = [...hotCandidates.entries()]
     .filter(([addr, info]) => info.chain === chain.id && v4PoolMap.has(addr))
-    .sort((a, b) => {
-      const pa = watchPriority(a[1].kind);
-      const pb = watchPriority(b[1].kind);
-      if (pa !== pb) return pa - pb;
-      return b[1].addedAt - a[1].addedAt;
-    })
-    .map(([addr]) => addr)
-    .slice(0, MAX_V4_WATCH);
+    .map(([addr]) => addr);
+
+  const poolIds = [...new Set([
+    ...hotV4Ids,
+    ...[...activeWatch.entries()]
+      .filter(([addr, info]) => info.chain === chain.id && v4PoolMap.has(addr))
+      .sort((a, b) => {
+        const pa = watchPriority(a[1].kind);
+        const pb = watchPriority(b[1].kind);
+        if (pa !== pb) return pa - pb;
+        return b[1].addedAt - a[1].addedAt;
+      })
+      .map(([addr]) => addr),
+  ])].slice(0, MAX_V4_WATCH);
 
   if (!poolIds.length) {
     const oldId = v4SwapSubIds.get(chain.id);
@@ -1230,6 +1256,13 @@ function watchPriority(kind?: string): number {
   if (kind === "FOMO")     return 1;
   if (kind === "LATE")     return 2;
   return 3;
+}
+
+function deleteHotCandidate(pairAddr: string): void {
+  hotCandidates.delete(pairAddr);
+  if (!activeWatch.has(pairAddr)) {
+    watchedPoolCache.delete(pairAddr);
+  }
 }
 
 function requestImmediateScopedSubscribe(chain: ChainConfig): void {
@@ -1944,7 +1977,7 @@ async function scan(): Promise<void> {
       if (activeWatch.has(pairAddr)) {
         fomoAlreadyWatchCount++;
       } else if (fomoType === "VERTICAL_5M") {
-        if (!( (isV3pool || isV4pool) && reserveUsdF >= 10_000 )) {
+        if (!( (isV3pool || isV4pool) && reserveUsdF >= 5_000 )) {
           if (!(isV3pool || isV4pool)) fomoNoDexCount++;
           else fomoLowReserveCount++;
         } else if (currentVerticalWatch >= MAX_VERTICAL_WATCH) {
@@ -2305,7 +2338,9 @@ async function verticalCandidatesLoop(): Promise<void> {
       });
 
       activeWatch.delete(pairAddr);
-      watchedPoolCache.delete(pairAddr);
+      // Nu șterge watchedPoolCache — hotCandidatesLoop are nevoie de el
+      const chainCfgV = CHAINS.find(c => c.id === info.chain);
+      if (chainCfgV) requestImmediateScopedSubscribe(chainCfgV);
     }
   } finally {
     processingVerticalCandidates = false;
@@ -2432,14 +2467,16 @@ async function lateCandidatesLoop(): Promise<void> {
         + ` h24:${h24f.toFixed(0)}% m5:${m5f.toFixed(1)}% h1:${h1f.toFixed(1)}%`
       );
 
-      hotCandidates.set(pairAddr, {
+     hotCandidates.set(pairAddr, {
         chain:      info.chain,
         promotedAt: now,
         source:     "LATE",
       });
 
       activeWatch.delete(pairAddr);
-      watchedPoolCache.delete(pairAddr);
+      // Nu șterge watchedPoolCache — hotCandidatesLoop are nevoie de el
+      const chainCfgL = CHAINS.find(c => c.id === info.chain);
+      if (chainCfgL) requestImmediateScopedSubscribe(chainCfgL);
     }
   } finally {
     processingLateCandidates = false;
@@ -2589,7 +2626,9 @@ async function fomoCandidatesLoop(): Promise<void> {
     });
 
     activeWatch.delete(pairAddr);
-    watchedPoolCache.delete(pairAddr);
+    // nu șterge watchedPoolCache — hotCandidatesLoop are nevoie de el
+    const chainCfgF = CHAINS.find(c => c.id === info.chain || c.gecko === info.chain);
+    if (chainCfgF) requestImmediateScopedSubscribe(chainCfgF);
   }
 }
 
@@ -2604,15 +2643,15 @@ async function hotCandidatesLoop(): Promise<void> {
   try {
     for (const [pairAddress, { chain: chainId, promotedAt, source }] of hotCandidates.entries()) {
       if (Date.now() - promotedAt > 5 * 60_000) {
-        hotCandidates.delete(pairAddress); continue;
+        deleteHotCandidate(pairAddress); continue;
       }
 
       const chainCfg = CHAINS.find(c => c.id === chainId);
-      if (!chainCfg) { hotCandidates.delete(pairAddress); continue; }
+      if (!chainCfg) { deleteHotCandidate(pairAddress); continue; }
 
       const mem = memory.get(pairAddress);
-      if (!mem) { hotCandidates.delete(pairAddress); continue; }
-      if (isBlockedAsset(mem.symbol)) { hotCandidates.delete(pairAddress); continue; }
+      if (!mem) { deleteHotCandidate(pairAddress); continue; }
+      if (isBlockedAsset(mem.symbol)) { deleteHotCandidate(pairAddress); continue; }
 
       const flow = getWsFlow(pairAddress);
       const lp   = getLpSignal(pairAddress);
@@ -2622,9 +2661,18 @@ async function hotCandidatesLoop(): Promise<void> {
         source === "VERTICAL" ? 2 :
         source === "FOMO" || source === "LATE" ? 3 :
         5;
-      if (!flow.hasData || flow.pressure !== "BUYING" || flow.buys5m < minHotBuys) {
-        console.log(`[HOT SKIP] ${mem.symbol} — no buying flow (${flow.pressure}) buys:${flow.buys5m}/${minHotBuys}`);
-        hotCandidates.delete(pairAddress);
+      const hotFlowPressure = (source === "VERTICAL" && (flow as any).pressure1m)
+        ? (flow as any).pressure1m
+        : flow.pressure;
+
+      const effectiveFlow: FlowSignal =
+        source === "VERTICAL" && (flow as any).pressure1m
+          ? { ...flow, pressure: (flow as any).pressure1m as "BUYING" | "SELLING" | "NEUTRAL" }
+          : flow;
+
+      if (!flow.hasData || hotFlowPressure !== "BUYING" || flow.buys5m < minHotBuys) {
+        console.log(`[HOT SKIP] ${mem.symbol} — no buying flow (${hotFlowPressure}) buys:${flow.buys5m}/${minHotBuys}`);
+        deleteHotCandidate(pairAddress);
         continue;
       }
 
@@ -2642,11 +2690,11 @@ async function hotCandidatesLoop(): Promise<void> {
 		.is("exited_at", null)
 		.limit(1);
 
-      if (existing?.length) { hotCandidates.delete(pairAddress); continue; }
+      if (existing?.length) { deleteHotCandidate(pairAddress); continue; }
 
       // Date reale înainte de orice decizie
       const pool = v4PoolMap.get(pairAddress) ?? v3PoolMap.get(pairAddress) ?? await fetchPoolByAddress(chainCfg, pairAddress);
-      if (!pool) { hotCandidates.delete(pairAddress); continue; }
+      if (!pool) { deleteHotCandidate(pairAddress); continue; }
 
       const fomo = checkFOMO(pool);
       if (fomo.blocked && source !== "FOMO" && source !== "VERTICAL" && source !== "LATE") {
@@ -2657,7 +2705,7 @@ async function hotCandidatesLoop(): Promise<void> {
           + ` buyVol:${((flow as any).buyVol5m ?? 0).toFixed(3)}ETH`
           + ` netVol:${((flow as any).netVol5m ?? 0).toFixed(3)}ETH`
         );
-        hotCandidates.delete(pairAddress);
+        deleteHotCandidate(pairAddress);
         continue;
       }
 
@@ -2667,27 +2715,27 @@ async function hotCandidatesLoop(): Promise<void> {
         );
       }
 
-      const score = quickEdgeScore(pool, mem, flow, lp);
+      const score = quickEdgeScore(pool, mem, effectiveFlow, lp);
       const minHotScore =
         source === "VERTICAL" ? 70 :
         source === "FOMO" || source === "LATE" ? 75 :
         80;
       if (score < minHotScore) {
         console.log(`[HOT LOW SCORE] ${mem.symbol} — score:${score}/${minHotScore} source:${source ?? "WS"} flow:${flow.pressure}`);
-        hotCandidates.delete(pairAddress);
+        deleteHotCandidate(pairAddress);
         continue;
       }
 
-      const gate = getEntryGate(mem, flow, lp, score, source ?? "WS");
+      const gate = getEntryGate(mem, effectiveFlow, lp, score, source ?? "WS");
       if (!gate.allowed) {
         console.log(`[HOT GATE] ${mem.symbol} — ${gate.reason} source:${source ?? "WS"} score:${score}`);
-        hotCandidates.delete(pairAddress);
+        deleteHotCandidate(pairAddress);
         continue;
       }
 
       console.log(`[HOT] ${mem.symbol} (${chainId}) — source:${source ?? "WS"} Edge ${score}`);
-      await saveShadowTrade(pool, score, mem, flow, lp, source ?? "WS");
-      hotCandidates.delete(pairAddress);
+      await saveShadowTrade(pool, score, mem, effectiveFlow, lp, source ?? "WS");
+      deleteHotCandidate(pairAddress);
     }
   } finally {
     processingHotCandidates = false;
