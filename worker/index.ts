@@ -1473,6 +1473,7 @@ function getEntryGate(mem: PairMemoryEntry, flow: FlowSignal, lp: LiquiditySigna
     const requiredHotEvidence =
       entrySource === "VERTICAL" ? 4 :
       entrySource === "FOMO" || entrySource === "LATE" ? 5 :
+      entrySource === "WS" ? 6 :
       7;
     if (mem.seenCount < 2) {
       return { allowed: false, reason: `HOT but too new (seen ${mem.seenCount}x, need 2)` };
