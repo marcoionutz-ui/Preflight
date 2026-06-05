@@ -1,5 +1,5 @@
 /**
- * Supreme Trader Worker v5.29
+ * Supreme Trader Worker v5.30
  */
 
 import * as dotenv from "dotenv";
@@ -51,7 +51,7 @@ let ethPriceCached = 2500;
 const MIN_FLOW_ETH        = 0.001;
 const MIN_TOTAL_FLOW_ETH  = 0.01;
 const FLOW_IMBALANCE      = 0.20;
-const WORKER_VERSION      = "v5.29";
+const WORKER_VERSION      = "v5.30";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   realtime: { transport: WebSocket as any },
@@ -1465,13 +1465,17 @@ function getEntryGate(mem: PairMemoryEntry, flow: FlowSignal, lp: LiquiditySigna
     console.log(`[${entrySource} BYPASS] one-sided spike allowed — sellRatio ${(sellRatio * 100).toFixed(1)}%`);
   }
 
+  // Pool lichid cu distribuție activă
+  const isLiquidPool = liq.reserveUsd >= 200_000;
   if (
-    !bypassOneSided &&
-    !isLargeConfirmedPool &&
+    isLiquidPool &&
     flow.pressure === "BUYING" &&
-    (sellVol < 0.01 || sellRatio < 0.03)
+    sellRatio > 0.50 &&
+    entrySource !== "FOMO" &&
+    entrySource !== "VERTICAL" &&
+    entrySource !== "LATE"
   ) {
-    return { allowed: false, reason: `one-sided spike — sell ratio ${(sellRatio * 100).toFixed(1)}% (min 3%)` };
+    return { allowed: false, reason: `high sell ratio in liquid pool (${(sellRatio * 100).toFixed(1)}% — likely distribution)` };
   }
 
   // RECOVERING hard block — excepție doar pentru second wave confirmat
@@ -1496,9 +1500,22 @@ function getEntryGate(mem: PairMemoryEntry, flow: FlowSignal, lp: LiquiditySigna
     return { allowed: false, reason: `too many pools for token (${poolCount}) — clone/fragmentation risk` };
   }
 
- if (mem.seenCount > 40 && mem.totalEntries === 0 && liq.reserveUsd < 250_000) {
-  return { allowed: false, reason: `stale with no history (seen ${mem.seenCount}x, never entered)` };
-}
+if (
+    entrySource === "SCAN" &&
+    mem.seenCount > 40 &&
+    mem.totalEntries === 0
+  ) {
+    return { allowed: false, reason: `SCAN stale with no history (seen ${mem.seenCount}x, never entered)` };
+  }
+  if (
+    (entrySource === "SCAN" || entrySource === "WS") &&
+    mem.seenCount > 20 &&
+    mem.wins24h === 0 &&
+    mem.losses24h === 0 &&
+    mem.badExits24h >= 2
+  ) {
+    return { allowed: false, reason: `stale loser — seen ${mem.seenCount}x, ${mem.badExits24h} bad exits, zero wins` };
+  }
 
   const evidence = computeEvidenceScore(mem, flow, lp);
   
@@ -1670,16 +1687,18 @@ async function saveShadowTrade(
     entrySource === "LATE"     ? price * 0.90 :
     price * (1 - (score >= 80 ? 0.15 : 0.18));
 
-  const tp1Price =
-    entrySource === "VERTICAL" ? price * 1.15 :
-    entrySource === "LATE"     ? price * 1.12 :
-    price * (
-      !flow.hasData               ? 1.10 :
-      flow.pressure === "BUYING"  ? 1.25 :
-      flow.pressure === "NEUTRAL" ? 1.12 :
-      flow.pressure === "SELLING" ? 1.08 :
-      1.15
-    );
+  const reserveAtEntry = liq.reserveUsd;
+  const tp1Multiplier =
+    entrySource === "VERTICAL" ? 1.15 :
+    entrySource === "LATE"     ? 1.12 :
+    reserveAtEntry >= 1_000_000 ? 1.08 :
+    reserveAtEntry >= 300_000   ? 1.10 :
+    !flow.hasData               ? 1.10 :
+    flow.pressure === "BUYING"  ? 1.18 :
+    flow.pressure === "NEUTRAL" ? 1.12 :
+    flow.pressure === "SELLING" ? 1.08 :
+    1.15;
+  const tp1Price = price * tp1Multiplier;
 
   const { error: insertError } = await supabase.from("shadow_trades").insert({
     id, timestamp: Date.now(),
