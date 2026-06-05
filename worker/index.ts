@@ -2201,6 +2201,66 @@ async function scan(): Promise<void> {
       }
       await r.set("supreme:pair_states", JSON.stringify(states), "EX", 120);
       console.log(`[REDIS] Wrote ${Object.keys(states).length} pair states`);
+
+      // ── Active watch snapshot ────────────────────────────────────────────
+      const watchObj: Record<string, object> = {};
+      for (const [addr, info] of activeWatch.entries()) {
+        const mem = memory.get(addr);
+        watchObj[addr] = {
+          chain:       info.chain,
+          addedAt:     info.addedAt,
+          ageMs:       Date.now() - info.addedAt,
+          kind:        info.kind ?? "NORMAL",
+          entryPrice:  info.entryPrice ?? null,
+          reason:      info.reason ?? null,
+          symbol:      mem?.symbol ?? null,
+          phase:       mem?.phase  ?? null,
+        };
+      }
+      await r.set("supreme:active_watch", JSON.stringify(watchObj), "EX", 120);
+
+      // ── Hot candidates snapshot ──────────────────────────────────────────
+      const hotObj: Record<string, object> = {};
+      for (const [addr, info] of hotCandidates.entries()) {
+        const mem = memory.get(addr);
+        const flow = getWsFlow(addr);
+        hotObj[addr] = {
+          chain:      info.chain,
+          promotedAt: info.promotedAt,
+          ageMs:      Date.now() - info.promotedAt,
+          source:     info.source ?? null,
+          symbol:     mem?.symbol ?? null,
+          phase:      mem?.phase  ?? null,
+          flow: {
+            pressure: flow.pressure,
+            buys5m:   flow.buys5m,
+            hasData:  flow.hasData,
+            buyVol5m: (flow as any).buyVol5m  ?? 0,
+            netVol5m: (flow as any).netVol5m  ?? 0,
+          },
+        };
+      }
+      await r.set("supreme:hot_candidates", JSON.stringify(hotObj), "EX", 120);
+
+      // ── Armed entries snapshot ───────────────────────────────────────────
+      const armedObj: Record<string, object> = {};
+      for (const [addr, info] of armedEntries.entries()) {
+        const mem = memory.get(addr);
+        armedObj[addr] = {
+          armedAt:      info.armedAt,
+          ageMs:        Date.now() - info.armedAt,
+          price:        info.price,
+          score:        info.score,
+          flowPressure: info.flowPressure,
+          symbol:       mem?.symbol ?? null,
+          phase:        mem?.phase  ?? null,
+        };
+      }
+      await r.set("supreme:armed_entries", JSON.stringify(armedObj), "EX", 120);
+
+      console.log(
+        `[REDIS] watch:${activeWatch.size} hot:${hotCandidates.size} armed:${armedEntries.size}`
+      );
     }
   } catch { /* Redis optional — workerul merge fără */ }
 //  CHAINS.forEach(c => updateScopedSwap(c));
