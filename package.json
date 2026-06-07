@@ -13,7 +13,7 @@
     "worker": "tsx worker/index.ts"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "1.26.0",
     "@solana/web3.js": "^1.98.4",
     "@supabase/supabase-js": "^2.106.0",
     "dotenv": "^17.4.2",
@@ -35,8 +35,5 @@
     "@types/react-dom": "^19",
     "tsx": "^4.22.2",
     "typescript": "^5"
-  },
-  "overrides": {
-    "@modelcontextprotocol/sdk": "1.26.0"
   }
 }
