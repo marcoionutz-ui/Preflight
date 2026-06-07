@@ -175,7 +175,7 @@ export default function TradePanel({ pair, chain, log, edgeScore, ohlcv = [] }: 
     }
 	
 	// Apply LIVE_CONFIG limits for semi/live mode
-	if (config.mode !== "paper" && side === "buy") {
+	if (side === "buy") {
 	  const liquidityUsd = Number(pair.liquidity?.usd ?? 0);
 	  if (liquidityUsd < config.minLiquidityUsd) {
 		log(`Trade blocked: liquidity $${Math.round(liquidityUsd)} < min $${config.minLiquidityUsd}`, "err");
