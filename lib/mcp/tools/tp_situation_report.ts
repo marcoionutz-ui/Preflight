@@ -113,11 +113,14 @@ Use this before deciding which other tools to call.`,
           lines.push(`RECENT TRANSITIONS:\n${evLines.join("\n")}`);
         }
 
-        const recentDrops = drops.filter(d => now - d.droppedAt < 5 * 60_000).slice(0, 3);
+        const dropsSource = (pfDrops && pfDrops.length > 0 ? pfDrops : drops) as any[];
+        const recentDrops = dropsSource.filter((d: any) => now - d.droppedAt < 5 * 60_000).slice(0, 3);
         if (recentDrops.length) {
-          const dropLines = recentDrops.map(d => {
-            const ageSec = Math.round((now - d.droppedAt) / 1000);
-            return `  ${ageSec}s ago: ${d.symbol} dropped from ${d.previousState} — ${d.reason}`;
+          const dropLines = recentDrops.map((d: any) => {
+            const ageSec    = Math.round((now - d.droppedAt) / 1000);
+            const fromState = d.wasIn ?? d.previousState ?? "?";
+            const reason    = d.dropReason ?? d.reason ?? "?";
+            return `  ${ageSec}s ago: ${d.symbol} dropped from ${fromState} — ${reason}`;
           });
           lines.push(`DROPPED:\n${dropLines.join("\n")}`);
         }
