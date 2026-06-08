@@ -1,6 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { readAllRedis, freshnessLabel, getPipelineState } from "../redis-reader";
+import { readAllRedis, freshnessLabel, getPipelineState, readPairContext } from "../redis-reader";
 import type { PairState, MemoryEntry } from "../types";
 import { mcpOk, mcpErr, ERR } from "../errors";
 
@@ -34,6 +34,9 @@ Args: pair_address (0x... EVM address or V4 pool ID), chain (optional: base/arbi
 
         const { now, states, watch, hot, armed, snapshot } = ctx;
         const addr = pair_address.toLowerCase().trim();
+		
+		// Try preflight:pair_context first — richest data
+        const pfCtx = await readPairContext(addr);
 
         const watchEntry    = watch[addr] ?? null;
         const hotEntry      = hot[addr]   ?? null;
@@ -49,12 +52,25 @@ Args: pair_address (0x... EVM address or V4 pool ID), chain (optional: base/arbi
         const reserveEth = snapshot?.poolReserveEth?.[addr] ?? null;
 
         if (!pairState && !snapMem) {
+          if (pfCtx) {
+            return mcpOk({
+              found: true, pairAddress: addr,
+              symbol: pfCtx.symbol,
+              chain:  pfCtx.chain,
+              preflightContext: pfCtx,
+              pipeline: { state: pfCtx.pipelineState ?? "NONE", watch: watchOut, hot: hotOut, armed: armedOut },
+              contextQuality: pfCtx.contextQuality ?? "fresh",
+              dataSource: "preflight_pair_context",
+              freshnessSec: pfCtx.updatedAt ? Math.round((now - pfCtx.updatedAt) / 1000) : null,
+            });
+          }
           return mcpOk({
             found: false, pairAddress: addr,
             symbol: watchOut?.symbol ?? hotOut?.symbol ?? armedOut?.symbol ?? null,
             chain:  chain ?? watchOut?.chain ?? hotOut?.chain ?? null,
             pipeline: { state: pipelineState, watch: watchOut, hot: hotOut, armed: armedOut },
             contextQuality: "unknown", dataSource: "none", freshnessSec: null,
+			preflightContext: pfCtx ?? null,
           });
         }
 
@@ -83,8 +99,9 @@ Args: pair_address (0x... EVM address or V4 pool ID), chain (optional: base/arbi
           } : undefined,
           pipeline: { state: pipelineState, watch: watchOut, hot: hotOut, armed: armedOut },
           reserveEth,
-          contextQuality: pairState ? freshnessLabel(now - pairState.updatedAt) : "snapshot_only",
-          dataSource: pairState ? "pair_states" : "worker_snapshot",
+          preflightContext: pfCtx ?? null,
+          contextQuality: pfCtx ? "fresh" : pairState ? freshnessLabel(now - pairState.updatedAt) : "snapshot_only",
+          dataSource: pfCtx ? "preflight_pair_context" : pairState ? "pair_states" : "worker_snapshot",
           freshnessSec,
         });
       } catch (e) { return mcpErr(ERR.INTERNAL, e instanceof Error ? e.message : String(e)); }

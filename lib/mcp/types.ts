@@ -155,6 +155,11 @@ export interface RedisContext {
   regime:   MarketRegime | null;
   events:   PipelineEvent[];
   drops:    RecentDrop[];
+  pfMarket:    any | null;
+  pfMomentum:  any | null;
+  pfPipeline:  any | null;
+  pfQualified: any | null;
+  pfDrops:     any | null;
   keyExists: {
     pair_states:     boolean;
     active_watch:    boolean;
@@ -164,6 +169,11 @@ export interface RedisContext {
     market_regime:   boolean;
     pipeline_events: boolean;
     recent_drops:    boolean;
+    pf_market:       boolean;
+    pf_momentum:     boolean;
+    pf_pipeline:     boolean;
+    pf_qualified:    boolean;
+    pf_drops:        boolean;
   };
 }
 

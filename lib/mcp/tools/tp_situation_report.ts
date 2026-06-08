@@ -25,7 +25,7 @@ Use this before deciding which other tools to call.`,
         const ctx = await readAllRedis();
         if (!ctx) return mcpOk("❌ Redis not connected — worker context unavailable.");
 
-        const { now, states, watch, hot, armed, snapshot, regime, events, drops } = ctx;
+        const { now, states, watch, hot, armed, snapshot, regime, events, drops, pfMarket, pfPipeline, pfMomentum, pfQualified, pfDrops } = ctx;
 
         const stateVals     = Object.values(states);
         const newestStateAt = stateVals.length ? Math.max(...stateVals.map(s => s.updatedAt)) : null;
@@ -35,10 +35,14 @@ Use this before deciding which other tools to call.`,
         const lines: string[] = [];
         lines.push(`WORKER: ${workerOnline ? `✅ online (${snapshot?.version ?? "?"})` : "⚠️ offline or stale"} | data: ${freshnessSec !== null ? `${freshnessSec}s ago` : "unknown"}`);
 
-        if (regime) {
-          const emoji  = regime.regime === "RISK_ON" ? "🟢" : regime.regime === "RISK_OFF" ? "🔴" : regime.regime === "DEAD" ? "⚫" : "🟡";
-          const chains = regime.wsConnectedChains.length ? regime.wsConnectedChains.join("+") : "none";
-          lines.push(`MARKET: ${emoji} ${regime.regime} | buying:${regime.buyingPctAll}% selling:${regime.sellingPctAll}% | WS coverage:${regime.flowCoveragePct}% | chains:${chains}`);
+       const marketCtx = pfMarket ?? regime;
+        if (marketCtx) {
+          const r      = pfMarket ?? regime as any;
+          const emoji  = r.regime === "RISK_ON" ? "🟢" : r.regime === "RISK_OFF" ? "🔴" : r.regime === "DEAD" ? "⚫" : "🟡";
+          const chains = (r.wsConnectedChains ?? r.chainsActive ?? []).join("+") || "none";
+          const buying = r.buyingPct ?? r.buyingPctAll ?? 0;
+          const selling = r.sellingPct ?? r.sellingPctAll ?? 0;
+          lines.push(`MARKET: ${emoji} ${r.regime} | buying:${buying}% selling:${selling}% | WS coverage:${r.flowCoveragePct ?? 0}% | chains:${chains}`);
         } else {
           const withFlow  = stateVals.filter(s => s.flow.hasData);
           const buying    = withFlow.filter(s => s.flow.pressure === "BUYING").length;
@@ -51,7 +55,34 @@ Use this before deciding which other tools to call.`,
         const watchCount = Object.keys(watch).length;
         const hotCount   = Object.keys(hot).length;
         const armedCount = Object.keys(armed).length;
-        lines.push(`PIPELINE: watching:${watchCount} | hot:${hotCount} | armed:${armedCount}`);
+
+        const pfCounts = pfPipeline?.reduce((acc: any, e: any) => {
+          acc[e.pipelineState] = (acc[e.pipelineState] ?? 0) + 1;
+          return acc;
+        }, {}) ?? null;
+
+        if (pfCounts) {
+          lines.push(`PIPELINE: watching:${pfCounts.WATCHING ?? 0} | confirming:${pfCounts.CONFIRMING ?? 0} | qualified:${pfQualified?.length ?? 0}`);
+        } else {
+          lines.push(`PIPELINE: watching:${watchCount} | hot:${hotCount} | armed:${armedCount}`);
+        }
+		
+		// Preflight qualified signals
+        if (pfQualified && pfQualified.length > 0) {
+          const qLines = pfQualified.slice(0, 3).map((q: any) =>
+            `  → ${q.symbol} [${q.chain}] risk:${q.entryRisk} flow:${q.flow?.status} buys:${q.flow?.buys5m} | ${q.workerObservation?.slice(0, 80) ?? ""}`
+          );
+          lines.push(`QUALIFIED SIGNALS (passed all filters):\n${qLines.join("\n")}`);
+        }
+
+        // Preflight momentum events last 10m
+        if (pfMomentum && pfMomentum.length > 0) {
+          const mLines = pfMomentum.slice(0, 3).map((m: any) => {
+            const ageSec = Math.round((now - m.detectedAt) / 1000);
+            return `  ${ageSec}s ago: ${m.symbol} [${m.chain}] ${m.verdict} m5:${m.m5Pct?.toFixed(1)}% — ${m.reason}`;
+          });
+          lines.push(`MOMENTUM EVENTS (last 10m):\n${mLines.join("\n")}`);
+        }
 
         if (hotCount > 0) {
           const hotList = Object.entries(hot)

@@ -26,7 +26,7 @@ Args: chain (optional filter: 'base' or 'arbitrum')`,
         const ctx = await readAllRedis();
         if (!ctx) return mcpErr(ERR.REDIS_DOWN, "Redis not connected");
 
-        const { now, watch, hot, armed, states } = ctx;
+        const { now, watch, hot, armed, states, pfPipeline, pfQualified } = ctx;
         const filterChain  = (c: string | null | undefined) => !chain || c === chain;
         const firstState   = Object.values(states)[0];
         const freshnessSec = firstState ? Math.round((now - firstState.updatedAt) / 1000) : null;
@@ -66,10 +66,38 @@ Args: chain (optional filter: 'base' or 'arbitrum')`,
             phase: v.phase, chain: v.chain,
           }))
           .sort((a, b) => a.ageSec - b.ageSec);
+		
+		// Preflight pipeline entries (richer context)
+        const pfEntries = pfPipeline && pfPipeline.length > 0
+          ? pfPipeline
+              .filter((e: any) => filterChain(e.chain))
+              .map((e: any) => ({
+              symbol:            e.symbol,
+              chain:             e.chain,
+              pairAddress:       e.pairAddress,
+              pipelineState:     e.pipelineState,
+              watchKind:         e.watchKind,
+              watchAgeMin:       Math.round(e.watchAgeMs / 60_000 * 10) / 10,
+              confidence:        e.confidence,
+              entryRisk:         e.entryRisk,
+              flow:              e.flow,
+              riskFlags:         e.riskFlags,
+              opportunitySignals: e.opportunitySignals,
+              priceVsEntryPct:   e.priceVsEntryPct,
+              workerObservation: e.workerObservation,
+            }))
+          : null;
 
         return mcpOk({
-          activeWatch, hotCandidates, armedEntries,
-          summary: { watching: activeWatch.length, hot: hotCandidates.length, armed: armedEntries.length },
+          pipeline: pfEntries ?? null,
+          legacy: { activeWatch, hotCandidates, armedEntries },
+          summary: pfEntries
+            ? {
+                watching:   pfEntries.filter((e: any) => e.pipelineState === "WATCHING").length,
+                confirming: pfEntries.filter((e: any) => e.pipelineState === "CONFIRMING").length,
+                qualified:  pfQualified?.filter((q: any) => filterChain(q.chain)).length ?? 0,
+              }
+            : { watching: activeWatch.length, hot: hotCandidates.length, armed: armedEntries.length },
           freshnessSec,
         });
       } catch (e) { return mcpErr(ERR.INTERNAL, e instanceof Error ? e.message : String(e)); }

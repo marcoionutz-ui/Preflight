@@ -1,6 +1,6 @@
 /**
  * lib/mcp/redis-reader.ts
- * Redis reads + helper functions — extrase din route.ts
+ * Redis reads + helper functions — preflight:* first, supreme:* fallback
  */
 
 import { getRedis }  from "@/lib/db/redis";
@@ -19,6 +19,7 @@ export async function readAllRedis(): Promise<RedisContext | null> {
   const [
     statesRaw, watchRaw, hotRaw, armedRaw,
     snapshotRaw, regimeRaw, eventsRaw, dropsRaw,
+    pfMarketRaw, pfMomentumRaw, pfPipelineRaw, pfQualifiedRaw, pfDropsRaw,
   ] = await Promise.all([
     r.get("supreme:pair_states"),
     r.get("supreme:active_watch"),
@@ -28,9 +29,20 @@ export async function readAllRedis(): Promise<RedisContext | null> {
     r.get("supreme:market_regime"),
     r.get("supreme:pipeline_events"),
     r.get("supreme:recent_drops"),
+    r.get("preflight:market_context"),
+    r.get("preflight:momentum_events"),
+    r.get("preflight:signal_pipeline"),
+    r.get("preflight:qualified_signals"),
+    r.get("preflight:recent_drops"),
   ]);
 
   const now = Date.now();
+
+  // preflight:* first, supreme:* fallback
+  const regimeFinal   = pfMarketRaw   ?? regimeRaw;
+  const dropsFinal    = pfDropsRaw    ?? dropsRaw;
+  const eventsFinal   = eventsRaw; // pipeline_events rămâne supreme pentru acum
+
   return {
     now,
     states:   statesRaw   ? JSON.parse(statesRaw)   as Record<string, PairState>  : {},
@@ -38,9 +50,15 @@ export async function readAllRedis(): Promise<RedisContext | null> {
     hot:      hotRaw      ? JSON.parse(hotRaw)      as Record<string, HotEntry>    : {},
     armed:    armedRaw    ? JSON.parse(armedRaw)    as Record<string, ArmedEntry>  : {},
     snapshot: snapshotRaw ? JSON.parse(snapshotRaw) as WorkerSnapshot              : null,
-    regime:   regimeRaw   ? JSON.parse(regimeRaw)   as MarketRegime                : null,
-    events:   eventsRaw   ? JSON.parse(eventsRaw)   as PipelineEvent[]             : [],
-    drops:    dropsRaw    ? JSON.parse(dropsRaw)    as RecentDrop[]                : [],
+    regime:   regimeFinal ? JSON.parse(regimeFinal) as MarketRegime                : null,
+    events:   eventsFinal ? JSON.parse(eventsFinal) as PipelineEvent[]             : [],
+    drops:    dropsFinal  ? JSON.parse(dropsFinal)  as RecentDrop[]                : [],
+    // preflight:* keys
+    pfMarket:    pfMarketRaw    ? JSON.parse(pfMarketRaw)    : null,
+    pfMomentum:  pfMomentumRaw  ? JSON.parse(pfMomentumRaw)  : null,
+    pfPipeline:  pfPipelineRaw  ? JSON.parse(pfPipelineRaw)  : null,
+    pfQualified: pfQualifiedRaw ? JSON.parse(pfQualifiedRaw) : null,
+    pfDrops:     pfDropsRaw     ? JSON.parse(pfDropsRaw)     : null,
     keyExists: {
       pair_states:     statesRaw   !== null,
       active_watch:    watchRaw    !== null,
@@ -50,6 +68,11 @@ export async function readAllRedis(): Promise<RedisContext | null> {
       market_regime:   regimeRaw   !== null,
       pipeline_events: eventsRaw   !== null,
       recent_drops:    dropsRaw    !== null,
+      pf_market:       pfMarketRaw    !== null,
+      pf_momentum:     pfMomentumRaw  !== null,
+      pf_pipeline:     pfPipelineRaw  !== null,
+      pf_qualified:    pfQualifiedRaw !== null,
+      pf_drops:        pfDropsRaw     !== null,
     },
   };
 }
@@ -96,6 +119,15 @@ export function findLastEventForPair(addr: string, events: PipelineEvent[]): Pip
 
 export function findLastDropForPair(addr: string, drops: RecentDrop[]): RecentDrop | null {
   return drops.find(d => d.pairAddress === addr) ?? null;
+}
+
+export async function readPairContext(addr: string): Promise<any | null> {
+  const r = getRedis();
+  if (!r) return null;
+  try {
+    const raw = await r.get(`preflight:pair_context:${addr.toLowerCase()}`);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
 }
 
 export { type MemoryEntry, type PairState };

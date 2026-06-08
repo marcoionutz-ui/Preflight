@@ -1,5 +1,5 @@
 /**
- * Supreme Trader Worker v5.31
+ * Supreme Trader Worker v5.32
  */
 
 import * as dotenv from "dotenv";
@@ -17,6 +17,21 @@ import { detectSecondWave }        from "../lib/engines/secondWave";
 import { classifyNewPool } from "../lib/engines/newPoolDetector";
 import type { KnownPool }  from "../lib/engines/newPoolDetector";
 import { getRedis } from "../lib/db/redis";
+import { classifyMomentumEvent, isVerticalWatch, isLateWatch, isHardReject, shouldRecordEvent } from "./lib/momentum";
+import { buildWorkerObservation, type ObservationContext } from "./lib/observation";
+import {
+  writePreflightRedis,
+  buildMomentumEventEntry,
+  buildSignalPipelineEntry,
+  buildQualifiedSignalEntry,
+  deriveFlowStatus,
+  deriveLiquidityStatus,
+  deriveRiskFlags,
+  type PreflightMomentumEvent,
+  type PreflightDrop,
+  type PreflightQualifiedSignal,
+  type PreflightPairContext,
+} from "./lib/preflight-redis";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -51,7 +66,7 @@ let ethPriceCached = 2500;
 const MIN_FLOW_ETH        = 0.001;
 const MIN_TOTAL_FLOW_ETH  = 0.01;
 const FLOW_IMBALANCE      = 0.20;
-const WORKER_VERSION      = "v5.31";
+const WORKER_VERSION      = "v5.32";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   realtime: { transport: WebSocket as any },
@@ -119,7 +134,7 @@ const memory          = new Map<string, PairMemoryEntry>();
 const wsFlow          = new Map<string, SwapEvent[]>();
 const lpEvents        = new Map<string, LpEvent[]>();
 type EntrySource = "WS" | "FOMO" | "SCAN" | "VERTICAL" | "LATE";
-type WatchKind   = "NORMAL" | "FOMO" | "VERTICAL" | "LATE";
+type WatchKind   = "NORMAL" | "FOMO" | "VERTICAL" | "LATE" | "CONFIRMED_MOMENTUM";
 
 const hotCandidates   = new Map<string, {
   chain:      string;
@@ -157,6 +172,10 @@ const lastImmediateSub = new Map<string, number>();
 const ARM_CONFIRM_MS        = 30_000;
 const ARM_TTL_MS            = 2 * 60_000;
 const ARM_MIN_PRICE_CONFIRM = 0.997;
+const momentumEventsBuffer: PreflightMomentumEvent[] = [];
+const MAX_MOMENTUM_BUFFER = 100;
+const qualifiedSignalsBuffer: PreflightQualifiedSignal[] = [];
+const MAX_QUALIFIED_BUFFER = 20;
 
 // ── Pipeline Events & Drops ───────────────────────────────────────────────────
 
@@ -613,6 +632,13 @@ function cleanupActiveWatch(): void {
 
   for (const [addr, info] of activeWatch.entries()) {
     const ageMs = now - info.addedAt;
+    if (info.kind === "CONFIRMED_MOMENTUM") {
+	if (ageMs > 3 * 60_000) {
+    console.log(`[WATCH EVICT] ${memory.get(addr)?.symbol ?? addr} — kind:CONFIRMED_MOMENTUM age:${Math.round(ageMs/1000)}s`);
+		dropWatchCandidate(addr, `evict CONFIRMED_MOMENTUM age:${Math.round(ageMs/1000)}s`);
+		}
+	  continue;
+	}
 
     if (info.kind === "VERTICAL") {
       if (ageMs > 3 * 60_000) {
@@ -1335,19 +1361,6 @@ async function loadMemoryFromRedis(): Promise<void> {
   console.log(`[REDIS] Snapshot load gave up after 5 attempts`);
 }
 
-// ── Anti-FOMO ─────────────────────────────────────────────────────────────────
-
-function checkFOMO(pool: GeckoPool): { blocked: boolean; reason: string | null } {
-  const h24 = Number(pool.attributes.price_change_percentage?.h24 ?? 0);
-  const m5  = Number(pool.attributes.price_change_percentage?.m5  ?? 0);
-
-  if (m5  > 30)  return { blocked: true, reason: `+${m5.toFixed(0)}% in 5m — vertical candle` };
-  if (h24 > 500) return { blocked: true, reason: `+${h24.toFixed(0)}% in 24h — extremely late` };
-  if (h24 > 200) return { blocked: true, reason: `+${h24.toFixed(0)}% in 24h — likely pumped` };
-
-  return { blocked: false, reason: null };
-}
-
 // ── FOMO type + watch priority ────────────────────────────────────────────────
 
 function getFomoType(reason: string | null): "VERTICAL_5M" | "LATE_24H" | "OTHER" {
@@ -1358,10 +1371,11 @@ function getFomoType(reason: string | null): "VERTICAL_5M" | "LATE_24H" | "OTHER
 }
 
 function watchPriority(kind?: string): number {
-  if (kind === "VERTICAL") return 0;
-  if (kind === "FOMO")     return 1;
-  if (kind === "LATE")     return 2;
-  return 3;
+  if (kind === "CONFIRMED_MOMENTUM") return 0;
+  if (kind === "VERTICAL") return 1;
+  if (kind === "FOMO")     return 2;
+  if (kind === "LATE")     return 3;
+  return 4;
 }
 
 function deleteHotCandidate(pairAddr: string): void {
@@ -1708,11 +1722,18 @@ async function fetchPoolByAddress(chain: ChainConfig, pairAddress: string): Prom
   } catch { return null; }
 }
 
-// ── Save FOMO block ───────────────────────────────────────────────────────────
+// ── MOMENTUM EVENT ───────────────────────────────────────────────────────────
 
-async function saveFOMOBlock(pool: GeckoPool, reason: string): Promise<void> {
+async function recordMomentumEvent(pool: GeckoPool, event: PreflightMomentumEvent): Promise<void> {
   const symbol = pool.attributes.name.split("/")[0]?.trim() ?? "?";
 
+  // Always update live buffer — for preflight:momentum_events Redis key
+  momentumEventsBuffer.unshift(event);
+  if (momentumEventsBuffer.length > MAX_MOMENTUM_BUFFER) {
+    momentumEventsBuffer.splice(MAX_MOMENTUM_BUFFER);
+  }
+
+  // Supabase dedupe — skip insert if already recorded in last hour
   const { data: existing } = await supabase
     .from("fomo_blocks").select("id")
     .eq("pair_address", pool.attributes.address)
@@ -1723,16 +1744,22 @@ async function saveFOMOBlock(pool: GeckoPool, reason: string): Promise<void> {
 
   const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
   await supabase.from("fomo_blocks").insert({
-    id, timestamp: Date.now(), symbol,
+    id,
+    timestamp:                 Date.now(),
+    symbol,
     worker_version:            WORKER_VERSION,
     chain:                     pool._chain.id,
     pair_address:              pool.attributes.address,
     price_at_block:            Number(pool.attributes.base_token_price_usd),
     price_change_24h_at_block: Number(pool.attributes.price_change_percentage?.h24 ?? 0),
-    reason,
+    reason:                    event.reason,
+    verdict:                   event.verdict,
+    momentum_level:            event.momentumLevel,
+    entry_risk:                event.entryRisk,
+    worker_observation:        event.workerObservation,
   });
 
-  console.log(`[FOMO] ${symbol} (${pool._chain.id}) — ${reason}`);
+  console.log(`[MOMENTUM] ${symbol} (${pool._chain.id}) — ${event.verdict}: ${event.reason}`);
 }
 
 // ── Save shadow trade ─────────────────────────────────────────────────────────
@@ -2084,75 +2111,86 @@ async function scan(): Promise<void> {
 	const isV4pool   = v4PoolMap.has(pairAddr);
 	if (isV3pool) v3Seen++;
 	if (isV4pool) v4Seen++;
-	const fomo       = checkFOMO(pool);
-	
-	const prelScore = quickEdgeScore(pool, mem, flow, lp);
-    if (fomo.blocked && fomo.reason) {
-      await saveFOMOBlock(pool, fomo.reason);
-	  fomoBlockCount++;
+	const momentumEvent = classifyMomentumEvent({
+	  m5:         Number(pool.attributes.price_change_percentage?.m5  ?? 0),
+	  h1:         Number(pool.attributes.price_change_percentage?.h1  ?? 0),
+	  h24:        Number(pool.attributes.price_change_percentage?.h24 ?? 0),
+	  reserveUsd: Number(pool.attributes.reserve_in_usd ?? 0),
+	  isV3orV4:   isV3pool || isV4pool,
+	  hasWsFlow:  wsFlowReal.hasData && wsFlowReal.pressure === "BUYING",
+	});
 
-      const m5f      = Number(pool.attributes.price_change_percentage?.m5  ?? 0);
-      const h1f      = Number(pool.attributes.price_change_percentage?.h1  ?? 0);
-      const fomoType             = getFomoType(fomo.reason);
-      const h24f                 = Number(pool.attributes.price_change_percentage?.h24 ?? 0);
-      const reserveUsdF          = Number(pool.attributes.reserve_in_usd ?? 0);
-      const currentVerticalWatch = [...activeWatch.values()].filter(w => w.kind === "VERTICAL").length;
-      const currentLateWatch     = [...activeWatch.values()].filter(w => w.kind === "LATE").length;
+	if (momentumEvent.verdict !== "NO_MOMENTUM") {
+	  const symbol = mem.symbol ?? pool.attributes.name.split("/")[0]?.trim() ?? "?";
+	  const entry  = buildMomentumEventEntry(
+		momentumEvent, symbol, pool._chain.id, pairAddr,
+		pairAddr.length === 66 ? "V4" : isV3pool ? "V3" : "V2",
+		wsFlowReal.hasData,
+		(wsFlowReal as any).buyVol5m ?? 0,
+		(wsFlowReal as any).netVol5m ?? 0,
+		wsFlowReal.buys5m ?? 0,
+		WORKER_VERSION,
+	  );
 
-      if (activeWatch.has(pairAddr)) {
-        fomoAlreadyWatchCount++;
-      } else if (fomoType === "VERTICAL_5M") {
-        if (!( (isV3pool || isV4pool) && reserveUsdF >= 5_000 )) {
-          if (!(isV3pool || isV4pool)) fomoNoDexCount++;
-          else fomoLowReserveCount++;
-        } else if (currentVerticalWatch >= MAX_VERTICAL_WATCH) {
-          verticalNoSlotCount++;
-        } else {
-          addWatchCandidate(pairAddr, {
-            chain:      pool._chain.id,
-            addedAt:    Date.now(),
-            kind:       "VERTICAL",
-            entryPrice: price,
-            reason:     fomo.reason ?? undefined,
-          }, pool);
-          fomoWatchAddedCount++;
-          console.log(`[VERTICAL WATCH] ${mem.symbol} (${pool._chain.id}) — m5:${m5f.toFixed(1)}% reserve:$${Math.round(reserveUsdF/1000)}K score:${prelScore}`);
-          const chainCfgImm = CHAINS.find(c => c.id === pool._chain.id);
-          if (chainCfgImm) requestImmediateScopedSubscribe(chainCfgImm);
-        }
-      } else if (fomoType === "LATE_24H") {
-        const lateOk =
-          (isV3pool || isV4pool) &&
-          reserveUsdF >= 50_000 &&
-          m5f > 3 && m5f < 30 &&
-          h1f > 10 &&
-          h24f < 800 &&
-          prelScore >= FOMO_WATCH_MIN_SCORE;
-        if (!lateOk) {
-          if (!(isV3pool || isV4pool)) fomoNoDexCount++;
-          else if (reserveUsdF < 50_000) fomoLowReserveCount++;
-          else if (prelScore < FOMO_WATCH_MIN_SCORE) fomoLowScoreCount++;
-          else fomoPatternCount++;
-        } else if (currentLateWatch >= MAX_LATE_WATCH) {
-          lateNoSlotCount++;
-        } else {
-          addWatchCandidate(pairAddr, {
-            chain:      pool._chain.id,
-            addedAt:    Date.now(),
-            kind:       "LATE",
-            entryPrice: price,
-            reason:     fomo.reason ?? undefined,
-          }, pool);
-          fomoWatchAddedCount++;
-          console.log(`[LATE WATCH] ${mem.symbol} (${pool._chain.id}) — h24:${h24f.toFixed(0)}% m5:${m5f.toFixed(1)}% h1:${h1f.toFixed(1)}% reserve:$${Math.round(reserveUsdF/1000)}K`);
-        }
-      } else {
-        fomoPatternCount++;
-      }  
+	  if (shouldRecordEvent(momentumEvent.verdict)) {
+		await recordMomentumEvent(pool, entry);
+		fomoBlockCount++;
+	  }
 
-      continue;
-    }
+	  if (isHardReject(momentumEvent.verdict)) {
+		continue;
+	  }
+
+	  if (isVerticalWatch(momentumEvent.verdict)) {
+		const currentVerticalWatch = [...activeWatch.values()].filter(w => w.kind === "VERTICAL").length;
+		if (activeWatch.has(pairAddr)) {
+		  fomoAlreadyWatchCount++;
+		} else if (currentVerticalWatch >= MAX_VERTICAL_WATCH) {
+		  verticalNoSlotCount++;
+		} else {
+		  const isPriority = momentumEvent.verdict === "CONFIRMED_MOMENTUM";
+		  addWatchCandidate(pairAddr, {
+			  chain:      pool._chain.id,
+			  addedAt:    Date.now(),
+			  kind:       isPriority ? "CONFIRMED_MOMENTUM" : "VERTICAL",
+			  entryPrice: price,
+			  reason:     momentumEvent.reason,
+			}, pool);
+		  fomoWatchAddedCount++;
+		  console.log(`[${isPriority ? "CONFIRMED_MOMENTUM" : "VERTICAL WATCH"}] ${symbol} (${pool._chain.id}) — m5:${momentumEvent.m5Pct.toFixed(1)}% reserve:$${Math.round(momentumEvent.reserveUsd/1000)}K verdict:${momentumEvent.verdict}`);
+		  if (isPriority || momentumEvent.m5Pct > 50) {
+			const chainCfgImm = CHAINS.find(c => c.id === pool._chain.id);
+			if (chainCfgImm) requestImmediateScopedSubscribe(chainCfgImm);
+		  }
+		}
+		continue;
+	  }
+
+	  if (isLateWatch(momentumEvent.verdict)) {
+		const currentLateWatch = [...activeWatch.values()].filter(w => w.kind === "LATE").length;
+		if (activeWatch.has(pairAddr)) {
+		  fomoAlreadyWatchCount++;
+		} else if (currentLateWatch >= MAX_LATE_WATCH) {
+		  lateNoSlotCount++;
+		} else {
+		  addWatchCandidate(pairAddr, {
+			chain:      pool._chain.id,
+			addedAt:    Date.now(),
+			kind:       "LATE",
+			entryPrice: price,
+			reason:     momentumEvent.reason,
+		  }, pool);
+		  fomoWatchAddedCount++;
+		  console.log(`[LATE WATCH] ${symbol} (${pool._chain.id}) — h24:${momentumEvent.h24Pct.toFixed(0)}% verdict:${momentumEvent.verdict}`);
+		}
+		continue;
+	  }
+
+	  fomoPatternCount++;
+	  continue;
+	}
 		
+	const prelScore = quickEdgeScore(pool, mem, flow, lp);
 	if (
 	  prelScore >= WATCH_MIN_SCORE &&
 	  !wsFlowReal.hasData &&
@@ -2257,6 +2295,27 @@ async function scan(): Promise<void> {
 	armedEntries.delete(pairAddr);
 
 	recordPipelineEvent("ARM_CONFIRMED", pairAddr, "ARMED", "CONFIRMED", pool._chain.id);
+	const qsScan = buildQualifiedSignalEntry({
+	  symbol:        mem.symbol,
+	  chain:         pool._chain.id,
+	  pairAddress:   pairAddr,
+	  qualifiedAt:   Date.now(),
+	  flow: {
+	    pressure: wsFlowReal.pressure,
+	    hasData:  wsFlowReal.hasData,
+	    buyVol5m: (wsFlowReal as any).buyVol5m ?? 0,
+	    netVol5m: (wsFlowReal as any).netVol5m ?? 0,
+	    buys5m:   wsFlowReal.buys5m ?? 0,
+	    sells5m:  wsFlowReal.sells5m ?? 0,
+	  },
+	  reserveUsd:    getLiquidityContext(pairAddr).reserveUsd,
+	  liqStatus:     getLiquidityContext(pairAddr).status,
+	  riskFlags:     [],
+	  phase:         mem.phase,
+	  workerVersion: WORKER_VERSION,
+	});
+	qualifiedSignalsBuffer.unshift(qsScan);
+	if (qualifiedSignalsBuffer.length > MAX_QUALIFIED_BUFFER) qualifiedSignalsBuffer.pop();
 	await saveShadowTrade(pool, score, mem, wsFlowReal, lp, "SCAN");
     shadowCount++;
     chainCounts[pool._chain.id] = (chainCounts[pool._chain.id] ?? 0) + 1;
@@ -2456,6 +2515,246 @@ async function scan(): Promise<void> {
         calculatedAt:   Date.now(),
       }), "EX", 120);
 
+	  // ── Preflight:* Redis writes ─────────────────────────────────────────
+      try {
+        const signalPipeline = [
+		  ...[...activeWatch.entries()].map(([addr, info]) => {
+			const mem2    = memory.get(addr);
+			const flow2   = getWsFlow(addr);
+			const events2 = wsFlow.get(addr) ?? [];
+			const buys2   = events2.filter(e => e.isBuy);
+			const sells2  = events2.filter(e => !e.isBuy);
+			const mem2p   = mem2 as any;
+			const liq2 = getLiquidityContext(addr);
+			const poolCount2 = (() => {
+			  const chainPrefix = mem2?.tokenAddress?.split("_")[0] ?? "";
+			  return mem2 ? tokenPools.get(tokenPoolKey(chainPrefix, mem2.tokenAddress))?.size ?? 1 : 1;
+			})();
+			return buildSignalPipelineEntry({
+			  symbol:             mem2?.symbol ?? addr.slice(0, 8),
+			  chain:              info.chain,
+			  pairAddress:        addr,
+			  pipelineState:      hotCandidates.has(addr) ? "CONFIRMING" : "WATCHING",
+			  watchKind:          info.kind ?? "NORMAL",
+			  enteredWatchAt:     info.addedAt,
+			  now:                Date.now(),
+			  flow: {
+				pressure:  flow2.pressure,
+				hasData:   flow2.hasData,
+				buyVol5m:  (flow2 as any).buyVol5m  ?? 0,
+				netVol5m:  (flow2 as any).netVol5m  ?? 0,
+				buys5m:    buys2.length,
+				sells5m:   sells2.length,
+			  },
+			  reserveUsd:         liq2.reserveUsd,
+			  liqStatus:          liq2.status,
+			  poolCountSameToken: poolCount2,
+			  consecutiveLosses:  mem2p?.consecutiveLosses  ?? 0,
+			  badExits24h:        mem2p?.badExits24h         ?? 0,
+			  wins24h:            mem2p?.wins24h             ?? 0,
+			  phase:              mem2?.phase ?? "UNKNOWN",
+			  priceVsEntryPct:    (info.entryPrice && mem2?.currentPrice)
+				? Number(((mem2.currentPrice - info.entryPrice) / info.entryPrice * 100).toFixed(2))
+				: null,
+			  workerVersion:      WORKER_VERSION,
+			});
+		  }),
+		  ...[...hotCandidates.entries()]
+			.filter(([addr]) => !activeWatch.has(addr))
+			.map(([addr, info]) => {
+			  const mem2    = memory.get(addr);
+			  const flow2   = getWsFlow(addr);
+			  const events2 = wsFlow.get(addr) ?? [];
+			  const buys2   = events2.filter(e => e.isBuy);
+			  const sells2  = events2.filter(e => !e.isBuy);
+			  const mem2p   = mem2 as any;
+			  const liq2 = getLiquidityContext(addr);
+			  const poolCount2 = (() => {
+			  const chainPrefix = mem2?.tokenAddress?.split("_")[0] ?? "";
+			    return mem2 ? tokenPools.get(tokenPoolKey(chainPrefix, mem2.tokenAddress))?.size ?? 1 : 1;
+			  })();
+			  return buildSignalPipelineEntry({
+				symbol:             mem2?.symbol ?? addr.slice(0, 8),
+				chain:              info.chain,
+				pairAddress:        addr,
+				pipelineState:      "CONFIRMING",
+				watchKind:          info.source ?? "NORMAL",
+				enteredWatchAt:     info.promotedAt,
+				now:                Date.now(),
+				flow: {
+				  pressure:  flow2.pressure,
+				  hasData:   flow2.hasData,
+				  buyVol5m:  (flow2 as any).buyVol5m  ?? 0,
+				  netVol5m:  (flow2 as any).netVol5m  ?? 0,
+				  buys5m:    buys2.length,
+				  sells5m:   sells2.length,
+				},
+				reserveUsd:         liq2.reserveUsd,
+				liqStatus:          liq2.status,
+				poolCountSameToken: poolCount2,
+				consecutiveLosses:  mem2p?.consecutiveLosses  ?? 0,
+				badExits24h:        mem2p?.badExits24h         ?? 0,
+				wins24h:            mem2p?.wins24h             ?? 0,
+				phase:              mem2?.phase ?? "UNKNOWN",
+				priceVsEntryPct:    null,
+				workerVersion:      WORKER_VERSION,
+			  });
+			}),
+		];
+        
+        const preflightDrops: PreflightDrop[] = recentDrops
+		  .filter(d => Date.now() - d.droppedAt < 10 * 60_000)
+		  .map(d => {
+			const dropFlow = getWsFlow(d.pairAddress);
+			const wasIn =
+			  d.previousState === "HOT"   ? "CONFIRMING" as const :
+			  d.previousState === "ARMED" ? "CONFIRMING" as const :
+			  "WATCHING" as const;
+			return {
+			  schemaVersion:    "preflight-scanner-v1",
+			  workerVersion:    WORKER_VERSION,
+			  symbol:           d.symbol,
+			  chain:            d.chain,
+			  pairAddress:      d.pairAddress,
+			  droppedAt:        d.droppedAt,
+			  wasIn,
+			  dropReason:       d.reason,
+			  timeInPipelineMs: 0,
+			  flowAtDrop: {
+				status:  dropFlow.hasData && dropFlow.pressure === "BUYING" ? "BUYING" as const : "WEAK" as const,
+				buys5m:  dropFlow.buys5m ?? 0,
+				sells5m: dropFlow.sells5m ?? 0,
+			  },
+			};
+		  });
+		  
+		const pairContextMap: Record<string, PreflightPairContext> = {};
+        for (const [addr, info] of activeWatch.entries()) {
+          const mem3   = memory.get(addr);
+          const flow3  = getWsFlow(addr);
+          const liq3   = getLiquidityContext(addr);
+          const events3 = wsFlow.get(addr) ?? [];
+          const buys3   = events3.filter(e => e.isBuy);
+          const sells3  = events3.filter(e => !e.isBuy);
+          const fs3     = deriveFlowStatus(flow3.pressure, flow3.hasData, buys3.length, sells3.length);
+          const ls3     = deriveLiquidityStatus(liq3.reserveUsd, liq3.status);
+          const rf3     = deriveRiskFlags(
+            (() => { const cp = mem3?.tokenAddress?.split("_")[0] ?? ""; return mem3 ? tokenPools.get(tokenPoolKey(cp, mem3.tokenAddress))?.size ?? 1 : 1; })(),
+            liq3.status, liq3.reserveUsd, mem3?.consecutiveLosses ?? 0, mem3?.badExits24h ?? 0, mem3?.wins24h ?? 0, 0, "",
+          );
+          const obsCtx3: ObservationContext = {
+            moveType: info.kind === "VERTICAL" || info.kind === "CONFIRMED_MOMENTUM" ? "VERTICAL" : info.kind === "LATE" ? "LATE" : "ORGANIC",
+            momentumLevel: "MEDIUM",
+            flowStatus: fs3,
+            liquidityStatus: ls3,
+            entryRisk: rf3.includes("BAD_HISTORY") ? "HIGH" : "MEDIUM",
+            riskFlags: rf3,
+            opportunitySignals: [],
+            pipelineState: hotCandidates.has(addr) ? "CONFIRMING" : "WATCHING",
+            confidence: "MEDIUM",
+            priceVsEntryPct: (info.entryPrice && mem3?.currentPrice)
+              ? Number(((mem3.currentPrice - info.entryPrice) / info.entryPrice * 100).toFixed(2))
+              : null,
+          };
+          pairContextMap[addr] = {
+            schemaVersion:     "preflight-scanner-v1",
+            workerVersion:     WORKER_VERSION,
+            symbol:            mem3?.symbol ?? addr.slice(0, 8),
+            chain:             info.chain,
+            pairAddress:       addr,
+            pipelineState:     hotCandidates.has(addr) ? "CONFIRMING" : "WATCHING",
+            phase:             mem3?.phase ?? "UNKNOWN",
+            liquidityStatus:   ls3,
+            reserveUsd:        liq3.reserveUsd,
+            flow: {
+              status:   fs3,
+              buyVol5m: (flow3 as any).buyVol5m ?? 0,
+              netVol5m: (flow3 as any).netVol5m ?? 0,
+              buys5m:   buys3.length,
+              sells5m:  sells3.length,
+              hasData:  flow3.hasData,
+            },
+            entryRisk:         rf3.includes("BAD_HISTORY") ? "HIGH" : "MEDIUM",
+            riskFlags:         rf3,
+            opportunitySignals: [],
+            workerObservation: buildWorkerObservation(obsCtx3),
+            updatedAt:         Date.now(),
+          };
+        }  
+		
+		for (const [addr, info] of hotCandidates.entries()) {
+		  if (pairContextMap[addr]) continue; // already added from activeWatch
+		  const mem3   = memory.get(addr);
+		  const flow3  = getWsFlow(addr);
+		  const liq3   = getLiquidityContext(addr);
+		  const events3 = wsFlow.get(addr) ?? [];
+		  const buys3   = events3.filter(e => e.isBuy);
+		  const sells3  = events3.filter(e => !e.isBuy);
+		  const fs3     = deriveFlowStatus(flow3.pressure, flow3.hasData, buys3.length, sells3.length);
+		  const ls3     = deriveLiquidityStatus(liq3.reserveUsd, liq3.status);
+		  const rf3     = deriveRiskFlags(
+			(() => { const cp = mem3?.tokenAddress?.split("_")[0] ?? ""; return mem3 ? tokenPools.get(tokenPoolKey(cp, mem3.tokenAddress))?.size ?? 1 : 1; })(),
+			liq3.status, liq3.reserveUsd, mem3?.consecutiveLosses ?? 0, mem3?.badExits24h ?? 0, mem3?.wins24h ?? 0, 0, "",
+		  );
+		  const obsCtx3: ObservationContext = {
+			moveType: "ORGANIC",
+			momentumLevel: "MEDIUM",
+			flowStatus: fs3,
+			liquidityStatus: ls3,
+			entryRisk: rf3.includes("BAD_HISTORY") ? "HIGH" : "MEDIUM",
+			riskFlags: rf3,
+			opportunitySignals: [],
+			pipelineState: "CONFIRMING",
+			confidence: "MEDIUM",
+			priceVsEntryPct: null,
+		  };
+		  pairContextMap[addr] = {
+			schemaVersion:     "preflight-scanner-v1",
+			workerVersion:     WORKER_VERSION,
+			symbol:            mem3?.symbol ?? addr.slice(0, 8),
+			chain:             info.chain,
+			pairAddress:       addr,
+			pipelineState:     "CONFIRMING",
+			phase:             mem3?.phase ?? "UNKNOWN",
+			liquidityStatus:   ls3,
+			reserveUsd:        liq3.reserveUsd,
+			flow: {
+			  status:   fs3,
+			  buyVol5m: (flow3 as any).buyVol5m ?? 0,
+			  netVol5m: (flow3 as any).netVol5m ?? 0,
+			  buys5m:   buys3.length,
+			  sells5m:  sells3.length,
+			  hasData:  flow3.hasData,
+			},
+			entryRisk:         rf3.includes("BAD_HISTORY") ? "HIGH" : "MEDIUM",
+			riskFlags:         rf3,
+			opportunitySignals: [],
+			workerObservation: buildWorkerObservation(obsCtx3),
+			updatedAt:         Date.now(),
+		  };
+		}
+		
+        await writePreflightRedis(r, {
+          workerVersion:    WORKER_VERSION,
+          now:              Date.now(),
+          regime,
+          buyingPctAll,
+          sellingPctAll,
+          flowCoveragePct,
+		  pairContextMap,
+          trackedPairs:     total,
+          chainsActive:     CHAINS.filter(c => {
+            const ws = wsClients.get(c.id);
+            return ws?.readyState === WebSocket.OPEN;
+          }).map(c => c.id),
+          momentumEventsBuffer,
+          signalPipeline,
+          qualifiedSignals: qualifiedSignalsBuffer,
+          recentDrops:      preflightDrops,
+        });
+      } catch (e) {
+        console.error("[PREFLIGHT REDIS] Write failed:", e instanceof Error ? e.message : e);
+      }
       console.log(
         `[REDIS] watch:${activeWatch.size} hot:${hotCandidates.size} armed:${armedEntries.size} regime:${regime}`
       );
@@ -2465,7 +2764,7 @@ async function scan(): Promise<void> {
   CHAINS.forEach(c => subscribeV4Scoped(c));
   CHAINS.forEach(c => subscribeV3Scoped(c));
   console.log(
-	  `[FOMO SUMMARY] blocked:${fomoBlockCount} watched:${fomoWatchAddedCount}`
+	  `[MOMENTUM SUMMARY] events:${fomoBlockCount} watched:${fomoWatchAddedCount}`
 	  + ` noSlot:${fomoNoSlotCount} lowScore:${fomoLowScoreCount}`
 	  + ` lowReserve:${fomoLowReserveCount} noDex:${fomoNoDexCount}`
 	  + ` pattern:${fomoPatternCount} already:${fomoAlreadyWatchCount}`
@@ -2492,7 +2791,7 @@ async function verticalCandidatesLoop(): Promise<void> {
     const now = Date.now();
 
     for (const [pairAddr, info] of activeWatch.entries()) {
-      if (info.kind !== "VERTICAL") continue;
+      if (info.kind !== "VERTICAL" && info.kind !== "CONFIRMED_MOMENTUM") continue;
 
       const ageMs = now - info.addedAt;
       if (ageMs < 15_000) continue;
@@ -2930,26 +3229,6 @@ async function hotCandidatesLoop(): Promise<void> {
       // Date reale înainte de orice decizie
       const pool = v4PoolMap.get(pairAddress) ?? v3PoolMap.get(pairAddress) ?? await fetchPoolByAddress(chainCfg, pairAddress);
       if (!pool) { dropHotCandidate(pairAddress, "pool unavailable", chainId); continue; }
-
-      const fomo = checkFOMO(pool);
-      if (fomo.blocked && source !== "FOMO" && source !== "VERTICAL" && source !== "LATE") {
-        console.log(
-          `[HOT FOMO BLOCK] ${mem.symbol} (${chainId}) — ${fomo.reason}`
-          + ` | flow:${flow.pressure}`
-          + ` buys:${flow.buys5m}/5m`
-          + ` buyVol:${((flow as any).buyVol5m ?? 0).toFixed(3)}ETH`
-          + ` netVol:${((flow as any).netVol5m ?? 0).toFixed(3)}ETH`
-        );
-        dropHotCandidate(pairAddress, `FOMO blocked: ${fomo.reason}`, chainId);
-        continue;
-      }
-
-      if (fomo.blocked && (source === "FOMO" || source === "VERTICAL" || source === "LATE")) {
-        console.log(
-          `[HOT BYPASS] ${mem.symbol} (${chainId}) source:${source} — continuation despite ${fomo.reason}`
-        );
-      }
-
       const score = quickEdgeScore(pool, mem, effectiveFlow, lp);
       const minHotScore =
         source === "VERTICAL" ? 70 :
@@ -2970,6 +3249,27 @@ async function hotCandidatesLoop(): Promise<void> {
 
       console.log(`[HOT] ${mem.symbol} (${chainId}) — source:${source ?? "WS"} Edge ${score}`);
       recordPipelineEvent("ARM_CONFIRMED", pairAddress, "HOT", "CONFIRMED", chainId);
+	  const qsHot = buildQualifiedSignalEntry({
+        symbol:        mem.symbol,
+        chain:         chainId,
+        pairAddress:   pairAddress,
+        qualifiedAt:   Date.now(),
+        flow: {
+          pressure: effectiveFlow.pressure,
+          hasData:  effectiveFlow.hasData,
+          buyVol5m: (effectiveFlow as any).buyVol5m ?? 0,
+          netVol5m: (effectiveFlow as any).netVol5m ?? 0,
+          buys5m:   effectiveFlow.buys5m ?? 0,
+          sells5m:  effectiveFlow.sells5m ?? 0,
+        },
+        reserveUsd:    getLiquidityContext(pairAddress).reserveUsd,
+        liqStatus:     getLiquidityContext(pairAddress).status,
+        riskFlags:     [],
+        phase:         mem.phase,
+        workerVersion: WORKER_VERSION,
+      });
+      qualifiedSignalsBuffer.unshift(qsHot);
+      if (qualifiedSignalsBuffer.length > MAX_QUALIFIED_BUFFER) qualifiedSignalsBuffer.pop();
       await saveShadowTrade(pool, score, mem, effectiveFlow, lp, source ?? "WS");
       deleteHotCandidate(pairAddress);
     }
