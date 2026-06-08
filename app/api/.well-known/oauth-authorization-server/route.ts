@@ -1,5 +1,5 @@
 /**
- * app/api/.well-known/oauth-authorization-server/route.ts
+ * app/.well-known/oauth-authorization-server/route.ts
  * OAuth 2.0 Authorization Server Metadata (RFC 8414)
  */
 
@@ -15,10 +15,12 @@ export async function GET(req: NextRequest) {
 
   return Response.json({
     issuer,
-    token_endpoint:                          `${issuer}/api/oauth/token`,
-    token_endpoint_auth_methods_supported:   ["client_secret_post"],
-    grant_types_supported:                   ["client_credentials"],
-    response_types_supported:                ["token"],
-    scopes_supported:                        ["read:all"],
+    authorization_endpoint:                        `${issuer}/authorize`,
+    token_endpoint:                                `${issuer}/api/oauth/token`,
+    token_endpoint_auth_methods_supported:         ["client_secret_post", "none"],
+    grant_types_supported:                         ["authorization_code", "client_credentials"],
+    response_types_supported:                      ["code"],
+    code_challenge_methods_supported:              ["S256", "plain"],
+    scopes_supported:                              ["read:all"],
   });
 }

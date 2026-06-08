@@ -43,3 +43,5 @@ next-env.d.ts
 
 *.tsbuildinfo
 *:Zone.Identifier
+
+create-client.ts
