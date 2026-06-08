@@ -64,6 +64,7 @@ export async function authenticate(req: NextRequest): Promise<AuthResult> {
 export function authErrorResponse(auth: AuthResult): Response {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (auth.retryAfter) headers["Retry-After"] = String(auth.retryAfter);
+  headers["WWW-Authenticate"] = `Bearer resource_metadata="/.well-known/oauth-protected-resource"`;
 
   return new Response(
     JSON.stringify({ ok: false, error: { code: auth.errorCode, message: auth.error } }),

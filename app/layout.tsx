@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Supreme Trader v3.0",
+  title: "Preflight MCP",
   description: "Multi-chain AI trading oracle",
 };
 

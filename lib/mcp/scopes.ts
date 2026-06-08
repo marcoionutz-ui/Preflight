@@ -24,6 +24,6 @@ export const TOOL_SCOPES: Record<string, string[]> = {
  */
 export function hasScope(clientScopes: string[], toolName: string): boolean {
   const required = TOOL_SCOPES[toolName];
-  if (!required) return true; // tool necunoscut — allow by default
+  if (!required) return false; // tool necunoscut — allow by default
   return required.some(s => clientScopes.includes(s));
 }

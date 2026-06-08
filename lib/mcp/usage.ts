@@ -29,7 +29,7 @@ export function logUsage(log: UsageLog): void {
       request_id: log.request_id,
       created_at: new Date().toISOString(),
     })
-    .then(() => {});
+    .then(() => {}, () => {});
 }
 
 export function generateRequestId(): string {

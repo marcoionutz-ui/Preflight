@@ -1,9 +1,12 @@
 /**
  * lib/mcp/tools/index.ts
- * Înregistrează toate toolurile MCP pe server
+ * Înregistrează toate toolurile MCP cu usage logging + scope enforcement
+ * prin createInstrumentedServer — toolurile individuale nu se modifică
  */
 
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { McpServer }          from "@modelcontextprotocol/sdk/server/mcp.js";
+import { createInstrumentedServer } from "../middleware";
+
 import { registerHealthCheck }     from "./tp_health_check";
 import { registerPairContext }     from "./tp_pair_context";
 import { registerWorkerPipeline }  from "./tp_worker_pipeline";
@@ -16,14 +19,17 @@ import { registerDoNotChase }      from "./tp_do_not_chase";
 import { registerPreflightSafety } from "./tp_preflight_safety";
 
 export function registerAllTools(server: McpServer, exposePerformance = false): void {
-  registerHealthCheck(server, exposePerformance);
-  registerPairContext(server, exposePerformance);
-  registerWorkerPipeline(server);
-  registerWorkerSnapshot(server, exposePerformance);
-  registerMarketOverview(server);
-  registerSituationReport(server);
-  registerCandidateBrief(server, exposePerformance);
-  registerWhyNot(server, exposePerformance);
-  registerDoNotChase(server);
-  registerPreflightSafety(server);
+  // Instrumentăm server-ul o singură dată — toate toolurile primesc middleware automat
+  const s = createInstrumentedServer(server);
+
+  registerHealthCheck(s, exposePerformance);
+  registerPairContext(s, exposePerformance);
+  registerWorkerPipeline(s);
+  registerWorkerSnapshot(s, exposePerformance);
+  registerMarketOverview(s);
+  registerSituationReport(s);
+  registerCandidateBrief(s, exposePerformance);
+  registerWhyNot(s, exposePerformance);
+  registerDoNotChase(s);
+  registerPreflightSafety(s);
 }
