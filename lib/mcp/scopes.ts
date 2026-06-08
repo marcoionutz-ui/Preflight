@@ -16,6 +16,7 @@ export const TOOL_SCOPES: Record<string, string[]> = {
   tp_why_not:           ["read:all", "read:reports"],
   tp_do_not_chase:      ["read:all", "read:reports"],
   tp_preflight_safety:  ["read:all", "read:safety"],
+  tp_chase_risk: ["read:all", "read:pipeline"],
 };
 
 /**
