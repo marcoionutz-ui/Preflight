@@ -1,41 +1,23 @@
 {
-  "name": "preflight",
-  "version": "3.0.0",
+  "name": "preflight-monorepo",
+  "version": "1.0.0",
   "private": true,
+  "workspaces": [
+    "packages/*",
+    "workers/*",
+    "mcp"
+  ],
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start -p ${PORT:-3000}",
-    "lint": "next lint",
-    "worker": "tsx worker/index.ts"
-  },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "1.26.0",
-    "@solana/web3.js": "^1.98.4",
-    "@supabase/supabase-js": "^2.106.0",
-    "dotenv": "^17.4.2",
-    "ethers": "^6.16.0",
-    "ioredis": "^5.10.1",
-    "mcp-handler": "^1.1.0",
-    "next": "^15.5.18",
-    "react": "^19.2.4",
-    "react-dom": "^19.2.4",
-    "recharts": "^2.12.7",
-    "utf-8-validate": "^6.0.6",
-    "ws": "^8.20.1",
-    "x402-fetch": "^1.2.0"
+    "build": "npm run build --workspace=mcp",
+    "start": "npm run start --workspace=mcp & npm run start --workspace=@preflight/worker-evm & wait",
+    "dev:mcp": "npm run dev --workspace=mcp",
+    "dev:worker": "npm run dev --workspace=@preflight/worker-evm",
+    "lint": "npm run lint --workspace=mcp"
   },
   "devDependencies": {
-    "@types/ioredis": "^4.28.10",
-    "@types/node": "^20",
-    "@types/react": "^19",
-    "@types/react-dom": "^19",
-    "tsx": "^4.22.2",
-    "typescript": "^5",
-	"eslint": "^9.0.0",
-	"eslint-config-next": "^15.0.0"
+    "typescript": "^5"
   }
 }

@@ -1,0 +1,24 @@
+{
+  "name": "@preflight/worker-evm",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "tsx --env-file=../../.env.local src/index.ts",
+	"start": "tsx src/index.ts"
+
+  },
+  "dependencies": {
+    "@preflight/schema": "*",
+    "@supabase/supabase-js": "^2.106.0",
+    "dotenv": "^17.4.2",
+    "ethers": "^6.16.0",
+    "ioredis": "^5.10.1",
+    "ws": "^8.20.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/ws": "^8",
+    "tsx": "^4.22.2",
+    "typescript": "^5"
+  }
+}

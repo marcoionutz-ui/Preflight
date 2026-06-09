@@ -1,0 +1,12 @@
+{
+  "/_not-found/page": "/_not-found",
+  "/.well-known/oauth-protected-resource/route": "/.well-known/oauth-protected-resource",
+  "/api/.well-known/oauth-protected-resource/route": "/api/.well-known/oauth-protected-resource",
+  "/.well-known/oauth-authorization-server/route": "/.well-known/oauth-authorization-server",
+  "/.well-known/openid-configuration/route": "/.well-known/openid-configuration",
+  "/api/.well-known/oauth-authorization-server/route": "/api/.well-known/oauth-authorization-server",
+  "/api/oauth/authorize/route": "/api/oauth/authorize",
+  "/api/[transport]/route": "/api/[transport]",
+  "/api/oauth/token/route": "/api/oauth/token",
+  "/authorize/page": "/authorize"
+}

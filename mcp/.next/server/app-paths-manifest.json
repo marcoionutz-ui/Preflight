@@ -1,0 +1,12 @@
+{
+  "/_not-found/page": "app/_not-found/page.js",
+  "/.well-known/oauth-protected-resource/route": "app/.well-known/oauth-protected-resource/route.js",
+  "/api/.well-known/oauth-protected-resource/route": "app/api/.well-known/oauth-protected-resource/route.js",
+  "/.well-known/oauth-authorization-server/route": "app/.well-known/oauth-authorization-server/route.js",
+  "/.well-known/openid-configuration/route": "app/.well-known/openid-configuration/route.js",
+  "/api/.well-known/oauth-authorization-server/route": "app/api/.well-known/oauth-authorization-server/route.js",
+  "/api/oauth/authorize/route": "app/api/oauth/authorize/route.js",
+  "/api/[transport]/route": "app/api/[transport]/route.js",
+  "/api/oauth/token/route": "app/api/oauth/token/route.js",
+  "/authorize/page": "app/authorize/page.js"
+}

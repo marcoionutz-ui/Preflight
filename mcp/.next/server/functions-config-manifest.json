@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "functions": {
+    "/.well-known/oauth-protected-resource": {},
+    "/api/.well-known/oauth-protected-resource": {},
+    "/.well-known/oauth-authorization-server": {},
+    "/.well-known/openid-configuration": {},
+    "/api/[transport]": {},
+    "/api/.well-known/oauth-authorization-server": {},
+    "/api/oauth/authorize": {},
+    "/api/oauth/token": {}
+  }
+}

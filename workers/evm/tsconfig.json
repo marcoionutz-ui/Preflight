@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "paths": {
+      "@preflight/schema": ["../../packages/preflight-schema/src/index.ts"]
+    }
+  },
+  "include": ["src"],
+  "exclude": [
+  "node_modules",
+  "src/lib/engines/_archive"
+]
+}
