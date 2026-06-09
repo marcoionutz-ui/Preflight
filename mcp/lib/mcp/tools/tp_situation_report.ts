@@ -181,14 +181,14 @@ Observed movers section shows tokens moving on market that haven't passed pipeli
         // ── NEXT action ────────────────────────────────────────────────────
 		const qualCount = activeQualified.length;
 
-        const nextAction =
-          hotCount > 0         ? `HOT candidate active — call tp_candidate_brief or tp_chase_risk for drilldown.` :
-          qualCount > 0        ? `Qualified signals present — call tp_candidate_brief(pair_address) for full analysis.` :
-          observedMovers.length > 0 ? `Observed movers present but no pipeline candidates — market awareness only.` :
-          watchCount > 0       ? `Watching ${watchCount} pairs — waiting for WS flow confirmation.` :
-          `Pipeline empty — worker scanning, no candidates qualify yet.`;
+		const status =
+		  hotCount > 0              ? `HOT candidate active. Drilldown data available.` :
+		  qualCount > 0             ? `Qualified signals present. Drilldown data available.` :
+		  observedMovers.length > 0 ? `Observed movers detected. No pipeline candidates.` :
+		  watchCount > 0            ? `Watching ${watchCount} pairs. Awaiting WS flow confirmation.` :
+		  `Pipeline empty. Worker scanning.`;
 
-        lines.push(`NEXT: ${nextAction}`);
+		lines.push(`STATUS: ${status}`);
 
         return mcpOk(lines.join("\n"));
       } catch (e) { return mcpErr(ERR.INTERNAL, e instanceof Error ? e.message : String(e)); }

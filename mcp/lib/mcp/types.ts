@@ -20,6 +20,8 @@ export interface PairState {
   dexType:            string;
   poolCountSameToken: number;
   hourUtc:            number;
+  chain?:             string;
+  priceChange?:       { m5: number; h1: number; h24: number };
   flow: {
     pressure:  string;
     buys5m:    number;

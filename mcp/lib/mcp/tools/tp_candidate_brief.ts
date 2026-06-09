@@ -54,6 +54,7 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
         lines.push(`═══ CANDIDATE BRIEF: ${symbol} / ${chain.toUpperCase()} ═══`);
         lines.push(`Address: ${addr}`);
         lines.push(`Pipeline: ${pipeState}`);
+		lines.push(`Chain: ${pairState?.chain ?? "unknown"}`);
         lines.push("");
 
         lines.push("WHY IT MATTERS:");
@@ -101,7 +102,18 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
         } else {
           lines.push(`  • No live liquidity data — using snapshot only`);
         }
-
+		
+		if (pairState?.priceChange) {
+		const pc = pairState.priceChange;
+	    const fmt = (n: number | null | undefined) =>
+		  typeof n === "number" && Number.isFinite(n)
+		    ? `${n > 0 ? "+" : ""}${n.toFixed(1)}%`
+		    : "n/a";
+	    lines.push("");
+	    lines.push("PRICE CHANGE:");
+	    lines.push(`  • m5: ${fmt(pc.m5)} | h1: ${fmt(pc.h1)} | h24: ${fmt(pc.h24)}`);
+	    }	
+		
         if (pairState?.flow?.hasData) {
           lines.push("");
           lines.push("FLOW (5m):");
@@ -139,14 +151,11 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
         }
 
         lines.push("");
-        lines.push("SUGGESTED NEXT STEP:");
-        if (pipeState === "ARMED") {
-          lines.push("  Worker is about to enter. Run tp_preflight_safety before treating this as actionable.");
-        } else if (pipeState === "HOT") {
-          lines.push("  Run tp_preflight_safety to verify contract safety. Re-check flow in 30s.");
-        } else {
-          lines.push("  Monitor — not yet in active pipeline. Call again in 60s or check tp_why_not.");
-        }
+        lines.push("DATA_AVAILABLE:");
+		lines.push(`  • tp_chase_risk — full chase risk scoring`);
+		lines.push(`  • tp_preflight_safety — contract/token safety check`);
+		lines.push(`  • tp_why_not — pipeline rejection reasons`);
+		lines.push(`  • tp_pair_context — raw worker context`);
 
         return mcpOk(lines.join("\n"));
       } catch (e) { return mcpErr(ERR.INTERNAL, e instanceof Error ? e.message : String(e)); }
