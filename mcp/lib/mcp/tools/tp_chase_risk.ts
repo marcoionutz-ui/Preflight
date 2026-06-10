@@ -207,21 +207,13 @@ Args: pair_address (0x... EVM address)`,
           lines.push("");
         }
 
-        // Action recommendation
-        lines.push("ACTION:");
-        if (level === "EXTREME") {
-          lines.push("  Do NOT chase. This pair shows strong distribution pattern.");
-          lines.push("  HOT signal is unreliable — flow appears manufactured or fading.");
-          lines.push("  Wait for clean reset: stable HOT > 2 min with low sell ratio.");
-        } else if (level === "HIGH") {
-          lines.push("  Avoid entry now. Multiple risk signals present.");
-          lines.push("  If still watching, require: stable HOT > 90s + sell ratio < 35%.");
-        } else if (level === "CAUTION") {
-          lines.push("  Proceed with caution. Some risk signals present.");
-          lines.push("  Verify with tp_preflight_safety before treating as actionable.");
+        // Data available
+        lines.push("DATA_AVAILABLE:");
+        if (level === "EXTREME" || level === "HIGH") {
+          lines.push("  tp_preflight_safety — contract/token safety check");
         } else {
-          lines.push("  No significant chase risk detected.");
-          lines.push("  Proceed to tp_preflight_safety for contract safety check.");
+          lines.push("  tp_preflight_safety — contract/token safety check");
+          lines.push("  tp_candidate_brief — full drilldown on this pair");
         }
 
         return mcpOk(lines.join("\n"));

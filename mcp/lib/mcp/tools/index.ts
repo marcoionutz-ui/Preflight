@@ -18,7 +18,7 @@ import { registerWhyNot }           from "./tp_why_not";
 import { registerDoNotChase }       from "./tp_do_not_chase";
 import { registerPreflightSafety }  from "./tp_preflight_safety";
 import { registerChaseRisk }        from "./tp_chase_risk";
-import { registerOpenPositions }    from "./tp_open_positions";
+import { registerPositionContext }  from "./tp_position_context";
 
 export function registerAllTools(server: McpServer, exposePerformance = false): void {
   // Instrumentăm server-ul o singură dată — toate toolurile primesc middleware automat
@@ -35,5 +35,5 @@ export function registerAllTools(server: McpServer, exposePerformance = false): 
   registerDoNotChase(s);
   registerPreflightSafety(s);
   registerChaseRisk(s);
-  registerOpenPositions(s);
+  registerPositionContext(s);
 }
