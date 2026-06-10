@@ -20,7 +20,7 @@ import { CHAINS } from "../config/chains";
 import {
   WORKER_VERSION, MAX_SHADOW_PER_SCAN, MAX_VERTICAL_WATCH, MAX_LATE_WATCH,
   MAX_QUALIFIED_BUFFER, ARM_CONFIRM_MS, ARM_MIN_PRICE_CONFIRM, V3_DEXES,
-  MAX_EVENT_WATCH, MAX_SHORT_WATCH,
+  MAX_EVENT_WATCH, MAX_SHORT_WATCH, MAX_CONTINUATION_WATCH, MAX_FRESH_WATCH_ATT, MAX_ACTIVE_WATCH,
 } from "../config/constants";
 import { classifyMomentumEvent, isVerticalWatch, isLateWatch, isHardReject, shouldRecordEvent } from "../risk/momentum";
 import { buildMomentumEventEntry, buildQualifiedSignalEntry } from "../lib/preflight-redis";
@@ -206,13 +206,15 @@ async function processPool(
     hasWsFlow: wsFlowReal.hasData && wsFlowReal.pressure === "BUYING",
   }, mem.seenCount);
 
-  // Salvează verdict + attention pe memory — indiferent de pipeline eligibility
+  // attentionScore salvat pe TOATE pool-urile — inclusiv NO_MOMENTUM
+  // AttentionScore descrie importanța de piață, nu verdictul de trading
+  (mem as any).attentionScore = momentumEvent.attentionScore;
+  (mem as any).monitoringTier = momentumEvent.monitoringTier;
+  (mem as any).patternTags    = momentumEvent.patternTags;
+
   if (momentumEvent.verdict !== "NO_MOMENTUM") {
     mem.lastMomentumVerdict = momentumEvent.verdict;
     mem.lastMomentumAt      = Date.now();
-    (mem as any).attentionScore  = momentumEvent.attentionScore;
-    (mem as any).monitoringTier  = momentumEvent.monitoringTier;
-    (mem as any).patternTags     = momentumEvent.patternTags;
   }
 
   if (momentumEvent.verdict !== "NO_MOMENTUM") {
@@ -307,10 +309,46 @@ async function processPool(
     return "CONTINUE";
   }
 
-  const prelScore = quickEdgeScore(pool, mem, flow, lp);
-  if (prelScore >= 70 && !wsFlowReal.hasData && !activeWatch.has(pairAddr) && activeWatch.size < 40 && (isV3pool || isV4pool)) {
-    addWatchCandidate(pairAddr, { chain: pool.chain, addedAt: Date.now(), kind: "NORMAL" }, pool);
-    console.log(`[WATCH] ${mem.symbol} (${pool.chain}) — added, prelScore ${prelScore}`);
+ // Attention-based watch selection — cu cap global + immediate subscribe
+  const attScore = (mem as any).attentionScore ?? 0;
+  const attTier  = (mem as any).monitoringTier ?? "MARKET_ONLY";
+
+  // Cap global MAX_ACTIVE_WATCH pe toate categoriile
+  if (!activeWatch.has(pairAddr) && activeWatch.size < MAX_ACTIVE_WATCH && (isV3pool || isV4pool)) {
+    if (attTier === "CONTINUATION_WATCH") {
+      const currentCont = [...activeWatch.values()].filter(w => w.chain === pool.chain && w.kind === "CONTINUATION_WATCH").length;
+      if (currentCont < MAX_CONTINUATION_WATCH) {
+        addWatchCandidate(pairAddr, {
+          chain: pool.chain, addedAt: Date.now(),
+          kind: "CONTINUATION_WATCH",
+          entryPrice: price, reason: `attention:${attScore} tier:CONTINUATION_WATCH`,
+        }, pool);
+        console.log(`[CONTINUATION_WATCH] ${mem.symbol} (${pool.chain}) — attention:${attScore} m5:${pool.priceChange.m5.toFixed(1)}% h1:${pool.priceChange.h1.toFixed(1)}%`);
+        // fix ChatGPT: immediate subscribe
+        const chainCfgCont = CHAINS.find(c => c.id === pool.chain);
+        if (chainCfgCont) requestImmediateScopedSubscribe(chainCfgCont);
+      }
+    } else if (attTier === "FRESH_WATCH") {
+      const currentFresh = [...activeWatch.values()].filter(w => w.chain === pool.chain && w.kind === "FRESH_WATCH").length;
+      if (currentFresh < MAX_FRESH_WATCH_ATT) {
+        addWatchCandidate(pairAddr, {
+          chain: pool.chain, addedAt: Date.now(),
+          kind: "FRESH_WATCH",
+          entryPrice: price, reason: `attention:${attScore} tier:FRESH_WATCH`,
+        }, pool);
+        console.log(`[FRESH_WATCH] ${mem.symbol} (${pool.chain}) — attention:${attScore} m5:${pool.priceChange.m5.toFixed(1)}% h1:${pool.priceChange.h1.toFixed(1)}%`);
+        // fix ChatGPT: immediate subscribe
+        const chainCfgFresh = CHAINS.find(c => c.id === pool.chain);
+        if (chainCfgFresh) requestImmediateScopedSubscribe(chainCfgFresh);
+      }
+    } else if (!wsFlowReal.hasData) {
+      // Fallback: logica veche cu prelScore
+      const prelScore = quickEdgeScore(pool, mem, flow, lp);
+      if (prelScore >= 70) {
+        addWatchCandidate(pairAddr, { chain: pool.chain, addedAt: Date.now(), kind: "NORMAL" }, pool);
+        console.log(`[WATCH] ${mem.symbol} (${pool.chain}) — added, prelScore ${prelScore}`);
+      }
+    }
   }
 
   if (!wsFlowReal.hasData) {

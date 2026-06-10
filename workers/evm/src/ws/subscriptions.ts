@@ -32,10 +32,14 @@ export const BURN_V2_TOPIC = "0xdccd412f0b1252819cb1fd330b93224ca42612892bb3f4f7
 
 export function watchPriority(kind?: string): number {
   if (kind === "CONFIRMED_MOMENTUM") return 0;
-  if (kind === "VERTICAL")           return 1;
-  if (kind === "FOMO")               return 2;
-  if (kind === "LATE")               return 3;
-  return 4;
+  if (kind === "CONTINUATION_WATCH") return 1;
+  if (kind === "FRESH_WATCH")        return 2;
+  if (kind === "VERTICAL")           return 3;
+  if (kind === "EVENT_WATCH")        return 4;
+  if (kind === "FOMO")               return 5;
+  if (kind === "LATE")               return 6;
+  if (kind === "SHORT_WATCH")        return 7;
+  return 8;
 }
 
 export function cleanupActiveWatch(): void {
