@@ -21,7 +21,7 @@ Use this first to verify the worker is running before calling other tools.`,
         const ctx = await readAllRedis();
         if (!ctx) return mcpErr(ERR.REDIS_DOWN, "Redis not connected");
 
-        const { now, states, watch, hot, armed, snapshot, pipelineCoverage } = ctx;
+        const { now, states, watch, hot, armed, snapshot, pipelineCoverage, scannerStats } = ctx;
         const snapshotAge   = snapshot?.savedAt ? now - snapshot.savedAt : null;
         const stateVals     = Object.values(states);
         const newestStateAt = stateVals.length ? Math.max(...stateVals.map(s => s.updatedAt)) : null;
@@ -59,6 +59,25 @@ Use this first to verify the worker is running before calling other tools.`,
             phases,
             flowSummary,
           },
+          scannerStats: scannerStats ? {
+            savedAgeSec: Math.round((now - scannerStats.savedAt) / 1000),
+            scan: {
+              durationMs:     scannerStats.scan?.durationMs     ?? null,
+              totalFetched:   scannerStats.scan?.totalFetched   ?? null,
+              processedPools: scannerStats.scan?.processedPools ?? null,
+            },
+            geckoHealth: Object.fromEntries(
+              Object.entries(scannerStats.chains ?? {}).map(([chainId, c]: [string, any]) => [
+                chainId,
+                {
+                  lastResultCount: c.lastResultCount,
+                  emptyStreak:     c.emptyStreak,
+                  lastFetchAgeSec: c.lastFetchAt ? Math.round((now - c.lastFetchAt) / 1000) : null,
+                  status:          c.emptyStreak >= 3 ? "DEGRADED" : c.emptyStreak >= 1 ? "INTERMITTENT" : "OK",
+                },
+              ])
+            ),
+          } : null,
           pipelineCoverage: pipelineCoverage ? {
             savedAgeSec: Math.round((now - pipelineCoverage.savedAt) / 1000),
             chains: Object.fromEntries(

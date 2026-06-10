@@ -152,4 +152,12 @@ export const marketFollowList = new Map<string, {
   lastRefreshedAt:  number;
   attentionScore:   number;
   reason:           string;
+  missCount:        number;
+}>();
+
+// ── Gecko source health ───────────────────────────────────────────────────────
+export const geckoSourceHealth = new Map<string, {
+  lastResultCount:  number;
+  emptyStreak:      number;
+  lastFetchAt:      number;
 }>();

@@ -21,6 +21,7 @@ export async function readAllRedis(): Promise<RedisContext | null> {
     snapshotRaw, regimeRaw, eventsRaw, dropsRaw,
     pfMarketRaw, pfMomentumRaw, pfPipelineRaw, pfQualifiedRaw, pfDropsRaw,
     pfCoverageRaw,
+    pfScannerStatsRaw,
   ] = await Promise.all([
     r.get("supreme:pair_states"),
     r.get("supreme:active_watch"),
@@ -36,6 +37,7 @@ export async function readAllRedis(): Promise<RedisContext | null> {
     r.get("preflight:qualified_signals"),
     r.get("preflight:recent_drops"),
     r.get("preflight:pipeline_coverage"),
+    r.get("preflight:scanner_stats"),
   ]);
 
   const now = Date.now();
@@ -61,7 +63,8 @@ export async function readAllRedis(): Promise<RedisContext | null> {
     pfPipeline:  pfPipelineRaw  ? JSON.parse(pfPipelineRaw)  : null,
     pfQualified: pfQualifiedRaw ? JSON.parse(pfQualifiedRaw) : null,
     pfDrops:          pfDropsRaw    ? JSON.parse(pfDropsRaw)    : null,
-    pipelineCoverage: pfCoverageRaw ? JSON.parse(pfCoverageRaw) : null,
+    pipelineCoverage: pfCoverageRaw     ? JSON.parse(pfCoverageRaw)     : null,
+    scannerStats:     pfScannerStatsRaw ? JSON.parse(pfScannerStatsRaw) : null,
     keyExists: {
       pair_states:          statesRaw   !== null,
       active_watch:         watchRaw    !== null,
@@ -76,7 +79,8 @@ export async function readAllRedis(): Promise<RedisContext | null> {
       pf_pipeline:          pfPipelineRaw  !== null,
       pf_qualified:         pfQualifiedRaw !== null,
       pf_drops:             pfDropsRaw    !== null,
-      pf_pipeline_coverage: pfCoverageRaw !== null,
+      pf_pipeline_coverage: pfCoverageRaw     !== null,
+      pf_scanner_stats:     pfScannerStatsRaw !== null,
     },
   };
 }

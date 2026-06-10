@@ -45,6 +45,8 @@ export const FOLLOW_REFRESH_MS    = 60_000;
 export const FOLLOW_REFRESH_LIMIT = 20;
 export const FOLLOW_ADD_SCORE     = 70;
 export const FOLLOW_REMOVE_SCORE  = 50;
+export const FOLLOW_MAX_MISSES    = 5;
+
 
 // ── Scores ────────────────────────────────────────────────────────────────────
 export const WATCH_MIN_SCORE      = 70;

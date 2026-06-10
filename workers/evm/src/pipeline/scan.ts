@@ -7,7 +7,7 @@
 import {
   activeWatch, hotCandidates, armedEntries,
   v3PoolMap, v4PoolMap, wsFlow, poolLiquidity,
-  memory, qualifiedSignalsBuffer, marketFollowList,
+  memory, qualifiedSignalsBuffer, marketFollowList, geckoSourceHealth,
 } from "../state/stores";
 import { updateMemory, saveMemoryToRedis } from "../state/memory";
 import { trackPool, tokenPools, tokenPoolKey } from "../infra/poolTracker";
@@ -22,7 +22,7 @@ import {
   WORKER_VERSION, MAX_SHADOW_PER_SCAN, MAX_VERTICAL_WATCH, MAX_LATE_WATCH,
   MAX_QUALIFIED_BUFFER, ARM_CONFIRM_MS, ARM_MIN_PRICE_CONFIRM, V3_DEXES,
   MAX_EVENT_WATCH, MAX_SHORT_WATCH, MAX_CONTINUATION_WATCH, MAX_FRESH_WATCH_ATT, MAX_ACTIVE_WATCH,
-  FOLLOW_TTL_MS, FOLLOW_ADD_SCORE, FOLLOW_REMOVE_SCORE, FOLLOW_REFRESH_LIMIT,
+  FOLLOW_TTL_MS, FOLLOW_ADD_SCORE, FOLLOW_REMOVE_SCORE, FOLLOW_REFRESH_LIMIT, FOLLOW_MAX_MISSES,
 } from "../config/constants";
 import { classifyMomentumEvent, isVerticalWatch, isLateWatch, isHardReject, shouldRecordEvent } from "../risk/momentum";
 import { buildMomentumEventEntry, buildQualifiedSignalEntry } from "../lib/preflight-redis";
@@ -83,13 +83,46 @@ function rebuildPoolMaps(pools: SourcePool[]): void {
   }
 }
 
+async function writeScannerStats(
+  r: any,
+  scanStart: number,
+  totalFetched: number,
+  processedPools: number,
+): Promise<void> {
+  const chainsHealth: Record<string, any> = {};
+  for (const [chainId, health] of geckoSourceHealth.entries()) {
+    chainsHealth[chainId] = health;
+  }
+  await r.set("preflight:scanner_stats", JSON.stringify({
+    savedAt: Date.now(),
+    scan: { durationMs: Date.now() - scanStart, totalFetched, processedPools },
+    chains: chainsHealth,
+  }), "EX", 300);
+}
+
 export async function scan(): Promise<void> {
-  const ts = new Date().toISOString();
+  const ts        = new Date().toISOString();
+  const scanStart = Date.now();
   cleanupActiveWatch();
   clearExpiredArmedEntries();
   pruneMemory();
 
   const allPoolsPerChain = await Promise.all(CHAINS.map(c => fetchTrendingPools(c)));
+
+  // Actualizează Gecko source health per chain
+  CHAINS.forEach((chain, i) => {
+    const count = allPoolsPerChain[i]?.length ?? 0;
+    const prev  = geckoSourceHealth.get(chain.id);
+    geckoSourceHealth.set(chain.id, {
+      lastResultCount: count,
+      emptyStreak:     count === 0 ? (prev?.emptyStreak ?? 0) + 1 : 0,
+      lastFetchAt:     Date.now(),
+    });
+    if (count === 0) {
+      console.log(`[GECKO EMPTY] ${chain.id} — emptyStreak:${(prev?.emptyStreak ?? 0) + 1}`);
+    }
+  });
+
   const seenInScan = new Set<string>();
   const allPools = [...allPoolsPerChain.flat()].filter(p => {
     const addr = `${p.chain}:${p.pairAddress}`;
@@ -102,7 +135,12 @@ export async function scan(): Promise<void> {
     rebuildPoolMaps(allPools);
   } else {
     console.log(`[MAPS] Keeping previous V3/V4 maps — Gecko returned empty`);
-    if (!allPools.length) { console.log("No pools fetched"); return; }
+    if (!allPools.length) {
+      console.log("No pools fetched");
+      const rEmpty = getRedis();
+      if (rEmpty) await writeScannerStats(rEmpty, scanStart, 0, 0).catch(() => {});
+      return;
+    }
   }
 
   console.log(`[${ts}] Scanning ${CHAINS.map(c => c.id).join("+")} — ${allPools.length} pools total`);
@@ -139,6 +177,7 @@ export async function scan(): Promise<void> {
     if (r) {
       await writeAllSnapshots(r);
       console.log(`[REDIS] watch:${activeWatch.size} hot:${hotCandidates.size} armed:${armedEntries.size}`);
+      await writeScannerStats(r, scanStart, allPools.length, allPools.length).catch(() => {});
     }
   } catch { /* Redis optional */ }
 
@@ -217,6 +256,27 @@ async function processPool(
   (mem as any).attentionScore = momentumEvent.attentionScore;
   (mem as any).monitoringTier = momentumEvent.monitoringTier;
   (mem as any).patternTags    = momentumEvent.patternTags;
+
+  // Populare marketFollowList pentru high-attention pairs
+  const att = momentumEvent.attentionScore;
+  const shouldFollow =
+    att >= FOLLOW_ADD_SCORE ||
+    momentumEvent.monitoringTier === "EVENT_WATCH" ||
+    (pool.reserveUsd >= 250_000 && (Math.abs(pool.priceChange.h1) >= 500 || Math.abs(pool.priceChange.h24) >= 1000));
+
+  if (shouldFollow) {
+    const existing = marketFollowList.get(pairAddr);
+    marketFollowList.set(pairAddr, {
+      chain:           pool.chain,
+      addedAt:         existing?.addedAt ?? Date.now(),
+      lastRefreshedAt: Date.now(),
+      attentionScore:  att,
+      reason:          momentumEvent.monitoringTier,
+      missCount:       existing?.missCount ?? 0,
+    });
+  } else if (marketFollowList.has(pairAddr) && att < FOLLOW_REMOVE_SCORE) {
+    marketFollowList.delete(pairAddr);
+  }
 
   if (momentumEvent.verdict !== "NO_MOMENTUM") {
     mem.lastMomentumVerdict = momentumEvent.verdict;
@@ -480,6 +540,7 @@ function seedFollowListFromMemory(): void {
       lastRefreshedAt: 0,
       attentionScore:  100,
       reason:          "seeded_from_memory",
+      missCount:       0,
     });
     seeded++;
   }
@@ -535,16 +596,22 @@ export async function runFollowRefresh(): Promise<void> {
       }
 
       if (!pool) {
-        marketFollowList.set(addr, { ...entry, lastRefreshedAt: now });
+        const missCount = (entry.missCount ?? 0) + 1;
+        if (missCount >= FOLLOW_MAX_MISSES) {
+          marketFollowList.delete(addr);
+          console.log(`[FOLLOW EVICT] ${entry.chain}:${addr.slice(0, 12)}... — ${missCount} consecutive misses`);
+        } else {
+          marketFollowList.set(addr, { ...entry, lastRefreshedAt: now, missCount });
+        }
         continue;
       }
 
       await processPool(pool, counters, chainCounts, { source: "follow_refresh" });
 
-      // fix ChatGPT: nu suprascrie attentionScore nou cu entry vechi
+      // nu suprascrie attentionScore nou cu entry vechi
       const updated = marketFollowList.get(addr);
       if (updated) {
-        marketFollowList.set(addr, { ...updated, lastRefreshedAt: now });
+        marketFollowList.set(addr, { ...updated, lastRefreshedAt: now, missCount: 0 });
       }
 
       refreshed++;
