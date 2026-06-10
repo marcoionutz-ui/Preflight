@@ -24,7 +24,9 @@ export interface PairMemoryEntry {
   lastExitReason:    string | null;
   lastExitTime:      number | null;
   chain?:             string;
-  priceChange?:       { m5: number; h1: number; h24: number };
+  priceChange?:         { m5: number; h1: number; h24: number };
+  lastMomentumVerdict?: string | null;
+  lastMomentumAt?:      number | null;
   phase:             Phase;
 }
 

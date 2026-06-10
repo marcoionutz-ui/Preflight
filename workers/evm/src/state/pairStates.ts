@@ -70,8 +70,10 @@ export interface PairStateSnapshot {
   poolCountSameToken: number;
 
   // Meta
-  hourUtc:   number;
-  updatedAt: number;
+  hourUtc:              number;
+  updatedAt:            number;
+  lastMomentumVerdict?: string | null;
+  lastMomentumAt?:      number | null;
 }
 
 export function buildPairStates(): Record<string, PairStateSnapshot> {
@@ -110,6 +112,8 @@ export function buildPairStates(): Record<string, PairStateSnapshot> {
 
       phase:         mem.phase,
       pipelineState,
+      lastMomentumVerdict: (mem as any).lastMomentumVerdict ?? null,
+      lastMomentumAt:      (mem as any).lastMomentumAt      ?? null,
       seenCount:     mem.seenCount,
       totalEntries:  mem.totalEntries,
 

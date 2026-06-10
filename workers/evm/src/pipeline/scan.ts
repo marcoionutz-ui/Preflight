@@ -205,6 +205,12 @@ async function processPool(
     hasWsFlow: wsFlowReal.hasData && wsFlowReal.pressure === "BUYING",
   });
 
+  // Salvează verdict pe memory — indiferent de pipeline eligibility
+  if (momentumEvent.verdict !== "NO_MOMENTUM") {
+    mem.lastMomentumVerdict = momentumEvent.verdict;
+    mem.lastMomentumAt      = Date.now();
+  }
+
   if (momentumEvent.verdict !== "NO_MOMENTUM") {
     const entry = buildMomentumEventEntry(
       momentumEvent, mem.symbol, pool.chain, pairAddr,

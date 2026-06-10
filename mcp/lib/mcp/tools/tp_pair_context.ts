@@ -90,6 +90,25 @@ Args: pair_address (0x... EVM address or V4 pool ID), chain (optional: base/arbi
           poolCountSameToken: (pairState as PairState)?.poolCountSameToken ?? null,
           flow: pairState?.flow ?? null,
           lp:   pairState?.lp  ?? null,
+          dataAvailability: (() => {
+            const hasWsFlow  = !!pairState?.flow?.hasData;
+            const hasLpData  = !!pairState?.lp?.hasData;
+            const liveMonitored = pipelineState === "WATCHING" ||
+              pipelineState === "HOT" || pipelineState === "ARMED";
+            return {
+              marketData: pairState ? "available" : "not_available",
+              wsFlow:    hasWsFlow  ? "available"
+                : liveMonitored     ? "not_available_no_ws_events_yet"
+                :                    "not_available_market_only",
+              lpSignal:  hasLpData  ? "available"
+                : liveMonitored     ? "not_available_no_lp_events_yet"
+                :                    "not_available_market_only",
+            };
+          })(),
+          marketPattern: {
+            lastMomentumVerdict: (pairState as any)?.lastMomentumVerdict ?? null,
+            lastMomentumAt:      (pairState as any)?.lastMomentumAt      ?? null,
+          },
           history: exposePerformance ? {
             totalEntries:      data.totalEntries,
             wins24h:           data.wins24h,

@@ -39,7 +39,9 @@ export interface PairState {
     lpRemoved5m:      number;
     removedPctOfPool: number | null;
   };
-  updatedAt: number;
+  updatedAt:            number;
+  lastMomentumVerdict?: string | null;
+  lastMomentumAt?:      number | null;
 }
 
 export interface MemoryEntry extends PairState {
