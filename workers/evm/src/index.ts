@@ -9,11 +9,11 @@ import * as dotenv from "dotenv";
 dotenv.config();
 
 import { CHAINS } from "./config/chains";
-import { WORKER_VERSION, SCAN_INTERVAL } from "./config/constants";
+import { WORKER_VERSION, SCAN_INTERVAL, FOLLOW_REFRESH_MS } from "./config/constants";
 import { connectChainWebSocket } from "./ws/manager";
 import { loadPairStats, loadMemoryFromRedis, saveMemoryToRedis } from "./state/memory";
 import { refreshEthPrice } from "./infra/ethPrice";
-import { scan } from "./pipeline/scan";
+import { scan, runFollowRefresh } from "./pipeline/scan";
 import { verticalCandidatesLoop } from "./pipeline/loops/vertical";
 import { lateCandidatesLoop } from "./pipeline/loops/late";
 import { fomoCandidatesLoop } from "./pipeline/loops/fomo";
@@ -57,4 +57,5 @@ loadPairStats().then(async () => {
   setInterval(() => { verticalCandidatesLoop().catch(err => console.error("[VERTICAL LOOP ERROR]", err)); }, 15_000);
   setInterval(() => { lateCandidatesLoop().catch(err => console.error("[LATE LOOP ERROR]", err)); },   30_000);
   setInterval(() => { fomoCandidatesLoop().catch(err => console.error("[FOMO LOOP ERROR]", err)); },   30_000);
+  setInterval(() => { runFollowRefresh().catch(err => console.error("[FOLLOW REFRESH ERROR]", err)); }, FOLLOW_REFRESH_MS);
 });

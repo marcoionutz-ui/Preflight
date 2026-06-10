@@ -40,6 +40,11 @@ export const MAX_SHORT_WATCH        = 5;
 export const MAX_CONTINUATION_WATCH = 15;
 export const MAX_FRESH_WATCH_ATT    = 15;  // FRESH_WATCH din attention system
 export const SHORT_WATCH_TTL_MS     = 90_000;
+export const FOLLOW_TTL_MS        = 12 * 60 * 60_000;
+export const FOLLOW_REFRESH_MS    = 60_000;
+export const FOLLOW_REFRESH_LIMIT = 20;
+export const FOLLOW_ADD_SCORE     = 70;
+export const FOLLOW_REMOVE_SCORE  = 50;
 
 // ── Scores ────────────────────────────────────────────────────────────────────
 export const WATCH_MIN_SCORE      = 70;

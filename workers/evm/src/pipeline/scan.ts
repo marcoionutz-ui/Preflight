@@ -7,13 +7,13 @@
 import {
   activeWatch, hotCandidates, armedEntries,
   v3PoolMap, v4PoolMap, wsFlow, poolLiquidity,
-  memory, qualifiedSignalsBuffer,
+  memory, qualifiedSignalsBuffer, marketFollowList,
 } from "../state/stores";
 import { updateMemory, saveMemoryToRedis } from "../state/memory";
 import { trackPool, tokenPools, tokenPoolKey } from "../infra/poolTracker";
 import { getRedis } from "../infra/redis";
 import { sendTelegram } from "../infra/telegram";
-import { fetchTrendingPools } from "../sources/gecko";
+import { fetchTrendingPools, fetchPoolByAddress } from "../sources/gecko";
 import { isBlockedSymbol } from "../sources/normalize";
 import type { SourcePool } from "../sources/normalize";
 import { CHAINS } from "../config/chains";
@@ -21,6 +21,7 @@ import {
   WORKER_VERSION, MAX_SHADOW_PER_SCAN, MAX_VERTICAL_WATCH, MAX_LATE_WATCH,
   MAX_QUALIFIED_BUFFER, ARM_CONFIRM_MS, ARM_MIN_PRICE_CONFIRM, V3_DEXES,
   MAX_EVENT_WATCH, MAX_SHORT_WATCH, MAX_CONTINUATION_WATCH, MAX_FRESH_WATCH_ATT, MAX_ACTIVE_WATCH,
+  FOLLOW_TTL_MS, FOLLOW_ADD_SCORE, FOLLOW_REMOVE_SCORE, FOLLOW_REFRESH_LIMIT,
 } from "../config/constants";
 import { classifyMomentumEvent, isVerticalWatch, isLateWatch, isHardReject, shouldRecordEvent } from "../risk/momentum";
 import { buildMomentumEventEntry, buildQualifiedSignalEntry } from "../lib/preflight-redis";
@@ -162,6 +163,7 @@ async function processPool(
   pool: SourcePool,
   counters: Record<string, number>,
   chainCounts: Record<string, number>,
+  opts: { source?: "scan" | "follow_refresh" } = {},
 ): Promise<"CONTINUE" | "BREAK"> {
   const price = pool.priceUsd;
   if (!price || isNaN(price)) return "CONTINUE";
@@ -170,6 +172,7 @@ async function processPool(
   const pairAddr = pool.pairAddress;
 
   if (isBlockedSymbol(mem.symbol)) return "CONTINUE";
+  const isFollowRefresh = opts.source === "follow_refresh";
 
   // New pool detection
   const tokenAddr = pool.tokenAddress ?? "";
@@ -183,11 +186,13 @@ async function processPool(
     const sig = classifyNewPool(tokenAddr, mem.symbol, pool.chain, pairAddr, pool.reserveUsd, knownPools);
     if (sig.classification !== "LOW_LIQ_NOISE" && sig.classification !== "CLONE_RISK") {
       console.log(`[NEW POOL] ${mem.symbol} (${pool.chain}) — ${sig.classification} | $${(sig.newLiquidityUsd / 1000).toFixed(1)}K liq | score:${sig.score}`);
-      await sendTelegram(
-        `🆕 <b>NEW POOL</b> ${mem.symbol} [${pool.chain.toUpperCase()}]\n`
-        + `${sig.classification}\nLichiditate: $${(sig.newLiquidityUsd / 1000).toFixed(1)}K\n`
-        + sig.reasons.join("\n"),
-      );
+      if (!isFollowRefresh) {
+        await sendTelegram(
+          `🆕 <b>NEW POOL</b> ${mem.symbol} [${pool.chain.toUpperCase()}]\n`
+          + `${sig.classification}\nLichiditate: $${(sig.newLiquidityUsd / 1000).toFixed(1)}K\n`
+          + sig.reasons.join("\n"),
+        );
+      }
     }
   }
 
@@ -228,7 +233,7 @@ async function processPool(
       WORKER_VERSION,
     );
 
-    if (shouldRecordEvent(momentumEvent.verdict)) {
+    if (!isFollowRefresh && shouldRecordEvent(momentumEvent.verdict)) {
       await recordMomentumEvent(pool, entry);
       counters.fomoBlockCount++;
     }
@@ -440,9 +445,69 @@ async function processPool(
   qualifiedSignalsBuffer.unshift(qsScan);
   if (qualifiedSignalsBuffer.length > MAX_QUALIFIED_BUFFER) qualifiedSignalsBuffer.pop();
 
-  await saveShadowTrade(pool, score, mem, wsFlowReal, lp, "SCAN");
-  counters.shadowCount++;
-  chainCounts[pool.chain] = (chainCounts[pool.chain] ?? 0) + 1;
+  if (!isFollowRefresh) {
+    await saveShadowTrade(pool, score, mem, wsFlowReal, lp, "SCAN");
+    counters.shadowCount++;
+    chainCounts[pool.chain] = (chainCounts[pool.chain] ?? 0) + 1;
+  }
 
   return "CONTINUE";
+}
+
+export async function runFollowRefresh(): Promise<void> {
+  const now = Date.now();
+
+  // Curăță entries expirate
+  for (const [addr, entry] of marketFollowList.entries()) {
+    if (now - entry.addedAt > FOLLOW_TTL_MS) {
+      marketFollowList.delete(addr);
+    }
+  }
+
+  if (marketFollowList.size === 0) return;
+
+  // Sortează după attentionScore descendent, ia top N
+  const toRefresh = [...marketFollowList.entries()]
+    .sort(([, a], [, b]) => b.attentionScore - a.attentionScore)
+    .slice(0, FOLLOW_REFRESH_LIMIT);
+
+  const counters = {
+    shadowCount: 0, fomoBlockCount: 0, fomoWatchAdded: 0,
+    fomoNoSlot: 0, fomoLowScore: 0, fomoNoDex: 0, fomoLowReserve: 0,
+    fomoPattern: 0, fomoAlready: 0, vertNoSlot: 0, lateNoSlot: 0,
+    v3Seen: 0, v4Seen: 0, noWs: 0, lowScore: 0, maxBlock: 0,
+    gateCount: 0, armedCount: 0, armFail: 0,
+    buying: 0, neutral: 0, selling: 0,
+  };
+  const chainCounts: Record<string, number> = {};
+  let refreshed = 0;
+
+  for (const [addr, entry] of toRefresh) {
+    const chainCfg = CHAINS.find(c => c.id === entry.chain);
+    if (!chainCfg) continue;
+
+    try {
+      const pool = await fetchPoolByAddress(chainCfg, addr);
+      if (!pool) {
+        marketFollowList.set(addr, { ...entry, lastRefreshedAt: now });
+        continue;
+      }
+
+      await processPool(pool, counters, chainCounts, { source: "follow_refresh" });
+
+      // fix ChatGPT: nu suprascrie attentionScore nou cu entry vechi
+      const updated = marketFollowList.get(addr);
+      if (updated) {
+        marketFollowList.set(addr, { ...updated, lastRefreshedAt: now });
+      }
+
+      refreshed++;
+    } catch {
+      // Ignoră erori individuale
+    }
+  }
+
+  if (refreshed > 0) {
+    console.log(`[FOLLOW REFRESH] ${refreshed}/${toRefresh.length} refreshed | followList:${marketFollowList.size}`);
+  }
 }

@@ -142,3 +142,14 @@ export function pushMomentumEvent(event: PreflightMomentumEvent): void {
     momentumEventsBuffer.splice(MAX_MOMENTUM_BUFFER);
   }
 }
+
+// ── Market follow list ────────────────────────────────────────────────────────
+// Pair-uri cu attention mare care se refreshează direct chiar dacă nu mai apar în trending
+
+export const marketFollowList = new Map<string, {
+  chain:            string;
+  addedAt:          number;
+  lastRefreshedAt:  number;
+  attentionScore:   number;
+  reason:           string;
+}>();
