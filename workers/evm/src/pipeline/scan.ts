@@ -455,34 +455,48 @@ async function processPool(
 }
 
 function seedFollowListFromMemory(): void {
-  let seeded = 0;
+  let scanned = 0;
+  let withPc  = 0;
+  let withLiq = 0;
+  let seeded  = 0;
+
   for (const [addr, mem] of memory.entries()) {
+    scanned++;
     if (marketFollowList.has(addr)) continue;
     const pc = (mem as any).priceChange;
     if (!pc) continue;
-    // reserveUsd vine din poolLiquidity, nu din memory
-    const reserveUsd = poolLiquidity.get(addr)?.reserveUsd ?? 0;
+    withPc++;
+
+    // Defensive key lookup — poate fi addr sau chain:addr
+    const reserveUsd =
+      poolLiquidity.get(addr)?.reserveUsd ??
+      poolLiquidity.get(`${mem.chain}:${addr}`)?.reserveUsd ??
+      0;
+    if (reserveUsd > 0) withLiq++;
+
     const shouldSeed =
       (reserveUsd >= 250_000 && (Math.abs(pc.h1) >= 500 || Math.abs(pc.h24) >= 1000)) ||
       (reserveUsd >= 50_000  && (Math.abs(pc.h1) >= 200 || Math.abs(pc.h24) >= 500));
     if (!shouldSeed) continue;
-    const chain = mem.chain ?? "base";
+
     marketFollowList.set(addr, {
-      chain,
+      chain:           mem.chain ?? "base",
       addedAt:         Date.now(),
-      lastRefreshedAt: 0, // forțează refresh imediat
-      attentionScore:  100, // priority în refresh queue; suprascris la primul processPool
+      lastRefreshedAt: 0,
+      attentionScore:  100,
       reason:          "seeded_from_memory",
     });
     seeded++;
   }
-  if (seeded > 0) console.log(`[FOLLOW SEED] ${seeded} high-attention pairs seeded from memory`);
+
+  console.log(`[FOLLOW SEED DEBUG] scanned:${scanned} withPc:${withPc} withLiq:${withLiq} seeded:${seeded} followList:${marketFollowList.size}`);
 }
 
 export async function runFollowRefresh(): Promise<void> {
+  console.log(`[FOLLOW REFRESH TICK] followList:${marketFollowList.size} memory:${memory.size} liq:${poolLiquidity.size}`);
   const now = Date.now();
 
-  // Seed din memory la fiecare run — prinde movers descoperiți înainte de attention system
+  // Seed din memory la fiecare run
   seedFollowListFromMemory();
 
   // Curăță entries expirate
