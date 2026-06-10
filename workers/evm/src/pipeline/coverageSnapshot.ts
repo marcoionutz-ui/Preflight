@@ -25,23 +25,23 @@ const moverScore = (pc: any) => Math.max(
   Math.abs(pc?.h24 ?? 0) / 8,
 );
 
-export async function writeCoverageSnapshot(r: Redis): Promise<void> {
+export async function writeCoverageSnapshot(r: Redis, states: Record<string, any>): Promise<void> {
   const now    = Date.now();
   const chains: Record<string, any> = {};
 
   for (const chain of CHAINS) {
     const chainId = chain.id;
 
-    // ── Toate perechile urmărite pe acest chain ───────────────────────────
-    const allPairs = [...memory.entries()].filter(([, m]) => m.chain === chainId);
+    // ── Toate perechile urmărite pe acest chain — din pair_states (sursa de adevăr) ──
+    const allPairs = Object.entries(states).filter(([, s]) =>
+      (s.chain ?? "").toLowerCase() === chainId
+    );
 
-    // ── Observed movers — priceChange semnificativă ────────────────────────
-    // fix #1: ?? 0 pe reserveUsd
-    // fix #4: include toți, indiferent de pipeline — coverage e calculat separat
-    const observedMovers = allPairs.filter(([, m]) => {
-      const pc = (m as any).priceChange;
+    // ── Observed movers — aceeași logică ca tp_situation_report ──────────────
+    const observedMovers = allPairs.filter(([, s]) => {
+      const pc = s.priceChange;
       if (!pc) return false;
-      if (((m as any).reserveUsd ?? 0) < MOVER_LIQ_MIN_USD) return false;
+      if ((s.reserveUsd ?? 0) < MOVER_LIQ_MIN_USD) return false;
       return (
         Math.abs(pc.m5  ?? 0) >= MOVER_M5_THRESHOLD  ||
         Math.abs(pc.h1  ?? 0) >= MOVER_H1_THRESHOLD  ||
@@ -87,17 +87,16 @@ export async function writeCoverageSnapshot(r: Redis): Promise<void> {
         return moverScore(pcB) - moverScore(pcA);
       })
       .slice(0, TOP_UNSUBSCRIBED_N)
-      .map(([addr, m]) => {
-        const pc = (m as any).priceChange;
+      .map(([addr, s]) => {
+        const pc = s.priceChange;
         return {
-          symbol:      m.symbol,
+          symbol:      s.symbol,
           pairAddress: addr,
           m5:          pc?.m5  ?? 0,
           h1:          pc?.h1  ?? 0,
           h24:         pc?.h24 ?? 0,
-          reserveUsd:  (m as any).reserveUsd ?? 0,
-          phase:       m.phase,
-          // fix #5: reason explicit
+          reserveUsd:  s.reserveUsd ?? 0,
+          phase:       s.phase,
           reason:      "not_in_pipeline",
         };
       });

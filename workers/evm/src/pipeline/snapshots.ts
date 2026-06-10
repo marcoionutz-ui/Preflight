@@ -67,7 +67,7 @@ export async function writeAllSnapshots(r: Redis): Promise<void> {
 
 // ── preflight:pipeline_coverage ───────────────────────────────────────────
   try {
-    await writeCoverageSnapshot(r);
+    await writeCoverageSnapshot(r, states);
   } catch (e) {
     console.error("[COVERAGE] Write failed:", e instanceof Error ? e.message : e);
   }
