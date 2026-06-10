@@ -161,7 +161,8 @@ export interface RedisContext {
   pfMomentum:  any | null;
   pfPipeline:  any | null;
   pfQualified: any | null;
-  pfDrops:     any | null;
+  pfDrops:          any | null;
+  pipelineCoverage: any | null;
   keyExists: {
     pair_states:     boolean;
     active_watch:    boolean;
@@ -175,7 +176,8 @@ export interface RedisContext {
     pf_momentum:     boolean;
     pf_pipeline:     boolean;
     pf_qualified:    boolean;
-    pf_drops:        boolean;
+    pf_drops:             boolean;
+    pf_pipeline_coverage: boolean;
   };
 }
 

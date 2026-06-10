@@ -21,7 +21,7 @@ Use this first to verify the worker is running before calling other tools.`,
         const ctx = await readAllRedis();
         if (!ctx) return mcpErr(ERR.REDIS_DOWN, "Redis not connected");
 
-        const { now, states, watch, hot, armed, snapshot } = ctx;
+        const { now, states, watch, hot, armed, snapshot, pipelineCoverage } = ctx;
         const snapshotAge   = snapshot?.savedAt ? now - snapshot.savedAt : null;
         const stateVals     = Object.values(states);
         const newestStateAt = stateVals.length ? Math.max(...stateVals.map(s => s.updatedAt)) : null;
@@ -59,6 +59,22 @@ Use this first to verify the worker is running before calling other tools.`,
             phases,
             flowSummary,
           },
+          pipelineCoverage: pipelineCoverage ? {
+            savedAgeSec: Math.round((now - pipelineCoverage.savedAt) / 1000),
+            chains: Object.fromEntries(
+              Object.entries(pipelineCoverage.chains ?? {}).map(([chainId, c]: [string, any]) => [
+                chainId,
+                {
+                  trackedPairs:   c.trackedPairs,
+                  observedMovers: c.observedMovers,
+                  pipeline:       c.pipeline,
+                  ws:             c.ws,
+                  moverCoverage:  c.observedMoverCoverage,
+                  topNotWatched:  (c.topMoversNotWatched ?? []).slice(0, 3),
+                },
+              ])
+            ),
+          } : null,
         });
       } catch (e) { return mcpErr(ERR.INTERNAL, e instanceof Error ? e.message : String(e)); }
     },

@@ -22,6 +22,7 @@ import { buildWorkerObservation, type ObservationContext } from "../lib/observat
 import { tokenPools, tokenPoolKey } from "../infra/poolTracker";
 import { WORKER_VERSION } from "../config/constants";
 import { CHAINS } from "../config/chains";
+import { writeCoverageSnapshot } from "./coverageSnapshot";
 
 export async function writeAllSnapshots(r: Redis): Promise<void> {
   // ── supreme:pair_states ────────────────────────────────────────────────────
@@ -62,6 +63,13 @@ export async function writeAllSnapshots(r: Redis): Promise<void> {
     });
   } catch (e) {
     console.error("[PREFLIGHT REDIS] Write failed:", e instanceof Error ? e.message : e);
+  }
+
+// ── preflight:pipeline_coverage ───────────────────────────────────────────
+  try {
+    await writeCoverageSnapshot(r);
+  } catch (e) {
+    console.error("[COVERAGE] Write failed:", e instanceof Error ? e.message : e);
   }
 }
 

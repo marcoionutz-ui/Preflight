@@ -20,6 +20,7 @@ export async function readAllRedis(): Promise<RedisContext | null> {
     statesRaw, watchRaw, hotRaw, armedRaw,
     snapshotRaw, regimeRaw, eventsRaw, dropsRaw,
     pfMarketRaw, pfMomentumRaw, pfPipelineRaw, pfQualifiedRaw, pfDropsRaw,
+    pfCoverageRaw,
   ] = await Promise.all([
     r.get("supreme:pair_states"),
     r.get("supreme:active_watch"),
@@ -34,6 +35,7 @@ export async function readAllRedis(): Promise<RedisContext | null> {
     r.get("preflight:signal_pipeline"),
     r.get("preflight:qualified_signals"),
     r.get("preflight:recent_drops"),
+    r.get("preflight:pipeline_coverage"),
   ]);
 
   const now = Date.now();
@@ -58,21 +60,23 @@ export async function readAllRedis(): Promise<RedisContext | null> {
     pfMomentum:  pfMomentumRaw  ? JSON.parse(pfMomentumRaw)  : null,
     pfPipeline:  pfPipelineRaw  ? JSON.parse(pfPipelineRaw)  : null,
     pfQualified: pfQualifiedRaw ? JSON.parse(pfQualifiedRaw) : null,
-    pfDrops:     pfDropsRaw     ? JSON.parse(pfDropsRaw)     : null,
+    pfDrops:          pfDropsRaw    ? JSON.parse(pfDropsRaw)    : null,
+    pipelineCoverage: pfCoverageRaw ? JSON.parse(pfCoverageRaw) : null,
     keyExists: {
-      pair_states:     statesRaw   !== null,
-      active_watch:    watchRaw    !== null,
-      hot_candidates:  hotRaw      !== null,
-      armed_entries:   armedRaw    !== null,
-      worker_snapshot: snapshotRaw !== null,
-      market_regime:   regimeRaw   !== null,
-      pipeline_events: eventsRaw   !== null,
-      recent_drops:    dropsRaw    !== null,
-      pf_market:       pfMarketRaw    !== null,
-      pf_momentum:     pfMomentumRaw  !== null,
-      pf_pipeline:     pfPipelineRaw  !== null,
-      pf_qualified:    pfQualifiedRaw !== null,
-      pf_drops:        pfDropsRaw     !== null,
+      pair_states:          statesRaw   !== null,
+      active_watch:         watchRaw    !== null,
+      hot_candidates:       hotRaw      !== null,
+      armed_entries:        armedRaw    !== null,
+      worker_snapshot:      snapshotRaw !== null,
+      market_regime:        regimeRaw   !== null,
+      pipeline_events:      eventsRaw   !== null,
+      recent_drops:         dropsRaw    !== null,
+      pf_market:            pfMarketRaw    !== null,
+      pf_momentum:          pfMomentumRaw  !== null,
+      pf_pipeline:          pfPipelineRaw  !== null,
+      pf_qualified:         pfQualifiedRaw !== null,
+      pf_drops:             pfDropsRaw    !== null,
+      pf_pipeline_coverage: pfCoverageRaw !== null,
     },
   };
 }
