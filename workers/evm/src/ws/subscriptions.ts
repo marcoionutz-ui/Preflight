@@ -19,7 +19,7 @@ import {
   MAX_V3_WATCH, MAX_V4_WATCH,
   WATCH_NO_FLOW_MAX_AGE_MS, WATCH_SELLING_MAX_AGE_MS,
   WATCH_MAX_AGE_MS, FOMO_WATCH_TTL_MS,
-  UNISWAP_V4_POOL_MANAGER, SWAP_V4_TOPIC,
+  UNISWAP_V4_POOL_MANAGER, SWAP_V4_TOPIC, SHORT_WATCH_TTL_MS,
 } from "../config/constants";
 import { cleanEvmAddress } from "../sources/normalize";
 
@@ -60,10 +60,18 @@ export function cleanupActiveWatch(): void {
       continue;
     }
 
-    if (info.kind === "LATE") {
-      if (ageMs > 8 * 60_000) {
-        console.log(`[WATCH EVICT] ${memory.get(addr)?.symbol ?? addr} — kind:LATE age:${Math.round(ageMs / 60_000)}m`);
-        dropWatchCandidate(addr, `evict LATE age:${Math.round(ageMs / 60_000)}m`);
+    if (info.kind === "EVENT_WATCH") {
+      if (ageMs > 5 * 60_000) {
+        console.log(`[WATCH EVICT] ${memory.get(addr)?.symbol ?? addr} — kind:EVENT_WATCH age:${Math.round(ageMs / 60_000)}m`);
+        dropWatchCandidate(addr, `evict EVENT_WATCH age:${Math.round(ageMs / 60_000)}m`);
+      }
+      continue;
+    }
+
+    if (info.kind === "SHORT_WATCH") {
+      if (ageMs > SHORT_WATCH_TTL_MS) {
+        console.log(`[WATCH EVICT] ${memory.get(addr)?.symbol ?? addr} — kind:SHORT_WATCH age:${Math.round(ageMs / 1000)}s`);
+        dropWatchCandidate(addr, `evict SHORT_WATCH age:${Math.round(ageMs / 1000)}s`);
       }
       continue;
     }

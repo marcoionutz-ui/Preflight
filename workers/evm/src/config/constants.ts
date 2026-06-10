@@ -30,11 +30,16 @@ export const FOMO_NO_WS_DROP_MS       =  3 * 60_000;
 export const MAX_FOMO_WATCH     = 15;
 
 // ── Watch limits ──────────────────────────────────────────────────────────────
-export const MAX_ACTIVE_WATCH   = 40;
-export const MAX_VERTICAL_WATCH = 20;
-export const MAX_LATE_WATCH     = 10;
-export const MAX_V3_WATCH       = 30;
-export const MAX_V4_WATCH       = 60;
+export const MAX_ACTIVE_WATCH       = 40;
+export const MAX_VERTICAL_WATCH     = 20;
+export const MAX_LATE_WATCH         = 10;
+export const MAX_V3_WATCH           = 30;
+export const MAX_V4_WATCH           = 60;
+export const MAX_EVENT_WATCH        = 5;
+export const MAX_SHORT_WATCH        = 5;
+export const MAX_CONTINUATION_WATCH = 15;
+export const MAX_FRESH_WATCH_ATT    = 15;  // FRESH_WATCH din attention system
+export const SHORT_WATCH_TTL_MS     = 90_000;
 
 // ── Scores ────────────────────────────────────────────────────────────────────
 export const WATCH_MIN_SCORE      = 70;

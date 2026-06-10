@@ -108,6 +108,9 @@ Args: pair_address (0x... EVM address or V4 pool ID), chain (optional: base/arbi
           marketPattern: {
             lastMomentumVerdict: (pairState as any)?.lastMomentumVerdict ?? null,
             lastMomentumAt:      (pairState as any)?.lastMomentumAt      ?? null,
+            attentionScore:      (pairState as any)?.attentionScore      ?? null,
+            monitoringTier:      (pairState as any)?.monitoringTier      ?? null,
+            patternTags:         (pairState as any)?.patternTags         ?? null,
           },
           history: exposePerformance ? {
             totalEntries:      data.totalEntries,

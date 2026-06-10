@@ -15,7 +15,16 @@ import { MAX_MOMENTUM_BUFFER, MAX_QUALIFIED_BUFFER } from "../config/constants";
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export type EntrySource = "WS" | "FOMO" | "SCAN" | "VERTICAL" | "LATE";
-export type WatchKind   = "NORMAL" | "FOMO" | "VERTICAL" | "LATE" | "CONFIRMED_MOMENTUM";
+export type WatchKind =
+  | "NORMAL"
+  | "VERTICAL"
+  | "CONFIRMED_MOMENTUM"
+  | "LATE"
+  | "FOMO"
+  | "EVENT_WATCH"
+  | "SHORT_WATCH"
+  | "FRESH_WATCH"
+  | "CONTINUATION_WATCH";
 
 export type PipelineEventType =
   | "WATCH_ADDED"

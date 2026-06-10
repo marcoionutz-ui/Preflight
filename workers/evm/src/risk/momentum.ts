@@ -8,6 +8,7 @@
  */
 
 import type { MomentumLevel, EntryRisk, MoveType } from "../lib/observation";
+import { computeAttentionScore, getMonitoringTier, getPatternTags } from "./attention";
 
 export type MomentumVerdict =
   | "VERTICAL_WATCH"       // +30-100% 5m, V3/V4, reserve ok → urmărește
@@ -18,6 +19,8 @@ export type MomentumVerdict =
   | "EXTREME_LATE"         // +500%+ 24h → prea târziu
   | "NO_MOMENTUM"          // sub threshold-uri → nu e momentum event
   | "NO_CHASE";            // momentum real dar criterii Preflight neîndeplinite
+
+import type { MonitoringTier } from "./attention";
 
 export interface MomentumEvent {
   verdict:        MomentumVerdict;
@@ -32,6 +35,9 @@ export interface MomentumEvent {
   isV3orV4:       boolean;
   hasWsFlow:      boolean;
   riskFlags:      string[];
+  attentionScore: number;
+  monitoringTier: MonitoringTier;
+  patternTags:    string[];
 }
 
 interface PoolSnapshot {
@@ -60,9 +66,13 @@ function getEntryRisk(verdict: MomentumVerdict, m5: number, h24: number, reserve
   return "LOW";
 }
 
-export function classifyMomentumEvent(pool: PoolSnapshot): MomentumEvent {
+export function classifyMomentumEvent(pool: PoolSnapshot, seenCount = 1): MomentumEvent {
   const { m5, h1, h24, reserveUsd, isV3orV4, hasWsFlow } = pool;
   const riskFlags: string[] = [];
+  const attentionScore = computeAttentionScore(m5, h1, h24, reserveUsd, seenCount);
+  const monitoringTier = getMonitoringTier(attentionScore, m5, h1, h24, reserveUsd, seenCount);
+  const patternTags    = getPatternTags(m5, h1, h24, reserveUsd);
+  const att = { attentionScore, monitoringTier, patternTags };
 
   if (m5 <= 30 && h24 <= 200) {
     return {
@@ -73,6 +83,7 @@ export function classifyMomentumEvent(pool: PoolSnapshot): MomentumEvent {
       reason: "No significant momentum detected",
       m5Pct: m5, h1Pct: h1, h24Pct: h24, reserveUsd, isV3orV4, hasWsFlow,
       riskFlags: [],
+      ...att,
     };
   }
 
@@ -85,6 +96,7 @@ export function classifyMomentumEvent(pool: PoolSnapshot): MomentumEvent {
       reason: `+${Math.round(h24)}% in 24h — extremely late`,
       m5Pct: m5, h1Pct: h1, h24Pct: h24, reserveUsd, isV3orV4, hasWsFlow,
       riskFlags: ["EXTREME_LATE_ENTRY"],
+      ...att,
     };
   }
 
@@ -97,6 +109,7 @@ export function classifyMomentumEvent(pool: PoolSnapshot): MomentumEvent {
       reason: `Low liquidity ($${Math.round(reserveUsd / 1000)}K) — likely noise`,
       m5Pct: m5, h1Pct: h1, h24Pct: h24, reserveUsd, isV3orV4, hasWsFlow,
       riskFlags: ["THIN_LIQUIDITY"],
+      ...att,
     };
   }
 
@@ -116,6 +129,7 @@ export function classifyMomentumEvent(pool: PoolSnapshot): MomentumEvent {
         reason: `+${Math.round(m5)}% in 5m — non-standard DEX`,
         m5Pct: m5, h1Pct: h1, h24Pct: h24, reserveUsd, isV3orV4, hasWsFlow,
         riskFlags,
+        ...att,
       };
     }
 
@@ -128,6 +142,7 @@ export function classifyMomentumEvent(pool: PoolSnapshot): MomentumEvent {
         reason: `+${Math.round(m5)}% in 5m — reserve too low ($${Math.round(reserveUsd / 1000)}K)`,
         m5Pct: m5, h1Pct: h1, h24Pct: h24, reserveUsd, isV3orV4, hasWsFlow,
         riskFlags,
+        ...att,
       };
     }
 
@@ -139,6 +154,7 @@ export function classifyMomentumEvent(pool: PoolSnapshot): MomentumEvent {
         reason: `+${Math.round(m5)}% in 5m with active WS buying flow`,
         m5Pct: m5, h1Pct: h1, h24Pct: h24, reserveUsd, isV3orV4, hasWsFlow,
         riskFlags,
+        ...att,
       };
     }
 
@@ -149,6 +165,7 @@ export function classifyMomentumEvent(pool: PoolSnapshot): MomentumEvent {
       reason: `+${Math.round(m5)}% in 5m — vertical candle`,
       m5Pct: m5, h1Pct: h1, h24Pct: h24, reserveUsd, isV3orV4, hasWsFlow,
       riskFlags,
+      ...att,
     };
   }
 
@@ -174,6 +191,7 @@ export function classifyMomentumEvent(pool: PoolSnapshot): MomentumEvent {
         reason: `+${Math.round(h24)}% in 24h — criteria not met for watch`,
         m5Pct: m5, h1Pct: h1, h24Pct: h24, reserveUsd, isV3orV4, hasWsFlow,
         riskFlags,
+        ...att,
       };
     }
 
@@ -184,6 +202,7 @@ export function classifyMomentumEvent(pool: PoolSnapshot): MomentumEvent {
       reason: `+${Math.round(h24)}% in 24h — late but active`,
       m5Pct: m5, h1Pct: h1, h24Pct: h24, reserveUsd, isV3orV4, hasWsFlow,
       riskFlags,
+      ...att,
     };
   }
 
@@ -195,6 +214,7 @@ export function classifyMomentumEvent(pool: PoolSnapshot): MomentumEvent {
     reason: "Below momentum thresholds",
     m5Pct: m5, h1Pct: h1, h24Pct: h24, reserveUsd, isV3orV4, hasWsFlow,
     riskFlags: [],
+    ...att,
   };
 }
 

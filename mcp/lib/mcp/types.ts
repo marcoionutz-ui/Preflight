@@ -40,8 +40,11 @@ export interface PairState {
     removedPctOfPool: number | null;
   };
   updatedAt:            number;
-  lastMomentumVerdict?: string | null;
-  lastMomentumAt?:      number | null;
+  lastMomentumVerdict?:  string | null;
+  lastMomentumAt?:       number | null;
+  attentionScore?:       number | null;
+  monitoringTier?:       string | null;
+  patternTags?:          string[] | null;
 }
 
 export interface MemoryEntry extends PairState {

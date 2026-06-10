@@ -74,6 +74,9 @@ export interface PairStateSnapshot {
   updatedAt:            number;
   lastMomentumVerdict?: string | null;
   lastMomentumAt?:      number | null;
+  attentionScore?:      number | null;
+  monitoringTier?:      string | null;
+  patternTags?:         string[] | null;
 }
 
 export function buildPairStates(): Record<string, PairStateSnapshot> {
@@ -114,6 +117,9 @@ export function buildPairStates(): Record<string, PairStateSnapshot> {
       pipelineState,
       lastMomentumVerdict: (mem as any).lastMomentumVerdict ?? null,
       lastMomentumAt:      (mem as any).lastMomentumAt      ?? null,
+      attentionScore:      (mem as any).attentionScore      ?? null,
+      monitoringTier:      (mem as any).monitoringTier      ?? null,
+      patternTags:         (mem as any).patternTags         ?? null,
       seenCount:     mem.seenCount,
       totalEntries:  mem.totalEntries,
 

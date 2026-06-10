@@ -20,6 +20,7 @@ import { CHAINS } from "../config/chains";
 import {
   WORKER_VERSION, MAX_SHADOW_PER_SCAN, MAX_VERTICAL_WATCH, MAX_LATE_WATCH,
   MAX_QUALIFIED_BUFFER, ARM_CONFIRM_MS, ARM_MIN_PRICE_CONFIRM, V3_DEXES,
+  MAX_EVENT_WATCH, MAX_SHORT_WATCH,
 } from "../config/constants";
 import { classifyMomentumEvent, isVerticalWatch, isLateWatch, isHardReject, shouldRecordEvent } from "../risk/momentum";
 import { buildMomentumEventEntry, buildQualifiedSignalEntry } from "../lib/preflight-redis";
@@ -203,12 +204,15 @@ async function processPool(
     reserveUsd: pool.reserveUsd,
     isV3orV4: isV3pool || isV4pool,
     hasWsFlow: wsFlowReal.hasData && wsFlowReal.pressure === "BUYING",
-  });
+  }, mem.seenCount);
 
-  // Salvează verdict pe memory — indiferent de pipeline eligibility
+  // Salvează verdict + attention pe memory — indiferent de pipeline eligibility
   if (momentumEvent.verdict !== "NO_MOMENTUM") {
     mem.lastMomentumVerdict = momentumEvent.verdict;
     mem.lastMomentumAt      = Date.now();
+    (mem as any).attentionScore  = momentumEvent.attentionScore;
+    (mem as any).monitoringTier  = momentumEvent.monitoringTier;
+    (mem as any).patternTags     = momentumEvent.patternTags;
   }
 
   if (momentumEvent.verdict !== "NO_MOMENTUM") {
@@ -227,7 +231,37 @@ async function processPool(
       counters.fomoBlockCount++;
     }
 
-    if (isHardReject(momentumEvent.verdict)) return "CONTINUE";
+    // isHardReject oprește pipeline, dar nu înainte de a verifica attention
+    if (isHardReject(momentumEvent.verdict)) {
+      // EVENT_WATCH pentru hard rejects cu attention mare
+      const { attentionScore, monitoringTier } = momentumEvent;
+      if (monitoringTier === "EVENT_WATCH" && !activeWatch.has(pairAddr)) {
+        const currentEvent = [...activeWatch.values()].filter(w => w.chain === pool.chain && w.kind === "EVENT_WATCH").length;
+        if (currentEvent < MAX_EVENT_WATCH) {
+          addWatchCandidate(pairAddr, {
+            chain: pool.chain, addedAt: Date.now(),
+            kind: "EVENT_WATCH",
+            entryPrice: price, reason: `attention:${attentionScore} tier:EVENT_WATCH`,
+          }, pool);
+          console.log(`[EVENT_WATCH] ${mem.symbol} (${pool.chain}) — attention:${attentionScore} verdict:${momentumEvent.verdict} liq:$${Math.round(pool.reserveUsd/1000)}K`);
+          const chainCfg = CHAINS.find(c => c.id === pool.chain);
+          if (chainCfg) requestImmediateScopedSubscribe(chainCfg);
+        }
+      } else if (monitoringTier === "SHORT_WATCH" && !activeWatch.has(pairAddr)) {
+        const currentShort = [...activeWatch.values()].filter(w => w.chain === pool.chain && w.kind === "SHORT_WATCH").length;
+        if (currentShort < MAX_SHORT_WATCH) {
+          addWatchCandidate(pairAddr, {
+            chain: pool.chain, addedAt: Date.now(),
+            kind: "SHORT_WATCH",
+            entryPrice: price, reason: `attention:${attentionScore} tier:SHORT_WATCH`,
+          }, pool);
+          console.log(`[SHORT_WATCH] ${mem.symbol} (${pool.chain}) — attention:${attentionScore} verdict:${momentumEvent.verdict}`);
+          const chainCfgShort = CHAINS.find(c => c.id === pool.chain);
+          if (chainCfgShort) requestImmediateScopedSubscribe(chainCfgShort);
+        }
+      }
+      return "CONTINUE";
+    }
 
     if (isVerticalWatch(momentumEvent.verdict)) {
       const currentVertical = [...activeWatch.values()].filter(w => w.kind === "VERTICAL").length;
