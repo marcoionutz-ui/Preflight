@@ -18,6 +18,7 @@ export const TOOL_SCOPES: Record<string, string[]> = {
   tp_preflight_safety:  ["read:all", "read:safety"],
   tp_chase_risk:        ["read:all", "read:pipeline"],
   tp_position_context:  ["read:all", "read:positions"],
+  tp_chain_report:      ["read:all", "read:reports", "read:market"],
 };
 
 /**

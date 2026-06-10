@@ -1,0 +1,234 @@
+/**
+ * lib/mcp/tools/tp_chain_report.ts
+ * Raport focusat pe un singur chain — mai detaliat decât tp_situation_report.
+ *
+ * tp_situation_report = global overview, compressed
+ * tp_chain_report     = per-chain drilldown, mai mult context per pereche
+ */
+
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { z } from "zod";
+import { readAllRedis, formatEth, getPipelineState } from "../redis-reader";
+import { mcpOk, mcpErr, ERR } from "../errors";
+
+// Timestamp fallback — events pot folosi ts, detectedAt, sau timestamp
+const eventTs = (e: any): number => e.ts ?? e.detectedAt ?? e.timestamp ?? 0;
+
+export function registerChainReport(server: McpServer) {
+  server.registerTool(
+    "tp_chain_report",
+    {
+      title: "Preflight Chain Report",
+      description: `Focused report for a single chain — more detail per pair than tp_situation_report.
+
+Use when you want to drill into one chain specifically:
+- Chain-level market regime (buying%, coverage, flow)
+- Pipeline breakdown for this chain only (watching/hot/armed)
+- HOT candidates with full flow detail
+- Observed movers filtered to this chain
+- Recent drops + transitions for this chain
+- Top WATCHING pairs by flow activity
+
+Args: chain — one of: base, arbitrum, eth, bsc, solana`,
+      inputSchema: {
+        chain: z.enum(["base", "arbitrum", "eth", "bsc", "solana"]),
+      },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    },
+    async ({ chain }: { chain: string }) => {
+      try {
+        const ctx = await readAllRedis();
+        if (!ctx) return mcpErr(ERR.REDIS_DOWN, "Redis not connected");
+
+        const { now, states, watch, hot, armed, events, drops, pfDrops } = ctx;
+
+        // ── Filter everything to this chain ───────────────────────────────
+        const chainStates = Object.entries(states).filter(
+          ([, s]) => (s.chain ?? "").toLowerCase() === chain
+        );
+        const chainWatch = Object.entries(watch).filter(([, w]) => w.chain?.toLowerCase() === chain);
+        const chainHot   = Object.entries(hot).filter(([, h])   => h.chain?.toLowerCase() === chain);
+        const chainArmed = Object.entries(armed).filter(([, a]) => (a.chain ?? "").toLowerCase() === chain);
+
+        const dropsSource = (pfDrops && pfDrops.length > 0 ? pfDrops : drops) as any[];
+        const chainDrops  = dropsSource.filter((d: any) =>
+          d.chain?.toLowerCase() === chain && now - d.droppedAt < 10 * 60_000
+        );
+        // fix ChatGPT #1: timestamp fallback
+        const chainEvents = events.filter((e: any) =>
+          e.chain?.toLowerCase() === chain && now - eventTs(e) < 5 * 60_000
+        );
+
+        const stateVals = chainStates.map(([, s]) => s);
+
+        const lines: string[] = [];
+        lines.push(`CHAIN REPORT: ${chain.toUpperCase()}`);
+
+        // ── Data freshness ─────────────────────────────────────────────────
+        const newestStateAt = stateVals.length
+          ? Math.max(...stateVals.map(s => s.updatedAt))
+          : null;
+        const dataAgeSec = newestStateAt ? Math.round((now - newestStateAt) / 1000) : null;
+        lines.push(`tracked:${stateVals.length} pairs | dataAge:${dataAgeSec !== null ? `${dataAgeSec}s` : "?"}`);
+        lines.push("");
+
+        if (stateVals.length === 0) {
+          lines.push(`No pairs tracked on ${chain.toUpperCase()} yet.`);
+          return mcpOk(lines.join("\n"));
+        }
+
+        // ── Chain-level market context ─────────────────────────────────────
+        const withFlow    = stateVals.filter(s => s.flow?.hasData);
+        const buying      = withFlow.filter(s => s.flow?.pressure === "BUYING").length;
+        const selling     = withFlow.filter(s => s.flow?.pressure === "SELLING").length;
+        const total       = stateVals.length;
+        const buyingPct   = total ? Math.round(buying  / total * 100) : 0;
+        const sellingPct  = total ? Math.round(selling / total * 100) : 0;
+        const coveragePct = total ? Math.round(withFlow.length / total * 100) : 0;
+
+        const regimeEmoji =
+          buyingPct >= 35  ? "🟢" :
+          sellingPct >= 40 ? "🔴" :
+          coveragePct < 20 ? "⚫" : "🟡";
+
+        const regimeLabel =
+          buyingPct >= 35  ? "RISK_ON"  :
+          sellingPct >= 40 ? "RISK_OFF" :
+          coveragePct < 20 ? "DEAD"     : "MIXED";
+
+        lines.push(`MARKET: ${regimeEmoji} ${regimeLabel} | buying:${buyingPct}% selling:${sellingPct}% coverage:${coveragePct}%`);
+
+        // ── Pipeline counts ────────────────────────────────────────────────
+        lines.push(`PIPELINE: watching:${chainWatch.length} hot:${chainHot.length} armed:${chainArmed.length}`);
+        lines.push("");
+
+        // ── Armed ──────────────────────────────────────────────────────────
+        if (chainArmed.length > 0) {
+          const armedLines = chainArmed.map(([addr, a]) => {
+            const ageSec = Math.round((now - a.armedAt) / 1000);
+            return `  → ${a.symbol ?? addr.slice(0, 8)} pair:${addr} score:${a.score} age:${ageSec}s flow:${a.flowPressure}`;
+          });
+          lines.push(`⚡ ARMED:\n${armedLines.join("\n")}`);
+          lines.push("");
+        }
+
+        // ── HOT — full detail ──────────────────────────────────────────────
+        if (chainHot.length > 0) {
+          const hotLines = chainHot
+            .sort(([, a], [, b]) => a.promotedAt - b.promotedAt)
+            .map(([addr, h]) => {
+              const ageSec    = Math.round((now - h.promotedAt) / 1000);
+              const pairState = states[addr];
+              const pc        = pairState?.priceChange;
+              const fmt       = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`;
+              let line = `  → ${h.symbol ?? addr.slice(0, 8)} pair:${addr}`;
+              line += `\n     source:${h.source ?? "WS"} age:${ageSec}s phase:${h.phase ?? "?"}`;
+              // fix ChatGPT #3: ?? 0 pe formatEth
+              line += `\n     flow:${h.flow?.pressure} | buys:${h.flow?.buys5m} buyVol:${formatEth(h.flow?.buyVol5m ?? 0)} netVol:${formatEth(h.flow?.netVol5m ?? 0)}`;
+              if (pc) line += `\n     priceChange: m5:${fmt(pc.m5)} h1:${fmt(pc.h1)} h24:${fmt(pc.h24)}`;
+              if (pairState) {
+                // fix ChatGPT #2: ?? 0 pe reserveUsd
+                line += `\n     liq:$${Math.round((pairState.reserveUsd ?? 0) / 1000)}K lp:${pairState.lp?.status ?? "?"}`;
+              }
+              return line;
+            });
+          lines.push(`HOT (${chainHot.length}):\n${hotLines.join("\n")}`);
+          lines.push("");
+        }
+
+        // ── Observed movers — acest chain ──────────────────────────────────
+        const moverScore = (s: (typeof stateVals)[0]) => Math.max(
+          Math.abs(s.priceChange?.m5  ?? 0),
+          Math.abs(s.priceChange?.h1  ?? 0) / 3,
+          Math.abs(s.priceChange?.h24 ?? 0) / 8,
+        );
+
+        const observedMovers = chainStates
+          .filter(([addr, s]) => {
+            const pipe = getPipelineState(addr, watch, hot, armed);
+            return pipe === "NONE" &&
+              s.priceChange &&
+              (
+                Math.abs(s.priceChange.m5)  >= 5  ||
+                Math.abs(s.priceChange.h1)  >= 15 ||
+                Math.abs(s.priceChange.h24) >= 40
+              ) &&
+              // fix ChatGPT #2: ?? 0
+              (s.reserveUsd ?? 0) >= 5_000;
+          })
+          .sort(([, a], [, b]) => moverScore(b) - moverScore(a))
+          .slice(0, 10);
+
+        if (observedMovers.length > 0) {
+          const fmt = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`;
+          const moverLines = observedMovers.map(([addr, s]) => {
+            const pc = s.priceChange!;
+            let line = `  → ${s.symbol ?? addr.slice(0, 8)} pair:${addr}`;
+            line += `\n     m5:${fmt(pc.m5)} h1:${fmt(pc.h1)} h24:${fmt(pc.h24)} liq:$${Math.round((s.reserveUsd ?? 0) / 1000)}K`;
+            // fix ChatGPT #3: ?? 0 pe formatEth
+            line += `\n     flow:${s.flow?.hasData ? `${s.flow.pressure} buys:${s.flow.buys5m} netVol:${formatEth(s.flow.netVol5m ?? 0)}` : "NO_WS_DATA"} lp:${s.lp?.status ?? "?"}`;
+            return line;
+          });
+          lines.push(`OBSERVED MOVERS (${observedMovers.length}):\n${moverLines.join("\n")}`);
+          lines.push("");
+        }
+
+        // ── Top WATCHING by flow activity ──────────────────────────────────
+        const watchingWithFlow = chainWatch
+          .map(([addr, w]) => ({ addr, w, pairState: states[addr] ?? null }))
+          .filter(({ pairState }) => pairState?.flow?.hasData && pairState.flow.pressure === "BUYING")
+          .sort((a, b) => (b.pairState?.flow?.buyVol5m ?? 0) - (a.pairState?.flow?.buyVol5m ?? 0))
+          .slice(0, 5);
+
+        if (watchingWithFlow.length > 0) {
+          const fmt = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`;
+          const watchLines = watchingWithFlow.map(({ addr, w, pairState }) => {
+            const pc = pairState?.priceChange;
+            let line = `  → ${w.symbol ?? addr.slice(0, 8)} pair:${addr}`;
+            // fix ChatGPT #3: ?? 0 pe formatEth
+            line += `\n     flow:${pairState!.flow.pressure} buys:${pairState!.flow.buys5m} buyVol:${formatEth(pairState!.flow.buyVol5m ?? 0)} netVol:${formatEth(pairState!.flow.netVol5m ?? 0)}`;
+            if (pc) line += `\n     priceChange: m5:${fmt(pc.m5)} h1:${fmt(pc.h1)} h24:${fmt(pc.h24)}`;
+            line += `\n     liq:$${Math.round((pairState?.reserveUsd ?? 0) / 1000)}K lp:${pairState?.lp?.status ?? "?"}`;
+            return line;
+          });
+          lines.push(`WATCHING — active flow (${watchingWithFlow.length}):\n${watchLines.join("\n")}`);
+          lines.push("");
+        }
+
+        // ── Recent drops ───────────────────────────────────────────────────
+        if (chainDrops.length > 0) {
+          const dropLines = chainDrops.slice(0, 5).map((d: any) => {
+            const ageSec    = Math.round((now - d.droppedAt) / 1000);
+            const fromState = d.wasIn ?? d.previousState ?? "?";
+            return `  ${ageSec}s: ${d.symbol} pair:${d.pairAddress} dropped from ${fromState} — ${d.dropReason ?? d.reason ?? "?"}`;
+          });
+          lines.push(`DROPPED (last 10m):\n${dropLines.join("\n")}`);
+          lines.push("");
+        }
+
+        // ── Recent transitions ─────────────────────────────────────────────
+        if (chainEvents.length > 0) {
+          const evLines = chainEvents.slice(0, 5).map((e: any) => {
+            // fix : eventTs()
+            const ageSec = Math.round((now - eventTs(e)) / 1000);
+            return `  ${ageSec}s: ${e.symbol} ${e.from}→${e.to}${e.reason ? ` (${e.reason})` : ""}`;
+          });
+          lines.push(`TRANSITIONS (last 5m):\n${evLines.join("\n")}`);
+          lines.push("");
+        }
+
+        // ── STATUS ─────────────────────────────────────────────────────────
+        const status =
+          chainArmed.length > 0     ? `ARMED candidate on ${chain.toUpperCase()}. Drilldown data available.` :
+          chainHot.length > 0       ? `HOT candidate on ${chain.toUpperCase()}. Drilldown data available.`   :
+          observedMovers.length > 0 ? `Observed movers on ${chain.toUpperCase()}. No pipeline candidates.`   :
+          chainWatch.length > 0     ? `Watching ${chainWatch.length} pairs on ${chain.toUpperCase()}. Awaiting WS flow confirmation.` :
+          `No active candidates on ${chain.toUpperCase()}. Worker scanning.`;
+
+        lines.push(`STATUS: ${status}`);
+
+        return mcpOk(lines.join("\n"));
+      } catch (e) { return mcpErr(ERR.INTERNAL, e instanceof Error ? e.message : String(e)); }
+    },
+  );
+}
