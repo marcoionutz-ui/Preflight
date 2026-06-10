@@ -7,7 +7,7 @@ import type { SourcePool } from "../sources/normalize";
 import type { EntrySource, WatchKind, PipelineEventType } from "../state/stores";
 import {
   activeWatch, hotCandidates, armedEntries, watchedPoolCache,
-  recentDrops, pipelineEvents, memory,
+  recentDrops, pipelineEvents, memory, clearQualifiedForPair,
 } from "../state/stores";
 import { MAX_ACTIVE_WATCH } from "../config/constants";
 
@@ -33,6 +33,7 @@ export function recordDrop(
 ): void {
   recentDrops.unshift({ symbol, chain, pairAddress: pairAddr, previousState, reason, droppedAt: Date.now() });
   if (recentDrops.length > 50) recentDrops.splice(50);
+  clearQualifiedForPair(pairAddr);
   recordPipelineEvent("DROPPED", symbol, chain, pairAddr, previousState, "NONE", reason);
 }
 

@@ -118,6 +118,15 @@ export const pipelineEvents: Array<{
 export const momentumEventsBuffer: PreflightMomentumEvent[] = [];
 export const qualifiedSignalsBuffer: PreflightQualifiedSignal[] = [];
 
+export function clearQualifiedForPair(pairAddress: string): void {
+  const addr = pairAddress.toLowerCase();
+  for (let i = qualifiedSignalsBuffer.length - 1; i >= 0; i--) {
+    if (qualifiedSignalsBuffer[i]?.pairAddress?.toLowerCase() === addr) {
+      qualifiedSignalsBuffer.splice(i, 1);
+    }
+  }
+}
+
 export function pushMomentumEvent(event: PreflightMomentumEvent): void {
   momentumEventsBuffer.unshift(event);
   if (momentumEventsBuffer.length > MAX_MOMENTUM_BUFFER) {
