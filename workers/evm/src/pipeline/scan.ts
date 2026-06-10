@@ -454,8 +454,35 @@ async function processPool(
   return "CONTINUE";
 }
 
+function seedFollowListFromMemory(): void {
+  let seeded = 0;
+  for (const [addr, mem] of memory.entries()) {
+    if (marketFollowList.has(addr)) continue;
+    const pc = (mem as any).priceChange;
+    if (!pc) continue;
+    const reserveUsd = (mem as any).reserveUsd ?? 0;
+    const shouldSeed =
+      (reserveUsd >= 250_000 && (Math.abs(pc.h1) >= 500 || Math.abs(pc.h24) >= 1000)) ||
+      (reserveUsd >= 50_000  && (Math.abs(pc.h1) >= 200 || Math.abs(pc.h24) >= 500));
+    if (!shouldSeed) continue;
+    const chain = mem.chain ?? "base";
+    marketFollowList.set(addr, {
+      chain,
+      addedAt:         Date.now(),
+      lastRefreshedAt: 0, // forțează refresh imediat
+      attentionScore:  100, // priority în refresh queue; suprascris la primul processPool
+      reason:          "seeded_from_memory",
+    });
+    seeded++;
+  }
+  if (seeded > 0) console.log(`[FOLLOW SEED] ${seeded} high-attention pairs seeded from memory`);
+}
+
 export async function runFollowRefresh(): Promise<void> {
   const now = Date.now();
+
+  // Seed din memory la fiecare run — prinde movers descoperiți înainte de attention system
+  seedFollowListFromMemory();
 
   // Curăță entries expirate
   for (const [addr, entry] of marketFollowList.entries()) {
