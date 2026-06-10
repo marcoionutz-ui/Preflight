@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@preflight/schema": "*",
+	"@preflight/risk-layer": "*",
     "@supabase/supabase-js": "^2.106.0",
     "dotenv": "^17.4.2",
     "ethers": "^6.16.0",

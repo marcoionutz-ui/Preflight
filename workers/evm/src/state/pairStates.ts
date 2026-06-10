@@ -12,6 +12,18 @@ import {
 import { getWsFlow, getLpSignal } from "../risk/flow";
 import { getLiquidityContext } from "../risk/liquidity";
 import { tokenPools, tokenPoolKey } from "../infra/poolTracker";
+import { getCachedRisksBulk } from "../risk/riskChecker";
+import type { RiskResult } from "../risk/riskChecker";
+
+// slim risk — fără raw GoPlus în pair_states snapshot
+type RiskStateSnapshot = Omit<RiskResult, "raw">;
+
+function slimRisk(risk: RiskResult | null | undefined): RiskStateSnapshot | null {
+  if (!risk) return null;
+  const safe = { ...risk } as RiskResult;
+  delete safe.raw;
+  return safe as RiskStateSnapshot;
+}
 
 export interface PairStateSnapshot {
   // Identity — necesar pentru market movers și drilldown fără call extra
@@ -77,10 +89,17 @@ export interface PairStateSnapshot {
   attentionScore?:      number | null;
   monitoringTier?:      string | null;
   patternTags?:         string[] | null;
+  risk?:                RiskStateSnapshot | null;
 }
 
-export function buildPairStates(): Record<string, PairStateSnapshot> {
+export async function buildPairStates(): Promise<Record<string, PairStateSnapshot>> {
   const states: Record<string, PairStateSnapshot> = {};
+
+  // Bulk MGET — un singur Redis call pentru toate pairs
+  const riskItems = [...memory.values()]
+    .filter(mem => !!mem.tokenAddress)
+    .map(mem => ({ tokenAddress: mem.tokenAddress!, chain: mem.chain ?? "base" }));
+  const riskMap = await getCachedRisksBulk(riskItems);
 
   for (const [addr, mem] of memory.entries()) {
     const flow    = getWsFlow(addr);
@@ -160,6 +179,11 @@ export function buildPairStates(): Record<string, PairStateSnapshot> {
 
       hourUtc:   new Date().getUTCHours(),
       updatedAt: Date.now(),
+      risk: (() => {
+        if (!mem.tokenAddress) return null;
+        const key = `${(mem.chain ?? "base").toLowerCase()}:${mem.tokenAddress.toLowerCase()}`;
+        return slimRisk(riskMap.get(key));
+      })(),
     };
   }
 

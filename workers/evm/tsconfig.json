@@ -3,7 +3,8 @@
   "compilerOptions": {
     "noEmit": true,
     "paths": {
-      "@preflight/schema": ["../../packages/preflight-schema/src/index.ts"]
+      "@preflight/schema": ["../../packages/preflight-schema/src/index.ts"],
+      "@preflight/risk-layer": ["../../packages/risk-layer/src/index.ts"]
     }
   },
   "include": ["src"],

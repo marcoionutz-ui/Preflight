@@ -26,7 +26,7 @@ import { writeCoverageSnapshot } from "./coverageSnapshot";
 
 export async function writeAllSnapshots(r: Redis): Promise<void> {
   // ── supreme:pair_states ────────────────────────────────────────────────────
-  const states = buildPairStates();
+  const states = await buildPairStates();
   await r.set("supreme:pair_states", JSON.stringify(states), "EX", 120);
   console.log(`[REDIS] Wrote ${Object.keys(states).length} pair states`);
 

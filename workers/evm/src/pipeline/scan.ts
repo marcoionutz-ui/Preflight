@@ -35,9 +35,15 @@ import { getEntryGate } from "../risk/gates";
 import { recordMomentumEvent } from "../events/momentum";
 import { saveShadowTrade } from "../shadow/trades";
 import { addWatchCandidate, armCandidate, recordDrop, recordPipelineEvent } from "./transitions";
+import { triggerRiskCheck } from "../risk/riskChecker";
 import { subscribeV3Scoped, subscribeV4Scoped, cleanupActiveWatch } from "../ws/subscriptions";
 import { requestImmediateScopedSubscribe } from "../ws/subscriptions";
 import { writeAllSnapshots } from "./snapshots";
+
+function triggerPoolRisk(pool: SourcePool): void {
+  if (!pool.tokenAddress || !pool.chain) return;
+  triggerRiskCheck(pool.tokenAddress, pool.chain);
+}
 
 function clearExpiredArmedEntries(): void {
   const now = Date.now();
@@ -314,6 +320,7 @@ async function processPool(
           console.log(`[EVENT_WATCH] ${mem.symbol} (${pool.chain}) — attention:${attentionScore} verdict:${momentumEvent.verdict} liq:$${Math.round(pool.reserveUsd/1000)}K`);
           const chainCfg = CHAINS.find(c => c.id === pool.chain);
           if (chainCfg) requestImmediateScopedSubscribe(chainCfg);
+          triggerPoolRisk(pool);
         }
       } else if (monitoringTier === "SHORT_WATCH" && !activeWatch.has(pairAddr)) {
         const currentShort = [...activeWatch.values()].filter(w => w.chain === pool.chain && w.kind === "SHORT_WATCH").length;
@@ -326,6 +333,7 @@ async function processPool(
           console.log(`[SHORT_WATCH] ${mem.symbol} (${pool.chain}) — attention:${attentionScore} verdict:${momentumEvent.verdict}`);
           const chainCfgShort = CHAINS.find(c => c.id === pool.chain);
           if (chainCfgShort) requestImmediateScopedSubscribe(chainCfgShort);
+          triggerPoolRisk(pool);
         }
       }
       return "CONTINUE";
@@ -350,6 +358,7 @@ async function processPool(
           const chainCfg = CHAINS.find(c => c.id === pool.chain);
           if (chainCfg) requestImmediateScopedSubscribe(chainCfg);
         }
+        triggerPoolRisk(pool);
       }
       return "CONTINUE";
     }
@@ -367,6 +376,7 @@ async function processPool(
         }, pool);
         counters.fomoWatchAdded++;
         console.log(`[LATE WATCH] ${mem.symbol} (${pool.chain}) — h24:${momentumEvent.h24Pct.toFixed(0)}% verdict:${momentumEvent.verdict}`);
+        triggerPoolRisk(pool);
       }
       return "CONTINUE";
     }
@@ -391,6 +401,7 @@ async function processPool(
         console.log(`[CONTINUATION_WATCH] ${mem.symbol} (${pool.chain}) — attention:${attScore} m5:${pool.priceChange.m5.toFixed(1)}% h1:${pool.priceChange.h1.toFixed(1)}%`);
         const chainCfgCont = CHAINS.find(c => c.id === pool.chain);
         if (chainCfgCont) requestImmediateScopedSubscribe(chainCfgCont);
+        triggerPoolRisk(pool);
       }
     } else if (attTier === "FRESH_WATCH") {
       const currentFresh = [...activeWatch.values()].filter(w => w.chain === pool.chain && w.kind === "FRESH_WATCH").length;
@@ -403,6 +414,7 @@ async function processPool(
         console.log(`[FRESH_WATCH] ${mem.symbol} (${pool.chain}) — attention:${attScore} m5:${pool.priceChange.m5.toFixed(1)}% h1:${pool.priceChange.h1.toFixed(1)}%`);
         const chainCfgFresh = CHAINS.find(c => c.id === pool.chain);
         if (chainCfgFresh) requestImmediateScopedSubscribe(chainCfgFresh);
+        triggerPoolRisk(pool);
       }
     } else if (!wsFlowReal.hasData) {
       // Fallback: logica veche cu prelScore
@@ -410,6 +422,7 @@ async function processPool(
       if (prelScore >= 70) {
         addWatchCandidate(pairAddr, { chain: pool.chain, addedAt: Date.now(), kind: "NORMAL" }, pool);
         console.log(`[WATCH] ${mem.symbol} (${pool.chain}) — added, prelScore ${prelScore}`);
+        triggerPoolRisk(pool);
       }
     }
   }
