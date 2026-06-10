@@ -18,8 +18,11 @@
       "@/*": [
         "./*"
       ],
-      "@preflight/schema": [
+       "@preflight/schema": [
         "../packages/preflight-schema/src/index.ts"
+      ],
+      "@preflight/risk-layer": [
+        "../packages/risk-layer/src/index.ts"
       ]
     },
     "allowJs": true

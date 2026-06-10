@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@preflight/schema": "*",
+    "@preflight/risk-layer": "*",
     "@modelcontextprotocol/sdk": "1.26.0",
     "@supabase/supabase-js": "^2.106.0",
     "dotenv": "^17.4.2",
