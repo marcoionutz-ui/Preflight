@@ -460,7 +460,8 @@ function seedFollowListFromMemory(): void {
     if (marketFollowList.has(addr)) continue;
     const pc = (mem as any).priceChange;
     if (!pc) continue;
-    const reserveUsd = (mem as any).reserveUsd ?? 0;
+    // reserveUsd vine din poolLiquidity, nu din memory
+    const reserveUsd = poolLiquidity.get(addr)?.reserveUsd ?? 0;
     const shouldSeed =
       (reserveUsd >= 250_000 && (Math.abs(pc.h1) >= 500 || Math.abs(pc.h24) >= 1000)) ||
       (reserveUsd >= 50_000  && (Math.abs(pc.h1) >= 200 || Math.abs(pc.h24) >= 500));
