@@ -309,11 +309,10 @@ async function processPool(
     return "CONTINUE";
   }
 
- // Attention-based watch selection — cu cap global + immediate subscribe
+ // Attention-based watch selection — cap global + immediate subscribe
   const attScore = (mem as any).attentionScore ?? 0;
   const attTier  = (mem as any).monitoringTier ?? "MARKET_ONLY";
 
-  // Cap global MAX_ACTIVE_WATCH pe toate categoriile
   if (!activeWatch.has(pairAddr) && activeWatch.size < MAX_ACTIVE_WATCH && (isV3pool || isV4pool)) {
     if (attTier === "CONTINUATION_WATCH") {
       const currentCont = [...activeWatch.values()].filter(w => w.chain === pool.chain && w.kind === "CONTINUATION_WATCH").length;
@@ -324,7 +323,6 @@ async function processPool(
           entryPrice: price, reason: `attention:${attScore} tier:CONTINUATION_WATCH`,
         }, pool);
         console.log(`[CONTINUATION_WATCH] ${mem.symbol} (${pool.chain}) — attention:${attScore} m5:${pool.priceChange.m5.toFixed(1)}% h1:${pool.priceChange.h1.toFixed(1)}%`);
-        // fix ChatGPT: immediate subscribe
         const chainCfgCont = CHAINS.find(c => c.id === pool.chain);
         if (chainCfgCont) requestImmediateScopedSubscribe(chainCfgCont);
       }
@@ -337,7 +335,6 @@ async function processPool(
           entryPrice: price, reason: `attention:${attScore} tier:FRESH_WATCH`,
         }, pool);
         console.log(`[FRESH_WATCH] ${mem.symbol} (${pool.chain}) — attention:${attScore} m5:${pool.priceChange.m5.toFixed(1)}% h1:${pool.priceChange.h1.toFixed(1)}%`);
-        // fix ChatGPT: immediate subscribe
         const chainCfgFresh = CHAINS.find(c => c.id === pool.chain);
         if (chainCfgFresh) requestImmediateScopedSubscribe(chainCfgFresh);
       }
