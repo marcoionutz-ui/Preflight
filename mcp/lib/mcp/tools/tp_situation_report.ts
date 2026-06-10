@@ -1,6 +1,12 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { readAllRedis, formatEth } from "../redis-reader";
 import { mcpOk, mcpErr, ERR } from "../errors";
+import { createClient } from "@supabase/supabase-js";
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+);
 
 export function registerSituationReport(server: McpServer) {
   server.registerTool(
@@ -155,6 +161,27 @@ Observed movers section shows tokens moving on market that haven't passed pipeli
           });
           lines.push(`⚡ ARMED:\n${armedList.join("\n")}`);
         }
+
+		// ── Open positions ─────────────────────────────────────────────────────
+		const { data: openTrades } = await supabase
+		  .from("shadow_trades")
+		  .select("symbol, chain, pair_address, entry_price, current_price, sl, tp1, timestamp")
+		  .is("exited_at", null)
+		  .order("timestamp", { ascending: false });
+
+		if (openTrades && openTrades.length > 0) {
+		  const num = (v: unknown) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+		  const posLines = openTrades.map((t: any) => {
+			const entry   = num(t.entry_price);
+			const current = num(states[t.pair_address?.toLowerCase()]?.currentPrice ?? t.current_price);
+			const pnlPct  = entry > 0 ? ((current - entry) / entry * 100) : 0;
+			const pnlStr  = `${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(1)}%`;
+			const emoji   = pnlPct > 5 ? "🟢" : pnlPct < -5 ? "🔴" : "🟡";
+			const flow    = states[t.pair_address?.toLowerCase()]?.flow;
+			return `  ${emoji} ${t.symbol} [${t.chain}] pair:${t.pair_address} P&L:${pnlStr} flow:${flow?.pressure ?? "?"}`;
+		  });
+		  lines.push(`OPEN POSITIONS (${openTrades.length}):\n${posLines.join("\n")}`);
+		}
 
         // ── Recent drops ───────────────────────────────────────────────────
         const dropsSource = (pfDrops && pfDrops.length > 0 ? pfDrops : drops) as any[];
