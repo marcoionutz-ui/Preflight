@@ -82,7 +82,13 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
 
           const flow = states[addr]?.flow;
           if (flow) {
-            lines.push(`• Current flow: ${flow.hasData ? `${flow.pressure} (buys:${flow.buys5m} buyVol:${formatEth(flow.buyVol5m)})` : "no WS data"}`);
+            lines.push(`• Current flow: ${flow.hasData ? `${flow.pressure} (buys:${flow.buys5m} buyVol:${formatEth(flow.buyVol5m ?? 0)})` : "no WS data"}`);
+          }
+
+          const pc = states[addr]?.priceChange;
+          if (pc) {
+            const fmt = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`;
+            lines.push(`• priceChange: m5:${fmt(pc.m5)} h1:${fmt(pc.h1)} h24:${fmt(pc.h24)}`);
           }
 
           const reasons: string[] = [];

@@ -67,7 +67,6 @@ Args: pair_address (0x... EVM address or V4 pool ID), chain (optional: base/arbi
           return mcpOk({
             found: false, pairAddress: addr,
             symbol: watchOut?.symbol ?? hotOut?.symbol ?? armedOut?.symbol ?? null,
-            chain:  chain ?? watchOut?.chain ?? hotOut?.chain ?? null,
             pipeline: { state: pipelineState, watch: watchOut, hot: hotOut, armed: armedOut },
             contextQuality: "unknown", dataSource: "none", freshnessSec: null,
 			preflightContext: pfCtx ?? null,
@@ -82,8 +81,9 @@ Args: pair_address (0x... EVM address or V4 pool ID), chain (optional: base/arbi
         return mcpOk({
           found: true, pairAddress: addr,
           symbol: data.symbol,
-          chain:  chain ?? watchOut?.chain ?? hotOut?.chain ?? null,
+          chain:  chain ?? pairState?.chain ?? watchOut?.chain ?? hotOut?.chain ?? armedOut?.chain ?? null,
           phase: data.phase, seenCount: data.seenCount, currentPrice: data.currentPrice,
+          priceChange: (pairState as PairState)?.priceChange ?? null,
           dexType:            (pairState as PairState)?.dexType            ?? null,
           reserveUsd:         (pairState as PairState)?.reserveUsd         ?? null,
           liqStatus:          (pairState as PairState)?.liqStatus          ?? null,
