@@ -7,17 +7,17 @@ export function registerSituationReport(server: McpServer) {
     "tp_situation_report",
     {
       title: "Preflight Situation Report",
-      description: `Front door for AI agents. Call this first to get a complete situational overview.
+      description: `Primary situational overview for AI agents.
 
 Returns a compact but complete picture:
 - Worker health + data freshness
 - Market regime + WS coverage
 - Pipeline counts (watching/confirming/qualified)
 - Qualified signals with pair addresses — no extra call needed
-- Observed movers (+5%+ m5 or +15%+ h1) not yet in pipeline
+- Observed movers (gainers/droppers) not yet in pipeline
 - HOT candidates with addresses
 - Recent drops + transitions
-- NEXT suggested action
+- Status summary
 
 Pair addresses are included in every entry — no need to call tp_worker_snapshot just to get addresses.
 Observed movers section shows tokens moving on market that haven't passed pipeline filters yet.`,
@@ -104,38 +104,57 @@ Observed movers section shows tokens moving on market that haven't passed pipeli
           lines.push(`HOT:\n${hotList.join("\n")}`);
         }
 
-        // ── Observed movers — derivat din pair_states ─────────────────────
-        // Tokeni cu mișcări semnificative care nu sunt încă în pipeline
+        // ── Observed movers — split gainers / droppers ────────────────────
         const moverScore = (s: any) => Math.max(
           Math.abs(s.priceChange?.m5  ?? 0),
           Math.abs(s.priceChange?.h1  ?? 0) / 3,
           Math.abs(s.priceChange?.h24 ?? 0) / 8,
         );
 
-        const observedMovers = stateVals
+        const fmtPct = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`;
+        const moverLine = (s: any) =>
+          `  → ${s.symbol} [${s.chain}] pair:${s.pairAddress} m5:${fmtPct(s.priceChange.m5)} h1:${fmtPct(s.priceChange.h1)} h24:${fmtPct(s.priceChange.h24)} liq:$${Math.round((s.reserveUsd ?? 0) / 1000)}K`;
+
+        const moverBase = stateVals.filter((s: any) =>
+          s.pipelineState === "NONE" &&
+          s.priceChange &&
+          (
+            Math.abs(s.priceChange.m5)  >= 5  ||
+            Math.abs(s.priceChange.h1)  >= 15 ||
+            Math.abs(s.priceChange.h24) >= 40
+          ) &&
+          (s.reserveUsd ?? 0) >= 5_000
+        );
+
+        const gainers = moverBase
           .filter((s: any) =>
-            s.pipelineState === "NONE" &&
-            s.priceChange &&
-            (
-              Math.abs(s.priceChange.m5)  >= 5  ||
-              Math.abs(s.priceChange.h1)  >= 15 ||
-              Math.abs(s.priceChange.h24) >= 40
-            ) &&
-            s.reserveUsd >= 5_000
+            s.priceChange.m5  >= 5  ||
+            s.priceChange.h1  >= 15 ||
+            s.priceChange.h24 >= 40
           )
           .sort((a: any, b: any) => moverScore(b) - moverScore(a))
-          .slice(0, 8);
+          .slice(0, 5);
 
-        if (observedMovers.length > 0) {
-          const moverLines = observedMovers.map((s: any) =>
-            `  → ${s.symbol} [${s.chain}] pair:${s.pairAddress} m5:${s.priceChange.m5 > 0 ? "+" : ""}${s.priceChange.m5.toFixed(1)}% h1:${s.priceChange.h1 > 0 ? "+" : ""}${s.priceChange.h1.toFixed(1)}% h24:${s.priceChange.h24 > 0 ? "+" : ""}${s.priceChange.h24.toFixed(1)}% liq:$${Math.round(s.reserveUsd / 1000)}K`
-          );
-          const totalMovers = stateVals.filter((s: any) =>
-            s.pipelineState === "NONE" && s.priceChange &&
-            (Math.abs(s.priceChange.m5) >= 5 || Math.abs(s.priceChange.h1) >= 15 || Math.abs(s.priceChange.h24) >= 40) &&
-            s.reserveUsd >= 5_000
-          ).length;
-          lines.push(`OBSERVED MOVERS (${totalMovers} total, top 8):\n${moverLines.join("\n")}`);
+        const droppers = moverBase
+          .filter((s: any) =>
+            s.priceChange.m5  <= -5  ||
+            s.priceChange.h1  <= -15 ||
+            s.priceChange.h24 <= -40
+          )
+          .sort((a: any, b: any) => moverScore(b) - moverScore(a))
+          .slice(0, 3);
+
+        if (gainers.length > 0 || droppers.length > 0) {
+          const totalMovers = moverBase.length;
+          lines.push(`OBSERVED MOVERS (${totalMovers} total):`);
+          if (gainers.length > 0) {
+            lines.push(`  GAINERS (${gainers.length}):`);
+            gainers.forEach((s: any) => lines.push(moverLine(s)));
+          }
+          if (droppers.length > 0) {
+            lines.push(`  DROPPERS (${droppers.length}):`);
+            droppers.forEach((s: any) => lines.push(moverLine(s)));
+          }
         }
 
         // ── Momentum events recente ────────────────────────────────────────
@@ -178,13 +197,13 @@ Observed movers section shows tokens moving on market that haven't passed pipeli
           lines.push(`TRANSITIONS:\n${evLines.join("\n")}`);
         }
 
-        // ── NEXT action ────────────────────────────────────────────────────
+        // ── Status summary ─────────────────────────────────────────────────
 		const qualCount = activeQualified.length;
 
 		const status =
 		  hotCount > 0              ? `HOT candidate active. Drilldown data available.` :
 		  qualCount > 0             ? `Qualified signals present. Drilldown data available.` :
-		  observedMovers.length > 0 ? `Observed movers detected. No pipeline candidates.` :
+		  moverBase.length > 0      ? `Observed movers detected. No pipeline candidates.` :
 		  watchCount > 0            ? `Watching ${watchCount} pairs. Awaiting WS flow confirmation.` :
 		  `Pipeline empty. Worker scanning.`;
 
