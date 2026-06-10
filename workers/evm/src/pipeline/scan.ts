@@ -14,6 +14,7 @@ import { trackPool, tokenPools, tokenPoolKey } from "../infra/poolTracker";
 import { getRedis } from "../infra/redis";
 import { sendTelegram } from "../infra/telegram";
 import { fetchTrendingPools, fetchPoolByAddress } from "../sources/gecko";
+import { fetchDsPairByAddress } from "../sources/dexscreener";
 import { isBlockedSymbol } from "../sources/normalize";
 import type { SourcePool } from "../sources/normalize";
 import { CHAINS } from "../config/chains";
@@ -455,25 +456,19 @@ async function processPool(
 }
 
 function seedFollowListFromMemory(): void {
-  let scanned = 0;
-  let withPc  = 0;
-  let withLiq = 0;
-  let seeded  = 0;
+  let seeded = 0;
 
   for (const [addr, mem] of memory.entries()) {
-    scanned++;
-    if (marketFollowList.has(addr)) continue;
+   if (marketFollowList.has(addr)) continue;
     const pc = (mem as any).priceChange;
     if (!pc) continue;
-    withPc++;
-
+    
     // Defensive key lookup — poate fi addr sau chain:addr
     const reserveUsd =
       poolLiquidity.get(addr)?.reserveUsd ??
       poolLiquidity.get(`${mem.chain}:${addr}`)?.reserveUsd ??
       0;
-    if (reserveUsd > 0) withLiq++;
-
+  
     const shouldSeed =
       (reserveUsd >= 250_000 && (Math.abs(pc.h1) >= 500 || Math.abs(pc.h24) >= 1000)) ||
       (reserveUsd >= 50_000  && (Math.abs(pc.h1) >= 200 || Math.abs(pc.h24) >= 500));
@@ -489,11 +484,11 @@ function seedFollowListFromMemory(): void {
     seeded++;
   }
 
-  console.log(`[FOLLOW SEED DEBUG] scanned:${scanned} withPc:${withPc} withLiq:${withLiq} seeded:${seeded} followList:${marketFollowList.size}`);
+  if (seeded > 0) console.log(`[FOLLOW SEED] ${seeded} pairs seeded from memory | followList:${marketFollowList.size}`);
 }
 
 export async function runFollowRefresh(): Promise<void> {
-  console.log(`[FOLLOW REFRESH TICK] followList:${marketFollowList.size} memory:${memory.size} liq:${poolLiquidity.size}`);
+  if (marketFollowList.size > 0) console.log(`[FOLLOW REFRESH TICK] followList:${marketFollowList.size}`);
   const now = Date.now();
 
   // Seed din memory la fiecare run
@@ -529,7 +524,16 @@ export async function runFollowRefresh(): Promise<void> {
     if (!chainCfg) continue;
 
     try {
-      const pool = await fetchPoolByAddress(chainCfg, addr);
+      let pool = await fetchPoolByAddress(chainCfg, addr);
+
+      // Fallback: DexScreener dacă Gecko direct fetch eșuează
+      if (!pool) {
+        pool = await fetchDsPairByAddress(chainCfg, addr);
+        if (pool) {
+          console.log(`[FOLLOW DS FALLBACK] ${entry.chain}:${addr.slice(0, 12)}... — Gecko miss, DexScreener hit`);
+        }
+      }
+
       if (!pool) {
         marketFollowList.set(addr, { ...entry, lastRefreshedAt: now });
         continue;
