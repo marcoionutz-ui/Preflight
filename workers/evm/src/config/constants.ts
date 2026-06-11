@@ -4,7 +4,7 @@
  * Zero imports din alte module interne.
  */
 
-export const WORKER_VERSION = "v5.33";
+export const WORKER_VERSION = "v5.34";
 
 export const GECKO_BASE = "https://api.geckoterminal.com/api/v2";
 
@@ -95,6 +95,7 @@ export const V3_DEXES = new Set([
   "camelot-v3",
   "ramses-v3-arbitrum",
   "sushiswap_arbitrum",
+  "pancakeswap-v3-bsc",
 ]);
 
 // ── V4 constants ──────────────────────────────────────────────────────────────

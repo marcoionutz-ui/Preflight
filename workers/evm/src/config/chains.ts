@@ -1,6 +1,7 @@
 /**
  * config/chains.ts
- * Chain configurations pentru EVM worker (Base + Arbitrum).
+ * Chain configurations pentru EVM worker.
+ * ENABLED_CHAINS env var controlează ce chainuri pornesc în acest runtime.
  */
 
 export interface ChainConfig {
@@ -12,7 +13,14 @@ export interface ChainConfig {
   wsUrl:       string;
 }
 
-export const CHAINS: ChainConfig[] = [
+const enabledChains = new Set(
+  (process.env.ENABLED_CHAINS ?? "base,arbitrum")
+    .split(",")
+    .map(s => s.trim().toLowerCase())
+    .filter(Boolean)
+);
+
+const ALL_CHAINS: ChainConfig[] = [
   {
     id:    "base",
     gecko: "base",
@@ -28,4 +36,15 @@ export const CHAINS: ChainConfig[] = [
     usdcLegacy:  "0xff970a61a04b1ca14834a43f5de4533ebddb5cc8",
     wsUrl:       process.env.ALCHEMY_ARB_WS ?? "",
   },
-].filter(c => c.wsUrl || c.gecko);
+  {
+    id:    "bsc",
+    gecko: "bsc",
+    weth:  "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c", // WBNB
+    usdc:  "0x55d398326f99059ff775485246999027b3197955", // USDT (câmp usdc = stable quote token)
+    wsUrl: process.env.ALCHEMY_BNB_WS ?? "",
+  },
+];
+
+export const CHAINS: ChainConfig[] = ALL_CHAINS.filter(c =>
+  enabledChains.has(c.id)
+);
