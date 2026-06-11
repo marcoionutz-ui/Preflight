@@ -40,6 +40,8 @@ import { requestImmediateScopedSubscribe } from "../ws/subscriptions";
 import { writeAllSnapshots } from "./snapshots";
 import { subscribeV3Scoped, subscribeV4Scoped, subscribeV2Scoped, cleanupActiveWatch } from "../ws/subscriptions";
 
+const seenBscDexIds = new Set<string>();
+
 function hasWatchSlot(chain: string): boolean {
   const maxForChain = MAX_ACTIVE_WATCH_BY_CHAIN[chain] ?? 10;
   let chainCount = 0;
@@ -92,6 +94,13 @@ function rebuildPoolMaps(pools: SourcePool[]): void {
     if (chainsPresent.has(p.chain)) v4PoolMap.delete(addr);
   }
   for (const p of pools) {
+	  if (p.chain === "bsc") {
+      const key = `${p.dexId ?? "unknown"}:${p.dexType ?? "unknown"}`;
+      if (!seenBscDexIds.has(key)) {
+        seenBscDexIds.add(key);
+        console.log(`[BSC DEX] dexId:${p.dexId} dexType:${p.dexType} symbol:${p.symbol}`);
+      }
+    }
     if (isBlockedSymbol(p.symbol)) continue;
     if (p.dexType === "V3" && V3_DEXES.has(p.dexId)) v3PoolMap.set(p.pairAddress, p);
     if (p.dexType === "V4") v4PoolMap.set(p.pairAddress, p);
