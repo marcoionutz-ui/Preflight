@@ -4,7 +4,7 @@
  * Zero imports din alte module interne.
  */
 
-export const WORKER_VERSION = "v5.37";
+export const WORKER_VERSION = "v5.38";
 
 export const GECKO_BASE = "https://api.geckoterminal.com/api/v2";
 
@@ -30,7 +30,13 @@ export const FOMO_NO_WS_DROP_MS       =  3 * 60_000;
 export const MAX_FOMO_WATCH     = 15;
 
 // ── Watch limits ──────────────────────────────────────────────────────────────
-export const MAX_ACTIVE_WATCH       = 40;
+export const MAX_ACTIVE_WATCH       = 60;
+
+export const MAX_ACTIVE_WATCH_BY_CHAIN: Record<string, number> = {
+  base:     20,
+  arbitrum: 12,
+  bsc:      25,
+};
 export const MAX_VERTICAL_WATCH     = 20;
 export const MAX_LATE_WATCH         = 10;
 export const MAX_V3_WATCH           = 30;

@@ -22,7 +22,7 @@ import {
   WORKER_VERSION, MAX_SHADOW_PER_SCAN, MAX_VERTICAL_WATCH, MAX_LATE_WATCH,
   MAX_QUALIFIED_BUFFER, ARM_CONFIRM_MS, ARM_MIN_PRICE_CONFIRM, V3_DEXES,
   MAX_EVENT_WATCH, MAX_SHORT_WATCH, MAX_CONTINUATION_WATCH, MAX_FRESH_WATCH_ATT, MAX_ACTIVE_WATCH,
-  FOLLOW_TTL_MS, FOLLOW_ADD_SCORE, FOLLOW_REMOVE_SCORE, FOLLOW_REFRESH_LIMIT, FOLLOW_MAX_MISSES,
+  FOLLOW_TTL_MS, FOLLOW_ADD_SCORE, FOLLOW_REMOVE_SCORE, FOLLOW_REFRESH_LIMIT, FOLLOW_MAX_MISSES, MAX_ACTIVE_WATCH_BY_CHAIN,
 } from "../config/constants";
 import { classifyMomentumEvent, isVerticalWatch, isLateWatch, isHardReject, shouldRecordEvent } from "../risk/momentum";
 import { buildMomentumEventEntry, buildQualifiedSignalEntry } from "../lib/preflight-redis";
@@ -39,6 +39,15 @@ import { triggerRiskCheck } from "../risk/riskChecker";
 import { requestImmediateScopedSubscribe } from "../ws/subscriptions";
 import { writeAllSnapshots } from "./snapshots";
 import { subscribeV3Scoped, subscribeV4Scoped, subscribeV2Scoped, cleanupActiveWatch } from "../ws/subscriptions";
+
+function hasWatchSlot(chain: string): boolean {
+  const maxForChain = MAX_ACTIVE_WATCH_BY_CHAIN[chain] ?? 10;
+  let chainCount = 0;
+  for (const w of activeWatch.values()) {
+    if (w.chain === chain) chainCount++;
+  }
+  return activeWatch.size < MAX_ACTIVE_WATCH && chainCount < maxForChain;
+}
 
 function triggerPoolRisk(pool: SourcePool): void {
   if (!pool.tokenAddress || !pool.chain) return;
@@ -339,7 +348,7 @@ async function processPool(
       }
 
       // Context watch — colectare dosar, nu pipeline candidate
-      if (!activeWatch.has(pairAddr) && activeWatch.size < MAX_ACTIVE_WATCH) {
+      if (!activeWatch.has(pairAddr) && hasWatchSlot(pool.chain)) {
         const shouldContextWatch =
           pool.reserveUsd >= 500_000 ||
           Math.abs(pool.priceChange?.m5  ?? 0) >= 5  ||
@@ -414,7 +423,7 @@ async function processPool(
   const attScore = (mem as any).attentionScore ?? 0;
   const attTier  = (mem as any).monitoringTier ?? "MARKET_ONLY";
 
-  if (!activeWatch.has(pairAddr) && activeWatch.size < MAX_ACTIVE_WATCH && (isV3pool || isV4pool)) {
+    if (!activeWatch.has(pairAddr) && hasWatchSlot(pool.chain)) {
     if (attTier === "CONTINUATION_WATCH") {
       const currentCont = [...activeWatch.values()].filter(w => w.chain === pool.chain && w.kind === "CONTINUATION_WATCH").length;
       if (currentCont < MAX_CONTINUATION_WATCH) {
@@ -442,7 +451,6 @@ async function processPool(
         triggerPoolRisk(pool);
       }
     } else if (!wsFlowReal.hasData) {
-      // Context gate — relevance for information, not trade quality
       const prelScore = quickEdgeScore(pool, mem, flow, lp);
       const shouldWatchForContext =
         Math.abs(pool.priceChange?.m5  ?? 0) >= 5  ||
