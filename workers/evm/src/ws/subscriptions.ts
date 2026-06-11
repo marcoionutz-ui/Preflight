@@ -208,4 +208,49 @@ export function requestImmediateScopedSubscribe(chain: ChainConfig): void {
   lastImmediateSub.set(chain.id, now);
   setTimeout(() => subscribeV4Scoped(chain), 500);
   setTimeout(() => subscribeV3Scoped(chain), 800);
+  setTimeout(() => subscribeV2Scoped(chain), 1100);
+}
+
+export function subscribeV2Scoped(chain: ChainConfig): void {
+  const ws = wsClients.get(chain.id) as WebSocket | undefined;
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+  const snapKey = chain.id + "_v2_snap";
+  const idKey   = chain.id + "_v2_id";
+
+  const addrs = [...new Set([
+    ...[...hotCandidates.entries()]
+      .filter(([addr, info]) => info.chain === chain.id && !v3PoolMap.has(addr) && !v4PoolMap.has(addr))
+      .map(([addr]) => addr),
+    ...[...activeWatch.entries()]
+      .filter(([addr, info]) => info.chain === chain.id && !v3PoolMap.has(addr) && !v4PoolMap.has(addr))
+      .sort((a, b) => watchPriority(a[1].kind) - watchPriority(b[1].kind))
+      .map(([addr]) => addr),
+  ])].slice(0, 50);
+
+  if (!addrs.length) {
+    const oldId = v3SwapSubIds.get(idKey);
+    if (oldId) {
+      ws.send(JSON.stringify({ jsonrpc: "2.0", id: 53, method: "eth_unsubscribe", params: [oldId] }));
+      v3SwapSubIds.delete(idKey);
+      v3SwapSubIds.delete(snapKey);
+    }
+    return;
+  }
+
+  const snapshot = addrs.join(",");
+  if (v3SwapSubIds.get(snapKey) === snapshot) return;
+  v3SwapSubIds.set(snapKey, snapshot);
+
+  const oldId = v3SwapSubIds.get(idKey);
+  if (oldId) {
+    ws.send(JSON.stringify({ jsonrpc: "2.0", id: 53, method: "eth_unsubscribe", params: [oldId] }));
+  }
+
+  ws.send(JSON.stringify({
+    jsonrpc: "2.0", id: 52,
+    method: "eth_subscribe",
+    params: ["logs", { address: addrs, topics: [SWAP_V2_TOPIC] }],
+  }));
+  console.log(`[V2] Scoped subscribe: ${addrs.length} watched pools (${chain.id})`);
 }

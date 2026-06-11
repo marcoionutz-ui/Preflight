@@ -91,9 +91,10 @@ export function connectChainWebSocket(chain: ChainConfig): void {
       const msg = JSON.parse(data.toString());
 
       // Sub confirmations pentru V3/V4
-      if (msg.id === 5 || msg.id === 6 || msg.id === 7) {
-        if (msg.id === 5 && msg.result) v4SwapSubIds.set(chain.id, msg.result);
-        if (msg.id === 7 && msg.result) v3SwapSubIds.set(chain.id, msg.result);
+      if (msg.id === 5 || msg.id === 6 || msg.id === 7 || msg.id === 52) {
+        if (msg.id === 5  && typeof msg.result === "string") v4SwapSubIds.set(chain.id, msg.result);
+	    if (msg.id === 7  && typeof msg.result === "string") v3SwapSubIds.set(chain.id, msg.result);
+	    if (msg.id === 52 && typeof msg.result === "string") v3SwapSubIds.set(chain.id + "_v2_id", msg.result);
         console.log(`[V3/V4 SUB DEBUG] ${data.toString()}`);
         return;
       }
@@ -332,6 +333,8 @@ export function connectChainWebSocket(chain: ChainConfig): void {
     v4SwapSubIds.delete(chain.id + "_snap");
     v3SwapSubIds.delete(chain.id);
     v3SwapSubIds.delete(chain.id + "_snap");
+	v3SwapSubIds.delete(chain.id + "_v2_id");
+	v3SwapSubIds.delete(chain.id + "_v2_snap");
     console.log(`[WS ${chain.id}] Disconnected — reconnecting in 5s...`);
     setTimeout(() => connectChainWebSocket(chain), 5_000);
   });

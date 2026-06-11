@@ -36,9 +36,9 @@ import { recordMomentumEvent } from "../events/momentum";
 import { saveShadowTrade } from "../shadow/trades";
 import { addWatchCandidate, armCandidate, recordDrop, recordPipelineEvent } from "./transitions";
 import { triggerRiskCheck } from "../risk/riskChecker";
-import { subscribeV3Scoped, subscribeV4Scoped, cleanupActiveWatch } from "../ws/subscriptions";
 import { requestImmediateScopedSubscribe } from "../ws/subscriptions";
 import { writeAllSnapshots } from "./snapshots";
+import { subscribeV3Scoped, subscribeV4Scoped, subscribeV2Scoped, cleanupActiveWatch } from "../ws/subscriptions";
 
 function triggerPoolRisk(pool: SourcePool): void {
   if (!pool.tokenAddress || !pool.chain) return;
@@ -189,6 +189,7 @@ export async function scan(): Promise<void> {
 
   CHAINS.forEach(c => subscribeV4Scoped(c));
   CHAINS.forEach(c => subscribeV3Scoped(c));
+  CHAINS.forEach(c => subscribeV2Scoped(c));
 
   console.log(
     `[MOMENTUM SUMMARY] events:${counters.fomoBlockCount} watched:${counters.fomoWatchAdded}`
