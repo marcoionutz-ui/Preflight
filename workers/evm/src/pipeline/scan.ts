@@ -7,7 +7,7 @@
 import {
   activeWatch, hotCandidates, armedEntries,
   v3PoolMap, v4PoolMap, wsFlow, poolLiquidity,
-  memory, qualifiedSignalsBuffer, marketFollowList, geckoSourceHealth,
+  memory, qualifiedSignalsBuffer, marketFollowList, geckoSourceHealth, WatchKind,
 } from "../state/stores";
 import { updateMemory, saveMemoryToRedis } from "../state/memory";
 import { trackPool, tokenPools, tokenPoolKey } from "../infra/poolTracker";
@@ -418,11 +418,28 @@ async function processPool(
         triggerPoolRisk(pool);
       }
     } else if (!wsFlowReal.hasData) {
-      // Fallback: logica veche cu prelScore
+      // Context gate — relevance for information, not trade quality
       const prelScore = quickEdgeScore(pool, mem, flow, lp);
-      if (prelScore >= 70) {
-        addWatchCandidate(pairAddr, { chain: pool.chain, addedAt: Date.now(), kind: "NORMAL" }, pool);
-        console.log(`[WATCH] ${mem.symbol} (${pool.chain}) — added, prelScore ${prelScore}`);
+      const shouldWatchForContext =
+        Math.abs(pool.priceChange?.m5  ?? 0) >= 5  ||
+        Math.abs(pool.priceChange?.h1  ?? 0) >= 10 ||
+        Math.abs(pool.priceChange?.h24 ?? 0) >= 50 ||
+        pool.reserveUsd >= 500_000 ||
+        mem.phase === "PUMPING" ||
+        mem.phase === "NEW" ||
+        prelScore >= 70;
+
+      if (shouldWatchForContext) {
+        const watchKind: WatchKind =
+          Math.abs(pool.priceChange?.m5  ?? 0) >= 5   ? "MOVER_5M"  :
+          Math.abs(pool.priceChange?.h1  ?? 0) >= 10  ? "MOVER_1H"  :
+          Math.abs(pool.priceChange?.h24 ?? 0) >= 50  ? "MOVER_24H" :
+          pool.reserveUsd >= 500_000                  ? "HIGH_LIQ"  :
+          mem.phase === "NEW"                         ? "NEW_POOL"  :
+          "NORMAL";
+
+        addWatchCandidate(pairAddr, { chain: pool.chain, addedAt: Date.now(), kind: watchKind }, pool);
+        console.log(`[WATCH] ${mem.symbol} (${pool.chain}) — added, kind:${watchKind} prelScore:${prelScore}`);
         triggerPoolRisk(pool);
       }
     }

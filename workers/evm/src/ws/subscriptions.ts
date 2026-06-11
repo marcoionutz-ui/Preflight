@@ -35,11 +35,16 @@ export function watchPriority(kind?: string): number {
   if (kind === "CONTINUATION_WATCH") return 1;
   if (kind === "FRESH_WATCH")        return 2;
   if (kind === "VERTICAL")           return 3;
-  if (kind === "EVENT_WATCH")        return 4;
-  if (kind === "FOMO")               return 5;
-  if (kind === "LATE")               return 6;
-  if (kind === "SHORT_WATCH")        return 7;
-  return 8;
+  if (kind === "MOVER_5M")           return 4;
+  if (kind === "MOVER_1H")           return 5;
+  if (kind === "HIGH_LIQ")           return 6;
+  if (kind === "MOVER_24H")          return 7;
+  if (kind === "EVENT_WATCH")        return 8;
+  if (kind === "FOMO")               return 9;
+  if (kind === "LATE")               return 10;
+  if (kind === "NEW_POOL")           return 11;
+  if (kind === "SHORT_WATCH")        return 12;
+  return 13;
 }
 
 export function cleanupActiveWatch(): void {

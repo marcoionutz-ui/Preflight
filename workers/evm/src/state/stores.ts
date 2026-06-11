@@ -24,7 +24,12 @@ export type WatchKind =
   | "EVENT_WATCH"
   | "SHORT_WATCH"
   | "FRESH_WATCH"
-  | "CONTINUATION_WATCH";
+  | "CONTINUATION_WATCH"
+  | "HIGH_LIQ"
+  | "MOVER_5M"
+  | "MOVER_1H"
+  | "MOVER_24H"
+  | "NEW_POOL";
 
 export type PipelineEventType =
   | "WATCH_ADDED"
