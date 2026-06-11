@@ -40,8 +40,6 @@ import { requestImmediateScopedSubscribe } from "../ws/subscriptions";
 import { writeAllSnapshots } from "./snapshots";
 import { subscribeV3Scoped, subscribeV4Scoped, subscribeV2Scoped, cleanupActiveWatch } from "../ws/subscriptions";
 
-const seenBscDexIds = new Set<string>();
-
 function hasWatchSlot(chain: string): boolean {
   const maxForChain = MAX_ACTIVE_WATCH_BY_CHAIN[chain] ?? 10;
   let chainCount = 0;
@@ -94,14 +92,7 @@ function rebuildPoolMaps(pools: SourcePool[]): void {
     if (chainsPresent.has(p.chain)) v4PoolMap.delete(addr);
   }
   for (const p of pools) {
-	  if (p.chain === "bsc") {
-      const key = `${p.dexId ?? "unknown"}:${p.dexType ?? "unknown"}`;
-      if (!seenBscDexIds.has(key)) {
-        seenBscDexIds.add(key);
-        console.log(`[BSC DEX] dexId:${p.dexId} dexType:${p.dexType} symbol:${p.symbol}`);
-      }
-    }
-    if (isBlockedSymbol(p.symbol)) continue;
+	if (isBlockedSymbol(p.symbol)) continue;
     if (p.dexType === "V3" && V3_DEXES.has(p.dexId)) v3PoolMap.set(p.pairAddress, p);
     if (p.dexType === "V4") v4PoolMap.set(p.pairAddress, p);
   }
@@ -515,7 +506,7 @@ async function processPool(
     counters.gateCount++;
     console.log(`[SKIP] ${mem.symbol} (${pool.chain}) — ${gate.reason}`);
     if (armedEntries.has(pairAddr)) {
-      recordDrop(pairAddr, mem.symbol, pool.chain, "ARMED", `gate failed: ${gate.reason}`);
+      recordDrop(pairAddr, mem.symbol, pool.chain, "ARMED", `gate failed: ${gate.reason}`, price, score);
     }
     armedEntries.delete(pairAddr);
     return "CONTINUE";
@@ -537,14 +528,14 @@ async function processPool(
 
   if (price < armed.price * ARM_MIN_PRICE_CONFIRM) {
     console.log(`[ARM SKIP] ${mem.symbol} (${pool.chain}) — price failed confirmation`);
-    recordDrop(pairAddr, mem.symbol, pool.chain, "ARMED", `price failed confirmation ${price.toExponential(4)} < ${armed.price.toExponential(4)}`);
+    recordDrop(pairAddr, mem.symbol, pool.chain, "ARMED", `price failed confirmation ${price.toExponential(4)} < ${armed.price.toExponential(4)}`, price, armed.score);
     armedEntries.delete(pairAddr); counters.armFail++;
     return "CONTINUE";
   }
 
   if (!wsFlowReal.hasData || wsFlowReal.pressure !== "BUYING") {
     console.log(`[ARM SKIP] ${mem.symbol} (${pool.chain}) — flow faded (${wsFlowReal.pressure})`);
-    recordDrop(pairAddr, mem.symbol, pool.chain, "ARMED", `flow faded: ${wsFlowReal.pressure}`);
+    recordDrop(pairAddr, mem.symbol, pool.chain, "ARMED", `flow faded: ${wsFlowReal.pressure}`, price, armed.score);
     armedEntries.delete(pairAddr); counters.armFail++;
     return "CONTINUE";
   }
@@ -552,7 +543,7 @@ async function processPool(
   const currentNetVol = (wsFlowReal as any).netVol5m ?? 0;
   if (currentNetVol < 0.05) {
     console.log(`[ARM SKIP] ${mem.symbol} (${pool.chain}) — netVol faded ${currentNetVol.toFixed(3)}ETH`);
-    recordDrop(pairAddr, mem.symbol, pool.chain, "ARMED", `netVol faded ${currentNetVol.toFixed(3)}ETH`);
+    recordDrop(pairAddr, mem.symbol, pool.chain, "ARMED", `netVol faded ${currentNetVol.toFixed(3)}ETH`, price, armed.score);
     armedEntries.delete(pairAddr); counters.armFail++;
     return "CONTINUE";
   }

@@ -5,12 +5,13 @@
  */
 
 export interface ChainConfig {
-  id:          string;
-  gecko:       string;
-  weth:        string;
-  usdc:        string;
-  usdcLegacy?: string;
-  wsUrl:       string;
+  id:          	 string;
+  gecko:       	 string;
+  weth:        	 string;
+  usdc:        	 string;
+  usdcLegacy?:   string;
+  stableQuotes?: string[];
+  wsUrl:         string;
 }
 
 const enabledChains = new Set(
@@ -41,6 +42,11 @@ const ALL_CHAINS: ChainConfig[] = [
     gecko: "bsc",
     weth:  "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c", // WBNB
     usdc:  "0x55d398326f99059ff775485246999027b3197955", // USDT (câmp usdc = stable quote token)
+	stableQuotes: [
+      "0x55d398326f99059ff775485246999027b3197955", // USDT
+      "0xe9e7cea3dedca5984780bafc599bd69add087d56", // BUSD
+      "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d", // USDC BSC
+    ],
     wsUrl: process.env.ALCHEMY_BNB_WS ?? "",
   },
 ];

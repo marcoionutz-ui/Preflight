@@ -151,7 +151,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
         if (qflow4.ethAmount > 0) {
           recordSwap(poolId, qflow4.isBuy, qflow4.ethAmount);
           console.log(
-            `[V4 SWAP] ${memV4.symbol} ${qflow4.isBuy ? "BUY" : "SELL"} `
+            `[V4 SWAP ${chain.id}] ${memV4.symbol} ${qflow4.isBuy ? "BUY" : "SELL"} `
             + `quote=${qflow4.quote} eth=${qflow4.ethAmount.toFixed(4)} `
             + `amount0=${amount0} amount1=${amount1} `
             + `base=${baseToken} quoteToken=${quoteToken} tx=${log4.transactionHash}`,
@@ -199,7 +199,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
 
         if (qflow3.ethAmount > 0) {
           recordSwap(pairAddr3, qflow3.isBuy, qflow3.ethAmount);
-          console.log(`[V3 SWAP] ${mem3.symbol} ${qflow3.isBuy ? "BUY" : "SELL"} quote=${qflow3.quote} eth=${qflow3.ethAmount.toFixed(4)} tx=${log3.transactionHash}`);
+          console.log(`[V3 SWAP ${chain.id}] ${mem3.symbol} ${qflow3.isBuy ? "BUY" : "SELL"} quote=${qflow3.quote} eth=${qflow3.ethAmount.toFixed(4)} tx=${log3.transactionHash}`);
           if (qflow3.isBuy && qflow3.ethAmount >= 0.005) {
             const flow3 = getWsFlow(pairAddr3);
             if (flow3.hasData && flow3.pressure === "BUYING" && flow3.buys5m >= 5) {
@@ -214,19 +214,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
 
       const log         = msg.params.result;
       const pairAddress = log.address?.toLowerCase();
-      if (!pairAddress || !memory.has(pairAddress)) {
-        const topic0check = log.topics?.[0];
-        if (topic0check === SWAP_V2_TOPIC) {
-          const cleanAddr = pairAddress ? cleanEvmAddress(pairAddress) : null;
-          console.log(
-            `[V2 MISS ${chain.id}] addr:${pairAddress} clean:${cleanAddr} ` +
-            `inMemoryRaw:${memory.has(pairAddress ?? "")} ` +
-            `inMemoryClean:${cleanAddr ? memory.has(cleanAddr) : false} ` +
-            `topics:${log.topics?.length} dataLen:${log.data?.length}`
-          );
-        }
-        return;
-      }
+      if (!pairAddress || !memory.has(pairAddress)) return;
 
       const raw = log.data?.slice(2);
       if (!raw || raw.length < 128) return;

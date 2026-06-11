@@ -9,7 +9,7 @@ import {
   activeWatch, hotCandidates, armedEntries, watchedPoolCache,
   recentDrops, pipelineEvents, memory, clearQualifiedForPair,
 } from "../state/stores";
-import { MAX_ACTIVE_WATCH } from "../config/constants";
+import { MAX_ACTIVE_WATCH, MAX_ACTIVE_WATCH_BY_CHAIN } from "../config/constants";
 
 const CONTEXT_ONLY_WATCH_KINDS = new Set([
   "CONTEXT_HIGH_LIQ",
@@ -37,8 +37,10 @@ export function recordDrop(
   chain:         string,
   previousState: "WATCHING" | "HOT" | "ARMED",
   reason:        string,
+  priceAtDrop?:  number,
+  scoreAtDrop?:  number,
 ): void {
-  recentDrops.unshift({ symbol, chain, pairAddress: pairAddr, previousState, reason, droppedAt: Date.now() });
+  recentDrops.unshift({ symbol, chain, pairAddress: pairAddr, previousState, reason, droppedAt: Date.now(), priceAtDrop, scoreAtDrop });
   if (recentDrops.length > 50) recentDrops.splice(50);
   clearQualifiedForPair(pairAddr);
   recordPipelineEvent("DROPPED", symbol, chain, pairAddr, previousState, "NONE", reason);
@@ -83,7 +85,18 @@ export function addWatchCandidate(
   },
   pool?: SourcePool,
 ): void {
-  if (activeWatch.size >= MAX_ACTIVE_WATCH) return;
+  const alreadyWatching = activeWatch.has(pairAddr);
+
+  if (!alreadyWatching) {
+    if (activeWatch.size >= MAX_ACTIVE_WATCH) return;
+    const maxForChain = MAX_ACTIVE_WATCH_BY_CHAIN[info.chain] ?? 10;
+    let chainCount = 0;
+    for (const w of activeWatch.values()) {
+      if (w.chain === info.chain) chainCount++;
+    }
+    if (chainCount >= maxForChain) return;
+  }
+
   activeWatch.set(pairAddr, info);
   if (pool) watchedPoolCache.set(pairAddr, pool);
   const sym = memory.get(pairAddr)?.symbol ?? pairAddr.slice(0, 8);
