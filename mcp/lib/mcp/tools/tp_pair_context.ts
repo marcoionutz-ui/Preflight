@@ -162,7 +162,21 @@ Args: pair_address (0x... EVM address or V4 pool ID), chain (optional: base/arbi
           preflightContext: pfCtx ?? null,
           contextQuality: pfCtx ? "fresh" : pairState ? freshnessLabel(now - pairState.updatedAt) : "snapshot_only",
           dataSource: pfCtx ? "preflight_pair_context" : pairState ? "pair_states" : "worker_snapshot",
-          freshnessSec,
+          dataReadyForReasoning: (() => {
+            const missingCritical: string[] = [];
+            const missingNonCritical: string[] = [];
+
+            if (!pairState?.flow?.hasData) missingCritical.push("wsFlow");
+            if (!(pairState as any)?.risk) missingCritical.push("riskCache");
+            if (freshnessSec === null || freshnessSec > 90) missingCritical.push("dataStale");
+
+            if (!pairState?.lp?.hasData) missingNonCritical.push("lpHistory");
+            if (!(pairState as any)?.pipelineEnteredAt) missingNonCritical.push("pipelineTiming");
+
+            const ready = missingCritical.length === 0;
+            return { ready, missingCritical, missingNonCritical };
+          })(),
+		  freshnessSec,
         });
       } catch (e) { return mcpErr(ERR.INTERNAL, e instanceof Error ? e.message : String(e)); }
     },
