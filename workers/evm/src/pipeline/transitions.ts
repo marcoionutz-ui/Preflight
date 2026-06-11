@@ -11,6 +11,13 @@ import {
 } from "../state/stores";
 import { MAX_ACTIVE_WATCH } from "../config/constants";
 
+const CONTEXT_ONLY_WATCH_KINDS = new Set([
+  "CONTEXT_HIGH_LIQ",
+  "CONTEXT_MOVER_5M",
+  "CONTEXT_MOVER_1H",
+  "CONTEXT_MOVER_24H",
+]);
+
 export function recordPipelineEvent(
   type:        PipelineEventType,
   symbol:      string,
@@ -57,6 +64,8 @@ export function promoteHotCandidate(
   chain:    string,
   source?:  EntrySource,
 ): void {
+  const watchKind = activeWatch.get(pairAddr)?.kind;
+  if (watchKind && CONTEXT_ONLY_WATCH_KINDS.has(watchKind)) return;
   const sym = memory.get(pairAddr)?.symbol ?? pairAddr.slice(0, 8);
   hotCandidates.set(pairAddr, { chain, promotedAt: Date.now(), source });
   activeWatch.delete(pairAddr);

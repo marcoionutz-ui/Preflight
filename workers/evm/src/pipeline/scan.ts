@@ -337,6 +337,30 @@ async function processPool(
           triggerPoolRisk(pool);
         }
       }
+
+      // Context watch — colectare dosar, nu pipeline candidate
+      if (!activeWatch.has(pairAddr) && activeWatch.size < MAX_ACTIVE_WATCH) {
+        const shouldContextWatch =
+          pool.reserveUsd >= 500_000 ||
+          Math.abs(pool.priceChange?.m5  ?? 0) >= 5  ||
+          Math.abs(pool.priceChange?.h1  ?? 0) >= 10 ||
+          Math.abs(pool.priceChange?.h24 ?? 0) >= 50;
+
+        if (shouldContextWatch) {
+          const watchKind: WatchKind =
+            Math.abs(pool.priceChange?.m5  ?? 0) >= 5   ? "CONTEXT_MOVER_5M"  :
+            Math.abs(pool.priceChange?.h1  ?? 0) >= 10  ? "CONTEXT_MOVER_1H"  :
+            Math.abs(pool.priceChange?.h24 ?? 0) >= 50  ? "CONTEXT_MOVER_24H" :
+            "CONTEXT_HIGH_LIQ";
+
+          addWatchCandidate(pairAddr, { chain: pool.chain, addedAt: Date.now(), kind: watchKind }, pool);
+          console.log(`[CONTEXT_WATCH] ${mem.symbol} (${pool.chain}) — kind:${watchKind} verdict:${momentumEvent.verdict}`);
+          const chainCfgCtx = CHAINS.find(c => c.id === pool.chain);
+          if (chainCfgCtx) requestImmediateScopedSubscribe(chainCfgCtx);
+          triggerPoolRisk(pool);
+        }
+      
+      }
       return "CONTINUE";
     }
 
