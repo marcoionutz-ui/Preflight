@@ -17,7 +17,7 @@ import { promoteHotCandidate } from "../pipeline/transitions";
 import { subscribeV4Scoped, subscribeV3Scoped, subscribeV2Scoped, SWAP_V2_TOPIC, SWAP_V3_TOPIC, MINT_V2_TOPIC, BURN_V2_TOPIC } from "./subscriptions";import { supabase } from "../infra/supabase";
 import { sendTelegram } from "../infra/telegram";
 import { getEthPrice } from "../infra/ethPrice";
-import { isBlockedSymbol } from "../sources/normalize";
+import { isBlockedSymbol, cleanEvmAddress } from "../sources/normalize";
 import {
   SWAP_V4_TOPIC, MODIFY_LIQUIDITY_V4_TOPIC,
   MIN_LP_REMOVE_ETH, INSTANT_LP_EXIT_PCT,
@@ -214,7 +214,19 @@ export function connectChainWebSocket(chain: ChainConfig): void {
 
       const log         = msg.params.result;
       const pairAddress = log.address?.toLowerCase();
-      if (!pairAddress || !memory.has(pairAddress)) return;
+      if (!pairAddress || !memory.has(pairAddress)) {
+        const topic0check = log.topics?.[0];
+        if (topic0check === SWAP_V2_TOPIC) {
+          const cleanAddr = pairAddress ? cleanEvmAddress(pairAddress) : null;
+          console.log(
+            `[V2 MISS ${chain.id}] addr:${pairAddress} clean:${cleanAddr} ` +
+            `inMemoryRaw:${memory.has(pairAddress ?? "")} ` +
+            `inMemoryClean:${cleanAddr ? memory.has(cleanAddr) : false} ` +
+            `topics:${log.topics?.length} dataLen:${log.data?.length}`
+          );
+        }
+        return;
+      }
 
       const raw = log.data?.slice(2);
       if (!raw || raw.length < 128) return;
@@ -245,6 +257,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
         }
 
         recordSwap(pairAddress, isBuy, ethAmount);
+        console.log(`[V2 SWAP ${chain.id}] ${mem.symbol} ${isBuy ? "BUY" : "SELL"} eth:${ethAmount.toFixed(4)}`);
         if (isBuy) {
           const flow = getWsFlow(pairAddress);
           if (flow.hasData && flow.pressure === "BUYING" && flow.buys5m >= 5) {
