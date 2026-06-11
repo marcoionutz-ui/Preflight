@@ -227,7 +227,7 @@ export function subscribeV2Scoped(chain: ChainConfig): void {
   const snapKey = chain.id + "_v2_snap";
   const idKey   = chain.id + "_v2_id";
 
-  const addrs = [...new Set([
+  const rawAddrs = [
     ...[...hotCandidates.entries()]
       .filter(([addr, info]) => info.chain === chain.id && !v3PoolMap.has(addr) && !v4PoolMap.has(addr))
       .map(([addr]) => addr),
@@ -235,7 +235,13 @@ export function subscribeV2Scoped(chain: ChainConfig): void {
       .filter(([addr, info]) => info.chain === chain.id && !v3PoolMap.has(addr) && !v4PoolMap.has(addr))
       .sort((a, b) => watchPriority(a[1].kind) - watchPriority(b[1].kind))
       .map(([addr]) => addr),
-  ])].slice(0, 50);
+  ];
+
+  const addrs = [...new Set(
+    rawAddrs
+      .map(a => cleanEvmAddress(a))
+      .filter((a): a is string => !!a && a.length === 42)
+  )].slice(0, 50);
 
   if (!addrs.length) {
     const oldId = v3SwapSubIds.get(idKey);

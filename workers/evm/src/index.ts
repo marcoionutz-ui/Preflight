@@ -19,7 +19,7 @@ import { lateCandidatesLoop } from "./pipeline/loops/late";
 import { fomoCandidatesLoop } from "./pipeline/loops/fomo";
 import { hotCandidatesLoop, monitorOpenTrades } from "./pipeline/loops/hot";
 
-console.log(`Supreme Trader Worker ${WORKER_VERSION} starting...`);
+console.log(`Preflight Worker ${WORKER_VERSION} starting...`);
 console.log(`Chains: ${CHAINS.map(c => c.id).join(", ")}`);
 
 // Conectează WS pentru fiecare chain

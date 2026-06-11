@@ -14,8 +14,7 @@ import {
 import { recordSwap, recordLp } from "../risk/flow";
 import { getWsFlow } from "../risk/flow";
 import { promoteHotCandidate } from "../pipeline/transitions";
-import { subscribeV4Scoped, subscribeV3Scoped, SWAP_V2_TOPIC, SWAP_V3_TOPIC, MINT_V2_TOPIC, BURN_V2_TOPIC } from "./subscriptions";
-import { supabase } from "../infra/supabase";
+import { subscribeV4Scoped, subscribeV3Scoped, subscribeV2Scoped, SWAP_V2_TOPIC, SWAP_V3_TOPIC, MINT_V2_TOPIC, BURN_V2_TOPIC } from "./subscriptions";import { supabase } from "../infra/supabase";
 import { sendTelegram } from "../infra/telegram";
 import { getEthPrice } from "../infra/ethPrice";
 import { isBlockedSymbol } from "../sources/normalize";
@@ -84,6 +83,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
     }
     setTimeout(() => subscribeV4Scoped(chain), 2500);
     setTimeout(() => subscribeV3Scoped(chain), 3000);
+	setTimeout(() => subscribeV2Scoped(chain), 3500);
   });
 
   wsClient.on("message", async (data: Buffer) => {
@@ -95,7 +95,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
         if (msg.id === 5  && typeof msg.result === "string") v4SwapSubIds.set(chain.id, msg.result);
 	    if (msg.id === 7  && typeof msg.result === "string") v3SwapSubIds.set(chain.id, msg.result);
 	    if (msg.id === 52 && typeof msg.result === "string") v3SwapSubIds.set(chain.id + "_v2_id", msg.result);
-        console.log(`[V3/V4 SUB DEBUG] ${data.toString()}`);
+        console.log(`[SUB DEBUG ${chain.id}] ${data.toString()}`);
         return;
       }
 
