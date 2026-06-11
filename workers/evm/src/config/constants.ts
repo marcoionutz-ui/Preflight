@@ -4,7 +4,7 @@
  * Zero imports din alte module interne.
  */
 
-export const WORKER_VERSION = "v5.41";
+export const WORKER_VERSION = "v5.42";
 
 export const GECKO_BASE = "https://api.geckoterminal.com/api/v2";
 

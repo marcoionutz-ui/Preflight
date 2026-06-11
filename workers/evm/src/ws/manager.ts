@@ -9,6 +9,7 @@ import {
   wsClients, v3PoolMap, v4PoolMap,
   swapSubIds, swapSubSnapshot, pendingSwapSubs,
   v3SwapSubIds, v4SwapSubIds, poolLiquidity, memory, hotCandidates,
+  watchedPoolCache,
   incrementSwapSubReqId,
 } from "../state/stores";
 import { recordSwap, recordLp } from "../risk/flow";
@@ -34,26 +35,50 @@ function getQuoteFlowAsEth(
   quoteToken: string,
   amount0:    bigint,
   amount1:    bigint,
-): { ok: boolean; ethAmount: number; isBuy: boolean; quote: "WETH" | "USDC" | "USDC.e" | null } {
-  const base       = baseToken.toLowerCase();
-  const quoteT     = quoteToken.toLowerCase();
-  const weth       = chain.weth.toLowerCase();
-  const usdc       = chain.usdc.toLowerCase();
-  const usdcLegacy = chain.usdcLegacy?.toLowerCase();
-  const token0     = base < quoteT ? base : quoteT;
-  const amountFor  = (t: string) => t === token0 ? amount0 : amount1;
+): { ok: boolean; ethAmount: number; isBuy: boolean; quote: string | null } {
+  const base   = baseToken.toLowerCase();
+  const quoteT = quoteToken.toLowerCase();
+  const token0 = base < quoteT ? base : quoteT;
+  const amountFor = (t: string) => t === token0 ? amount0 : amount1;
 
-  if (base === weth || quoteT === weth) {
-    const amt = amountFor(weth);
-    return { ok: true, ethAmount: Number(amt < 0n ? -amt : amt) / 1e18, isBuy: amt > 0n, quote: "WETH" };
-  }
-  if (base === usdc || quoteT === usdc || (usdcLegacy && (base === usdcLegacy || quoteT === usdcLegacy))) {
-    const stable = (base === usdc || quoteT === usdc) ? usdc : usdcLegacy!;
-    const amt    = amountFor(stable);
-    const usdAmt = Number(amt < 0n ? -amt : amt) / 1e6;
-    return { ok: true, ethAmount: usdAmt / getEthPrice(), isBuy: amt > 0n, quote: stable === usdc ? "USDC" : "USDC.e" };
-  }
-  return { ok: false, ethAmount: 0, isBuy: false, quote: null };
+  const stableAddrs = [
+    chain.usdc?.toLowerCase(),
+    chain.usdcLegacy?.toLowerCase(),
+    ...(chain.stableQuotes ?? []).map(a => a.toLowerCase()),
+  ].filter(Boolean) as string[];
+
+  const quoteMetaFor = (addr: string): { symbol: string; decimals: number; kind: "native" | "stable" } | null => {
+    const a = addr.toLowerCase();
+    if (a === chain.weth.toLowerCase()) {
+      return { symbol: chain.id === "bsc" ? "WBNB" : "WETH", decimals: 18, kind: "native" };
+    }
+    if (stableAddrs.includes(a)) {
+      let symbol = "STABLE";
+      if (chain.id === "bsc") {
+        if (a === "0x55d398326f99059ff775485246999027b3197955") symbol = "USDT";
+        else if (a === "0xe9e7cea3dedca5984780bafc599bd69add087d56") symbol = "BUSD";
+        else if (a === "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d") symbol = "USDC";
+      } else {
+        symbol = a === chain.usdcLegacy?.toLowerCase() ? "USDC.e" : "USDC";
+      }
+      return { symbol, decimals: chain.id === "bsc" ? 18 : 6, kind: "stable" };
+    }
+    return null;
+  };
+
+  const baseMeta   = quoteMetaFor(base);
+  const quoteMetaT = quoteMetaFor(quoteT);
+  const quoteMeta  = baseMeta ?? quoteMetaT;
+
+  if (!quoteMeta) return { ok: false, ethAmount: 0, isBuy: false, quote: null };
+
+  const quoteAddr   = baseMeta ? base : quoteT;
+  const amt         = amountFor(quoteAddr);
+  const abs         = amt < 0n ? -amt : amt;
+  const quoteAmount = Number(abs) / (10 ** quoteMeta.decimals);
+  const ethAmount   = quoteMeta.kind === "native" ? quoteAmount : quoteAmount / getEthPrice();
+
+  return { ok: true, ethAmount, isBuy: amt > 0n, quote: quoteMeta.symbol };
 }
 
 export function connectChainWebSocket(chain: ChainConfig): void {
@@ -230,23 +255,27 @@ export function connectChainWebSocket(chain: ChainConfig): void {
 
         if (amount0In === 0n && amount1In === 0n) return;
 
-        const mem       = memory.get(pairAddress)!;
-        const tokenAddr = mem.tokenAddress.replace(`${chain.id}_`, "").toLowerCase();
-        const wethIsT0  = chain.weth.toLowerCase() < tokenAddr;
+        const mem   = memory.get(pairAddress)!;
+        const pool2 = watchedPoolCache.get(pairAddress);
 
-        let isBuy: boolean;
-        let ethAmount: number;
-        if (wethIsT0) {
-          isBuy     = amount0In > 0n && amount1Out > 0n;
-          ethAmount = Number(isBuy ? amount0In : amount1In) / 1e18;
-        } else {
-          isBuy     = amount1In > 0n && amount0Out > 0n;
-          ethAmount = Number(isBuy ? amount1In : amount0In) / 1e18;
-        }
+        const base2  = pool2?._raw
+          ? (pool2._raw as any).relationships?.base_token?.data?.id?.replace(`${chain.id}_`, "").toLowerCase()
+          : "";
+        const quote2 = pool2?._raw
+          ? (pool2._raw as any).relationships?.quote_token?.data?.id?.replace(`${chain.id}_`, "").toLowerCase()
+          : "";
 
-        recordSwap(pairAddress, isBuy, ethAmount);
-        console.log(`[V2 SWAP ${chain.id}] ${mem.symbol} ${isBuy ? "BUY" : "SELL"} eth:${ethAmount.toFixed(4)}`);
-        if (isBuy) {
+        if (!base2 || !quote2) return;
+
+        const amount0 = amount0In > 0n ? amount0In : -amount0Out;
+        const amount1 = amount1In > 0n ? amount1In : -amount1Out;
+
+        const qflow2 = getQuoteFlowAsEth(chain, base2, quote2, amount0, amount1);
+        if (!qflow2.ok || qflow2.ethAmount <= 0) return;
+
+        recordSwap(pairAddress, qflow2.isBuy, qflow2.ethAmount);
+        console.log(`[V2 SWAP ${chain.id}] ${mem.symbol} ${qflow2.isBuy ? "BUY" : "SELL"} quote=${qflow2.quote} eth:${qflow2.ethAmount.toFixed(4)}`);
+        if (qflow2.isBuy) {
           const flow = getWsFlow(pairAddress);
           if (flow.hasData && flow.pressure === "BUYING" && flow.buys5m >= 5) {
             if (!hotCandidates.has(pairAddress)) {
