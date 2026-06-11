@@ -84,6 +84,14 @@ Args: pair_address (0x... EVM address or V4 pool ID), chain (optional: base/arbi
           chain:  chain ?? pairState?.chain ?? watchOut?.chain ?? hotOut?.chain ?? armedOut?.chain ?? null,
           phase: data.phase, seenCount: data.seenCount, currentPrice: data.currentPrice,
           priceChange: (pairState as PairState)?.priceChange ?? null,
+          timing: {
+            firstSeenAt:        (pairState as any)?.firstSeenAt  ?? (snapMem as any)?.firstSeen  ?? null,
+            lastSeenAt:         (pairState as any)?.lastSeenAt   ?? (snapMem as any)?.lastSeen   ?? null,
+            pipelineEnteredAt:  (pairState as any)?.pipelineEnteredAt  ?? null,
+            currentStateAgeSec: (pairState as any)?.currentStateAgeSec ?? null,
+            seenCount:          data.seenCount,
+          },
+          priceVsFirstSeenPct: (pairState as any)?.priceVsFirstSeenPct ?? null,
           dexType:            (pairState as PairState)?.dexType            ?? null,
           reserveUsd:         (pairState as PairState)?.reserveUsd         ?? null,
           liqStatus:          (pairState as PairState)?.liqStatus          ?? null,
@@ -132,6 +140,16 @@ Args: pair_address (0x... EVM address or V4 pool ID), chain (optional: base/arbi
             checkedAt:            (pairState as any).risk.checkedAt,
             checkedAgeSec:        Math.round((Date.now() - (pairState as any).risk.checkedAt) / 1000),
           } : null,
+		  riskCacheStatus: (() => {
+            const r = (pairState as any)?.risk;
+            if (!pairState) return "unavailable";
+            if (!r) return "missing";
+            const checkedAt = Number(r.checkedAt ?? 0);
+            if (!checkedAt) return "unavailable";
+            const ageSec = Math.round((now - checkedAt) / 1000);
+            if (ageSec > 6 * 3600) return "stale";
+            return "available";
+          })(),
           history: exposePerformance ? {
             totalEntries:      data.totalEntries,
             wins24h:           data.wins24h,

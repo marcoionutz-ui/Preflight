@@ -13,7 +13,7 @@ export type FlowStatus     = "NO_DATA" | "WEAK" | "BUYING" | "STRONG" | "ONE_SID
 export type LiquidityStatus = "THIN" | "OK" | "CONFIRMED" | "DEEP";
 export type EntryRisk      = "LOW" | "MEDIUM" | "HIGH" | "EXTREME";
 export type MoveType       = "ORGANIC" | "VERTICAL" | "LATE" | "SECOND_WAVE" | "NEW_POOL" | "UNKNOWN";
-export type PipelineState  = "NONE" | "WATCHING" | "CONFIRMING" | "QUALIFIED" | "DROPPED" | "REJECTED";
+export type PipelineState  = "NONE" | "WATCHING" | "HOT" | "ARMED" | "QUALIFIED" | "DROPPED" | "REJECTED";
 export type Confidence     = "LOW" | "MEDIUM" | "HIGH";
 
 export interface ObservationContext {
@@ -109,7 +109,7 @@ export function buildWorkerObservation(ctx: ObservationContext): string {
   }
 
   // ── Pipeline state context ────────────────────────────────────────────────
-  if (ctx.pipelineState === "CONFIRMING") {
+  if (ctx.pipelineState === "HOT" || ctx.pipelineState === "ARMED") {
     parts.push("Awaiting 30s price confirmation.");
   } else if (ctx.pipelineState === "QUALIFIED") {
     parts.push("Passed all filters.");

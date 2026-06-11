@@ -21,7 +21,8 @@ export type PipelineState =
   | "NONE"
   | "OBSERVED"
   | "WATCHING"
-  | "CONFIRMING"
+  | "HOT"
+  | "ARMED"
   | "QUALIFIED"
   | "DROPPED"
   | "REJECTED";
@@ -128,6 +129,8 @@ export interface PreflightDrop {
   wasIn:            PipelineState;
   dropReason:       string;
   timeInPipelineMs: number;
+  priceAtDrop?: number | null;
+  scoreAtDrop?: number | null;
   flowAtDrop: {
     status:   FlowStatus;
     buys5m:   number;

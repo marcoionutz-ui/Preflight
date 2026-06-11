@@ -81,6 +81,13 @@ export interface PairStateSnapshot {
   liqStatus:          string;
   poolCountSameToken: number;
 
+  // Timing — necesar pentru agent reasoning (fix AVNT 8.5m → 0m confusion)
+  firstSeenAt:        number | null;
+  lastSeenAt:         number | null;
+  pipelineEnteredAt:  number | null;
+  currentStateAgeSec: number | null;
+  priceVsFirstSeenPct: number | null;
+
   // Meta
   hourUtc:              number;
   updatedAt:            number;
@@ -94,6 +101,7 @@ export interface PairStateSnapshot {
 
 export async function buildPairStates(): Promise<Record<string, PairStateSnapshot>> {
   const states: Record<string, PairStateSnapshot> = {};
+  const now = Date.now();
 
   // Bulk MGET — un singur Redis call pentru toate pairs
   const riskItems = [...memory.values()]
@@ -111,12 +119,26 @@ export async function buildPairStates(): Promise<Record<string, PairStateSnapsho
     // Pipeline state derivat din stores
     const pipelineState =
 	  armedEntries.has(addr)   ? "ARMED"      :
-	  hotCandidates.has(addr)  ? "CONFIRMING" :
+	  hotCandidates.has(addr)  ? "HOT" :
 	  activeWatch.has(addr)    ? "WATCHING"   :
 	  "NONE";
 
     // priceChange vine din PairMemoryEntry — workerul îl updatează la fiecare scan
     const mc = (mem as any).priceChange ?? { m5: 0, h1: 0, h24: 0 };
+
+    // Timing — pipelineEnteredAt = cel mai recent moment de intrare în pipeline
+    const pipelineEnteredAt =
+      armedEntries.get(addr)?.armedAt ??
+      hotCandidates.get(addr)?.promotedAt ??
+      activeWatch.get(addr)?.addedAt ??
+      null;
+
+    // priceVsFirstSeenPct — cât a mișcat față de prima apariție în worker
+    const priceAtFirstSeen = (mem as any).priceAtFirstSeen ?? 0;
+    const priceVsFirstSeenPct =
+      priceAtFirstSeen > 0 && mem.currentPrice > 0
+        ? Number(((mem.currentPrice - priceAtFirstSeen) / priceAtFirstSeen * 100).toFixed(2))
+        : null;
 
     states[addr] = {
       symbol:       mem.symbol,
@@ -141,6 +163,12 @@ export async function buildPairStates(): Promise<Record<string, PairStateSnapsho
       patternTags:         (mem as any).patternTags         ?? null,
       seenCount:     mem.seenCount,
       totalEntries:  mem.totalEntries,
+
+      firstSeenAt:        mem.firstSeen  ?? null,
+      lastSeenAt:         mem.lastSeen   ?? null,
+      pipelineEnteredAt,
+      currentStateAgeSec: pipelineEnteredAt ? Math.round((now - pipelineEnteredAt) / 1000) : null,
+      priceVsFirstSeenPct,
 
       wins24h:           mem.wins24h,
       losses24h:         mem.losses24h,
@@ -177,8 +205,8 @@ export async function buildPairStates(): Promise<Record<string, PairStateSnapsho
         return tokenPools.get(tokenPoolKey(cp, mem.tokenAddress))?.size ?? 1;
       })(),
 
-      hourUtc:   new Date().getUTCHours(),
-      updatedAt: Date.now(),
+      hourUtc:   new Date(now).getUTCHours(),
+      updatedAt: now,
       risk: (() => {
         if (!mem.tokenAddress) return null;
         const key = `${(mem.chain ?? "base").toLowerCase()}:${mem.tokenAddress.toLowerCase()}`;

@@ -3,6 +3,27 @@
  * Toate interfețele pentru datele din Redis — extrase din route.ts
  */
 
+export type PairRiskSummary = {
+  riskLevel:            string;
+  confidence:           string;
+  flags:                string[];
+  summary:              string;
+  isHoneypot:           boolean | null;
+  cannotSell:           boolean | null;
+  buyTaxPct:            number  | null;
+  sellTaxPct:           number  | null;
+  ownerRenounced:       boolean | null;
+  canMint:              boolean | null;
+  canBlacklist:         boolean | null;
+  canPauseTrading:      boolean | null;
+  canChangeTax:         boolean | null;
+  canChangeBalance:     boolean | null;
+  canTakeBackOwnership: boolean | null;
+  missingData:          string[];
+  checkedAt:            number;
+  checkedAgeSec:        number;
+};
+
 export interface PairState {
   symbol:             string;
   phase:              string;
@@ -45,6 +66,12 @@ export interface PairState {
   attentionScore?:       number | null;
   monitoringTier?:       string | null;
   patternTags?:          string[] | null;
+  firstSeenAt?:          number | null;
+  lastSeenAt?:           number | null;
+  pipelineEnteredAt?:    number | null;
+  currentStateAgeSec?:   number | null;
+  priceVsFirstSeenPct?:  number | null;
+  risk?:                 PairRiskSummary | null;
 }
 
 export interface MemoryEntry extends PairState {

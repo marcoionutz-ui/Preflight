@@ -94,7 +94,8 @@ Args: chain (optional filter: 'base' or 'arbitrum')`,
           summary: pfEntries
             ? {
                 watching:   pfEntries.filter((e: any) => e.pipelineState === "WATCHING").length,
-                confirming: pfEntries.filter((e: any) => e.pipelineState === "CONFIRMING").length,
+                hot:        pfEntries.filter((e: any) => e.pipelineState === "HOT").length,
+                confirming: pfEntries.filter((e: any) => e.pipelineState === "HOT").length, // legacy alias
                 qualified:  pfQualified?.filter((q: any) => filterChain(q.chain)).length ?? 0,
               }
             : { watching: activeWatch.length, hot: hotCandidates.length, armed: armedEntries.length },

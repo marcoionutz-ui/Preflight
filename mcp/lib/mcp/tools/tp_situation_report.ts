@@ -98,8 +98,9 @@ Observed movers section shows tokens moving on market that haven't passed pipeli
             .sort(([, a]: any, [, b]: any) => a.promotedAt - b.promotedAt)
             .slice(0, 3)
             .map(([addr, h]: any) => {
-              const ageSec = Math.round((now - h.promotedAt) / 1000);
-              return `  → ${h.symbol ?? addr.slice(0, 8)} [${h.chain}] pair:${addr} source:${h.source ?? "WS"} age:${ageSec}s flow:${h.flow?.pressure} buys:${h.flow?.buys5m} buyVol:${formatEth(h.flow?.buyVol5m ?? 0)}`;
+              const ageSec    = Math.round((now - h.promotedAt) / 1000);
+              const watchKind = watch[addr]?.kind ?? null;
+              return `  → ${h.symbol ?? addr.slice(0, 8)} [${h.chain}] pair:${addr}${watchKind ? ` kind:${watchKind}` : ""} source:${h.source ?? "WS"} age:${ageSec}s flow:${h.flow?.pressure} buys:${h.flow?.buys5m} buyVol:${formatEth(h.flow?.buyVol5m ?? 0)}`;
             });
           lines.push(`HOT:\n${hotList.join("\n")}`);
         }

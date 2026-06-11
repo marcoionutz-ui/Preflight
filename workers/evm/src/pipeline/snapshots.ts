@@ -114,12 +114,12 @@ function buildSignalPipelineEntries() {
 
   return [
     ...[...activeWatch.entries()].map(([addr, info]) =>
-      makeEntry(addr, info.chain, hotCandidates.has(addr) ? "CONFIRMING" : "WATCHING", info.kind ?? "NORMAL", info.addedAt, info.entryPrice)
+      makeEntry(addr, info.chain, hotCandidates.has(addr) ? "HOT" : "WATCHING", info.kind ?? "NORMAL", info.addedAt, info.entryPrice)
     ),
     ...[...hotCandidates.entries()]
       .filter(([addr]) => !activeWatch.has(addr))
       .map(([addr, info]) =>
-        makeEntry(addr, info.chain, "CONFIRMING", info.source ?? "NORMAL", info.promotedAt)
+        makeEntry(addr, info.chain, "HOT", info.source ?? "NORMAL", info.promotedAt)
       ),
   ];
 }
@@ -130,8 +130,8 @@ function buildPreflightDrops(): PreflightDrop[] {
     .map(d => {
       const dropFlow = getWsFlow(d.pairAddress);
       const wasIn =
-        d.previousState === "HOT"   ? "CONFIRMING" as const :
-        d.previousState === "ARMED" ? "CONFIRMING" as const :
+        d.previousState === "HOT"   ? "HOT"   as const :
+        d.previousState === "ARMED" ? "ARMED" as const :
         "WATCHING" as const;
       return {
         schemaVersion: "preflight-scanner-v1",
@@ -139,6 +139,8 @@ function buildPreflightDrops(): PreflightDrop[] {
         symbol: d.symbol, chain: d.chain, pairAddress: d.pairAddress,
         droppedAt: d.droppedAt, wasIn, dropReason: d.reason,
         timeInPipelineMs: 0,
+		priceAtDrop: d.priceAtDrop ?? null,
+        scoreAtDrop: d.scoreAtDrop ?? null,
         flowAtDrop: {
           status:  dropFlow.hasData && dropFlow.pressure === "BUYING" ? "BUYING" as const : "WEAK" as const,
           buys5m:  dropFlow.buys5m ?? 0,
@@ -151,7 +153,7 @@ function buildPreflightDrops(): PreflightDrop[] {
 function buildPairContextMap(): Record<string, PreflightPairContext> {
   const pairContextMap: Record<string, PreflightPairContext> = {};
 
-  const buildCtx = (addr: string, chain: string, pipelineState: "WATCHING" | "CONFIRMING", entryPrice?: number): PreflightPairContext => {
+  const buildCtx = (addr: string, chain: string, pipelineState: "WATCHING" | "HOT", entryPrice?: number): PreflightPairContext => {
     const mem3    = memory.get(addr);
     const flow3   = getWsFlow(addr);
     const liq3    = getLiquidityContext(addr);
@@ -195,11 +197,11 @@ function buildPairContextMap(): Record<string, PreflightPairContext> {
   };
 
   for (const [addr, info] of activeWatch.entries()) {
-    pairContextMap[addr] = buildCtx(addr, info.chain, hotCandidates.has(addr) ? "CONFIRMING" : "WATCHING", info.entryPrice);
+    pairContextMap[addr] = buildCtx(addr, info.chain, hotCandidates.has(addr) ? "HOT" : "WATCHING", info.entryPrice);
   }
   for (const [addr, info] of hotCandidates.entries()) {
     if (!pairContextMap[addr]) {
-      pairContextMap[addr] = buildCtx(addr, info.chain, "CONFIRMING");
+      pairContextMap[addr] = buildCtx(addr, info.chain, "HOT");
     }
   }
 

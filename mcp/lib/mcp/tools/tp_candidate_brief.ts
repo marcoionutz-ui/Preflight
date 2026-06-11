@@ -53,7 +53,7 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
         const lines: string[] = [];
         lines.push(`═══ CANDIDATE BRIEF: ${symbol} / ${chain.toUpperCase()} ═══`);
         lines.push(`Address: ${addr}`);
-        lines.push(`Pipeline: ${pipeState}`);
+        lines.push(`Pipeline: ${pipeState}${watchEntry?.kind ? ` (${watchEntry.kind})` : ""}`);
 		lines.push(`Chain: ${pairState?.chain ?? "unknown"}`);
         lines.push("");
 

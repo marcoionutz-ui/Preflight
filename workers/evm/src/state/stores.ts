@@ -109,6 +109,8 @@ export const recentDrops: Array<{
   previousState: "WATCHING" | "HOT" | "ARMED";
   reason:        string;
   droppedAt:     number;
+  priceAtDrop?:  number;
+  scoreAtDrop?:  number;
 }> = [];
 
 export const pipelineEvents: Array<{
