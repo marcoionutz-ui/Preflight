@@ -159,7 +159,7 @@ export function subscribeV3Scoped(chain: ChainConfig): void {
     method: "eth_subscribe",
     params: ["logs", { address: addrs, topics: [SWAP_V3_TOPIC] }],
   }));
-  console.log(`[V3] Scoped subscribe: ${addrs.length} watched pools`);
+  console.log(`[V3] Scoped subscribe: ${addrs.length} watched pools (${chain.id})`);
 }
 
 export function subscribeV4Scoped(chain: ChainConfig): void {
