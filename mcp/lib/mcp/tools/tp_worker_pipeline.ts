@@ -15,7 +15,7 @@ Shows all pairs moving through the worker's decision flow:
 - HOT: promoted candidates with confirmed buying flow
 - ARMED: passed entry gate, awaiting 30s price confirmation — may enter imminently
 
-Args: chain (optional filter: 'base' or 'arbitrum')`,
+Args: chain (filter: 'base', 'arbitrum', or 'bsc')`,
       inputSchema: {
         chain: z.string().optional().describe("Filter by chain: 'base' or 'arbitrum'"),
       },
@@ -59,6 +59,7 @@ Args: chain (optional filter: 'base' or 'arbitrum')`,
           .sort((a, b) => a.ageSec - b.ageSec);
 
         const armedEntries = Object.entries(armed)
+          .filter(([, v]) => filterChain(v.chain ?? ""))
           .map(([addr, v]) => ({
             pairAddress: addr, symbol: v.symbol ?? addr.slice(0, 10) + "...",
             ageSec:       Math.round((now - v.armedAt) / 1000),

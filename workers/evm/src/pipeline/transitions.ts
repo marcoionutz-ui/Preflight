@@ -111,7 +111,7 @@ export function armCandidate(
   flowPressure: string,
 ): void {
   const sym = memory.get(pairAddr)?.symbol ?? pairAddr.slice(0, 8);
-  armedEntries.set(pairAddr, { armedAt: Date.now(), price, score, flowPressure });
+  armedEntries.set(pairAddr, { chain, armedAt: Date.now(), price, score, flowPressure });
   recordPipelineEvent("ARMED", sym, chain, pairAddr, "HOT", "ARMED");
 }
 

@@ -93,13 +93,16 @@ export async function checkRateLimit(
   if (countMin === 1 || ttlMin === -1) await r.expire(minKey, RL_MIN_TTL);
   if (countDay === 1 || ttlDay === -1) await r.expire(dayKey, RL_DAY_TTL);
 
-  const remaining_min = Math.max(0, rate_limit_per_minute - countMin);
-  const remaining_day = Math.max(0, rate_limit_per_day    - countDay);
+  const unlimitedMin = rate_limit_per_minute < 0;
+  const unlimitedDay = rate_limit_per_day    < 0;
 
-  if (countMin > rate_limit_per_minute) {
+  const remaining_min = unlimitedMin ? -1 : Math.max(0, rate_limit_per_minute - countMin);
+  const remaining_day = unlimitedDay ? -1 : Math.max(0, rate_limit_per_day    - countDay);
+
+  if (!unlimitedMin && countMin > rate_limit_per_minute) {
     return { allowed: false, remaining_min: 0, remaining_day, retry_after: RL_MIN_TTL };
   }
-  if (countDay > rate_limit_per_day) {
+  if (!unlimitedDay && countDay > rate_limit_per_day) {
     return { allowed: false, remaining_min, remaining_day: 0, retry_after: RL_DAY_TTL };
   }
 

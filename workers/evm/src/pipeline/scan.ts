@@ -60,7 +60,7 @@ function clearExpiredArmedEntries(): void {
   for (const [addr, armed] of armedEntries.entries()) {
     if (now - armed.armedAt > ARM_TTL_MS) {
       console.log(`[ARM EXPIRE] ${addr} — confirmation window expired`);
-      recordDrop(addr, memory.get(addr)?.symbol ?? addr.slice(0, 8), memory.get(addr)?.chain ?? "unknown", "ARMED", "confirmation window expired");
+      recordDrop(addr, memory.get(addr)?.symbol ?? addr.slice(0, 8), armed.chain ?? memory.get(addr)?.chain ?? "unknown", "ARMED", "confirmation window expired");
       armedEntries.delete(addr);
     }
   }

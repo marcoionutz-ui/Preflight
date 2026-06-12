@@ -71,6 +71,7 @@ export const hotCandidates = new Map<string, {
 }>();
 
 export const armedEntries = new Map<string, {
+  chain:         string;
   armedAt:       number;
   price:         number;
   score:         number;

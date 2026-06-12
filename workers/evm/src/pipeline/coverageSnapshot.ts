@@ -52,10 +52,10 @@ export async function writeCoverageSnapshot(r: Redis, states: Record<string, any
     // ── Pipeline counts per chain ─────────────────────────────────────────
     const watching   = [...activeWatch.entries()].filter(([, w]) => w.chain === chainId);
     const hot        = [...hotCandidates.entries()].filter(([, h]) => h.chain === chainId);
-    const armed      = [...armedEntries.entries()].filter(([addr]) => {
-      const mem = memory.get(addr);
-      return (mem?.chain ?? "") === chainId;
-    });
+    const armed = [...armedEntries.entries()].filter(([addr, info]) => {
+    const mem = memory.get(addr);
+    return (info.chain ?? mem?.chain ?? "") === chainId;
+  });
     const gatePassed = qualifiedSignalsBuffer.filter(q => q.chain === chainId);
 
     // ── WS flow stats ─────────────────────────────────────────────────────

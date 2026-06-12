@@ -279,7 +279,7 @@ export function buildArmedSnapshot(): Record<string, object> {
       price: info.price, score: info.score, flowPressure: info.flowPressure,
       symbol: mem?.symbol ?? null, phase: mem?.phase ?? null,
       pairAddress: addr,
-      chain: mem?.chain ?? null,
+      chain: info.chain ?? mem?.chain ?? null,
     };
   }
   return armedObj;
