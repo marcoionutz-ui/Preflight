@@ -96,7 +96,18 @@ Args: chain — one of: base, arbitrum, eth, bsc, solana`,
           sellingPct >= 40 ? "RISK_OFF" :
           coveragePct < 20 ? "DEAD"     : "MIXED";
 
+        const coverageConfidence =
+          coveragePct >= 50 ? "HIGH" :
+          coveragePct >= 20 ? "MEDIUM" :
+          "LOW";
+
         lines.push(`MARKET: ${regimeEmoji} ${regimeLabel} | buying:${buyingPct}% selling:${sellingPct}% coverage:${coveragePct}%`);
+
+        if (coverageConfidence === "LOW") {
+          lines.push(`⚠️ COVERAGE_CONFIDENCE: LOW — only ${coveragePct}% of watched pairs have WS flow. Flow-derived context is partial and lower confidence for this chain.`);
+        } else if (coverageConfidence === "MEDIUM") {
+          lines.push(`ℹ️ COVERAGE_CONFIDENCE: MEDIUM — ${coveragePct}% WS coverage.`);
+        }
 
         // ── Pipeline counts ────────────────────────────────────────────────
         lines.push(`PIPELINE: watching:${chainWatch.length} hot:${chainHot.length} armed:${chainArmed.length}`);
