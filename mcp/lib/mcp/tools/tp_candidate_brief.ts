@@ -51,10 +51,11 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
         }
 
         const lines: string[] = [];
-        lines.push(`═══ CANDIDATE BRIEF: ${symbol} / ${chain.toUpperCase()} ═══`);
+        const displayChain = pairState?.chain ?? chain ?? "unknown";
+        lines.push(`═══ CANDIDATE BRIEF: ${symbol} / ${displayChain.toUpperCase()} ═══`);
         lines.push(`Address: ${addr}`);
         lines.push(`Pipeline: ${pipeState}${watchEntry?.kind ? ` (${watchEntry.kind})` : ""}`);
-		lines.push(`Chain: ${pairState?.chain ?? chain}`);
+		lines.push(`Chain: ${displayChain}`);
         lines.push("");
 
         lines.push("WHY IT MATTERS:");
