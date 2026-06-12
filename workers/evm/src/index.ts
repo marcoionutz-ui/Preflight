@@ -51,10 +51,9 @@ async function safeScan(): Promise<void> {
 
   safeScan();
   setInterval(safeScan, SCAN_INTERVAL);
-
   setInterval(() => { hotCandidatesLoop().catch(err => console.error("[HOT LOOP ERROR]", err)); },     3_000);
   setInterval(() => { verticalCandidatesLoop().catch(err => console.error("[VERTICAL LOOP ERROR]", err)); }, 15_000);
   setInterval(() => { lateCandidatesLoop().catch(err => console.error("[LATE LOOP ERROR]", err)); },   30_000);
   setInterval(() => { fomoCandidatesLoop().catch(err => console.error("[FOMO LOOP ERROR]", err)); },   30_000);
   setInterval(() => { runFollowRefresh().catch(err => console.error("[FOLLOW REFRESH ERROR]", err)); }, FOLLOW_REFRESH_MS);
-});
+})();
