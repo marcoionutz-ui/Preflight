@@ -86,7 +86,16 @@ export function buildWorkerObservation(ctx: ObservationContext): string {
     parts.push("LP activity detected — monitor for removal.");
   }
   if (ctx.riskFlags.includes("ONE_SIDED_FLOW") && !ctx.riskFlags.includes("DISTRIBUTION_RISK")) {
-    parts.push("No sell pressure observed — may indicate very early stage or low activity.");
+    const buys5m  = (ctx as any).flow?.buys5m  ?? 0;
+    const sells5m = (ctx as any).flow?.sells5m ?? 0;
+
+    if (buys5m >= 3 && sells5m === 0) {
+      parts.push("No sell pressure observed — buying-only flow in current window.");
+    } else if (sells5m >= 3 && buys5m === 0) {
+      parts.push("Sell-only flow observed — buying support absent in current window.");
+    } else {
+      parts.push("One-sided flow observed, but current flow counts are incomplete or stale.");
+    }
   }
   if (ctx.riskFlags.includes("STALE_RUNNER")) {
     parts.push("Pair seen many times without clean entry — stale runner pattern.");

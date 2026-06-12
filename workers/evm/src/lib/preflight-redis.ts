@@ -160,6 +160,8 @@ function deriveRiskFlags(
   wins24h: number,
   sellRatio: number,
   lpStatus: string,
+  buys5m?:     number,
+  sells5m?:    number,
 ): string[] {
   const flags: string[] = [];
   if (poolCountSameToken >= 3)                        flags.push("CLONE_FRAGMENTATION");
@@ -167,7 +169,9 @@ function deriveRiskFlags(
   if (consecutiveLosses >= 3)                         flags.push("BAD_HISTORY");
   if (badExits24h >= 2 && wins24h === 0)              flags.push("BAD_HISTORY");
   if (sellRatio > 0.5 && sellRatio < 1)               flags.push("DISTRIBUTION_RISK");
-  if (sellRatio === 0 && liqStatus === "CONFIRMED")   flags.push("ONE_SIDED_FLOW");
+  const totalSwaps   = (buys5m ?? 0) + (sells5m ?? 0);
+  const oneSidedFlow = totalSwaps >= 3 && ((buys5m ?? 0) === 0 || (sells5m ?? 0) === 0);
+  if (oneSidedFlow && liqStatus === "CONFIRMED") flags.push("ONE_SIDED_FLOW");
   if (lpStatus === "REMOVED")                         flags.push("LP_RISK");
   return flags;
 }
@@ -402,7 +406,7 @@ export function buildSignalPipelineEntry(params: {
   const sellRatio   = (flow.buyVol5m + (flow.buyVol5m - flow.netVol5m)) > 0
     ? (flow.buyVol5m - flow.netVol5m) / (flow.buyVol5m + (flow.buyVol5m - flow.netVol5m))
     : 0;
-  const riskFlags   = deriveRiskFlags(poolCountSameToken, liqStatus, reserveUsd, consecutiveLosses, badExits24h, wins24h, sellRatio, "");
+  const riskFlags = deriveRiskFlags(poolCountSameToken, liqStatus, reserveUsd, consecutiveLosses, badExits24h, wins24h, sellRatio, "", flow.buys5m, flow.sells5m);
   const opSignals   = deriveOpportunitySignals(phase, "ORGANIC", false, false);
   const entryRisk: EntryRisk = riskFlags.includes("BAD_HISTORY") ? "HIGH" : confidence === "HIGH" ? "MEDIUM" : "MEDIUM";
 
