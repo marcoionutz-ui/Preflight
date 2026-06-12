@@ -11,13 +11,13 @@ dotenv.config();
 import { CHAINS } from "./config/chains";
 import { WORKER_VERSION, SCAN_INTERVAL, FOLLOW_REFRESH_MS } from "./config/constants";
 import { connectChainWebSocket } from "./ws/manager";
-import { loadPairStats, loadMemoryFromRedis, saveMemoryToRedis } from "./state/memory";
+import { loadMemoryFromRedis, saveMemoryToRedis } from "./state/memory";
 import { refreshEthPrice } from "./infra/ethPrice";
 import { scan, runFollowRefresh } from "./pipeline/scan";
 import { verticalCandidatesLoop } from "./pipeline/loops/vertical";
 import { lateCandidatesLoop } from "./pipeline/loops/late";
 import { fomoCandidatesLoop } from "./pipeline/loops/fomo";
-import { hotCandidatesLoop, monitorOpenTrades } from "./pipeline/loops/hot";
+import { hotCandidatesLoop } from "./pipeline/loops/hot";
 
 console.log(`Preflight Worker ${WORKER_VERSION} starting...`);
 console.log(`Chains: ${CHAINS.map(c => c.id).join(", ")}`);
@@ -42,7 +42,7 @@ async function safeScan(): Promise<void> {
   }
 }
 
-loadPairStats().then(async () => {
+(async () => {
   await refreshEthPrice();
   await loadMemoryFromRedis();
 
@@ -52,7 +52,6 @@ loadPairStats().then(async () => {
   safeScan();
   setInterval(safeScan, SCAN_INTERVAL);
 
-  setInterval(() => { monitorOpenTrades().catch(err => console.error("[MONITOR ERROR]", err)); },     10_000);
   setInterval(() => { hotCandidatesLoop().catch(err => console.error("[HOT LOOP ERROR]", err)); },     3_000);
   setInterval(() => { verticalCandidatesLoop().catch(err => console.error("[VERTICAL LOOP ERROR]", err)); }, 15_000);
   setInterval(() => { lateCandidatesLoop().catch(err => console.error("[LATE LOOP ERROR]", err)); },   30_000);

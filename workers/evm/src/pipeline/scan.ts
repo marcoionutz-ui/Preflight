@@ -33,7 +33,6 @@ import { getLiquidityContext } from "../risk/liquidity";
 import { quickEdgeScore } from "../risk/scoring";
 import { getEntryGate } from "../risk/gates";
 import { recordMomentumEvent } from "../events/momentum";
-import { saveShadowTrade } from "../shadow/trades";
 import { addWatchCandidate, armCandidate, recordDrop, recordPipelineEvent } from "./transitions";
 import { triggerRiskCheck } from "../risk/riskChecker";
 import { requestImmediateScopedSubscribe } from "../ws/subscriptions";
@@ -570,8 +569,9 @@ async function processPool(
   qualifiedSignalsBuffer.unshift(qsScan);
   if (qualifiedSignalsBuffer.length > MAX_QUALIFIED_BUFFER) qualifiedSignalsBuffer.pop();
 
+  // Shadow trades disabled — Preflight reports signals, does not manage simulated positions.
+  // Legacy counter name: shadowCount now counts qualified signals emitted this scan.
   if (!isFollowRefresh) {
-    await saveShadowTrade(pool, score, mem, wsFlowReal, lp, "SCAN");
     counters.shadowCount++;
     chainCounts[pool.chain] = (chainCounts[pool.chain] ?? 0) + 1;
   }

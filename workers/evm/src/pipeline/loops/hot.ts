@@ -10,7 +10,6 @@ import { getWsFlow, getLpSignal } from "../../risk/flow";
 import { getLiquidityContext } from "../../risk/liquidity";
 import { quickEdgeScore } from "../../risk/scoring";
 import { getEntryGate } from "../../risk/gates";
-import { saveShadowTrade, updateOutcomes } from "../../shadow/trades";
 import { fetchPoolByAddress } from "../../sources/gecko";
 import { supabase } from "../../infra/supabase";
 import { CHAINS } from "../../config/chains";
@@ -19,6 +18,7 @@ import { isBlockedSymbol } from "../../sources/normalize";
 import { buildQualifiedSignalEntry } from "../../lib/preflight-redis";
 import type { FlowSignal } from "../../lib/engines/flowTypes";
 import type { SourcePool } from "../../sources/normalize";
+import { updateOutcomes } from "../../shadow/trades";
 
 let processingHot     = false;
 let monitoringTrades  = false;
@@ -67,11 +67,9 @@ export async function hotCandidatesLoop(): Promise<void> {
         continue;
       }
 
-      const { data: existing } = await supabase
-        .from("shadow_trades").select("id")
-        .eq("pair_address", pairAddress).is("exited_at", null).limit(1);
-
-      if (existing?.length) { dropHotCandidate(pairAddress, "existing open trade", chainId); continue; }
+      // Do not gate HOT candidates on shadow_trades.
+      // Preflight is a data layer; shadow trades are telemetry only.
+      // saveShadowTrade() still dedupes persistence after the signal is emitted.
 
       const pool = v4PoolMap.get(pairAddress) ?? v3PoolMap.get(pairAddress) ?? await fetchPoolByAddress(chainCfg, pairAddress);
       if (!pool) { dropHotCandidate(pairAddress, "pool unavailable", chainId); continue; }
@@ -120,7 +118,6 @@ export async function hotCandidatesLoop(): Promise<void> {
       qualifiedSignalsBuffer.unshift(qsHot);
       if (qualifiedSignalsBuffer.length > MAX_QUALIFIED_BUFFER) qualifiedSignalsBuffer.pop();
 
-      await saveShadowTrade(pool, score, mem, effectiveFlow, lp, source ?? "WS");
       deleteHotCandidate(pairAddress);
     }
   } finally {
@@ -152,10 +149,7 @@ export async function monitorOpenTrades(): Promise<void> {
       if (pool) pools.push(pool);
     }
 
-    if (pools.length) {
-      await updateOutcomes(pools);
-      console.log(`[MONITOR] Checked ${pools.length} open trades`);
-    }
+    // updateOutcomes disabled — shadow trades are telemetry only.
   } finally {
     monitoringTrades = false;
   }
