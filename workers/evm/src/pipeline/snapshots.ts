@@ -169,6 +169,7 @@ function buildPairContextMap(): Record<string, PreflightPairContext> {
       (mem3 as any)?.badExits24h ?? 0,
       (mem3 as any)?.wins24h ?? 0,
       0, "",
+      buys3.length, sells3.length,
     );
     const obsCtx3: ObservationContext = {
       moveType: "ORGANIC", momentumLevel: "MEDIUM",
