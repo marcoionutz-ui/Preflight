@@ -23,6 +23,45 @@ export function mcpErr(code: string, message: string, extra?: Record<string, unk
   };
 }
 
+export type McpConfidence = "LOW" | "MEDIUM" | "HIGH";
+
+export type McpDataQuality = {
+  wsFlow?:    "present" | "partial" | "absent";
+  risk?:      "cached" | "stale" | "missing";
+  liquidity?: "confirmed" | "estimated" | "unknown";
+};
+
+export function mcpResponse(params: {
+  text:           string;
+  freshnessSec?:  number | null;
+  confidence?:    McpConfidence;
+  coverageNote?:  string | null;
+  warnings?:      string[];
+  dataQuality?:   McpDataQuality;
+  evidence?:      Record<string, unknown>;
+}): { content: McpContent } {
+  const {
+    text, freshnessSec, confidence,
+    coverageNote, warnings, dataQuality, evidence,
+  } = params;
+
+  const meta: Record<string, unknown> = {};
+
+  if (freshnessSec !== undefined && freshnessSec !== null) meta.freshnessSec = freshnessSec;
+  if (confidence   !== undefined)                          meta.confidence   = confidence;
+  if (coverageNote !== undefined && coverageNote !== null) meta.coverageNote = coverageNote;
+  if (warnings     !== undefined && warnings.length > 0)  meta.warnings     = warnings;
+  if (dataQuality  !== undefined)                         meta.dataQuality  = dataQuality;
+  if (evidence     !== undefined)                         meta.evidence     = evidence;
+
+  return mcpOk({
+    ok:     true,
+    format: "preflight.response.v1",
+    text,
+    meta,
+  });
+}
+
 // Error codes standard
 export const ERR = {
   REDIS_DOWN:       "REDIS_DOWN",
