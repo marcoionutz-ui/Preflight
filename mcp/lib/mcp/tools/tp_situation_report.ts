@@ -27,7 +27,7 @@ Observed movers section shows tokens moving on market that haven't passed pipeli
     async () => {
       try {
         const ctx = await readAllRedis();
-        if (!ctx) return mcpOk("❌ Redis not connected — worker context unavailable.");
+        if (!ctx) return mcpErr(ERR.REDIS_DOWN, "Redis not connected");
 
         const {
           now, states, watch, hot, armed,

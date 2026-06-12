@@ -30,7 +30,7 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
     async ({ pair_address }: { pair_address: string }) => {
       try {
         const ctx = await readAllRedis();
-        if (!ctx) return mcpOk("❌ Redis not connected.");
+        if (!ctx) return mcpErr(ERR.REDIS_DOWN, "Redis not connected");
 
         const { now, states, watch, hot, armed, snapshot, events } = ctx;
         const addr = pair_address.toLowerCase().trim();
