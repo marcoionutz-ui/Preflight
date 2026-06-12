@@ -77,7 +77,7 @@ Args: pair_address (0x... EVM address)`,
           d.pairAddress === addr && now - d.droppedAt < FLAP_WINDOW_MS
         );
 
-        const dropReasons      = recentDrops.map(d => d.reason.toLowerCase());
+        const dropReasons      = recentDrops.map(d => ((d as any).dropReason ?? d.reason ?? "").toLowerCase());
         const hasFlowFade      = dropReasons.some(r => r.includes("flow faded") || r.includes("neutral"));
         const hasGateFail      = dropReasons.some(r => r.includes("gate") || r.includes("bad exits") || r.includes("score"));
         const hasDistribution  = dropReasons.some(r => r.includes("distribution") || r.includes("sell"));
@@ -195,7 +195,7 @@ Args: pair_address (0x... EVM address)`,
           if (recentDrops.length) {
             recentDrops.slice(0, 3).forEach(d => {
               const ageSec = Math.round((now - d.droppedAt) / 1000);
-              lines.push(`  ${ageSec}s ago: dropped — ${d.reason}`);
+              lines.push(`  ${ageSec}s ago: dropped — ${(d as any).dropReason ?? d.reason ?? "unknown"}`);
             });
           }
           lines.push("");

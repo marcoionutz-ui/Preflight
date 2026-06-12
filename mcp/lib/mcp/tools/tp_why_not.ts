@@ -26,7 +26,7 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
     async ({ pair_address }: { pair_address: string }) => {
       try {
         const ctx = await readAllRedis();
-        if (!ctx) return mcpOk("❌ Redis not connected.");
+        if (!ctx) return mcpErr(ERR.REDIS_DOWN, "Redis not connected");
 
         const { now, states, watch, hot, armed, snapshot, events, drops } = ctx;
         const addr = pair_address.toLowerCase().trim();
@@ -60,8 +60,10 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
         const lastDrop = findLastDropForPair(addr, drops);
         if (lastDrop) {
           const ageSec = Math.round((now - lastDrop.droppedAt) / 1000);
-          lines.push(`Recently dropped from ${lastDrop.previousState} (${ageSec}s ago):`);
-          lines.push(`• Reason: ${lastDrop.reason}`);
+          const fromState = (lastDrop as any).wasIn ?? lastDrop.previousState ?? "UNKNOWN";
+          const reason    = (lastDrop as any).dropReason ?? lastDrop.reason ?? "unknown";
+          lines.push(`Recently dropped from ${fromState} (${ageSec}s ago):`);
+          lines.push(`• Reason: ${reason}`);
           lines.push("");
         }
 

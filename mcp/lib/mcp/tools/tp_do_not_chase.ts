@@ -23,7 +23,7 @@ Args: limit (default 10, max 30), minutes_back (default 10, max 10)`,
     async ({ limit, minutes_back }: { limit: number; minutes_back: number }) => {
       try {
         const ctx = await readAllRedis();
-        if (!ctx) return mcpOk("❌ Redis not connected.");
+        if (!ctx) return mcpErr(ERR.REDIS_DOWN, "Redis not connected");
 
         const { now, drops, states } = ctx;
         const cutoff = now - minutes_back * 60_000;
@@ -40,12 +40,17 @@ Args: limit (default 10, max 30), minutes_back (default 10, max 10)`,
           const pairData = states[d.pairAddress];
           const phase    = pairData?.phase ?? "?";
 
-          let line = `${d.symbol} [${d.chain}] — dropped from ${d.previousState} ${ageSec}s ago`;
-          line += `\n  Reason: ${d.reason}`;
+          const fromState = (d as any).wasIn ?? d.previousState ?? "UNKNOWN";
+          const reason    = (d as any).dropReason ?? d.reason ?? "unknown";
+          const symbol    = d.symbol ?? d.pairAddress?.slice(0, 8) ?? "UNKNOWN";
+          const chain     = d.chain ?? "unknown";
+
+          let line = `${symbol} [${chain}] — dropped from ${fromState} ${ageSec}s ago`;
+          line += `\n  Reason: ${reason}`;
           if (phase !== "?") line += ` | phase: ${phase}`;
           if (pairData?.flow?.hasData) line += ` | flow now: ${pairData.flow.pressure}`;
 
-          const r = d.reason.toLowerCase();
+          const r = reason.toLowerCase();
           if (r.includes("flow faded") || r.includes("flow turned") || r.includes("no buying flow")) {
             line += "\n  → Buying interest evaporated. Do not re-enter without fresh WS confirmation.";
           } else if (r.includes("too late") || r.includes("vertical")) {
