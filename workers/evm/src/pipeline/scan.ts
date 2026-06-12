@@ -39,6 +39,7 @@ import { triggerRiskCheck } from "../risk/riskChecker";
 import { requestImmediateScopedSubscribe } from "../ws/subscriptions";
 import { writeAllSnapshots } from "./snapshots";
 import { subscribeV3Scoped, subscribeV4Scoped, subscribeV2Scoped, cleanupActiveWatch } from "../ws/subscriptions";
+import { REDIS_KEYS } from "@preflight/schema";
 
 function hasWatchSlot(chain: string): boolean {
   const maxForChain = MAX_ACTIVE_WATCH_BY_CHAIN[chain] ?? 10;
@@ -108,7 +109,7 @@ async function writeScannerStats(
   for (const [chainId, health] of geckoSourceHealth.entries()) {
     chainsHealth[chainId] = health;
   }
-  await r.set("preflight:scanner_stats", JSON.stringify({
+  await r.set(REDIS_KEYS.scannerStats, JSON.stringify({
     savedAt: Date.now(),
     scan: { durationMs: Date.now() - scanStart, totalFetched, processedPools },
     chains: chainsHealth,

@@ -9,6 +9,22 @@ import type {
   ArmedEntry, WorkerSnapshot, MarketRegime,
   PipelineEvent, RecentDrop, RedisContext,
 } from "./types";
+import { REDIS_KEYS } from "@preflight/schema";
+
+function safeJson<T>(raw: string | null, fallback: T, key?: string): T {
+  if (!raw) return fallback;
+  try {
+    return JSON.parse(raw) as T;
+  } catch (err) {
+    if (key) {
+      console.warn(
+        `[REDIS PARSE ERROR] key:${key} — invalid JSON, using fallback`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+    return fallback;
+  }
+}
 
 // ── Redis read ────────────────────────────────────────────────────────────────
 
@@ -19,52 +35,48 @@ export async function readAllRedis(): Promise<RedisContext | null> {
   const [
     statesRaw, watchRaw, hotRaw, armedRaw,
     snapshotRaw, regimeRaw, eventsRaw, dropsRaw,
-    pfMarketRaw, pfMomentumRaw, pfPipelineRaw, pfQualifiedRaw, pfDropsRaw,
-    pfCoverageRaw,
-    pfScannerStatsRaw,
+    pfMarketRaw, pfMomentumRaw, pfPipelineRaw, pfQualifiedRaw,
+    pfCoverageRaw, pfScannerStatsRaw,
   ] = await Promise.all([
-    r.get("supreme:pair_states"),
-    r.get("supreme:active_watch"),
-    r.get("supreme:hot_candidates"),
-    r.get("supreme:armed_entries"),
-    r.get("supreme:worker_snapshot:latest"),
-    r.get("supreme:market_regime"),
-    r.get("supreme:pipeline_events"),
-    r.get("supreme:recent_drops"),
-    r.get("preflight:market_context"),
-    r.get("preflight:momentum_events"),
-    r.get("preflight:signal_pipeline"),
-    r.get("preflight:qualified_signals"),
-    r.get("preflight:recent_drops"),
-    r.get("preflight:pipeline_coverage"),
-    r.get("preflight:scanner_stats"),
+    r.get(REDIS_KEYS.pairStates),
+    r.get(REDIS_KEYS.activeWatch),
+    r.get(REDIS_KEYS.hotCandidates),
+    r.get(REDIS_KEYS.armedEntries),
+    r.get(REDIS_KEYS.workerSnapshot),
+    r.get(REDIS_KEYS.marketRegime),
+    r.get(REDIS_KEYS.pipelineEvents),
+    r.get(REDIS_KEYS.recentDrops),
+    r.get(REDIS_KEYS.marketContext),
+    r.get(REDIS_KEYS.momentumEvents),
+    r.get(REDIS_KEYS.signalPipeline),
+    r.get(REDIS_KEYS.qualifiedSignals),
+    r.get(REDIS_KEYS.pipelineCoverage),
+    r.get(REDIS_KEYS.scannerStats),
   ]);
 
   const now = Date.now();
 
   // preflight:* first, supreme:* fallback
   const regimeFinal   = pfMarketRaw   ?? regimeRaw;
-  const dropsFinal    = pfDropsRaw    ?? dropsRaw;
   const eventsFinal   = eventsRaw; // pipeline_events rămâne supreme pentru acum
 
   return {
     now,
-    states:   statesRaw   ? JSON.parse(statesRaw)   as Record<string, PairState>  : {},
-    watch:    watchRaw    ? JSON.parse(watchRaw)    as Record<string, WatchEntry>  : {},
-    hot:      hotRaw      ? JSON.parse(hotRaw)      as Record<string, HotEntry>    : {},
-    armed:    armedRaw    ? JSON.parse(armedRaw)    as Record<string, ArmedEntry>  : {},
-    snapshot: snapshotRaw ? JSON.parse(snapshotRaw) as WorkerSnapshot              : null,
-    regime:   regimeFinal ? JSON.parse(regimeFinal) as MarketRegime                : null,
-    events:   eventsFinal ? JSON.parse(eventsFinal) as PipelineEvent[]             : [],
-    drops:    dropsFinal  ? JSON.parse(dropsFinal)  as RecentDrop[]                : [],
-    // preflight:* keys
-    pfMarket:    pfMarketRaw    ? JSON.parse(pfMarketRaw)    : null,
-    pfMomentum:  pfMomentumRaw  ? JSON.parse(pfMomentumRaw)  : null,
-    pfPipeline:  pfPipelineRaw  ? JSON.parse(pfPipelineRaw)  : null,
-    pfQualified: pfQualifiedRaw ? JSON.parse(pfQualifiedRaw) : null,
-    pfDrops:          pfDropsRaw    ? JSON.parse(pfDropsRaw)    : null,
-    pipelineCoverage: pfCoverageRaw     ? JSON.parse(pfCoverageRaw)     : null,
-    scannerStats:     pfScannerStatsRaw ? JSON.parse(pfScannerStatsRaw) : null,
+    states:   safeJson<Record<string, PairState>> (statesRaw,   {},   "pair_states"),
+    watch:    safeJson<Record<string, WatchEntry>>(watchRaw,    {},   "active_watch"),
+    hot:      safeJson<Record<string, HotEntry>>  (hotRaw,      {},   "hot_candidates"),
+    armed:    safeJson<Record<string, ArmedEntry>>(armedRaw,    {},   "armed_entries"),
+    snapshot: safeJson<WorkerSnapshot | null>     (snapshotRaw, null, "worker_snapshot"),
+    regime:   safeJson<MarketRegime | null>        (regimeFinal, null, "market_regime"),
+    events:   safeJson<PipelineEvent[]>            (eventsFinal, [],   "pipeline_events"),
+    drops:   safeJson<RecentDrop[]>(dropsRaw, [], REDIS_KEYS.recentDrops),
+    pfMarket:         safeJson(pfMarketRaw,        null, "pf_market"),
+    pfMomentum:       safeJson(pfMomentumRaw,      null, "pf_momentum"),
+    pfPipeline:       safeJson(pfPipelineRaw,      null, "pf_pipeline"),
+    pfQualified:      safeJson(pfQualifiedRaw,     null, "pf_qualified"),
+    pfDrops: safeJson(dropsRaw, null, REDIS_KEYS.recentDrops),
+    pipelineCoverage: safeJson(pfCoverageRaw,      null, "pf_pipeline_coverage"),
+    scannerStats:     safeJson(pfScannerStatsRaw,  null, "pf_scanner_stats"),
     keyExists: {
       pair_states:          statesRaw   !== null,
       active_watch:         watchRaw    !== null,
@@ -78,7 +90,7 @@ export async function readAllRedis(): Promise<RedisContext | null> {
       pf_momentum:          pfMomentumRaw  !== null,
       pf_pipeline:          pfPipelineRaw  !== null,
       pf_qualified:         pfQualifiedRaw !== null,
-      pf_drops:             pfDropsRaw    !== null,
+      pf_drops:             dropsRaw    !== null,
       pf_pipeline_coverage: pfCoverageRaw     !== null,
       pf_scanner_stats:     pfScannerStatsRaw !== null,
     },
@@ -133,7 +145,7 @@ export async function readPairContext(addr: string): Promise<any | null> {
   const r = getRedis();
   if (!r) return null;
   try {
-    const raw = await r.get(`preflight:pair_context:${addr.toLowerCase()}`);
+    const raw = await r.get(REDIS_KEYS.pairContext(addr));
     return raw ? JSON.parse(raw) : null;
   } catch { return null; }
 }

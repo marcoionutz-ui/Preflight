@@ -5,6 +5,7 @@
 
 import { getRedis } from "@/lib/db/redis";
 import type { GoPlusSafety } from "./types";
+import { REDIS_KEYS } from "@preflight/schema";
 
 const GOPLUS_CHAIN_IDS: Record<string, string> = {
   base:     "8453",
@@ -123,7 +124,7 @@ export async function getTokenSafety(
 
   if (!chainId) return { ...GOPLUS_UNAVAILABLE, missingData: [`Chain '${chain}' not supported`], cachedAt: Date.now() };
 
-  const cacheKey = `supreme:token_safety:${chain}:${tokenAddr}`;
+  const cacheKey = REDIS_KEYS.risk(chain, tokenAddr);
   if (r) {
     try {
       const cached = await r.get(cacheKey);

@@ -8,6 +8,7 @@ import type { Redis } from "ioredis";
 import { CHAINS } from "../config/chains";
 import { wsClients, recentDrops, pipelineEvents, hotCandidates, armedEntries } from "../state/stores";
 import type { PairStateSnapshot } from "../state/pairStates";
+import { REDIS_KEYS } from "@preflight/schema";
 
 export interface MarketContext {
   regime:           string;
@@ -39,7 +40,7 @@ export function deriveMarketContext(states: Record<string, PairStateSnapshot>): 
 }
 
 export async function writeMarketRegime(r: Redis, ctx: MarketContext): Promise<void> {
-  await r.set("supreme:market_regime", JSON.stringify({
+  await r.set(REDIS_KEYS.marketRegime, JSON.stringify({
     regime:            ctx.regime,
     buyingPctAll:      ctx.buyingPctAll,
     sellingPctAll:     ctx.sellingPctAll,
@@ -63,11 +64,7 @@ export async function writeMarketRegime(r: Redis, ctx: MarketContext): Promise<v
 
 export async function writeDropsAndEvents(r: Redis): Promise<void> {
   const now = Date.now();
-  await r.set("supreme:recent_drops", JSON.stringify(
-    recentDrops.filter(d => now - d.droppedAt < 10 * 60_000),
-  ), "EX", 600);
-
-  await r.set("supreme:pipeline_events", JSON.stringify(
+  await r.set(REDIS_KEYS.pipelineEvents, JSON.stringify(
     pipelineEvents.filter(e => now - e.ts < 10 * 60_000),
   ), "EX", 600);
 }

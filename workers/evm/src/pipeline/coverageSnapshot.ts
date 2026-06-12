@@ -12,6 +12,7 @@ import {
 } from "../state/stores";
 import { getWsFlow } from "../risk/flow";
 import { WORKER_VERSION } from "../config/constants";
+import { REDIS_KEYS } from "@preflight/schema";
 
 const MOVER_M5_THRESHOLD  = 5;
 const MOVER_H1_THRESHOLD  = 15;
@@ -134,7 +135,7 @@ export async function writeCoverageSnapshot(r: Redis, states: Record<string, any
     };
   }
 
-  await r.set("preflight:pipeline_coverage", JSON.stringify({
+  await r.set(REDIS_KEYS.pipelineCoverage, JSON.stringify({
     workerVersion: WORKER_VERSION,
     savedAt:       now,
     chains,

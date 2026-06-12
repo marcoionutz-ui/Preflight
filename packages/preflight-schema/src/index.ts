@@ -143,24 +143,27 @@ export interface PreflightDrop {
 // Workers scriu, MCP citește — nimeni nu scrie strings hardcodate.
 
 export const REDIS_KEYS = {
-  // preflight:* — schema nouă (workers scriu asta)
-  MARKET_CONTEXT:     "preflight:market_context",
-  MOMENTUM_EVENTS:    "preflight:momentum_events",
-  SIGNAL_PIPELINE:    "preflight:signal_pipeline",
-  QUALIFIED_SIGNALS:  "preflight:qualified_signals",
-  RECENT_DROPS:       "preflight:recent_drops",
-  OBSERVED_MOVERS:    "preflight:observed_movers",
-  PAIR_CONTEXT:       (addr: string) => `preflight:pair_context:${addr.toLowerCase()}`,
+  // Pipeline state
+  pairStates:      "preflight:pair_states",
+  activeWatch:     "preflight:active_watch",
+  hotCandidates:   "preflight:hot_candidates",
+  armedEntries:    "preflight:armed_entries",
+  workerSnapshot:  "preflight:worker_snapshot:latest",
+  marketRegime:    "preflight:market_regime",
+  recentDrops:     "preflight:recent_drops",
+  pipelineEvents:  "preflight:pipeline_events",
 
-  // supreme:* — schema veche (fallback pentru MCP)
-  SUPREME_PAIR_STATES:     "supreme:pair_states",
-  SUPREME_ACTIVE_WATCH:    "supreme:active_watch",
-  SUPREME_HOT_CANDIDATES:  "supreme:hot_candidates",
-  SUPREME_ARMED_ENTRIES:   "supreme:armed_entries",
-  SUPREME_WORKER_SNAPSHOT: "supreme:worker_snapshot:latest",
-  SUPREME_MARKET_REGIME:   "supreme:market_regime",
-  SUPREME_PIPELINE_EVENTS: "supreme:pipeline_events",
-  SUPREME_RECENT_DROPS:    "supreme:recent_drops",
+  // Context
+  marketContext:    "preflight:market_context",
+  momentumEvents:   "preflight:momentum_events",
+  signalPipeline:   "preflight:signal_pipeline",
+  qualifiedSignals: "preflight:qualified_signals",
+  pipelineCoverage: "preflight:pipeline_coverage",
+  scannerStats:     "preflight:scanner_stats",
+
+  // Per-pair
+  pairContext: (addr: string) => `preflight:pair_context:${addr.toLowerCase()}`,
+  risk:        (chain: string, token: string) => `preflight:risk:${chain}:${token.toLowerCase()}`,
 } as const;
 
 export const SCHEMA_VERSION = "preflight-schema-v1";

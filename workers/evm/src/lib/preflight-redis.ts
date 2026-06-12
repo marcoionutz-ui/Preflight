@@ -26,6 +26,7 @@ import {
   type Confidence,
 } from "./observation";
 import type { MomentumEvent, MomentumVerdict } from "../risk/momentum";
+import { REDIS_KEYS } from "@preflight/schema";
 
 const SCHEMA_VERSION = "preflight-scanner-v1";
 const MAX_EVENTS     = 50;
@@ -255,7 +256,7 @@ export async function writePreflightRedis(r: Redis, input: PreflightWriteInput):
   const pipeline = r.pipeline();
 
   // ── preflight:market_context ─────────────────────────────────────────────
-  pipeline.set("preflight:market_context", JSON.stringify({
+  pipeline.set(REDIS_KEYS.marketContext, JSON.stringify({
     schemaVersion:   SCHEMA_VERSION,
     workerVersion,
     regime,
@@ -273,25 +274,25 @@ export async function writePreflightRedis(r: Redis, input: PreflightWriteInput):
   const recentMomentum = momentumEventsBuffer
     .filter(e => recent10m(e.detectedAt))
     .slice(0, MAX_EVENTS);
-  pipeline.set("preflight:momentum_events", JSON.stringify(recentMomentum), "EX", 600);
+  pipeline.set(REDIS_KEYS.momentumEvents, JSON.stringify(recentMomentum), "EX", 600);
 
   // ── preflight:signal_pipeline ────────────────────────────────────────────
   pipeline.set(
-    "preflight:signal_pipeline",
+    REDIS_KEYS.signalPipeline,
     JSON.stringify(signalPipeline.slice(0, MAX_PIPELINE)),
     "EX", 120,
   );
 
   // ── preflight:qualified_signals ──────────────────────────────────────────
   pipeline.set(
-    "preflight:qualified_signals",
+    REDIS_KEYS.qualifiedSignals,
     JSON.stringify(qualifiedSignals.slice(0, MAX_QUALIFIED)),
     "EX", 120,
   );
 
   // ── preflight:recent_drops ───────────────────────────────────────────────
   pipeline.set(
-    "preflight:recent_drops",
+    REDIS_KEYS.recentDrops,
     JSON.stringify(recentDrops.filter(d => recent10m(d.droppedAt)).slice(0, MAX_DROPS)),
     "EX", 600,
   );
@@ -300,7 +301,7 @@ export async function writePreflightRedis(r: Redis, input: PreflightWriteInput):
   const pairContextEntries = Object.entries(input.pairContextMap);
   if (pairContextEntries.length > 0) {
     for (const [addr, ctx] of pairContextEntries) {
-      pipeline.set(`preflight:pair_context:${addr}`, JSON.stringify(ctx), "EX", 120);
+      pipeline.set(REDIS_KEYS.pairContext(addr), JSON.stringify(ctx), "EX", 120);
     }
   }
 

@@ -14,6 +14,7 @@ import { getRedis } from "../infra/redis";
 import { supabase } from "../infra/supabase";
 import { getEthPrice } from "../infra/ethPrice";
 import { WORKER_VERSION } from "../config/constants";
+import { REDIS_KEYS } from "@preflight/schema";
 
 export function updatePoolLiquidity(addr: string, pool: SourcePool): void {
   const reserveUsd = pool.reserveUsd;
@@ -145,8 +146,8 @@ export async function saveMemoryToRedis(): Promise<void> {
     const reserveObj: Record<string, number> = {};
     for (const [addr, liqCtx] of poolLiquidity.entries()) reserveObj[addr] = liqCtx.reserveEth;
 
-    await r.set(
-      `supreme:worker_snapshot:latest`,
+     await r.set(
+      REDIS_KEYS.workerSnapshot,
       JSON.stringify({
         version:        WORKER_VERSION,
         savedAt:        Date.now(),
@@ -167,7 +168,7 @@ export async function loadMemoryFromRedis(): Promise<void> {
       const r = getRedis();
       if (!r) return;
 
-      const raw = await r.get("supreme:worker_snapshot:latest");
+      const raw = await r.get(REDIS_KEYS.workerSnapshot);
       if (!raw) return;
 
       const snap = JSON.parse(raw) as {

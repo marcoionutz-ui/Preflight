@@ -23,17 +23,18 @@ import { tokenPools, tokenPoolKey } from "../infra/poolTracker";
 import { WORKER_VERSION } from "../config/constants";
 import { CHAINS } from "../config/chains";
 import { writeCoverageSnapshot } from "./coverageSnapshot";
+import { REDIS_KEYS } from "@preflight/schema";
 
 export async function writeAllSnapshots(r: Redis): Promise<void> {
   // ── supreme:pair_states ────────────────────────────────────────────────────
   const states = await buildPairStates();
-  await r.set("supreme:pair_states", JSON.stringify(states), "EX", 120);
+  await r.set(REDIS_KEYS.pairStates, JSON.stringify(states), "EX", 120);
   console.log(`[REDIS] Wrote ${Object.keys(states).length} pair states`);
 
   // ── supreme:active_watch / hot / armed ────────────────────────────────────
-  await r.set("supreme:active_watch",   JSON.stringify(buildWatchSnapshot()), "EX", 120);
-  await r.set("supreme:hot_candidates", JSON.stringify(buildHotSnapshot()),   "EX", 120);
-  await r.set("supreme:armed_entries",  JSON.stringify(buildArmedSnapshot()), "EX", 120);
+  await r.set(REDIS_KEYS.activeWatch,   JSON.stringify(buildWatchSnapshot()), "EX", 120);
+  await r.set(REDIS_KEYS.hotCandidates, JSON.stringify(buildHotSnapshot()),   "EX", 120);
+  await r.set(REDIS_KEYS.armedEntries,  JSON.stringify(buildArmedSnapshot()), "EX", 120);
 
   // ── market context + drops ────────────────────────────────────────────────
   const ctx = deriveMarketContext(states);
