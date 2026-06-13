@@ -91,20 +91,50 @@ Args: pair_address (0x... EVM address or V4 pool ID), chain (optional: base/arbi
             currentStateAgeSec: (pairState as any)?.currentStateAgeSec ?? null,
             seenCount:          data.seenCount,
           },
-		  discovery: {
-            primaryDiscoverySource:
-              (pairState as any)?.discovery?.primaryDiscoverySource ??
-              (snapMem as any)?.primaryDiscoverySource ?? null,
-            discoverySources:
+		            discovery: (() => {
+            const allSources: string[] =
               (pairState as any)?.discovery?.discoverySources ??
-              (snapMem as any)?.discoverySources ?? [],
-            firstDiscoveredAt:
-              (pairState as any)?.discovery?.firstDiscoveredAt ??
-              (snapMem as any)?.firstDiscoveredAt ?? null,
-            lastDiscoveryAt:
-              (pairState as any)?.discovery?.lastDiscoveryAt ??
-              (snapMem as any)?.lastDiscoveryAt ?? null,
-          },
+              (snapMem as any)?.discoverySources ??
+              [];
+
+            const RETENTION_SOURCES = new Set(["MARKET_FOLLOW_LIST"]);
+            const LOOKUP_SOURCES    = new Set(["DEXSCREENER_PAIR_FALLBACK"]);
+
+            const discoverySources = allSources.filter(
+              s => !RETENTION_SOURCES.has(s) && !LOOKUP_SOURCES.has(s),
+            );
+
+            const retainedVia = allSources.filter(
+              s => RETENTION_SOURCES.has(s),
+            );
+
+            const resolvedVia = allSources.filter(
+              s => LOOKUP_SOURCES.has(s),
+            );
+
+            const rawPrimary =
+              (pairState as any)?.discovery?.primaryDiscoverySource ??
+              (snapMem as any)?.primaryDiscoverySource ??
+              null;
+
+            const primaryDiscoverySource =
+              rawPrimary && discoverySources.includes(rawPrimary)
+                ? rawPrimary
+                : discoverySources[0] ?? null;
+
+            return {
+              primaryDiscoverySource,
+              discoverySources,
+              retainedVia,
+              resolvedVia,
+              firstDiscoveredAt:
+                (pairState as any)?.discovery?.firstDiscoveredAt ??
+                (snapMem as any)?.firstDiscoveredAt ?? null,
+              lastDiscoveryAt:
+                (pairState as any)?.discovery?.lastDiscoveryAt ??
+                (snapMem as any)?.lastDiscoveryAt ?? null,
+            };
+          })(),
           priceVsFirstSeenPct: (pairState as any)?.priceVsFirstSeenPct ?? null,
           dexType:            (pairState as PairState)?.dexType            ?? null,
           reserveUsd:         (pairState as PairState)?.reserveUsd         ?? null,
