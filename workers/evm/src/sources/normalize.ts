@@ -7,6 +7,7 @@
 import type { ChainConfig } from "../config/chains";
 import { BLOCKED_SYMBOLS } from "../config/constants";
 import { V3_DEXES } from "../config/constants";
+import type { DiscoverySource } from "@preflight/schema";
 
 export type DexType = "V2" | "V3" | "V4" | "UNKNOWN";
 
@@ -18,6 +19,8 @@ export interface SourcePool {
   symbol:       string;
   dexType:      DexType;
   dexId:        string;
+  // Discovery provenance
+  discoverySource?: DiscoverySource;
 
   // Price
   priceUsd: number;

@@ -2,6 +2,7 @@
 
 import type { Phase }       from "./phaseDetector";
 import type { FlowSignal }  from "./flowTypes";
+import type { DiscoverySource } from "@preflight/schema";
 
 export interface PairMemoryEntry {
   pairAddress:       string;
@@ -28,6 +29,11 @@ export interface PairMemoryEntry {
   lastMomentumVerdict?: string | null;
   lastMomentumAt?:      number | null;
   phase:             Phase;
+  // Discovery provenance
+  primaryDiscoverySource?: DiscoverySource;
+  discoverySources?:       DiscoverySource[];
+  firstDiscoveredAt?:      number;
+  lastDiscoveryAt?:        number;
 }
 
 export function emptyPairMemory(pairAddress: string, symbol: string): PairMemoryEntry {

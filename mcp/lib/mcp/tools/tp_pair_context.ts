@@ -91,6 +91,20 @@ Args: pair_address (0x... EVM address or V4 pool ID), chain (optional: base/arbi
             currentStateAgeSec: (pairState as any)?.currentStateAgeSec ?? null,
             seenCount:          data.seenCount,
           },
+		  discovery: {
+            primaryDiscoverySource:
+              (pairState as any)?.discovery?.primaryDiscoverySource ??
+              (snapMem as any)?.primaryDiscoverySource ?? null,
+            discoverySources:
+              (pairState as any)?.discovery?.discoverySources ??
+              (snapMem as any)?.discoverySources ?? [],
+            firstDiscoveredAt:
+              (pairState as any)?.discovery?.firstDiscoveredAt ??
+              (snapMem as any)?.firstDiscoveredAt ?? null,
+            lastDiscoveryAt:
+              (pairState as any)?.discovery?.lastDiscoveryAt ??
+              (snapMem as any)?.lastDiscoveryAt ?? null,
+          },
           priceVsFirstSeenPct: (pairState as any)?.priceVsFirstSeenPct ?? null,
           dexType:            (pairState as PairState)?.dexType            ?? null,
           reserveUsd:         (pairState as PairState)?.reserveUsd         ?? null,

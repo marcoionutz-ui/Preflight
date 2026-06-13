@@ -97,6 +97,14 @@ export interface PairStateSnapshot {
   monitoringTier?:      string | null;
   patternTags?:         string[] | null;
   risk?:                RiskStateSnapshot | null;
+  
+  // Discovery
+  discovery: {
+    primaryDiscoverySource: string | null;
+    discoverySources:       string[];
+    firstDiscoveredAt:      number | null;
+    lastDiscoveryAt:        number | null;
+  };
 }
 
 export async function buildPairStates(): Promise<Record<string, PairStateSnapshot>> {
@@ -146,7 +154,14 @@ export async function buildPairStates(): Promise<Record<string, PairStateSnapsho
       pairAddress:  addr,
       tokenAddress: mem.tokenAddress ?? "",
       dexType:      addr.length === 66 ? "V4" : v3PoolMap.has(addr) ? "V3" : "V2",
-
+	  
+	  discovery: {
+        primaryDiscoverySource: mem.primaryDiscoverySource ?? null,
+        discoverySources:       mem.discoverySources ?? [],
+        firstDiscoveredAt:      mem.firstDiscoveredAt ?? mem.firstSeen ?? null,
+        lastDiscoveryAt:        mem.lastDiscoveryAt ?? mem.lastSeen ?? null,
+      },
+	  
       currentPrice: mem.currentPrice,
       priceChange: {
         m5:  mc.m5  ?? 0,

@@ -81,6 +81,16 @@ export function updateMemory(pool: SourcePool, price: number): PairMemoryEntry {
     losses24h: 0,
     badExits24h: 0,
   });
+  
+  if (pool.discoverySource) {
+    if (!existing.firstDiscoveredAt) existing.firstDiscoveredAt = now;
+    existing.lastDiscoveryAt = now;
+    existing.discoverySources ??= [];
+    if (!existing.discoverySources.includes(pool.discoverySource)) {
+      existing.discoverySources.push(pool.discoverySource);
+    }
+    existing.primaryDiscoverySource ??= pool.discoverySource;
+  }
 
   memory.set(addr, existing);
   updatePoolLiquidity(addr, pool);

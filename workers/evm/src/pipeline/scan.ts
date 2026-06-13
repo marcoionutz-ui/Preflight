@@ -13,7 +13,7 @@ import { updateMemory, saveMemoryToRedis } from "../state/memory";
 import { trackPool, tokenPools, tokenPoolKey } from "../infra/poolTracker";
 import { getRedis } from "../infra/redis";
 import { sendTelegram } from "../infra/telegram";
-import { fetchTrendingPools, fetchPoolByAddress } from "../sources/gecko";
+import { fetchDiscoveryPools, fetchPoolByAddress } from "../sources/gecko";
 import { fetchDsPairByAddress } from "../sources/dexscreener";
 import { isBlockedSymbol } from "../sources/normalize";
 import type { SourcePool } from "../sources/normalize";
@@ -122,7 +122,7 @@ export async function scan(): Promise<void> {
   clearExpiredArmedEntries();
   pruneMemory();
 
-  const allPoolsPerChain = await Promise.all(CHAINS.map(c => fetchTrendingPools(c)));
+  const allPoolsPerChain = await Promise.all(CHAINS.map(c => fetchDiscoveryPools(c)));
 
   // Actualizează Gecko source health per chain
   CHAINS.forEach((chain, i) => {
@@ -670,7 +670,12 @@ export async function runFollowRefresh(): Promise<void> {
         continue;
       }
 
-      await processPool(pool, counters, chainCounts, { source: "follow_refresh" });
+      await processPool(
+        { ...pool, discoverySource: "MARKET_FOLLOW_LIST" },
+        counters,
+        chainCounts,
+        { source: "follow_refresh" },
+      );
 
       // nu suprascrie attentionScore nou cu entry vechi
       const updated = marketFollowList.get(addr);

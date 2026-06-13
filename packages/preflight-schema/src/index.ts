@@ -142,7 +142,21 @@ export interface PreflightDrop {
 // Un singur loc unde trăiesc key names.
 // Workers scriu, MCP citește — nimeni nu scrie strings hardcodate.
 
+// ── Discovery Sources ─────────────────────────────────────────────────────────
+
+export type DiscoverySource =
+  | "GECKO_TRENDING_P1"
+  | "GECKO_TRENDING_P2"
+  | "GECKO_TRENDING_P3"
+  | "GECKO_NEW_POOL"
+  | "DEXSCREENER_BOOSTED"
+  | "DEXSCREENER_PROFILE"
+  | "DEXSCREENER_PAIR_FALLBACK"
+  | "MARKET_FOLLOW_LIST";
+  
+
 export const REDIS_KEYS = {
+    
   // Pipeline state
   pairStates:      "preflight:pair_states",
   activeWatch:     "preflight:active_watch",
