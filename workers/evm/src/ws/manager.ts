@@ -28,7 +28,7 @@ import {
 } from "./subscriptions";
 import { supabase } from "../infra/supabase";
 import { sendTelegram } from "../infra/telegram";
-import { getEthPrice } from "../infra/ethPrice";
+import { getNativePrice } from "../infra/nativePrice";
 import { isBlockedSymbol, cleanEvmAddress } from "../sources/normalize";
 import {
   SWAP_V4_TOPIC, MODIFY_LIQUIDITY_V4_TOPIC,
@@ -46,7 +46,7 @@ function getQuoteFlowAsEth(
   quoteToken: string,
   amount0:    bigint,
   amount1:    bigint,
-): { ok: boolean; ethAmount: number; isBuy: boolean; quote: string | null } {
+): { ok: boolean; ethAmount: number; usdAmount: number; isBuy: boolean; quote: string | null } {
   const base   = baseToken.toLowerCase();
   const quoteT = quoteToken.toLowerCase();
   const token0 = base < quoteT ? base : quoteT;
@@ -81,15 +81,21 @@ function getQuoteFlowAsEth(
   const quoteMetaT = quoteMetaFor(quoteT);
   const quoteMeta  = baseMeta ?? quoteMetaT;
 
-  if (!quoteMeta) return { ok: false, ethAmount: 0, isBuy: false, quote: null };
+  if (!quoteMeta) return { ok: false, ethAmount: 0, usdAmount: 0, isBuy: false, quote: null };
 
   const quoteAddr   = baseMeta ? base : quoteT;
   const amt         = amountFor(quoteAddr);
   const abs         = amt < 0n ? -amt : amt;
   const quoteAmount = Number(abs) / (10 ** quoteMeta.decimals);
-  const ethAmount   = quoteMeta.kind === "native" ? quoteAmount : quoteAmount / getEthPrice();
+  // legacy name: ethAmount is native-equivalent (ETH or BNB depending on chain/quote).
+  // usdAmount is the canonical cross-chain volume field.
+  const nativeSymbol = chain.id === "bsc" ? "BNB" : "ETH";
+  const ethAmount    = quoteMeta.kind === "native" ? quoteAmount : quoteAmount / getNativePrice(nativeSymbol);
+  const usdAmount    = quoteMeta.kind === "stable"
+    ? quoteAmount
+    : quoteAmount * getNativePrice(nativeSymbol);
 
-  return { ok: true, ethAmount, isBuy: amt > 0n, quote: quoteMeta.symbol };
+  return { ok: true, ethAmount, usdAmount, isBuy: amt > 0n, quote: quoteMeta.symbol };
 }
 
 export function connectChainWebSocket(chain: ChainConfig): void {
@@ -185,10 +191,10 @@ export function connectChainWebSocket(chain: ChainConfig): void {
         }
 
         if (qflow4.ethAmount > 0) {
-          recordSwap(poolId, qflow4.isBuy, qflow4.ethAmount);
+          recordSwap(poolId, qflow4.isBuy, qflow4.ethAmount, qflow4.usdAmount);
           console.log(
             `[V4 SWAP ${chain.id}] ${memV4.symbol} ${qflow4.isBuy ? "BUY" : "SELL"} `
-            + `quote=${qflow4.quote} eth=${qflow4.ethAmount.toFixed(4)} `
+            + `quote=${qflow4.quote} nativeEq=${qflow4.ethAmount.toFixed(4)} usd=$${qflow4.usdAmount.toFixed(0)} `
             + `amount0=${amount0} amount1=${amount1} `
             + `base=${baseToken} quoteToken=${quoteToken} tx=${log4.transactionHash}`,
           );
@@ -236,8 +242,8 @@ export function connectChainWebSocket(chain: ChainConfig): void {
         if (!qflow3.ok) return;
 
         if (qflow3.ethAmount > 0) {
-          recordSwap(pairAddr3, qflow3.isBuy, qflow3.ethAmount);
-          console.log(`[V3 SWAP ${chain.id}] ${mem3.symbol} ${qflow3.isBuy ? "BUY" : "SELL"} quote=${qflow3.quote} eth=${qflow3.ethAmount.toFixed(4)} tx=${log3.transactionHash}`);
+          recordSwap(pairAddr3, qflow3.isBuy, qflow3.ethAmount, qflow3.usdAmount);
+          console.log(`[V3 SWAP ${chain.id}] ${mem3.symbol} ${qflow3.isBuy ? "BUY" : "SELL"} quote=${qflow3.quote} nativeEq=${qflow3.ethAmount.toFixed(4)} usd=$${qflow3.usdAmount.toFixed(0)} tx=${log3.transactionHash}`);
           if (qflow3.isBuy && qflow3.ethAmount >= 0.005) {
             const flow3 = getWsFlow(pairAddr3);
             if (flow3.hasData && flow3.pressure === "BUYING" && flow3.buys5m >= 5) {
@@ -332,8 +338,8 @@ export function connectChainWebSocket(chain: ChainConfig): void {
         const qflow2 = getQuoteFlowAsEth(chain, base2, quote2, amount0, amount1);
         if (!qflow2.ok || qflow2.ethAmount <= 0) return;
 
-        recordSwap(pairAddress, qflow2.isBuy, qflow2.ethAmount);
-        console.log(`[V2 SWAP ${chain.id}] ${mem.symbol} ${qflow2.isBuy ? "BUY" : "SELL"} quote=${qflow2.quote} eth:${qflow2.ethAmount.toFixed(4)}`);
+        recordSwap(pairAddress, qflow2.isBuy, qflow2.ethAmount, qflow2.usdAmount);
+        console.log(`[V2 SWAP ${chain.id}] ${mem.symbol} ${qflow2.isBuy ? "BUY" : "SELL"} quote=${qflow2.quote} nativeEq:${qflow2.ethAmount.toFixed(4)} usd:$${qflow2.usdAmount.toFixed(0)}`);
         if (qflow2.isBuy) {
           const flow = getWsFlow(pairAddress);
           if (flow.hasData && flow.pressure === "BUYING" && flow.buys5m >= 5) {

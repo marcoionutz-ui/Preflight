@@ -1,5 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { readAllRedis, formatEth } from "../redis-reader";
+import { readAllRedis, formatEth, formatVol } from "../redis-reader";
 import { mcpOk, mcpErr, ERR } from "../errors";
 
 export function registerSituationReport(server: McpServer) {
@@ -113,7 +113,8 @@ Observed movers section shows tokens moving on market that haven't passed pipeli
             .map(([addr, h]: any) => {
               const ageSec    = Math.round((now - h.promotedAt) / 1000);
               const watchKind = watch[addr]?.kind ?? null;
-              return `  → ${h.symbol ?? addr.slice(0, 8)} [${h.chain}] pair:${addr}${watchKind ? ` kind:${watchKind}` : ""} source:${h.source ?? "WS"} age:${ageSec}s flow:${h.flow?.pressure} buys:${h.flow?.buys5m} buyVol:${formatEth(h.flow?.buyVol5m ?? 0)}`;
+              const psFlow = states[addr]?.flow ?? h.flow;
+              return `  → ${h.symbol ?? addr.slice(0, 8)} [${h.chain}] pair:${addr}${watchKind ? ` kind:${watchKind}` : ""} source:${h.source ?? "WS"} age:${ageSec}s flow:${psFlow?.pressure} buys:${psFlow?.buys5m} buyVol:${formatVol((psFlow as any)?.buyVol5mUsd, psFlow?.buyVol5m ?? 0)}`;
             });
           lines.push(`HOT:\n${hotList.join("\n")}`);
         }
@@ -124,7 +125,7 @@ Observed movers section shows tokens moving on market that haven't passed pipeli
             const ageSec   = Math.round((now - a.armedAt) / 1000);
             const ps       = states[addr] ?? null;
             const flowStr  = ps?.flow?.hasData
-              ? `${ps.flow.pressure} buys:${ps.flow.buys5m} buyVol:${formatEth(ps.flow.buyVol5m ?? 0)}`
+              ? `${ps.flow.pressure} buys:${ps.flow.buys5m} buyVol:${formatVol(ps.flow.buyVol5mUsd, ps.flow.buyVol5m ?? 0)}`
               : a.flowPressure ?? "?";
             const priceStr = a.price ? `price:${a.price.toPrecision(4)}` : "";
             return `  → ${a.symbol ?? addr.slice(0, 8)} [${a.chain ?? "?"}] pair:${addr} score:${a.score} age:${ageSec}s ${priceStr} flow:${flowStr}`;

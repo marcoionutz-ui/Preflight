@@ -11,11 +11,11 @@ import type { FlowSignal, LiquiditySignal } from "../lib/engines/flowTypes";
 import { cleanEvmAddress } from "../sources/normalize";
 import type { SourcePool } from "../sources/normalize";
 
-export function recordSwap(pairAddress: string, isBuy: boolean, ethAmount: number): void {
+export function recordSwap(pairAddress: string, isBuy: boolean, ethAmount: number, usdAmount?: number): void {
   const addr   = pairAddress.toLowerCase();
   const now    = Date.now();
   const events = (wsFlow.get(addr) ?? []).filter(e => now - e.ts < 5 * 60_000);
-  events.push({ ts: now, isBuy, ethAmount });
+  events.push({ ts: now, isBuy, ethAmount, usdAmount });
   wsFlow.set(addr, events);
 }
 
@@ -54,6 +54,10 @@ export function getWsFlow(pairAddress: string): FlowSignal {
   const totalVol  = buyVol5m + sellVol5m;
   const netVol    = buyVol5m - sellVol5m;
   const imbalance = totalVol > 0 ? netVol / totalVol : 0;
+  const buyVol5mUsd  = Math.round(m5.filter(e =>  e.isBuy).reduce((s, e) => s + (e.usdAmount ?? 0), 0));
+  const sellVol5mUsd = Math.round(m5.filter(e => !e.isBuy).reduce((s, e) => s + (e.usdAmount ?? 0), 0));
+  const netVol5mUsd  = buyVol5mUsd - sellVol5mUsd;
+  const hasUsdData = m5.some(e => typeof e.usdAmount === "number" && e.usdAmount > 0);
 
   const pressure: "BUYING" | "SELLING" | "NEUTRAL" =
     totalVol < MIN_TOTAL_FLOW_ETH ? "NEUTRAL" :
@@ -81,6 +85,11 @@ export function getWsFlow(pairAddress: string): FlowSignal {
     buyVol1m:   Math.round(buyVol1m  * 1000) / 1000,
     sellVol1m:  Math.round(sellVol1m * 1000) / 1000,
     netVol1m:   Math.round(netVol1m  * 1000) / 1000,
+    ...(hasUsdData ? {
+      buyVol5mUsd,
+      sellVol5mUsd,
+      netVol5mUsd,
+    } : {}),
   };
 }
 

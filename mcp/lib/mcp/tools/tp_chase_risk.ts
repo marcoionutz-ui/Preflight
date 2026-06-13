@@ -16,7 +16,8 @@ import {
   readAllRedis,
   getPipelineState,
   formatEth,
-}                         from "../redis-reader";
+  formatVol,
+} from "../redis-reader";
 import { mcpOk, mcpErr, ERR } from "../errors";
 
 const FLAP_WINDOW_MS    = 10 * 60_000; // 10 minute
@@ -203,7 +204,7 @@ Args: pair_address (0x... EVM address)`,
 
         // Flow summary
         if (flow?.hasData) {
-          lines.push(`FLOW (5m): buy ${formatEth(buyVol)} (${buys5m} swaps) | sell ${formatEth(sellVol)} (${sells5m} swaps) | net ${formatEth(flow.netVol5m)}`);
+          lines.push(`FLOW (5m): buy ${formatVol((flow as any).buyVol5mUsd, buyVol)} (${buys5m} swaps) | sell ${formatVol((flow as any).sellVol5mUsd, sellVol)} (${sells5m} swaps) | net ${formatVol((flow as any).netVol5mUsd, flow.netVol5m)}`);
           lines.push("");
         }
 

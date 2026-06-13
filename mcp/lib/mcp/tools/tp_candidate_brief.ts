@@ -1,6 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { readAllRedis, getPipelineState, findLastEventForPair, formatEth } from "../redis-reader";
+import { readAllRedis, getPipelineState, findLastEventForPair, formatEth, formatVol } from "../redis-reader";
 import type { PairState } from "../types";
 import { mcpOk, mcpErr, ERR } from "../errors";
 
@@ -83,7 +83,8 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
         } else if (pipeState === "HOT") {
           const ageSec = Math.round((now - (hotEntry?.promotedAt ?? now)) / 1000);
           lines.push(`  • Promoted to HOT ${ageSec}s ago from source: ${hotEntry?.source ?? "WS"}`);
-          lines.push(`  • Flow: ${hotEntry?.flow?.pressure ?? "?"} | buys: ${hotEntry?.flow?.buys5m ?? 0} | buyVol: ${formatEth(hotEntry?.flow?.buyVol5m ?? 0)}`);
+          const hotFlow = pairState?.flow ?? hotEntry?.flow;
+          lines.push(`  • Flow: ${hotFlow?.pressure ?? "?"} | buys: ${hotFlow?.buys5m ?? 0} | buyVol: ${formatVol((hotFlow as any)?.buyVol5mUsd, hotFlow?.buyVol5m ?? 0)}`);
           if ((hotEntry?.largestBuyEth ?? 0) > (hotEntry?.avgBuyEth ?? 0) * 4) {
             lines.push(`  ⚠️ Whale pattern: largest buy ${formatEth(hotEntry?.largestBuyEth ?? 0)} vs avg ${formatEth(hotEntry?.avgBuyEth ?? 0)}`);
           } else {
@@ -136,8 +137,8 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
           lines.push("");
           lines.push("FLOW (5m):");
           lines.push(`  • Pressure: ${pairState.flow.pressure}`);
-          lines.push(`  • Buy: ${formatEth(pairState.flow.buyVol5m)} (${pairState.flow.buys5m} swaps) | Sell: ${formatEth(pairState.flow.sellVol5m)} (${pairState.flow.sells5m} swaps)`);
-          lines.push(`  • Net: ${formatEth(pairState.flow.netVol5m)}`);
+          lines.push(`  • Buy: ${formatVol(pairState.flow.buyVol5mUsd, pairState.flow.buyVol5m)} (${pairState.flow.buys5m} swaps) | Sell: ${formatVol(pairState.flow.sellVol5mUsd, pairState.flow.sellVol5m)} (${pairState.flow.sells5m} swaps)`);
+          lines.push(`  • Net: ${formatVol(pairState.flow.netVol5mUsd, pairState.flow.netVol5m)}`);
         }
 
         const cautions: string[] = [];
@@ -156,7 +157,7 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
 
         lines.push("");
         lines.push("INVALIDATE IF:");
-        lines.push("  • Flow turns SELLING or netVol drops below 0.03 ETH");
+        lines.push("  • Flow turns SELLING or netVol drops below 0.03 nativeEq");
         lines.push("  • LP removal detected (any significant burn event)");
         if ((pairState?.poolCountSameToken ?? 1) >= 2) lines.push("  • Liquidity migrating to another pool for same token");
         if (data?.phase === "RECOVERING") lines.push("  • Phase stays RECOVERING with no BUYING confirmation");

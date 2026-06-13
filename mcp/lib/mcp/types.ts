@@ -44,13 +44,16 @@ export interface PairState {
   chain?:             string;
   priceChange?:       { m5: number; h1: number; h24: number };
   flow: {
-    pressure:  string;
-    buys5m:    number;
-    sells5m:   number;
-    hasData:   boolean;
-    buyVol5m:  number;
-    sellVol5m: number;
-    netVol5m:  number;
+    pressure:     string;
+    buys5m:       number;
+    sells5m:      number;
+    hasData:      boolean;
+    buyVol5m:     number;
+    sellVol5m:    number;
+    netVol5m:     number;
+    buyVol5mUsd:  number | null;
+    sellVol5mUsd: number | null;
+    netVol5mUsd:  number | null;
   };
   lp: {
     status:           string;

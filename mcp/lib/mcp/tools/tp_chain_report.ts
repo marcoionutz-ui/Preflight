@@ -8,7 +8,7 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { readAllRedis, formatEth, getPipelineState } from "../redis-reader";
+import { readAllRedis, formatEth, formatVol, getPipelineState } from "../redis-reader";
 import { mcpOk, mcpErr, ERR } from "../errors";
 
 // Timestamp fallback — events pot folosi ts, detectedAt, sau timestamp
@@ -152,7 +152,8 @@ Args: chain — one of: base, arbitrum, eth, bsc, solana`,
               let line = `  → ${h.symbol ?? addr.slice(0, 8)} pair:${addr}`;
               line += `\n     source:${h.source ?? "WS"} age:${ageSec}s phase:${h.phase ?? "?"}`;
               // fix ChatGPT #3: ?? 0 pe formatEth
-              line += `\n     flow:${h.flow?.pressure} | buys:${h.flow?.buys5m} buyVol:${formatEth(h.flow?.buyVol5m ?? 0)} netVol:${formatEth(h.flow?.netVol5m ?? 0)}`;
+              const flow = pairState?.flow ?? h.flow;
+              line += `\n     flow:${flow?.pressure} | buys:${flow?.buys5m} buyVol:${formatVol((flow as any)?.buyVol5mUsd, flow?.buyVol5m ?? 0)} netVol:${formatVol((flow as any)?.netVol5mUsd, flow?.netVol5m ?? 0)}`;
               if (pc) line += `\n     priceChange: m5:${fmt(pc.m5)} h1:${fmt(pc.h1)} h24:${fmt(pc.h24)}`;
               if (pairState) {
                 // fix ChatGPT #2: ?? 0 pe reserveUsd
@@ -194,7 +195,7 @@ Args: chain — one of: base, arbitrum, eth, bsc, solana`,
             let line = `  → ${s.symbol ?? addr.slice(0, 8)} pair:${addr}`;
             line += `\n     m5:${fmt(pc.m5)} h1:${fmt(pc.h1)} h24:${fmt(pc.h24)} liq:$${Math.round((s.reserveUsd ?? 0) / 1000)}K`;
             // fix ChatGPT #3: ?? 0 pe formatEth
-            line += `\n     flow:${s.flow?.hasData ? `${s.flow.pressure} buys:${s.flow.buys5m} netVol:${formatEth(s.flow.netVol5m ?? 0)}` : "NO_WS_DATA"} lp:${s.lp?.status ?? "?"}(${getLpCoverage(s.dexType, s.lp?.hasData ?? false)})`;
+            line += `\n     flow:${s.flow?.hasData ? `${s.flow.pressure} buys:${s.flow.buys5m} netVol:${formatVol((s.flow as any).netVol5mUsd, s.flow.netVol5m ?? 0)}` : "NO_WS_DATA"} lp:${s.lp?.status ?? "?"}(${getLpCoverage(s.dexType, s.lp?.hasData ?? false)})`;
             return line;
           });
           lines.push(`OBSERVED MOVERS (${observedMovers.length}):\n${moverLines.join("\n")}`);
@@ -214,7 +215,7 @@ Args: chain — one of: base, arbitrum, eth, bsc, solana`,
             const pc = pairState?.priceChange;
             let line = `  → ${w.symbol ?? addr.slice(0, 8)} pair:${addr}`;
             // fix ChatGPT #3: ?? 0 pe formatEth
-            line += `\n     flow:${pairState!.flow.pressure} buys:${pairState!.flow.buys5m} buyVol:${formatEth(pairState!.flow.buyVol5m ?? 0)} netVol:${formatEth(pairState!.flow.netVol5m ?? 0)}`;
+            line += `\n     flow:${pairState!.flow.pressure} buys:${pairState!.flow.buys5m} buyVol:${formatVol(pairState!.flow.buyVol5mUsd, pairState!.flow.buyVol5m ?? 0)} netVol:${formatVol(pairState!.flow.netVol5mUsd, pairState!.flow.netVol5m ?? 0)}`;
             if (pc) line += `\n     priceChange: m5:${fmt(pc.m5)} h1:${fmt(pc.h1)} h24:${fmt(pc.h24)}`;
             line += `\n     liq:$${Math.round((pairState?.reserveUsd ?? 0) / 1000)}K lp:${pairState?.lp?.status ?? "?"}(${getLpCoverage(pairState?.dexType, pairState?.lp?.hasData ?? false)})`;
             return line;

@@ -56,13 +56,16 @@ export interface PairStateSnapshot {
 
   // Flow
   flow: {
-    pressure:  string;
-    buys5m:    number;
-    sells5m:   number;
-    hasData:   boolean;
-    buyVol5m:  number;
-    sellVol5m: number;
-    netVol5m:  number;
+    pressure:     string;
+    buys5m:       number;
+    sells5m:      number;
+    hasData:      boolean;
+    buyVol5m:     number;
+    sellVol5m:    number;
+    netVol5m:     number;
+    buyVol5mUsd:  number | null;
+    sellVol5mUsd: number | null;
+    netVol5mUsd:  number | null;
   };
 
   // LP
@@ -192,13 +195,16 @@ export async function buildPairStates(): Promise<Record<string, PairStateSnapsho
       lastEntryTime:     mem.lastEntryTime,
 
       flow: {
-        pressure:  flow.pressure,
-        buys5m:    flow.buys5m,
-        sells5m:   flow.sells5m,
-        hasData:   flow.hasData,
-        buyVol5m:  (flow as any).buyVol5m  ?? 0,
-        sellVol5m: (flow as any).sellVol5m ?? 0,
-        netVol5m:  (flow as any).netVol5m  ?? 0,
+        pressure:     flow.pressure,
+        buys5m:       flow.buys5m,
+        sells5m:      flow.sells5m,
+        hasData:      flow.hasData,
+        buyVol5m:     (flow as any).buyVol5m     ?? 0,
+        sellVol5m:    (flow as any).sellVol5m    ?? 0,
+        netVol5m:     (flow as any).netVol5m     ?? 0,
+        buyVol5mUsd:  (flow as any).buyVol5mUsd  ?? null,
+        sellVol5mUsd: (flow as any).sellVol5mUsd ?? null,
+        netVol5mUsd:  (flow as any).netVol5mUsd  ?? null,
       },
 
       lp: {

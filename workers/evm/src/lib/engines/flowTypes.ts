@@ -16,6 +16,9 @@ export interface FlowSignal {
   buyVol1m?:   number;
   sellVol1m?:  number;
   netVol1m?:   number;
+  buyVol5mUsd?:  number;
+  sellVol5mUsd?: number;
+  netVol5mUsd?:  number;
 }
 
 export const NEUTRAL_FLOW: FlowSignal = {

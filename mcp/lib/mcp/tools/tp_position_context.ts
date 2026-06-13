@@ -10,7 +10,7 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { readAllRedis, formatEth, getPipelineState } from "../redis-reader";
+import { readAllRedis, formatEth, formatVol, getPipelineState } from "../redis-reader";
 import { mcpOk, mcpErr, ERR } from "../errors";
 
 // Normalizează timestamp: seconds → ms dacă e sub 10B
@@ -178,7 +178,7 @@ Returns per position:
           if (sizeUsd) lines.push(`size:$${sizeUsd}`);
 
           if (hasFlow && flow) {
-            lines.push(`flow:${flow.pressure} | buys:${flow.buys5m} sells:${flow.sells5m} | netVol:${formatEth(flow.netVol5m)}`);
+            lines.push(`flow:${flow.pressure} | buys:${flow.buys5m} sells:${flow.sells5m} | netVol:${formatVol((flow as any).netVol5mUsd, flow.netVol5m)}`);
           } else {
             lines.push(`flow:NO_WS_DATA`);
           }

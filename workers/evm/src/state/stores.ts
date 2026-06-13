@@ -42,7 +42,7 @@ export type PipelineEventType =
   | "DROPPED"
   | "ARM_CONFIRMED";
 
-export interface SwapEvent { ts: number; isBuy: boolean; ethAmount: number; }
+export interface SwapEvent { ts: number; isBuy: boolean; ethAmount: number; usdAmount?: number; }
 export interface LpEvent   { ts: number; isAdd: boolean; ethAmount: number; }
 
 // ── Pair memory ───────────────────────────────────────────────────────────────

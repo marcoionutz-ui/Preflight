@@ -121,6 +121,17 @@ export function formatEth(val: number): string {
   return val.toFixed(3) + " ETH";
 }
 
+export function formatVol(usd: number | null | undefined, legacyNativeEq: number): string {
+  if (typeof usd === "number" && Number.isFinite(usd)) {
+    const sign = usd < 0 ? "-" : "";
+    const abs  = Math.abs(usd);
+    if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toFixed(1)}M`;
+    if (abs >= 1_000)     return `${sign}$${(abs / 1_000).toFixed(1)}K`;
+    return `${sign}$${abs.toFixed(0)}`;
+  }
+  return `${legacyNativeEq.toFixed(3)} nativeEq`;
+}
+
 export function getPipelineState(
   addr:  string,
   watch: Record<string, WatchEntry>,

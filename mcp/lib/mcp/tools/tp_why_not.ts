@@ -1,6 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { readAllRedis, getPipelineState, findLastEventForPair, findLastDropForPair, formatEth } from "../redis-reader";
+import { readAllRedis, getPipelineState, findLastEventForPair, findLastDropForPair, formatEth, formatVol } from "../redis-reader";
 import type { PairState } from "../types";
 import { mcpOk, mcpErr, ERR } from "../errors";
 
@@ -84,7 +84,7 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
 
           const flow = states[addr]?.flow;
           if (flow) {
-            lines.push(`• Current flow: ${flow.hasData ? `${flow.pressure} (buys:${flow.buys5m} buyVol:${formatEth(flow.buyVol5m ?? 0)})` : "no WS data"}`);
+            lines.push(`• Current flow: ${flow.hasData ? `${flow.pressure} (buys:${flow.buys5m} buyVol:${formatVol((flow as any).buyVol5mUsd, flow.buyVol5m ?? 0)})` : "no WS data"}`);
           }
 
           const pc = states[addr]?.priceChange;
