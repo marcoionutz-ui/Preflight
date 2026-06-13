@@ -377,12 +377,15 @@ export function buildSignalPipelineEntry(params: {
   enteredWatchAt:     number;
   now:                number;
   flow: {
-    pressure:  string;
-    hasData:   boolean;
-    buyVol5m:  number;
-    netVol5m:  number;
-    buys5m:    number;
-    sells5m:   number;
+    pressure:     string;
+    hasData:      boolean;
+    buyVol5m:     number;
+    netVol5m:     number;
+    buys5m:       number;
+    sells5m:      number;
+    buyVol5mUsd:  number | null;
+    sellVol5mUsd: number | null;
+    netVol5mUsd:  number | null;
   };
   reserveUsd:         number;
   liqStatus:          string;

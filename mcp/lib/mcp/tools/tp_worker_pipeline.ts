@@ -68,6 +68,18 @@ Args: chain (filter: 'base', 'arbitrum', or 'bsc')`,
           }))
           .sort((a, b) => a.ageSec - b.ageSec);
 		  
+		  const enrichFlowWithUsd = (pairAddress: string | undefined, flow: any) => {
+          const addr = pairAddress?.toLowerCase?.() ?? "";
+          const ps   = addr ? states[addr]?.flow ?? null : null;
+
+          return {
+            ...(flow ?? {}),
+            buyVol5mUsd:  ps?.buyVol5mUsd  ?? null,
+            sellVol5mUsd: ps?.sellVol5mUsd ?? null,
+            netVol5mUsd:  ps?.netVol5mUsd  ?? null,
+          };
+        };
+		  
 		  // Preflight pipeline entries (richer context)
         const pfEntries = pfPipeline && pfPipeline.length > 0
           ? pfPipeline
@@ -81,7 +93,7 @@ Args: chain (filter: 'base', 'arbitrum', or 'bsc')`,
               watchAgeMin:       Math.round(e.watchAgeMs / 60_000 * 10) / 10,
               confidence:        e.confidence,
               entryRisk:         e.entryRisk,
-              flow:              e.flow,
+              flow:              enrichFlowWithUsd(e.pairAddress, e.flow),
               riskFlags:         e.riskFlags,
               opportunitySignals: e.opportunitySignals,
               priceVsEntryPct:   e.priceVsEntryPct,
@@ -99,13 +111,23 @@ Args: chain (filter: 'base', 'arbitrum', or 'bsc')`,
           watchAgeMin:        null,
           confidence:         null,
           entryRisk:          null,
-          flow: {
-            status:   a.flowPressure ?? null,
-            buyVol5m: null,
-            netVol5m: null,
-            buys5m:   null,
-            sells5m:  null,
-          },
+          flow: (() => {
+            const addr = a.pairAddress?.toLowerCase?.() ?? "";
+            const ps   = addr ? states[addr]?.flow ?? null : null;
+
+            return {
+              status:       ps?.pressure    ?? a.flowPressure ?? null,
+              hasData:      ps?.hasData     ?? null,
+              buyVol5m:     ps?.buyVol5m    ?? null,
+              sellVol5m:    ps?.sellVol5m   ?? null,
+              netVol5m:     ps?.netVol5m    ?? null,
+              buys5m:       ps?.buys5m      ?? null,
+              sells5m:      ps?.sells5m     ?? null,
+              buyVol5mUsd:  ps?.buyVol5mUsd  ?? null,
+              sellVol5mUsd: ps?.sellVol5mUsd ?? null,
+              netVol5mUsd:  ps?.netVol5mUsd  ?? null,
+            };
+          })(),
           riskFlags:          [],
           opportunitySignals: ["ENTRY_GATE_PASSED"],
           priceVsEntryPct:    null,

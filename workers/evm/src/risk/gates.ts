@@ -36,7 +36,7 @@ export function getEntryGate(
   }
 
   if (lp.hasData && lp.status === "REMOVED") {
-    return { allowed: false, reason: `LP removed (${lp.lpRemoved5m.toFixed(3)} ETH in 5m)` };
+    return { allowed: false, reason: `LP removed (${lp.lpRemoved5m.toFixed(3)} nativeEq in 5m)` };
   }
 
   const buyVol = (flow as any).buyVol5m ?? 0;
