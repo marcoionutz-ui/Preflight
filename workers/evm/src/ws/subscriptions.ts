@@ -19,7 +19,7 @@ import {
   MAX_V3_WATCH, MAX_V4_WATCH,
   WATCH_NO_FLOW_MAX_AGE_MS, WATCH_SELLING_MAX_AGE_MS,
   WATCH_MAX_AGE_MS, FOMO_WATCH_TTL_MS,
-  UNISWAP_V4_POOL_MANAGER, SWAP_V4_TOPIC, SHORT_WATCH_TTL_MS,
+  UNISWAP_V4_POOL_MANAGER, SWAP_V4_TOPIC, MODIFY_LIQUIDITY_V4_TOPIC, SHORT_WATCH_TTL_MS,
 } from "../config/constants";
 import { cleanEvmAddress } from "../sources/normalize";
 
@@ -29,6 +29,8 @@ const SWAP_V3_TOPIC = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e1
 export { SWAP_V2_TOPIC, SWAP_V3_TOPIC };
 export const MINT_V2_TOPIC = "0x4c209b5fc8ad50758f13e2e1088ba56a560dff690a1c6fef26394f4c03821c4f";
 export const BURN_V2_TOPIC = "0xdccd412f0b1252819cb1fd330b93224ca42612892bb3f4f789976e6d81936496";
+export const MINT_V3_TOPIC = "0x7a53080ba414158be7ec69b987b5fb7d07dee101fe85488f0853ae16239d0bde";
+export const BURN_V3_TOPIC = "0x0c396cd989a39f4459b5fa1aed6a9a8dcdbc45908acfd67e028cd568da98982c";
 
 export function watchPriority(kind?: string): number {
   if (kind === "CONFIRMED_MOMENTUM") return 0;
@@ -157,7 +159,7 @@ export function subscribeV3Scoped(chain: ChainConfig): void {
   ws.send(JSON.stringify({
     jsonrpc: "2.0", id: 7,
     method: "eth_subscribe",
-    params: ["logs", { address: addrs, topics: [SWAP_V3_TOPIC] }],
+    params: ["logs", { address: addrs, topics: [[SWAP_V3_TOPIC, MINT_V3_TOPIC, BURN_V3_TOPIC]] }],
   }));
   console.log(`[V3] Scoped subscribe: ${addrs.length} watched pools (${chain.id})`);
 }
@@ -205,7 +207,7 @@ export function subscribeV4Scoped(chain: ChainConfig): void {
   ws.send(JSON.stringify({
     jsonrpc: "2.0", id: 5,
     method: "eth_subscribe",
-    params: ["logs", { address: UNISWAP_V4_POOL_MANAGER, topics: [SWAP_V4_TOPIC, poolIds] }],
+    params: ["logs", { address: UNISWAP_V4_POOL_MANAGER, topics: [[SWAP_V4_TOPIC, MODIFY_LIQUIDITY_V4_TOPIC], poolIds] }],
   }));
   console.log(`[V4] Scoped subscribe: ${poolIds.length} watched pools`);
 }
@@ -265,7 +267,7 @@ export function subscribeV2Scoped(chain: ChainConfig): void {
   ws.send(JSON.stringify({
     jsonrpc: "2.0", id: 52,
     method: "eth_subscribe",
-    params: ["logs", { address: addrs, topics: [SWAP_V2_TOPIC] }],
+    params: ["logs", { address: addrs, topics: [[SWAP_V2_TOPIC, MINT_V2_TOPIC, BURN_V2_TOPIC]] }],
   }));
   console.log(`[V2] Scoped subscribe: ${addrs.length} watched pools (${chain.id})`);
 }

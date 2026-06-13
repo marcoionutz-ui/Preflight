@@ -15,7 +15,18 @@ import {
 import { recordSwap, recordLp } from "../risk/flow";
 import { getWsFlow } from "../risk/flow";
 import { promoteHotCandidate } from "../pipeline/transitions";
-import { subscribeV4Scoped, subscribeV3Scoped, subscribeV2Scoped, SWAP_V2_TOPIC, SWAP_V3_TOPIC, MINT_V2_TOPIC, BURN_V2_TOPIC } from "./subscriptions";import { supabase } from "../infra/supabase";
+import {
+  subscribeV4Scoped,
+  subscribeV3Scoped,
+  subscribeV2Scoped,
+  SWAP_V2_TOPIC,
+  SWAP_V3_TOPIC,
+  MINT_V2_TOPIC,
+  BURN_V2_TOPIC,
+  MINT_V3_TOPIC,
+  BURN_V3_TOPIC,
+} from "./subscriptions";
+import { supabase } from "../infra/supabase";
 import { sendTelegram } from "../infra/telegram";
 import { getEthPrice } from "../infra/ethPrice";
 import { isBlockedSymbol, cleanEvmAddress } from "../sources/normalize";
@@ -194,11 +205,13 @@ export function connectChainWebSocket(chain: ChainConfig): void {
         return;
       }
 
-      // ── V4 ModifyLiquidity (log-only) ─────────────────────────────────────
+      // ── V4 ModifyLiquidity (investigating layout) ─────────────────────────
       if (chain.id === "base" && msg.params?.result?.topics?.[0] === MODIFY_LIQUIDITY_V4_TOPIC) {
         const log4   = msg.params.result;
         const poolId = log4.topics?.[1]?.toLowerCase();
-        console.log(`[V4 LIQ RAW] poolId=${poolId} data=${log4.data?.slice(0, 258)} tx=${log4.transactionHash}`);
+        const mem4   = poolId ? memory.get(poolId) : null;
+        const raw4   = log4.data?.slice(2) ?? "";
+        console.log(`[V4 LIQ] ${mem4?.symbol ?? poolId} len=${raw4.length} data=${raw4.slice(0, 192)} tx=${log4.transactionHash}`);
         return;
       }
 
@@ -231,6 +244,52 @@ export function connectChainWebSocket(chain: ChainConfig): void {
               if (!hotCandidates.has(pairAddr3)) promoteHotCandidate(pairAddr3, chain.id, undefined);
             }
           }
+        }
+        return;
+      }
+	  
+	  // ── V3 Mint ──────────────────────────────────────────────────────────
+      if (msg.params?.result?.topics?.[0] === MINT_V3_TOPIC) {
+        const log3  = msg.params.result;
+        const addr3 = log3.address?.toLowerCase();
+        const pool3 = v3PoolMap.get(addr3);
+        const mem3  = pool3 ? memory.get(addr3) : null;
+        if (!pool3 || !mem3) return;
+        const raw3 = log3.data?.slice(2) ?? "";
+        if (raw3.length < 256) return;
+        // V3 Mint data: sender(32) amount(32) amount0(32) amount1(32)
+        const amount0 = BigInt("0x" + raw3.slice(128, 192));
+        const amount1 = BigInt("0x" + raw3.slice(192, 256));
+        const base3  = pool3._raw ? (pool3._raw as any).relationships?.base_token?.data?.id?.replace(`${chain.id}_`, "").toLowerCase() : "";
+        const quote3 = pool3._raw ? (pool3._raw as any).relationships?.quote_token?.data?.id?.replace(`${chain.id}_`, "").toLowerCase() : "";
+        const qflow3 = getQuoteFlowAsEth(chain, base3, quote3, amount0, amount1);
+        if (qflow3.ok && qflow3.ethAmount > 0) {
+          recordLp(addr3, true, qflow3.ethAmount);
+          console.log(`[V3 LP ADD ${chain.id}] ${mem3.symbol} +${qflow3.ethAmount.toFixed(3)} ETH quote=${qflow3.quote}`);
+        }
+        return;
+      }
+
+      // ── V3 Burn ──────────────────────────────────────────────────────────
+      if (msg.params?.result?.topics?.[0] === BURN_V3_TOPIC) {
+        const log3  = msg.params.result;
+        const addr3 = log3.address?.toLowerCase();
+        const pool3 = v3PoolMap.get(addr3);
+        const mem3  = pool3 ? memory.get(addr3) : null;
+        if (!pool3 || !mem3) return;
+        const raw3 = log3.data?.slice(2) ?? "";
+        if (raw3.length < 192) return;
+        // V3 Burn data: amount(32) amount0(32) amount1(32)
+        const amount0 = BigInt("0x" + raw3.slice(64, 128));
+        const amount1 = BigInt("0x" + raw3.slice(128, 192));
+        const base3  = pool3._raw ? (pool3._raw as any).relationships?.base_token?.data?.id?.replace(`${chain.id}_`, "").toLowerCase() : "";
+        const quote3 = pool3._raw ? (pool3._raw as any).relationships?.quote_token?.data?.id?.replace(`${chain.id}_`, "").toLowerCase() : "";
+        const qflow3 = getQuoteFlowAsEth(chain, base3, quote3, amount0, amount1);
+        if (qflow3.ok && qflow3.ethAmount > 0) {
+          recordLp(addr3, false, qflow3.ethAmount);
+          const poolEth    = poolLiquidity.get(addr3)?.reserveEth ?? 0;
+          const removedPct = poolEth > 0 ? qflow3.ethAmount / poolEth : 0;
+          console.log(`[V3 LP REMOVE ${chain.id}] ${mem3.symbol} -${qflow3.ethAmount.toFixed(3)} ETH (${(removedPct * 100).toFixed(1)}%) quote=${qflow3.quote}`);
         }
         return;
       }
