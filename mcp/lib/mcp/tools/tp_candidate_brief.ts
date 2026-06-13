@@ -151,12 +151,60 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
           lines.push(`LAST PIPELINE EVENT (${ageSec}s ago): ${lastEvent.from} → ${lastEvent.to}${lastEvent.reason ? ` — ${lastEvent.reason}` : ""}`);
         }
 
+        // ── Discovery ────────────────────────────────────────────────────────
+        const RETENTION_SOURCES = new Set(["MARKET_FOLLOW_LIST"]);
+        const LOOKUP_SOURCES    = new Set(["DEXSCREENER_PAIR_FALLBACK"]);
+
+        const allSources: string[] =
+          (pairState as any)?.discovery?.discoverySources ??
+          (snapMem as any)?.discoverySources ??
+          [];
+
+        const discoverySources = allSources.filter(s => !RETENTION_SOURCES.has(s) && !LOOKUP_SOURCES.has(s));
+        const retainedVia      = allSources.filter(s => RETENTION_SOURCES.has(s));
+        const resolvedVia      = allSources.filter(s => LOOKUP_SOURCES.has(s));
+
+        const rawPrimary =
+          (pairState as any)?.discovery?.primaryDiscoverySource ??
+          (snapMem as any)?.primaryDiscoverySource ??
+          null;
+
+        const primaryDiscoverySource =
+          rawPrimary && discoverySources.includes(rawPrimary)
+            ? rawPrimary
+            : discoverySources[0] ?? null;
+
+        const firstDiscoveredAt =
+          (pairState as any)?.discovery?.firstDiscoveredAt ??
+          (snapMem as any)?.firstDiscoveredAt ?? null;
+
+        const lastDiscoveryAt =
+          (pairState as any)?.discovery?.lastDiscoveryAt ??
+          (snapMem as any)?.lastDiscoveryAt ?? null;
+
+        if (allSources.length > 0 || primaryDiscoverySource) {
+          lines.push("");
+          lines.push("DISCOVERY:");
+          lines.push(`  • primary: ${primaryDiscoverySource ?? "unknown"}`);
+          if (discoverySources.length > 0) lines.push(`  • sources: ${discoverySources.join(", ")}`);
+          if (retainedVia.length > 0)      lines.push(`  • retainedVia: ${retainedVia.join(", ")}`);
+          if (resolvedVia.length > 0)      lines.push(`  • resolvedVia: ${resolvedVia.join(", ")}`);
+          if (firstDiscoveredAt) {
+            const firstMin = Math.max(0, Math.round((now - firstDiscoveredAt) / 60_000));
+            lines.push(`  • firstDiscovered: ${firstMin}m ago`);
+          }
+          if (lastDiscoveryAt) {
+            const lastSec = Math.max(0, Math.round((now - lastDiscoveryAt) / 1_000));
+            lines.push(`  • lastDiscovery: ${lastSec}s ago`);
+          }
+        }
+
         lines.push("");
         lines.push("DATA_AVAILABLE:");
-		lines.push(`  • tp_chase_risk — full chase risk scoring`);
-		lines.push(`  • tp_preflight_safety — contract/token safety check`);
-		lines.push(`  • tp_why_not — pipeline rejection reasons`);
-		lines.push(`  • tp_pair_context — raw worker context`);
+        lines.push(`  • tp_chase_risk — full chase risk scoring`);
+        lines.push(`  • tp_preflight_safety — contract/token safety check`);
+        lines.push(`  • tp_why_not — pipeline rejection reasons`);
+        lines.push(`  • tp_pair_context — raw worker context`);
 
         return mcpOk(lines.join("\n"));
       } catch (e) { return mcpErr(ERR.INTERNAL, e instanceof Error ? e.message : String(e)); }
