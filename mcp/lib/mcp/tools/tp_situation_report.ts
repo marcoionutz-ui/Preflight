@@ -48,18 +48,31 @@ Observed movers section shows tokens moving on market that haven't passed pipeli
         // ── Market regime ──────────────────────────────────────────────────
         const r      = pfMarket ?? regime as any;
         const emoji  = !r ? "❓" : r.regime === "RISK_ON" ? "🟢" : r.regime === "RISK_OFF" ? "🔴" : r.regime === "DEAD" ? "⚫" : "🟡";
+        let globalCoverage = 0;
         if (r) {
           const chains  = (r.wsConnectedChains ?? r.chainsActive ?? []).join("+") || "none";
           const buying  = r.buyingPct ?? r.buyingPctAll ?? 0;
           const selling = r.sellingPct ?? r.sellingPctAll ?? 0;
-          lines.push(`MARKET: ${emoji} ${r.regime} | buying:${buying}% selling:${selling}% coverage:${r.flowCoveragePct ?? 0}% chains:${chains}`);
+          globalCoverage = r.flowCoveragePct ?? 0;
+          lines.push(`MARKET: ${emoji} ${r.regime} | buying:${buying}% selling:${selling}% coverage:${globalCoverage}% chains:${chains}`);
         } else {
           const withFlow  = stateVals.filter((s: any) => s.flow?.hasData);
           const buying    = withFlow.filter((s: any) => s.flow?.pressure === "BUYING").length;
           const total     = stateVals.length;
           const buyingPct = total ? Math.round(buying / total * 100) : 0;
-          const coverage  = total ? Math.round(withFlow.length / total * 100) : 0;
-          lines.push(`MARKET: ${buyingPct > 30 ? "🟢 RISK_ON" : coverage < 20 ? "⚫ DEAD" : "🟡 MIXED"} | buying:${buyingPct}% coverage:${coverage}%`);
+          globalCoverage  = total ? Math.round(withFlow.length / total * 100) : 0;
+          lines.push(`MARKET: ${buyingPct > 30 ? "🟢 RISK_ON" : globalCoverage < 20 ? "⚫ DEAD" : "🟡 MIXED"} | buying:${buyingPct}% coverage:${globalCoverage}%`);
+        }
+
+        const coverageConfidence =
+          globalCoverage >= 50 ? "HIGH" :
+          globalCoverage >= 20 ? "MEDIUM" :
+          "LOW";
+
+        if (coverageConfidence === "LOW") {
+          lines.push(`⚠️ COVERAGE_CONFIDENCE: LOW — only ${globalCoverage}% WS coverage globally. Flow-derived signals are partial and lower confidence.`);
+        } else if (coverageConfidence === "MEDIUM") {
+          lines.push(`ℹ️ COVERAGE_CONFIDENCE: MEDIUM — ${globalCoverage}% WS coverage globally.`);
         }
 
         // ── Pipeline counts ────────────────────────────────────────────────
@@ -103,6 +116,20 @@ Observed movers section shows tokens moving on market that haven't passed pipeli
               return `  → ${h.symbol ?? addr.slice(0, 8)} [${h.chain}] pair:${addr}${watchKind ? ` kind:${watchKind}` : ""} source:${h.source ?? "WS"} age:${ageSec}s flow:${h.flow?.pressure} buys:${h.flow?.buys5m} buyVol:${formatEth(h.flow?.buyVol5m ?? 0)}`;
             });
           lines.push(`HOT:\n${hotList.join("\n")}`);
+        }
+
+		// ── ARMED — first-class, înainte de noise ─────────────────────────
+        if (armedCount > 0) {
+          const armedList = Object.entries(armed).map(([addr, a]: any) => {
+            const ageSec   = Math.round((now - a.armedAt) / 1000);
+            const ps       = states[addr] ?? null;
+            const flowStr  = ps?.flow?.hasData
+              ? `${ps.flow.pressure} buys:${ps.flow.buys5m} buyVol:${formatEth(ps.flow.buyVol5m ?? 0)}`
+              : a.flowPressure ?? "?";
+            const priceStr = a.price ? `price:${a.price.toPrecision(4)}` : "";
+            return `  → ${a.symbol ?? addr.slice(0, 8)} [${a.chain ?? "?"}] pair:${addr} score:${a.score} age:${ageSec}s ${priceStr} flow:${flowStr}`;
+          });
+          lines.push(`⚡ ARMED:\n${armedList.join("\n")}`);
         }
 
         // ── Observed movers — split gainers / droppers ────────────────────
@@ -166,16 +193,7 @@ Observed movers section shows tokens moving on market that haven't passed pipeli
           });
           lines.push(`MOMENTUM EVENTS (last 10m, ${pfMomentum.length} total):\n${mLines.join("\n")}`);
         }
-
-        // ── Armed ──────────────────────────────────────────────────────────
-        if (armedCount > 0) {
-          const armedList = Object.entries(armed).map(([addr, a]: any) => {
-            const ageSec = Math.round((now - a.armedAt) / 1000);
-            return `  → ${a.symbol ?? addr.slice(0, 8)} pair:${addr} score:${a.score} age:${ageSec}s`;
-          });
-          lines.push(`⚡ ARMED:\n${armedList.join("\n")}`);
-        }
-		
+        		
         // ── Recent drops ───────────────────────────────────────────────────
         const dropsSource = (pfDrops && pfDrops.length > 0 ? pfDrops : drops) as any[];
         const recentDropsList = dropsSource.filter((d: any) => now - d.droppedAt < 5 * 60_000).slice(0, 3);
@@ -202,11 +220,13 @@ Observed movers section shows tokens moving on market that haven't passed pipeli
 		const qualCount = activeQualified.length;
 
 		const status =
-		  hotCount > 0              ? `HOT candidate active. Drilldown data available.` :
-		  qualCount > 0             ? `Gate-passed setups present. Drilldown data available.` :
-		  moverBase.length > 0      ? `Observed movers detected. No pipeline candidates.` :
-		  watchCount > 0            ? `Watching ${watchCount} pairs. Awaiting WS flow confirmation.` :
-		  `Pipeline empty. Worker scanning.`;
+          armedCount > 0 && hotCount > 0 ? `HOT + ARMED candidates active. Next verification: tp_candidate_brief + tp_preflight_safety.` :
+          armedCount > 0                 ? `ARMED candidate active. Next verification: tp_candidate_brief + tp_preflight_safety.` :
+          hotCount > 0                   ? `HOT candidate active. Drilldown data available.` :
+          qualCount > 0                  ? `Gate-passed setups present. Drilldown data available.` :
+          moverBase.length > 0           ? `Observed movers detected. No pipeline candidates.` :
+          watchCount > 0                 ? `Watching ${watchCount} pairs. Awaiting WS flow confirmation.` :
+          `Pipeline empty. Worker scanning.`;
 
 		lines.push(`STATUS: ${status}`);
 

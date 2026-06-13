@@ -67,8 +67,8 @@ Args: chain (filter: 'base', 'arbitrum', or 'bsc')`,
             phase: v.phase, chain: v.chain,
           }))
           .sort((a, b) => a.ageSec - b.ageSec);
-		
-		// Preflight pipeline entries (richer context)
+		  
+		  // Preflight pipeline entries (richer context)
         const pfEntries = pfPipeline && pfPipeline.length > 0
           ? pfPipeline
               .filter((e: any) => filterChain(e.chain))
@@ -89,14 +89,53 @@ Args: chain (filter: 'base', 'arbitrum', or 'bsc')`,
             }))
           : null;
 
-        return mcpOk({
-          pipeline: pfEntries ?? null,
+		  
+		  const armedPipelineEntries = armedEntries.map((a: any) => ({
+          symbol:             a.symbol,
+          chain:              a.chain,
+          pairAddress:        a.pairAddress,
+          pipelineState:      "ARMED",
+          watchKind:          null,
+          watchAgeMin:        null,
+          confidence:         null,
+          entryRisk:          null,
+          flow: {
+            status:   a.flowPressure ?? null,
+            buyVol5m: null,
+            netVol5m: null,
+            buys5m:   null,
+            sells5m:  null,
+          },
+          riskFlags:          [],
+          opportunitySignals: ["ENTRY_GATE_PASSED"],
+          priceVsEntryPct:    null,
+          workerObservation:  `Entry gate passed. Monitor confirmation state/freshness. Score:${a.score ?? "?"}`,
+          score:              a.score,
+          ageSec:             a.ageSec,
+          price:              a.price,
+        }));
+
+        const pipelineEntries = pfEntries
+          ? [
+              ...armedPipelineEntries.filter((a: any) =>
+                !pfEntries.some((e: any) =>
+                  e.pairAddress?.toLowerCase() === a.pairAddress?.toLowerCase()
+                )
+              ),
+              ...pfEntries,
+            ]
+          : null;
+				
+       return mcpOk({
+          pipeline: pipelineEntries,
+          armed: armedEntries,
           legacy: { activeWatch, hotCandidates, armedEntries },
-          summary: pfEntries
+          summary: pipelineEntries
             ? {
-                watching:   pfEntries.filter((e: any) => e.pipelineState === "WATCHING").length,
-                hot:        pfEntries.filter((e: any) => e.pipelineState === "HOT").length,
-                confirming: pfEntries.filter((e: any) => e.pipelineState === "HOT").length, // legacy alias
+                watching:   pipelineEntries.filter((e: any) => e.pipelineState === "WATCHING").length,
+                hot:        pipelineEntries.filter((e: any) => e.pipelineState === "HOT").length,
+                armed:      pipelineEntries.filter((e: any) => e.pipelineState === "ARMED").length,
+                confirming: pipelineEntries.filter((e: any) => e.pipelineState === "HOT").length,
                 qualified:  pfQualified?.filter((q: any) => filterChain(q.chain)).length ?? 0,
               }
             : { watching: activeWatch.length, hot: hotCandidates.length, armed: armedEntries.length },
