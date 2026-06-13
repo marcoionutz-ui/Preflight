@@ -72,22 +72,8 @@ export function quickEdgeScore(
   // Phase memory
   if (mem.phase === "SECOND_WAVE") score += 20;
   if (mem.phase === "RECOVERING")  score -= 30;
-  if (mem.wins24h >= 2)            score += 10;
-  if (mem.losses24h > mem.wins24h && mem.losses24h > 2) score -= 15;
-  if (mem.consecutiveLosses >= 3)  score -= 20;
   if (mem.seenCount > 100) score -= 15;
-  if      (mem.seenCount > 50 && mem.totalEntries === 0) score -= 35;
-  else if (mem.seenCount > 25 && mem.totalEntries === 0) score -= 25;
-  else if (mem.seenCount > 15 && mem.wins24h === 0 && h1 <= 0) score -= 20;
-
-  // History penalty
-  const exitedCount = mem.wins24h + mem.losses24h + mem.badExits24h;
-  const winRate     = exitedCount > 0 ? mem.wins24h / exitedCount : 0.5;
-  if      (exitedCount >= 5 && mem.wins24h === 0)  score -= 40;
-  else if (exitedCount >= 5 && winRate < 0.20)      score -= 25;
-  else if (exitedCount >= 8 && winRate < 0.30)      score -= 15;
-  if (mem.badExits24h >= 3 && mem.wins24h === 0)    score -= 20;
-
+  
   // Second wave bonus
   const sw = detectSecondWave(mem, flow, m5, h1);
   if (sw.isSecondWave) {
@@ -128,9 +114,6 @@ export function computeEvidenceScore(
   if (mem.phase === "PUMPING")     score -= 1;
   if (mem.phase === "DEAD")        score -= 5;
   if (mem.phase === "ZOMBIE")      score -= 3;
-
-  if (mem.wins24h >= 2)            score += 1;
-  if (mem.consecutiveLosses >= 2)  score -= 2;
 
   return score;
 }

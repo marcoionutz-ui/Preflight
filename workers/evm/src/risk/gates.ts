@@ -90,12 +90,7 @@ export function getEntryGate(
   if (mem.phase === "RECOVERING" && !(sw.isSecondWave && sw.confidence !== "LOW")) {
     return { allowed: false, reason: `RECOVERING phase blocked (historically negative, not confirmed 2W)` };
   }
-
-  const recentBadExit = mem.lastExitTime && Date.now() - mem.lastExitTime < 6 * 60 * 60_000;
-  if (entrySource !== "FOMO" && mem.badExits24h >= 2 && mem.wins24h === 0 && mem.losses24h === 0 && recentBadExit) {
-    return { allowed: false, reason: `bad exits only (${mem.badExits24h} bad, 0 wins/losses)` };
-  }
-
+  
   if ((isV3 || isV4) && mem.phase === "RECOVERING" && flow.buys5m < 5) {
     return { allowed: false, reason: `RECOVERING needs stronger participation (${flow.buys5m}/5 buys)` };
   }
@@ -105,25 +100,7 @@ export function getEntryGate(
   if (poolCount >= 5) {
     return { allowed: false, reason: `too many pools for token (${poolCount}) — clone/fragmentation risk` };
   }
-
-  if (
-    entrySource === "SCAN" &&
-    mem.seenCount > 40 &&
-    mem.totalEntries === 0
-  ) {
-    return { allowed: false, reason: `SCAN stale with no history (seen ${mem.seenCount}x, never entered)` };
-  }
-
-  if (
-    (entrySource === "SCAN" || entrySource === "WS") &&
-    mem.seenCount > 20 &&
-    mem.wins24h === 0 &&
-    mem.losses24h === 0 &&
-    mem.badExits24h >= 2
-  ) {
-    return { allowed: false, reason: `stale loser — seen ${mem.seenCount}x, ${mem.badExits24h} bad exits, zero wins` };
-  }
-
+  
   const evidence = computeEvidenceScore(mem, flow, lp);
 
   if (hotCandidates.has(mem.pairAddress.toLowerCase())) {

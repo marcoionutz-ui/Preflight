@@ -69,11 +69,17 @@ export function updateMemory(pool: SourcePool, price: number): PairMemoryEntry {
   existing.chain = pool.chain;
 
   existing.phase = detectPhase({
-    seenCount: existing.seenCount, consecutiveLosses: existing.consecutiveLosses,
-    m5, h24,
-    highPrice: existing.highPrice, lowPrice: existing.lowPrice, currentPrice: price,
-    totalEntries: existing.totalEntries, wins24h: existing.wins24h,
-    losses24h: existing.losses24h, badExits24h: existing.badExits24h,
+    seenCount: existing.seenCount,
+    consecutiveLosses: 0,
+    m5,
+    h24,
+    highPrice: existing.highPrice,
+    lowPrice: existing.lowPrice,
+    currentPrice: price,
+    totalEntries: 0,
+    wins24h: 0,
+    losses24h: 0,
+    badExits24h: 0,
   });
 
   memory.set(addr, existing);

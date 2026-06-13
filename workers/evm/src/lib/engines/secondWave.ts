@@ -62,15 +62,8 @@ export function detectSecondWave(
     if (flow.pressure === "SELLING") { score -= 20; reasons.push("sell pressure — not ready"); }
     if (flow.pressure === "NEUTRAL") { score +=  5; }
   }
-
-  // 5. Istoric pozitiv — tokenul a mai dat TP1
-  if (mem.wins24h >= 2)      { score += 15; reasons.push(`${mem.wins24h} TP1 hits history`); }
-  else if (mem.wins24h >= 1) { score +=  8; reasons.push("1 TP1 hit history"); }
-
-  // 6. Nu e dead
-  if (mem.consecutiveLosses >= 3) { score -= 20; reasons.push(`${mem.consecutiveLosses} consecutive SL`); }
-
-  // 7. Momentum 5m fresh
+  
+  // 5. Momentum 5m fresh
   if (m5 > 2 && m5 < 15) { score += 8; reasons.push(`+${m5.toFixed(1)}% 5m momentum`); }
   if (h1 > 5 && h1 < 35)  { score += 5; reasons.push(`+${h1.toFixed(1)}% 1h momentum`); }
 
