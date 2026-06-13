@@ -4,6 +4,23 @@ import { readAllRedis, getPipelineState, findLastEventForPair, formatEth } from 
 import type { PairState } from "../types";
 import { mcpOk, mcpErr, ERR } from "../errors";
 
+function getLpCoverage(dexType: string | null | undefined, hasData: boolean): string {
+  const d = (dexType ?? "").toUpperCase();
+
+  if (d === "V4") return "V4_INVESTIGATING";
+
+  if (hasData) {
+    if (d === "V3") return "V3_FULL";
+    if (d === "V2") return "V2_FULL";
+    return "LP_EVENTS_OBSERVED";
+  }
+
+  if (d === "V3") return "V3_NO_EVENTS_5M";
+  if (d === "V2") return "V2_NO_EVENTS_5M";
+
+  return "NO_LP_COVERAGE";
+}
+
 export function registerCandidateBrief(server: McpServer, exposePerformance: boolean) {
   server.registerTool(
     "tp_candidate_brief",
@@ -93,7 +110,7 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
         lines.push("LIQUIDITY:");
         if (pairState) {
           lines.push(`  • Reserve: $${Math.round((pairState.reserveUsd ?? 0) / 1000)}K (${pairState.liqStatus ?? "?"})`);
-          lines.push(`  • DEX type: ${pairState.dexType ?? "?"}`);
+          lines.push(`  • DEX type: ${pairState.dexType ?? "?"} | LP coverage: ${getLpCoverage(pairState.dexType, pairState.lp?.hasData ?? false)}`);
           if ((pairState.poolCountSameToken ?? 1) > 1) {
             lines.push(`  ⚠️ ${pairState.poolCountSameToken} pools for same token — fragmentation/clone risk`);
           }

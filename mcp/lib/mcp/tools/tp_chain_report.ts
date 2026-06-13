@@ -14,6 +14,23 @@ import { mcpOk, mcpErr, ERR } from "../errors";
 // Timestamp fallback — events pot folosi ts, detectedAt, sau timestamp
 const eventTs = (e: any): number => e.ts ?? e.detectedAt ?? e.timestamp ?? 0;
 
+function getLpCoverage(dexType: string | null | undefined, hasData: boolean): string {
+  const d = (dexType ?? "").toUpperCase();
+
+  if (d === "V4") return "V4_INVESTIGATING";
+
+  if (hasData) {
+    if (d === "V3") return "V3_FULL";
+    if (d === "V2") return "V2_FULL";
+    return "LP_EVENTS_OBSERVED";
+  }
+
+  if (d === "V3") return "V3_NO_EVENTS_5M";
+  if (d === "V2") return "V2_NO_EVENTS_5M";
+
+  return "NO_LP_COVERAGE";
+}
+
 export function registerChainReport(server: McpServer) {
   server.registerTool(
     "tp_chain_report",
@@ -139,7 +156,7 @@ Args: chain — one of: base, arbitrum, eth, bsc, solana`,
               if (pc) line += `\n     priceChange: m5:${fmt(pc.m5)} h1:${fmt(pc.h1)} h24:${fmt(pc.h24)}`;
               if (pairState) {
                 // fix ChatGPT #2: ?? 0 pe reserveUsd
-                line += `\n     liq:$${Math.round((pairState.reserveUsd ?? 0) / 1000)}K lp:${pairState.lp?.status ?? "?"}`;
+                line += `\n     liq:$${Math.round((pairState.reserveUsd ?? 0) / 1000)}K lp:${pairState.lp?.status ?? "?"}(${getLpCoverage(pairState.dexType, pairState.lp?.hasData ?? false)})`;
               }
               return line;
             });
@@ -177,7 +194,7 @@ Args: chain — one of: base, arbitrum, eth, bsc, solana`,
             let line = `  → ${s.symbol ?? addr.slice(0, 8)} pair:${addr}`;
             line += `\n     m5:${fmt(pc.m5)} h1:${fmt(pc.h1)} h24:${fmt(pc.h24)} liq:$${Math.round((s.reserveUsd ?? 0) / 1000)}K`;
             // fix ChatGPT #3: ?? 0 pe formatEth
-            line += `\n     flow:${s.flow?.hasData ? `${s.flow.pressure} buys:${s.flow.buys5m} netVol:${formatEth(s.flow.netVol5m ?? 0)}` : "NO_WS_DATA"} lp:${s.lp?.status ?? "?"}`;
+            line += `\n     flow:${s.flow?.hasData ? `${s.flow.pressure} buys:${s.flow.buys5m} netVol:${formatEth(s.flow.netVol5m ?? 0)}` : "NO_WS_DATA"} lp:${s.lp?.status ?? "?"}(${getLpCoverage(s.dexType, s.lp?.hasData ?? false)})`;
             return line;
           });
           lines.push(`OBSERVED MOVERS (${observedMovers.length}):\n${moverLines.join("\n")}`);
@@ -199,7 +216,7 @@ Args: chain — one of: base, arbitrum, eth, bsc, solana`,
             // fix ChatGPT #3: ?? 0 pe formatEth
             line += `\n     flow:${pairState!.flow.pressure} buys:${pairState!.flow.buys5m} buyVol:${formatEth(pairState!.flow.buyVol5m ?? 0)} netVol:${formatEth(pairState!.flow.netVol5m ?? 0)}`;
             if (pc) line += `\n     priceChange: m5:${fmt(pc.m5)} h1:${fmt(pc.h1)} h24:${fmt(pc.h24)}`;
-            line += `\n     liq:$${Math.round((pairState?.reserveUsd ?? 0) / 1000)}K lp:${pairState?.lp?.status ?? "?"}`;
+            line += `\n     liq:$${Math.round((pairState?.reserveUsd ?? 0) / 1000)}K lp:${pairState?.lp?.status ?? "?"}(${getLpCoverage(pairState?.dexType, pairState?.lp?.hasData ?? false)})`;
             return line;
           });
           lines.push(`WATCHING — active flow (${watchingWithFlow.length}):\n${watchLines.join("\n")}`);

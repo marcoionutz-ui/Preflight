@@ -4,6 +4,23 @@ import { readAllRedis, freshnessLabel, getPipelineState, readPairContext } from 
 import type { PairState, MemoryEntry } from "../types";
 import { mcpOk, mcpErr, ERR } from "../errors";
 
+function getLpCoverage(dexType: string | null | undefined, hasData: boolean): string {
+  const d = (dexType ?? "").toUpperCase();
+
+  if (d === "V4") return "V4_INVESTIGATING";
+
+  if (hasData) {
+    if (d === "V3") return "V3_FULL";
+    if (d === "V2") return "V2_FULL";
+    return "LP_EVENTS_OBSERVED";
+  }
+
+  if (d === "V3") return "V3_NO_EVENTS_5M";
+  if (d === "V2") return "V2_NO_EVENTS_5M";
+
+  return "NO_LP_COVERAGE";
+}
+
 export function registerPairContext(server: McpServer, exposePerformance: boolean) {
   server.registerTool(
     "tp_pair_context",
@@ -153,8 +170,9 @@ Args: pair_address (0x... EVM address or V4 pool ID), chain (optional: base/arbi
                 : liveMonitored     ? "not_available_no_ws_events_yet"
                 :                    "not_available_market_only",
               lpSignal:  hasLpData  ? "available"
-                : liveMonitored     ? "not_available_no_lp_events_yet"
-                :                    "not_available_market_only",
+			  : liveMonitored     ? "not_available_no_lp_events_yet"
+			  :                    "not_available_market_only",
+			lpCoverage: getLpCoverage((pairState as PairState)?.dexType, hasLpData),
             };
           })(),
           marketPattern: {

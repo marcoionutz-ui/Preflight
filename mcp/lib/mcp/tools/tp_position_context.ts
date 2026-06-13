@@ -34,6 +34,23 @@ const positionSchema = z.object({
 
 type Position = z.infer<typeof positionSchema>;
 
+function getLpCoverage(dexType: string | null | undefined, hasData: boolean): string {
+  const d = (dexType ?? "").toUpperCase();
+
+  if (d === "V4") return "V4_INVESTIGATING";
+
+  if (hasData) {
+    if (d === "V3") return "V3_FULL";
+    if (d === "V2") return "V2_FULL";
+    return "LP_EVENTS_OBSERVED";
+  }
+
+  if (d === "V3") return "V3_NO_EVENTS_5M";
+  if (d === "V2") return "V2_NO_EVENTS_5M";
+
+  return "NO_LP_COVERAGE";
+}
+
 export function registerPositionContext(server: McpServer) {
   server.registerTool(
     "tp_position_context",
@@ -166,7 +183,7 @@ Returns per position:
             lines.push(`flow:NO_WS_DATA`);
           }
 
-          if (lpStatus) lines.push(`lp:${lpStatus}`);
+          if (lpStatus) lines.push(`lp:${lpStatus}(${getLpCoverage((pairState as any)?.dexType, lpData?.hasData ?? false)})`);
           lines.push(`pipeline:${pipeState}`);
 
           if (pc) {
