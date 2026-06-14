@@ -19,7 +19,7 @@ Call this when you're not sure where to start, or after tp_situation_report to g
 
 Returns:
 - priority: what deserves attention right now
-- action: which tool to call next and why
+- diagnosticRoute: which Preflight tool provides the next relevant context
 - context: brief state summary that informed the routing
 - coverage_note: data confidence caveat if relevant
 
@@ -75,7 +75,7 @@ Does not advise on trades. Routes to data, not to decisions.`,
           const armedList = Object.entries(armed).map(([addr, a]: any) =>
             `${a.symbol ?? addr.slice(0, 8)} [${a.chain ?? "?"}] pair:${addr} score:${a.score} age:${Math.round((now - a.armedAt) / 1000)}s`
           );
-          lines.push(`PRIORITY: ARMED — entry gate passed`);
+          lines.push(`FOCUS: ARMED — qualification criteria observed`);
           lines.push(`ARMED (${armedCount}):`);
           armedList.forEach(l => lines.push(`  → ${l}`));
           lines.push("");

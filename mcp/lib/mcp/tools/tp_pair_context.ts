@@ -62,8 +62,8 @@ export function registerPairContext(server: McpServer, exposePerformance: boolea
 Combines pair_states (live, TTL 120s) + worker_snapshot (24h) + all pipeline maps.
 
 pipelineState: WATCHING = subscribed via WS, accumulating flow
-               HOT      = confirmed buying flow, about to enter
-               ARMED    = passed entry gate, awaiting 30s price confirmation
+               HOT      = confirmed buying flow observed
+			   ARMED    = qualification criteria observed, awaiting 30s price confirmation
                NONE     = not currently tracked in pipeline
 
 contextQuality: fresh (<45s), aging (<90s), stale (>90s), snapshot_only, unknown

@@ -13,7 +13,7 @@ export function registerWorkerPipeline(server: McpServer) {
 Shows all pairs moving through the worker's decision flow:
 - WATCHING: subscribed via WS, accumulating flow (kind: NORMAL/FOMO/VERTICAL/LATE)
 - HOT: promoted candidates with confirmed buying flow
-- ARMED: passed entry gate, awaiting 30s price confirmation — may enter imminently
+- ARMED: qualification criteria observed, awaiting 30s price confirmation
 
 Args: chain (filter: 'base', 'arbitrum', or 'bsc')`,
       inputSchema: {
@@ -129,9 +129,9 @@ Args: chain (filter: 'base', 'arbitrum', or 'bsc')`,
             };
           })(),
           riskFlags:          [],
-          opportunitySignals: ["ENTRY_GATE_PASSED"],
+          opportunitySignals: ["ARMED_STATE_OBSERVED"],
           priceVsEntryPct:    null,
-          workerObservation:  `Entry gate passed. Monitor confirmation state/freshness. Score:${a.score ?? "?"}`,
+          workerObservation: `ARMED state observed. Confirmation freshness should be checked separately. Score:${a.score ?? "?"}`,
           score:              a.score,
           ageSec:             a.ageSec,
           price:              a.price,

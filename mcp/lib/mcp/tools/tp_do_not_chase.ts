@@ -52,9 +52,8 @@ Args: limit (default 10, max 30), minutes_back (default 10, max 10)`,
 
           const r = reason.toLowerCase();
           if (r.includes("flow faded") || r.includes("flow turned") || r.includes("no buying flow")) {
-            line += "\n  → Buying interest evaporated. Do not re-enter without fresh WS confirmation.";
-          } else if (r.includes("too late") || r.includes("vertical")) {
-            line += "\n  → Price already moved significantly. Entry now = buying the top.";
+            line += "\n  → Fresh WS confirmation absent; continuation evidence not currently present.";          } else if (r.includes("too late") || r.includes("vertical")) {
+            line += "\n  → Price extension risk elevated; late-chase conditions detected.";
           } else if (r.includes("dump") || r.includes("-")) {
             line += "\n  → Price dumped after signal. Avoid until structure rebuilds.";
           } else if (r.includes("gate") || r.includes("score") || r.includes("evidence")) {

@@ -18,7 +18,7 @@ import {
   formatEth,
   formatVol,
 } from "../redis-reader";
-import { mcpOk, mcpErr, ERR } from "../errors";
+import { mcpErr, mcpResponse, ERR } from "../errors";
 
 const FLAP_WINDOW_MS    = 10 * 60_000; // 10 minute
 const FLAP_THRESHOLD    = 2;           // 2+ HOT→NONE în window = flapping
@@ -30,7 +30,7 @@ export function registerChaseRisk(server: McpServer) {
     "tp_chase_risk",
     {
       title: "Preflight Chase Risk",
-      description: `Assess whether a HOT or WATCHING pair is safe to act on, or a chase trap.
+      description: `Summarize execution-risk evidence for a HOT or WATCHING pair, including late-chase conditions.
 
 Detects:
 - HOT flapping (promoted and dropped repeatedly — distribution pattern)
@@ -40,7 +40,7 @@ Detects:
 
 Returns: CLEAR | CAUTION | HIGH | EXTREME with full reasoning.
 
-Use before tp_preflight_safety to filter out FOMO traps early.
+Use with tp_preflight_safety when the agent needs contract/security context next to flow evidence.
 Best used on pairs currently HOT or recently dropped from HOT.
 
 Args: pair_address (0x... EVM address)`,
@@ -134,7 +134,7 @@ Args: pair_address (0x... EVM address)`,
         // Drop reasons
         if (hasGateFail) {
           riskScore += 15;
-          signals.push(`Failed entry gate: bad exits or low score prevented HOT confirmation`);
+          signals.push(`Qualification criteria not met: bad exits or low score prevented HOT confirmation`);
         }
         if (hasDistribution) {
           riskScore += 20;
@@ -217,7 +217,32 @@ Args: pair_address (0x... EVM address)`,
           lines.push("  tp_candidate_brief — full drilldown on this pair");
         }
 
-        return mcpOk(lines.join("\n"));
+        const dataAgeSec = pairState?.updatedAt
+  ? Math.round((now - pairState.updatedAt) / 1000)
+  : null;
+
+const confidence =
+  flow?.hasData && dataAgeSec !== null && dataAgeSec <= 120 ? "HIGH" :
+  flow?.hasData                                              ? "MEDIUM" :
+  "LOW";
+
+return mcpResponse({
+  text:         lines.join("\n"),
+  freshnessSec: dataAgeSec,
+  confidence,
+  dataQuality: {
+    wsFlow:    flow?.hasData ? "present" : "absent",
+    liquidity: pairState?.lp?.hasData ? "confirmed" : pairState ? "estimated" : "unknown",
+  },
+  evidence: {
+    riskLevel:     level,
+    riskScore,
+    pipelineState: pipeState,
+    hotFlaps:      hotDrops,
+    hotPromotions,
+    hasFlowData:   !!flow?.hasData,
+   },
+});
       } catch (e) { return mcpErr(ERR.INTERNAL, e instanceof Error ? e.message : String(e)); }
     },
   );

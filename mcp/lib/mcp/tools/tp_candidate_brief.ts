@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { readAllRedis, getPipelineState, findLastEventForPair, formatEth, formatVol } from "../redis-reader";
 import type { PairState } from "../types";
-import { mcpOk, mcpErr, ERR } from "../errors";
+import { mcpOk, mcpErr, mcpResponse, ERR } from "../errors";
 import type { SourceAgreement } from "@preflight/schema";
 
 function getLpCoverage(dexType: string | null | undefined, hasData: boolean): string {
@@ -65,7 +65,7 @@ Returns a structured text brief covering:
 - Flow analysis (organic vs whale, buy pressure quality)
 - Liquidity and risk signals
 - What would invalidate the setup
-- Suggested next verification step
+- Related diagnostic routes
 
 Use this after tp_situation_report identifies a HOT or ARMED candidate.
 
@@ -109,7 +109,7 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
         lines.push("WHY IT MATTERS:");
         if (pipeState === "ARMED") {
           const ageSec = Math.round((now - (armedEntry?.armedAt ?? now)) / 1000);
-          lines.push(`  • ARMED ${ageSec}s ago — entry gate passed, awaiting 30s price confirmation`);
+          lines.push(`  • ARMED ${ageSec}s ago — qualification criteria observed, awaiting 30s price confirmation`);
           lines.push(`  • Entry score: ${armedEntry?.score ?? "?"} | flow: ${armedEntry?.flowPressure ?? "?"}`);
         } else if (pipeState === "HOT") {
           const ageSec = Math.round((now - (hotEntry?.promotedAt ?? now)) / 1000);
@@ -256,8 +256,29 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
         lines.push(`  • tp_preflight_safety — contract/token safety check`);
         lines.push(`  • tp_why_not — pipeline rejection reasons`);
         lines.push(`  • tp_pair_context — raw worker context`);
+ 
+const confidence =
+  pairState?.flow?.hasData && pipeState === "ARMED" ? "HIGH" :
+  pairState?.flow?.hasData || pipeState === "ARMED" || pipeState === "HOT" ? "MEDIUM" :
+  "LOW";
 
-        return mcpOk(lines.join("\n"));
+return mcpResponse({
+  text:         lines.join("\n"),
+  freshnessSec: dataAgeSec,
+  confidence,
+  dataQuality: {
+    wsFlow:    pairState?.flow?.hasData ? "present" : "absent",
+    liquidity: pairState?.lp?.hasData ? "confirmed" : pairState?.reserveUsd ? "estimated" : "unknown",
+  },
+  evidence: {
+    pipelineState: pipeState,
+    chain:         displayChain,
+    symbol,
+    pairAddress:   addr,
+    hasFlowData:   !!pairState?.flow?.hasData,
+    lpCoverage:    pairState ? getLpCoverage(pairState.dexType, pairState.lp?.hasData ?? false) : "NO_PAIR_STATE",
+  },
+});
       } catch (e) { return mcpErr(ERR.INTERNAL, e instanceof Error ? e.message : String(e)); }
     },
   );

@@ -1,6 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { readAllRedis, formatEth, formatVol } from "../redis-reader";
-import { mcpOk, mcpErr, ERR } from "../errors";
+import { mcpErr, mcpResponse, ERR } from "../errors";
 
 export function registerSituationReport(server: McpServer) {
   server.registerTool(
@@ -12,8 +12,8 @@ export function registerSituationReport(server: McpServer) {
 Returns a compact but complete picture:
 - Worker health + data freshness
 - Market regime + WS coverage
-- Pipeline counts (watching/hot/armed/gatePassed)
-- Gate-passed setups with pair addresses
+- Pipeline counts (watching/hot/armed/qualified)
+- Qualified setups with pair addresses
 - Observed movers (gainers/droppers) not yet in pipeline
 - HOT candidates with addresses
 - Recent drops + transitions
@@ -93,17 +93,17 @@ Observed movers section shows tokens moving on market that haven't passed pipeli
           return fresh && stillActive && !droppedAfter;
         });
         const staleCount = (pfQualified?.length ?? 0) - activeQualified.length;
-        lines.push(`PIPELINE: watching:${watchCount} hot:${hotCount} armed:${armedCount} gatePassed:${activeQualified.length}${staleCount > 0 ? ` (${staleCount} stale)` : ""}`);
+        lines.push(`PIPELINE: watching:${watchCount} hot:${hotCount} armed:${armedCount} qualified:${activeQualified.length}${staleCount > 0 ? ` (${staleCount} stale)` : ""}`);
 
         // ── Active gate-passed setups — top 5 con adrese ───────────────────
         if (activeQualified.length > 0) {
-          const qLines = activeQualified.slice(0, 5).map((q: any) =>
-            `  → ${q.symbol} [${q.chain}] pair:${q.pairAddress ?? "?"} risk:${q.entryRisk} flow:${q.flow?.status} buys:${q.flow?.buys5m}`
-          );
-          lines.push(`GATE PASSED (active):\n${qLines.join("\n")}`);
-        } else if (pfQualified && pfQualified.length > 0) {
-          lines.push(`GATE PASSED: ${pfQualified.length} recent but all stale/dropped`);
-        }
+		  const qLines = activeQualified.slice(0, 5).map((q: any) =>
+			`  → ${q.symbol} [${q.chain}] pair:${q.pairAddress ?? "?"} risk:${q.entryRisk} flow:${q.flow?.status} buys:${q.flow?.buys5m}`
+		  );
+		  lines.push(`QUALIFIED (active):\n${qLines.join("\n")}`);
+		} else if (pfQualified && pfQualified.length > 0) {
+		  lines.push(`QUALIFIED: ${pfQualified.length} recent but all stale/dropped`);
+		}
 
         // ── HOT candidates con adrese ──────────────────────────────────────
         if (hotCount > 0) {
@@ -224,14 +224,39 @@ Observed movers section shows tokens moving on market that haven't passed pipeli
           armedCount > 0 && hotCount > 0 ? `HOT + ARMED candidates active. Next verification: tp_candidate_brief + tp_preflight_safety.` :
           armedCount > 0                 ? `ARMED candidate active. Next verification: tp_candidate_brief + tp_preflight_safety.` :
           hotCount > 0                   ? `HOT candidate active. Drilldown data available.` :
-          qualCount > 0                  ? `Gate-passed setups present. Drilldown data available.` :
+          qualCount > 0                  ? `Qualified setups present. Drilldown data available.` :
           moverBase.length > 0           ? `Observed movers detected. No pipeline candidates.` :
           watchCount > 0                 ? `Watching ${watchCount} pairs. Awaiting WS flow confirmation.` :
           `Pipeline empty. Worker scanning.`;
 
 		lines.push(`STATUS: ${status}`);
 
-        return mcpOk(lines.join("\n"));
+        const warnings = [
+  !workerOnline ? "Worker snapshot offline or stale" : null,
+  globalCoverage < 20 ? `WS coverage ${globalCoverage}% — flow signals partial` : null,
+].filter((w): w is string => !!w);
+
+return mcpResponse({
+  text:         lines.join("\n"),
+  freshnessSec: freshnessSec ?? null,
+  confidence:   !workerOnline ? "LOW" : coverageConfidence as "LOW" | "MEDIUM" | "HIGH",
+  coverageNote: globalCoverage < 20
+    ? `WS coverage ${globalCoverage}% — flow signals partial`
+    : null,
+  warnings,
+  dataQuality: {
+    wsFlow: globalCoverage >= 50 ? "present" : globalCoverage >= 20 ? "partial" : "absent",
+  },
+  evidence: {
+    trackedPairs:    stateVals.length,
+    watching:        watchCount,
+    hot:             hotCount,
+    armed:           armedCount,
+    qualifiedActive: activeQualified.length,
+    qualifiedStale:  staleCount,
+    workerOnline,
+  },
+});
       } catch (e) { return mcpErr(ERR.INTERNAL, e instanceof Error ? e.message : String(e)); }
     },
   );

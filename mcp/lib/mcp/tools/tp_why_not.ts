@@ -96,7 +96,7 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
           const reasons: string[] = [];
           if (data.phase === "RECOVERING" && data.seenCount > 20) reasons.push("phase RECOVERING with long history — entry blocked by default");
           if (exposePerformance && data.consecutiveLosses >= 3) reasons.push(`${data.consecutiveLosses} consecutive losses — score heavily penalised`);
-          if (exposePerformance && data.badExits24h >= 2 && data.wins24h === 0) reasons.push("bad exits only, zero wins — entry gate blocks");
+          if (exposePerformance && data.badExits24h >= 2 && data.wins24h === 0) reasons.push("bad exits only, zero wins — qualification criteria not met");
           if (exposePerformance && data.seenCount > 40 && data.totalEntries === 0) reasons.push("seen 40+ times with no entry — marked as stale loser");
           const pCount = (states[addr] as PairState)?.poolCountSameToken ?? 1;
           if (pCount >= 5) reasons.push(`${pCount} pools for same token — clone/fragmentation block`);
