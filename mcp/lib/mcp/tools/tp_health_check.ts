@@ -80,10 +80,10 @@ Use this first to verify the worker is running before calling other tools.`,
                     c.emptyStreak >= 1 ? "DEGRADED" :
                     "OK"
                   ),
-				  dexscreenerHealth: scannerStats.dexscreener ?? null,
-                },
+				},
               ])
             ),
+			dexscreenerHealth: scannerStats.dexscreener ?? null,
           } : null,
           pipelineCoverage: pipelineCoverage ? {
             savedAgeSec: Math.round((now - pipelineCoverage.savedAt) / 1000),
