@@ -257,6 +257,8 @@ Args: pair_address (0x... EVM address or V4 pool ID), chain (optional: base/arbi
           } : undefined,
           pipeline: { state: pipelineState, watch: watchOut, hot: hotOut, armed: armedOut },
           reserveEth,
+          reserveNative: (pairState as any)?.reserveNative ?? reserveEth,
+          nativeSymbol:  (pairState as any)?.nativeSymbol  ?? null,
           preflightContext: pfCtx ?? null,
           contextQuality: pfCtx ? "fresh" : pairState ? freshnessLabel(now - pairState.updatedAt) : "snapshot_only",
           dataSource: pfCtx ? "preflight_pair_context" : pairState ? "pair_states" : "worker_snapshot",

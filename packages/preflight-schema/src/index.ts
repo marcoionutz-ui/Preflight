@@ -153,7 +153,6 @@ export type DiscoverySource =
   | "DEXSCREENER_PROFILE"
   | "DEXSCREENER_PAIR_FALLBACK"
   | "MARKET_FOLLOW_LIST"
-  | "MARKET_FOLLOW_LIST"
   | "AGENT_SUPPLIED";
 
 export type SourceAgreement =

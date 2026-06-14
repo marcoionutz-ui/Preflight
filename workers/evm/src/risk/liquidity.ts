@@ -6,13 +6,15 @@
 import { poolLiquidity } from "../state/stores";
 
 export function getLiquidityContext(pairAddress: string): {
-  reserveUsd:  number;
-  reserveEth:  number;
-  freshnessMs: number | null;
-  status:      "CONFIRMED" | "WEAK" | "MISSING";
+  reserveUsd:    number;
+  reserveEth:    number;
+  reserveNative: number;
+  nativeSymbol:  "ETH" | "BNB" | null;
+  freshnessMs:   number | null;
+  status:        "CONFIRMED" | "WEAK" | "MISSING";
 } {
   const ctx = poolLiquidity.get(pairAddress.toLowerCase());
-  if (!ctx) return { reserveUsd: 0, reserveEth: 0, freshnessMs: null, status: "MISSING" };
+  if (!ctx) return { reserveUsd: 0, reserveEth: 0, reserveNative: 0, nativeSymbol: null, freshnessMs: null, status: "MISSING" };
 
   const freshnessMs = Date.now() - ctx.updatedAt;
 

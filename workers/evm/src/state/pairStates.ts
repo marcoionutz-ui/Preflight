@@ -81,6 +81,8 @@ export interface PairStateSnapshot {
   // Liquidity
   reserveUsd:         number;
   reserveEth:         number;
+  reserveNative:      number;  
+  nativeSymbol:       string | null;
   liqStatus:          string;
   poolCountSameToken: number;
 
@@ -218,9 +220,11 @@ export async function buildPairStates(): Promise<Record<string, PairStateSnapsho
           : null,
       },
 
-      reserveUsd:  liq.reserveUsd,
-      reserveEth:  liq.reserveEth,
-      liqStatus:   liq.status,
+      reserveUsd:    liq.reserveUsd,
+      reserveEth:    liq.reserveEth,
+      reserveNative: liq.reserveNative,
+      nativeSymbol:  liq.nativeSymbol,
+      liqStatus:     liq.status,
       poolCountSameToken: (() => {
         const cp = mem.chain ?? "";
         return tokenPools.get(tokenPoolKey(cp, mem.tokenAddress))?.size ?? 1;

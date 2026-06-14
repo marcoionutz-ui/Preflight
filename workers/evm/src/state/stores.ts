@@ -82,9 +82,11 @@ export const armedEntries = new Map<string, {
 // ── Liquidity ─────────────────────────────────────────────────────────────────
 
 export const poolLiquidity = new Map<string, {
-  reserveUsd: number;
-  reserveEth: number;
-  updatedAt:  number;
+  reserveUsd:    number;
+  reserveEth:    number; 
+  reserveNative: number;
+  nativeSymbol:  "ETH" | "BNB";
+  updatedAt:     number;
 }>();
 
 // ── WS client state ───────────────────────────────────────────────────────────

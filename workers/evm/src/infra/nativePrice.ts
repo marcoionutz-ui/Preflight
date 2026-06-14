@@ -70,3 +70,9 @@ export async function refreshNativePrices(): Promise<void> {
     console.log(`[NATIVE PRICE] BNB: no RPC configured, using cached $${prices.bnb}`);
   }
 }
+
+export type NativeSymbol = "ETH" | "BNB";
+
+export function getNativeSymbolForChain(chainId: string): NativeSymbol {
+  return chainId === "bsc" ? "BNB" : "ETH";
+}

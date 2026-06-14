@@ -12,17 +12,23 @@ import { memory, poolLiquidity } from "./stores";
 import { tokenPoolKey, tokenPools } from "../infra/poolTracker";
 import { getRedis } from "../infra/redis";
 import { supabase } from "../infra/supabase";
-import { getEthPrice } from "../infra/ethPrice";
+import { getNativePrice, getNativeSymbolForChain } from "../infra/nativePrice";
 import { WORKER_VERSION } from "../config/constants";
 import { REDIS_KEYS } from "@preflight/schema";
 
 export function updatePoolLiquidity(addr: string, pool: SourcePool): void {
   const reserveUsd = pool.reserveUsd;
   if (reserveUsd > 0) {
+    const nativeSymbol  = getNativeSymbolForChain(pool.chain);
+    const nativePrice   = getNativePrice(nativeSymbol) || getNativePrice("ETH") || 1;
+    const reserveNative = reserveUsd / 2 / nativePrice;
+
     poolLiquidity.set(addr.toLowerCase(), {
       reserveUsd,
-      reserveEth: reserveUsd / 2 / getEthPrice(),
-      updatedAt:  Date.now(),
+      reserveEth:    reserveNative, 
+      reserveNative,
+      nativeSymbol,
+      updatedAt: Date.now(),
     });
   }
 }
@@ -215,13 +221,19 @@ export async function loadMemoryFromRedis(): Promise<void> {
         tokenPools.get(key)!.add(addr);
       }
 
-      for (const [addr, eth] of Object.entries(snap.poolReserveEth ?? {})) {
-        const val = Number(eth);
-        if (Number.isFinite(val) && val > 0) {
+     for (const [addr, nativeReserveRaw] of Object.entries(snap.poolReserveEth ?? {})) {
+        const nativeReserve = Number(nativeReserveRaw);
+        if (Number.isFinite(nativeReserve) && nativeReserve > 0) {
+          const mem          = snap.memory?.[addr];
+          const nativeSymbol = getNativeSymbolForChain(mem?.chain ?? "base");
+          const nativePrice  = getNativePrice(nativeSymbol) || getNativePrice("ETH") || 1;
+
           poolLiquidity.set(addr, {
-            reserveUsd: val * 2 * getEthPrice(),
-            reserveEth: val,
-            updatedAt:  snap.savedAt ?? Date.now(),
+            reserveUsd:    nativeReserve * 2 * nativePrice,
+            reserveEth:    nativeReserve, // legacy alias
+            reserveNative: nativeReserve,
+            nativeSymbol,
+            updatedAt: snap.savedAt ?? Date.now(),
           });
         }
       }
