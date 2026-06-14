@@ -21,6 +21,7 @@ export const TOOL_SCOPES: Record<string, string[]> = {
   tp_chain_report:      ["read:all", "read:reports", "read:market"],
   tp_next_action:       ["read:all", "read:reports"],
   tp_agent_brief:       ["read:all", "read:reports"],
+  tp_watch_pair:        ["read:all"],
 };
 
 /**

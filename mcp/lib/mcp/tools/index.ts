@@ -21,6 +21,7 @@ import { registerChaseRisk }        from "./tp_chase_risk";
 import { registerPositionContext }  from "./tp_position_context";
 import { registerChainReport }      from "./tp_chain_report";
 import { registerNextAction }       from "./tp_agent_brief";
+import { registerWatchPair } from "./tp_watch_pair";
 
 export function registerAllTools(server: McpServer, exposePerformance = false): void {
   // Instrumentăm server-ul o singură dată — toate toolurile primesc middleware automat
@@ -40,4 +41,5 @@ export function registerAllTools(server: McpServer, exposePerformance = false): 
   registerChainReport(s);
   registerPositionContext(s);
   registerNextAction(s);
+  registerWatchPair(s);
 }

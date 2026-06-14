@@ -152,8 +152,16 @@ export type DiscoverySource =
   | "DEXSCREENER_BOOSTED"
   | "DEXSCREENER_PROFILE"
   | "DEXSCREENER_PAIR_FALLBACK"
-  | "MARKET_FOLLOW_LIST";
-  
+  | "MARKET_FOLLOW_LIST"
+  | "MARKET_FOLLOW_LIST"
+  | "AGENT_SUPPLIED";
+
+export type SourceAgreement =
+  | "MULTI_DISCOVERY_SOURCES"
+  | "RETAINED_BY_FOLLOW_LIST"
+  | "SINGLE_DISCOVERY_SOURCE"
+  | "STALE_DISCOVERY"
+  | "NO_DISCOVERY_DATA";  
 
 export const REDIS_KEYS = {
     
@@ -168,12 +176,13 @@ export const REDIS_KEYS = {
   pipelineEvents:  "preflight:pipeline_events",
 
   // Context
-  marketContext:    "preflight:market_context",
-  momentumEvents:   "preflight:momentum_events",
-  signalPipeline:   "preflight:signal_pipeline",
-  qualifiedSignals: "preflight:qualified_signals",
-  pipelineCoverage: "preflight:pipeline_coverage",
-  scannerStats:     "preflight:scanner_stats",
+  marketContext:      "preflight:market_context",
+  momentumEvents:     "preflight:momentum_events",
+  signalPipeline:     "preflight:signal_pipeline",
+  qualifiedSignals:   "preflight:qualified_signals",
+  pipelineCoverage:   "preflight:pipeline_coverage",
+  scannerStats:       "preflight:scanner_stats",
+  agentWatchRequests: "preflight:agent_watch_requests",
 
   // Per-pair
   pairContext: (addr: string) => `preflight:pair_context:${addr.toLowerCase()}`,

@@ -4,7 +4,7 @@
  * Zero imports din alte module interne.
  */
 
-export const WORKER_VERSION = "v5.47";
+export const WORKER_VERSION = "v5.48";
 
 export const GECKO_BASE = "https://api.geckoterminal.com/api/v2";
 
@@ -75,6 +75,10 @@ export const ARM_MIN_PRICE_CONFIRM = 0.997;
 // ── Momentum buffer ───────────────────────────────────────────────────────────
 export const MAX_MOMENTUM_BUFFER = 100;
 export const MAX_QUALIFIED_BUFFER = 20;
+
+// ── DexScreener Boosted ────────────────────────────────────────────────────
+export const DS_BOOSTED_INTERVAL_MS = 5 * 60_000;
+export const DS_BOOSTED_MAX_PER_RUN = 10;
 
 // ── Chainlink ─────────────────────────────────────────────────────────────────
 export const CHAINLINK_ETH_USD           = "0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70";

@@ -23,6 +23,16 @@ async function dsGet(url: string): Promise<any | null> {
   }
 }
 
+async function dsGetWithStatus(url: string): Promise<{ status: number; data: any | null }> {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(6_000) });
+    if (!res.ok) return { status: res.status, data: null };
+    return { status: res.status, data: await res.json() };
+  } catch {
+    return { status: 0, data: null };
+  }
+}
+
 function normalizeDsPair(raw: any, chain: ChainConfig): SourcePool | null {
   const pairAddressRaw = String(raw?.pairAddress ?? "").toLowerCase();
   if (!pairAddressRaw) return null;
@@ -98,4 +108,33 @@ export async function fetchDsTokenPairs(
     .map(p => normalizeDsPair(p, chain))
     .filter((p): p is SourcePool => p !== null)
     .slice(0, 5);
+}
+
+export async function fetchDsBoostedTokens(
+  allowedChainIds: Set<string>,
+): Promise<{
+  status: number;
+  tokens: Array<{ chainId: string; tokenAddress: string; pairAddress?: string }>;
+}> {
+  const { status, data } = await dsGetWithStatus(`${DS_API}/token-boosts/v1/latest`);
+  if (!Array.isArray(data)) return { status, tokens: [] };
+
+  const tokens: Array<{ chainId: string; tokenAddress: string; pairAddress?: string }> = [];
+
+  for (const item of data) {
+    const chainId = String(item?.chainId ?? "").toLowerCase();
+    if (!allowedChainIds.has(chainId)) continue;
+
+    const tokenAddress = cleanEvmAddress(item?.tokenAddress);
+    if (!tokenAddress) continue;
+
+    const lastUrlPart = String(item?.url ?? "").split("/").pop()?.toLowerCase();
+    const pairAddress =
+      cleanEvmAddress(lastUrlPart) ??
+      (/^0x[a-f0-9]{64}$/.test(lastUrlPart ?? "") ? lastUrlPart : undefined);
+
+    tokens.push({ chainId, tokenAddress, pairAddress });
+  }
+
+  return { status, tokens };
 }

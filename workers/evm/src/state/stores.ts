@@ -11,6 +11,7 @@ import type { PairMemoryEntry } from "../lib/engines/pairMemory";
 import type { SourcePool } from "../sources/normalize";
 import type { PreflightMomentumEvent, PreflightQualifiedSignal } from "../lib/preflight-redis";
 import { MAX_MOMENTUM_BUFFER, MAX_QUALIFIED_BUFFER } from "../config/constants";
+import type { DiscoverySource } from "@preflight/schema";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -165,6 +166,7 @@ export const marketFollowList = new Map<string, {
   attentionScore:   number;
   reason:           string;
   missCount:        number;
+  source?:          DiscoverySource;
 }>();
 
 // ── Gecko source health ───────────────────────────────────────────────────────
@@ -172,4 +174,18 @@ export const geckoSourceHealth = new Map<string, {
   lastResultCount:  number;
   emptyStreak:      number;
   lastFetchAt:      number;
+  last429At:        number | null;
+  consecutiveEmpty: number;
+  status:           "OK" | "DEGRADED" | "RATE_LIMITED";
 }>();
+
+// ── DexScreener source health ───────────────────────────────────────────────────────
+export const dexscreenerSourceHealth = {
+  lastFetchAt:      null as number | null,
+  lastResultCount:  0,
+  last429At:        null as number | null,
+  status:           "OK" as "OK" | "DEGRADED" | "RATE_LIMITED",
+};
+
+export let lastDsBoostedFetchAt = 0;
+export function setLastDsBoostedFetchAt(ts: number): void { lastDsBoostedFetchAt = ts; }

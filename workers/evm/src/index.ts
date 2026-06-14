@@ -13,7 +13,7 @@ import { WORKER_VERSION, SCAN_INTERVAL, FOLLOW_REFRESH_MS } from "./config/const
 import { connectChainWebSocket } from "./ws/manager";
 import { loadMemoryFromRedis, saveMemoryToRedis } from "./state/memory";
 import { refreshEthPrice } from "./infra/ethPrice";
-import { scan, runFollowRefresh } from "./pipeline/scan";
+import { scan, runFollowRefresh, runDsBoostedRefresh } from "./pipeline/scan";
 import { verticalCandidatesLoop } from "./pipeline/loops/vertical";
 import { lateCandidatesLoop } from "./pipeline/loops/late";
 import { fomoCandidatesLoop } from "./pipeline/loops/fomo";
@@ -56,4 +56,5 @@ async function safeScan(): Promise<void> {
   setInterval(() => { lateCandidatesLoop().catch(err => console.error("[LATE LOOP ERROR]", err)); },   30_000);
   setInterval(() => { fomoCandidatesLoop().catch(err => console.error("[FOMO LOOP ERROR]", err)); },   30_000);
   setInterval(() => { runFollowRefresh().catch(err => console.error("[FOLLOW REFRESH ERROR]", err)); }, FOLLOW_REFRESH_MS);
+  setInterval(() => { runDsBoostedRefresh().catch(err => console.error("[DS BOOSTED ERROR]", err)); }, 60_000);
 })();

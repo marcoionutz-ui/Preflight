@@ -7,6 +7,7 @@
 import type { ChainConfig } from "../config/chains";
 import { GECKO_BASE } from "../config/constants";
 import { normalizePool, type SourcePool } from "./normalize";
+import { geckoSourceHealth } from "../state/stores";
 
 async function fetchWithTimeout(url: string, ms = 8_000): Promise<Response> {
   const ctrl = new AbortController();
@@ -25,6 +26,22 @@ export async function fetchDiscoveryPools(chain: ChainConfig): Promise<SourcePoo
     const res2   = await fetchWithTimeout(`${GECKO_BASE}/networks/${chain.gecko}/trending_pools?page=2`);
     await new Promise(r => setTimeout(r, 600));
     const resNew = await fetchWithTimeout(`${GECKO_BASE}/networks/${chain.gecko}/new_pools?page=1`);
+
+	const now    = Date.now();
+    const got429 = [res1, res2, resNew].some(r => r.status === 429);
+
+    if (got429) {
+      const prev = geckoSourceHealth.get(chain.id);
+      geckoSourceHealth.set(chain.id, {
+        lastResultCount:  prev?.lastResultCount  ?? 0,
+        emptyStreak:      prev?.emptyStreak      ?? 0,
+        consecutiveEmpty: prev?.consecutiveEmpty ?? prev?.emptyStreak ?? 0,
+        lastFetchAt:      now,
+        last429At:        now,
+        status:           "RATE_LIMITED",
+      });
+      console.log(`[GECKO 429] ${chain.id} — partial/full rate limit observed`);
+    }
 
     const d1   = res1.ok   ? await res1.json()   as any : { data: [] };
 	const d2   = res2.ok   ? await res2.json()   as any : { data: [] };

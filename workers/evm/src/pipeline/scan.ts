@@ -8,13 +8,14 @@ import {
   activeWatch, hotCandidates, armedEntries,
   v3PoolMap, v4PoolMap, wsFlow, poolLiquidity,
   memory, qualifiedSignalsBuffer, marketFollowList, geckoSourceHealth, WatchKind,
+  dexscreenerSourceHealth, lastDsBoostedFetchAt, setLastDsBoostedFetchAt,
 } from "../state/stores";
 import { updateMemory, saveMemoryToRedis } from "../state/memory";
 import { trackPool, tokenPools, tokenPoolKey } from "../infra/poolTracker";
 import { getRedis } from "../infra/redis";
 import { sendTelegram } from "../infra/telegram";
 import { fetchDiscoveryPools, fetchPoolByAddress } from "../sources/gecko";
-import { fetchDsPairByAddress } from "../sources/dexscreener";
+import { fetchDsPairByAddress, fetchDsTokenPairs, fetchDsBoostedTokens } from "../sources/dexscreener";
 import { isBlockedSymbol } from "../sources/normalize";
 import type { SourcePool } from "../sources/normalize";
 import { CHAINS } from "../config/chains";
@@ -23,6 +24,7 @@ import {
   MAX_QUALIFIED_BUFFER, ARM_CONFIRM_MS, ARM_MIN_PRICE_CONFIRM, V3_DEXES,
   MAX_EVENT_WATCH, MAX_SHORT_WATCH, MAX_CONTINUATION_WATCH, MAX_FRESH_WATCH_ATT, MAX_ACTIVE_WATCH,
   FOLLOW_TTL_MS, FOLLOW_ADD_SCORE, FOLLOW_REMOVE_SCORE, FOLLOW_REFRESH_LIMIT, FOLLOW_MAX_MISSES, MAX_ACTIVE_WATCH_BY_CHAIN,
+  DS_BOOSTED_INTERVAL_MS, DS_BOOSTED_MAX_PER_RUN,
 } from "../config/constants";
 import { classifyMomentumEvent, isVerticalWatch, isLateWatch, isHardReject, shouldRecordEvent } from "../risk/momentum";
 import { buildMomentumEventEntry, buildQualifiedSignalEntry } from "../lib/preflight-redis";
@@ -112,6 +114,16 @@ async function writeScannerStats(
     savedAt: Date.now(),
     scan: { durationMs: Date.now() - scanStart, totalFetched, processedPools },
     chains: chainsHealth,
+    dexscreener: {
+      lastFetchAgeSec:  dexscreenerSourceHealth.lastFetchAt
+        ? Math.round((Date.now() - dexscreenerSourceHealth.lastFetchAt) / 1000)
+        : null,
+      lastResultCount:  dexscreenerSourceHealth.lastResultCount,
+      last429AgeSec:    dexscreenerSourceHealth.last429At
+        ? Math.round((Date.now() - dexscreenerSourceHealth.last429At) / 1000)
+        : null,
+      status:           dexscreenerSourceHealth.status,
+    },
   }), "EX", 300);
 }
 
@@ -128,10 +140,26 @@ export async function scan(): Promise<void> {
   CHAINS.forEach((chain, i) => {
     const count = allPoolsPerChain[i]?.length ?? 0;
     const prev  = geckoSourceHealth.get(chain.id);
+    const now      = Date.now();
+    const newEmpty = count === 0 ? (prev?.consecutiveEmpty ?? prev?.emptyStreak ?? 0) + 1 : 0;
+
+    const hit429ThisScan =
+      !!prev?.last429At && now - prev.last429At < 60_000;
+
+    const status: "OK" | "DEGRADED" | "RATE_LIMITED" =
+      hit429ThisScan && count === 0 ? "RATE_LIMITED" :
+      hit429ThisScan                ? "DEGRADED" :
+      newEmpty >= 3                 ? "DEGRADED" :
+      count === 0                   ? "DEGRADED" :
+      "OK";
+
     geckoSourceHealth.set(chain.id, {
-      lastResultCount: count,
-      emptyStreak:     count === 0 ? (prev?.emptyStreak ?? 0) + 1 : 0,
-      lastFetchAt:     Date.now(),
+      lastResultCount:  count,
+      emptyStreak:      count === 0 ? (prev?.emptyStreak ?? 0) + 1 : 0,
+      consecutiveEmpty: newEmpty,
+      lastFetchAt:      now,
+      last429At:        prev?.last429At ?? null,
+      status,
     });
     if (count === 0) {
       console.log(`[GECKO EMPTY] ${chain.id} — emptyStreak:${(prev?.emptyStreak ?? 0) + 1}`);
@@ -280,7 +308,7 @@ async function processPool(
     momentumEvent.monitoringTier === "EVENT_WATCH" ||
     (pool.reserveUsd >= 250_000 && (Math.abs(pool.priceChange.h1) >= 500 || Math.abs(pool.priceChange.h24) >= 1000));
 
-  if (shouldFollow) {
+ if (shouldFollow) {
     const existing = marketFollowList.get(pairAddr);
     marketFollowList.set(pairAddr, {
       chain:           pool.chain,
@@ -289,9 +317,16 @@ async function processPool(
       attentionScore:  att,
       reason:          momentumEvent.monitoringTier,
       missCount:       existing?.missCount ?? 0,
+      source:          existing?.source,
     });
   } else if (marketFollowList.has(pairAddr) && att < FOLLOW_REMOVE_SCORE) {
-    marketFollowList.delete(pairAddr);
+    const existingFollow = marketFollowList.get(pairAddr);
+
+    // Agent-supplied watches stay until FOLLOW_TTL_MS / miss eviction.
+    // Preflight still reports context; it does not decide that the agent should stop watching.
+    if (existingFollow?.source !== "AGENT_SUPPLIED") {
+      marketFollowList.delete(pairAddr);
+    }
   }
 
   if (momentumEvent.verdict !== "NO_MOMENTUM") {
@@ -605,11 +640,91 @@ function seedFollowListFromMemory(): void {
       attentionScore:  100,
       reason:          "seeded_from_memory",
       missCount:       0,
+      source:          undefined,
     });
     seeded++;
   }
 
   if (seeded > 0) console.log(`[FOLLOW SEED] ${seeded} pairs seeded from memory | followList:${marketFollowList.size}`);
+}
+
+export async function runDsBoostedRefresh(): Promise<void> {
+  const now = Date.now();
+  if (now - lastDsBoostedFetchAt < DS_BOOSTED_INTERVAL_MS) return;
+  setLastDsBoostedFetchAt(now);
+
+  const allowedChainIds = new Set(CHAINS.map(c => c.id));
+
+  try {
+    const { status, tokens: boosted } = await fetchDsBoostedTokens(allowedChainIds);
+
+    if (status === 429) {
+      dexscreenerSourceHealth.lastFetchAt     = now;
+      dexscreenerSourceHealth.last429At       = now;
+      dexscreenerSourceHealth.lastResultCount = 0;
+      dexscreenerSourceHealth.status          = "RATE_LIMITED";
+      console.log("[DS BOOSTED] rate limited");
+      return;
+    }
+
+    if (!boosted.length) {
+      dexscreenerSourceHealth.lastFetchAt     = now;
+      dexscreenerSourceHealth.lastResultCount = 0;
+      dexscreenerSourceHealth.status          = "DEGRADED";
+      return;
+    }
+
+    dexscreenerSourceHealth.lastFetchAt     = now;
+    dexscreenerSourceHealth.lastResultCount = boosted.length;
+    dexscreenerSourceHealth.status          = "OK";
+
+    const chainCfgMap = new Map(CHAINS.map(c => [c.id, c]));
+    let added = 0;
+
+    for (const item of boosted.slice(0, DS_BOOSTED_MAX_PER_RUN)) {
+      const chainCfg = chainCfgMap.get(item.chainId);
+      if (!chainCfg) continue;
+
+      let pool: SourcePool | null = null;
+
+      if (item.pairAddress) {
+        pool = await fetchDsPairByAddress(chainCfg, item.pairAddress);
+      }
+
+      if (!pool) {
+        const dsPools = await fetchDsTokenPairs(chainCfg, item.tokenAddress);
+        pool = dsPools.sort((a, b) => b.reserveUsd - a.reserveUsd)[0] ?? null;
+      }
+
+      if (!pool) continue;
+      if (isBlockedSymbol(pool.symbol)) continue;
+
+      const addr     = pool.pairAddress;
+      const existing = marketFollowList.get(addr);
+
+      marketFollowList.set(addr, {
+        chain:           pool.chain,
+        addedAt:         existing?.addedAt ?? now,
+        attentionScore:  Math.max(existing?.attentionScore ?? 0, 75),
+        lastRefreshedAt: 0,
+        missCount:       existing?.missCount ?? 0,
+        reason:          existing?.reason
+          ? `${existing.reason} | DEXSCREENER_BOOSTED`.slice(0, 160)
+          : "DEXSCREENER_BOOSTED",
+        source:          existing?.source === "AGENT_SUPPLIED"
+          ? "AGENT_SUPPLIED"
+          : "DEXSCREENER_BOOSTED",
+      });
+
+      added++;
+      console.log(`[DS BOOSTED] ${pool.symbol} [${pool.chain}] pair:${addr.slice(0, 12)}...`);
+    }
+
+    console.log(`[DS BOOSTED] ${added}/${boosted.length} tokens added to followList`);
+  } catch (e) {
+    dexscreenerSourceHealth.status = "DEGRADED";
+    console.log(`[DS BOOSTED] fetch error:`, e instanceof Error ? e.message : e);
+  }
 }
 
 export async function runFollowRefresh(): Promise<void> {
@@ -618,6 +733,45 @@ export async function runFollowRefresh(): Promise<void> {
 
   // Seed din memory la fiecare run
   seedFollowListFromMemory();
+
+	// ── Agent watch requests ───────────────────────────────────────────────
+  try {
+    const r = getRedis();
+    if (r) {
+      for (let i = 0; i < 50; i++) {
+        const item = await r.rpop(REDIS_KEYS.agentWatchRequests);
+        if (!item) break;
+        try {
+          const req      = JSON.parse(item);
+          const reqAddr  = String(req.pairAddress ?? "").toLowerCase().trim();
+          const reqChain = String(req.chain ?? "").toLowerCase().trim();
+          const isPoolId =
+            /^0x[a-f0-9]{40}$/.test(reqAddr) ||
+            /^0x[a-f0-9]{64}$/.test(reqAddr);
+          if (!isPoolId) continue;
+          if (!CHAINS.some(c => c.id === reqChain)) continue;
+          const reqReason     = String(req.reason ?? "AGENT_SUPPLIED").slice(0, 160);
+          const reqAt         = Number(req.requestedAt ?? now);
+          const requestedAt   = Number.isFinite(reqAt) ? reqAt : now;
+          const existingEntry = marketFollowList.get(reqAddr);
+          marketFollowList.set(reqAddr, {
+            chain:           reqChain,
+            addedAt:         existingEntry?.addedAt ?? requestedAt,
+            attentionScore:  Math.max(existingEntry?.attentionScore ?? 0, 80),
+            lastRefreshedAt: existingEntry?.lastRefreshedAt ?? 0,
+            missCount:       existingEntry?.missCount ?? 0,
+            reason:          existingEntry?.reason
+              ? `${existingEntry.reason} | ${reqReason}`.slice(0, 160)
+              : reqReason,
+            source: "AGENT_SUPPLIED",
+          });
+          console.log(`[AGENT WATCH] queued: ${reqChain}:${reqAddr.slice(0, 12)}... reason:${reqReason}`);
+        } catch { /* ignore malformed */ }
+      }
+    }
+  } catch (e) {
+    console.log(`[AGENT WATCH] Redis read error:`, e instanceof Error ? e.message : e);
+  }
 
   // Curăță entries expirate
   for (const [addr, entry] of marketFollowList.entries()) {
@@ -670,8 +824,10 @@ export async function runFollowRefresh(): Promise<void> {
         continue;
       }
 
+      const discoverySource = entry.source ?? "MARKET_FOLLOW_LIST";
+
       await processPool(
-        { ...pool, discoverySource: "MARKET_FOLLOW_LIST" },
+        { ...pool, discoverySource },
         counters,
         chainCounts,
         { source: "follow_refresh" },

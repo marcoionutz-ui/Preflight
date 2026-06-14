@@ -70,10 +70,17 @@ Use this first to verify the worker is running before calling other tools.`,
               Object.entries(scannerStats.chains ?? {}).map(([chainId, c]: [string, any]) => [
                 chainId,
                 {
-                  lastResultCount: c.lastResultCount,
-                  emptyStreak:     c.emptyStreak,
-                  lastFetchAgeSec: c.lastFetchAt ? Math.round((now - c.lastFetchAt) / 1000) : null,
-                  status:          c.emptyStreak >= 3 ? "DEGRADED" : c.emptyStreak >= 1 ? "INTERMITTENT" : "OK",
+                  lastResultCount:  c.lastResultCount,
+                  emptyStreak:      c.emptyStreak,
+                  consecutiveEmpty: c.consecutiveEmpty ?? c.emptyStreak ?? 0,
+                  lastFetchAgeSec:  c.lastFetchAt ? Math.round((now - c.lastFetchAt) / 1000) : null,
+                  last429AgeSec:    c.last429At   ? Math.round((now - c.last429At)   / 1000) : null,
+                  status:           c.status ?? (
+                    c.emptyStreak >= 3 ? "DEGRADED" :
+                    c.emptyStreak >= 1 ? "DEGRADED" :
+                    "OK"
+                  ),
+				  dexscreenerHealth: scannerStats.dexscreener ?? null,
                 },
               ])
             ),

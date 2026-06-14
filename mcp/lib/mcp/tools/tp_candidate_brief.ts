@@ -3,6 +3,7 @@ import { z } from "zod";
 import { readAllRedis, getPipelineState, findLastEventForPair, formatEth, formatVol } from "../redis-reader";
 import type { PairState } from "../types";
 import { mcpOk, mcpErr, ERR } from "../errors";
+import type { SourceAgreement } from "@preflight/schema";
 
 function getLpCoverage(dexType: string | null | undefined, hasData: boolean): string {
   const d = (dexType ?? "").toUpperCase();
@@ -19,6 +20,36 @@ function getLpCoverage(dexType: string | null | undefined, hasData: boolean): st
   if (d === "V2") return "V2_NO_EVENTS_5M";
 
   return "NO_LP_COVERAGE";
+}
+
+function getSourceAgreement(
+  allSources:      string[],
+  lastDiscoveryAt: number | null,
+  now:             number,
+): SourceAgreement {
+  const RETENTION_SOURCES = new Set(["MARKET_FOLLOW_LIST"]);
+  const LOOKUP_SOURCES    = new Set(["DEXSCREENER_PAIR_FALLBACK"]);
+
+  const realSources = allSources.filter(
+    s => !RETENTION_SOURCES.has(s) && !LOOKUP_SOURCES.has(s),
+  );
+
+  const isRetained = allSources.some(s => RETENTION_SOURCES.has(s));
+
+  if (!realSources.length && !isRetained) return "NO_DISCOVERY_DATA";
+
+  const staleSec = lastDiscoveryAt ? Math.round((now - lastDiscoveryAt) / 1_000) : null;
+  const isStale  = staleSec !== null && staleSec > 30 * 60 && !isRetained;
+
+  if (isStale) return "STALE_DISCOVERY";
+
+  if (realSources.length >= 2) return "MULTI_DISCOVERY_SOURCES";
+
+  if (isRetained) return "RETAINED_BY_FOLLOW_LIST";
+
+  if (realSources.length === 1) return "SINGLE_DISCOVERY_SOURCE";
+
+  return "NO_DISCOVERY_DATA";
 }
 
 export function registerCandidateBrief(server: McpServer, exposePerformance: boolean) {
@@ -215,6 +246,8 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
             const lastSec = Math.max(0, Math.round((now - lastDiscoveryAt) / 1_000));
             lines.push(`  • lastDiscovery: ${lastSec}s ago`);
           }
+
+          lines.push(`  • agreement: ${getSourceAgreement(allSources, lastDiscoveryAt, now)}`);
         }
 
         lines.push("");
