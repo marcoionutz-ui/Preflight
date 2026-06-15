@@ -10,6 +10,7 @@ import {
   memory, qualifiedSignalsBuffer, marketFollowList, geckoSourceHealth, WatchKind,
   dexscreenerSourceHealth, lastDsBoostedFetchAt, setLastDsBoostedFetchAt,
 } from "../state/stores";
+import { BUDGET, maxWatchForChain } from "../config/mode";
 import { updateMemory, saveMemoryToRedis } from "../state/memory";
 import { trackPool, tokenPools, tokenPoolKey } from "../infra/poolTracker";
 import { getRedis } from "../infra/redis";
@@ -22,8 +23,8 @@ import { CHAINS } from "../config/chains";
 import {
   WORKER_VERSION, MAX_SHADOW_PER_SCAN, MAX_VERTICAL_WATCH, MAX_LATE_WATCH,
   MAX_QUALIFIED_BUFFER, ARM_CONFIRM_MS, ARM_MIN_PRICE_CONFIRM, V3_DEXES,
-  MAX_EVENT_WATCH, MAX_SHORT_WATCH, MAX_CONTINUATION_WATCH, MAX_FRESH_WATCH_ATT, MAX_ACTIVE_WATCH,
-  FOLLOW_TTL_MS, FOLLOW_ADD_SCORE, FOLLOW_REMOVE_SCORE, FOLLOW_REFRESH_LIMIT, FOLLOW_MAX_MISSES, MAX_ACTIVE_WATCH_BY_CHAIN,
+  MAX_EVENT_WATCH, MAX_SHORT_WATCH, MAX_CONTINUATION_WATCH, MAX_FRESH_WATCH_ATT,
+  FOLLOW_TTL_MS, FOLLOW_ADD_SCORE, FOLLOW_REMOVE_SCORE, FOLLOW_REFRESH_LIMIT, FOLLOW_MAX_MISSES,
   DS_BOOSTED_INTERVAL_MS, DS_BOOSTED_MAX_PER_RUN,
 } from "../config/constants";
 import { classifyMomentumEvent, isVerticalWatch, isLateWatch, isHardReject, shouldRecordEvent } from "../risk/momentum";
@@ -36,6 +37,7 @@ import { quickEdgeScore } from "../risk/scoring";
 import { getEntryGate } from "../risk/gates";
 import { recordMomentumEvent } from "../events/momentum";
 import { addWatchCandidate, armCandidate, recordDrop, recordPipelineEvent } from "./transitions";
+import { recordLifecycleOutcome } from "../state/lifecycle";
 import { triggerRiskCheck } from "../risk/riskChecker";
 import { requestImmediateScopedSubscribe } from "../ws/subscriptions";
 import { writeAllSnapshots } from "./snapshots";
@@ -43,12 +45,12 @@ import { subscribeV3Scoped, subscribeV4Scoped, subscribeV2Scoped, cleanupActiveW
 import { REDIS_KEYS } from "@preflight/schema";
 
 function hasWatchSlot(chain: string): boolean {
-  const maxForChain = MAX_ACTIVE_WATCH_BY_CHAIN[chain] ?? 10;
+  const maxForChain = maxWatchForChain(chain);
   let chainCount = 0;
   for (const w of activeWatch.values()) {
     if (w.chain === chain) chainCount++;
   }
-  return activeWatch.size < MAX_ACTIVE_WATCH && chainCount < maxForChain;
+  return activeWatch.size < BUDGET.maxActiveWatch && chainCount < maxForChain;
 }
 
 function triggerPoolRisk(pool: SourcePool): void {
@@ -587,6 +589,7 @@ async function processPool(
   armedEntries.delete(pairAddr);
 
   recordPipelineEvent("ARM_CONFIRMED", mem.symbol, pool.chain, pairAddr, "ARMED", "CONFIRMED");
+  recordLifecycleOutcome(pairAddr, "QUALIFIED_EMITTED", "ARMED", "ARM_CONFIRMED: price + flow held");
 
   const liqCtx = getLiquidityContext(pairAddr);
   const qsScan = buildQualifiedSignalEntry({

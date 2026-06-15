@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { readAllRedis } from "../redis-reader";
-import { mcpOk, mcpErr, ERR } from "../errors";
+import { mcpResponse, mcpErr, ERR } from "../errors";
 
 export function registerDoNotChase(server: McpServer) {
   server.registerTool(
@@ -29,7 +29,7 @@ Args: limit (default 10, max 30), minutes_back (default 10, max 10)`,
         const cutoff = now - minutes_back * 60_000;
         const recent = drops.filter(d => d.droppedAt >= cutoff).slice(0, limit);
 
-        if (!recent.length) return mcpOk(`No drops in the last ${minutes_back} minutes. Pipeline has been stable.`);
+        if (!recent.length) return mcpResponse({ text: `No drops in the last ${minutes_back} minutes. Pipeline has been stable.`, confidence: "HIGH" });
 
         const lines: string[] = [];
         lines.push(`DO NOT CHASE — dropped in last ${minutes_back}m (${recent.length} total):`);
@@ -52,7 +52,8 @@ Args: limit (default 10, max 30), minutes_back (default 10, max 10)`,
 
           const r = reason.toLowerCase();
           if (r.includes("flow faded") || r.includes("flow turned") || r.includes("no buying flow")) {
-            line += "\n  → Fresh WS confirmation absent; continuation evidence not currently present.";          } else if (r.includes("too late") || r.includes("vertical")) {
+            line += "\n  → Fresh WS confirmation absent; continuation evidence not currently present.";          
+			} else if (r.includes("too late") || r.includes("vertical")) {
             line += "\n  → Price extension risk elevated; late-chase conditions detected.";
           } else if (r.includes("dump") || r.includes("-")) {
             line += "\n  → Price dumped after signal. Avoid until structure rebuilds.";
@@ -68,7 +69,11 @@ Args: limit (default 10, max 30), minutes_back (default 10, max 10)`,
           lines.push("");
         }
 
-        return mcpOk(lines.join("\n").trim());
+        return mcpResponse({
+          text: lines.join("\n").trim(),
+          confidence: "HIGH",
+          freshnessSec: Math.round((Date.now() - (recent[0]?.droppedAt ?? Date.now())) / 1000),
+		});
       } catch (e) { return mcpErr(ERR.INTERNAL, e instanceof Error ? e.message : String(e)); }
     },
   );

@@ -4,7 +4,7 @@ import { readAllRedis } from "../redis-reader";
 import { getRedis } from "@/lib/db/redis";
 import { checkTokenRisk } from "@preflight/risk-layer";
 import type { RiskResult } from "@preflight/risk-layer";
-import { mcpOk, mcpErr, ERR } from "../errors";
+import { mcpResponse, mcpErr, ERR } from "../errors";
 
 // fix ChatGPT: cache comun cu workerul — același key ca riskChecker.ts
 const RISK_CACHE_TTL_SEC       = 6 * 60 * 60;
@@ -114,11 +114,11 @@ Results are cached in Redis for 6 hours (shared with worker risk cache).
 Args:
   pair_address   — EVM pair address (used to look up token address from worker context)
   token_address  — optional: pass directly if worker snapshot cannot resolve it
-  chain          — optional: 'base' or 'arbitrum'`,
+  chain          — optional: 'base', 'arbitrum', or 'bsc'`,
       inputSchema: {
         pair_address:  z.string().min(10).describe("EVM pair address (0x...) or V4 pool ID"),
         token_address: z.string().optional().describe("Optional token contract address"),
-        chain:         z.string().optional().describe("Chain: 'base' or 'arbitrum'"),
+        chain:         z.string().optional().describe("Chain: 'base', 'arbitrum', or 'bsc'"),
       },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
@@ -152,15 +152,19 @@ Args:
         if (!rawTokenAddress || !resolvedChain) {
           const missing: string[] = [];
           if (!rawTokenAddress) missing.push("token address not found — pass token_address explicitly");
-          if (!resolvedChain)   missing.push("chain could not be determined — pass chain: 'base' or 'arbitrum'");
-          return mcpOk([
-            `PREFLIGHT SAFETY: ${symbol}`,
-            ``,
-            `⚠️ Cannot run safety check:`,
-            ...missing.map(m => `  • ${m}`),
-            ``,
-            `safetyStatus: UNKNOWN_RISK`,
-          ].join("\n"));
+          if (!resolvedChain)   missing.push("chain could not be determined — pass chain: 'base', 'arbitrum', or 'bsc'");
+          return mcpResponse({
+            text: [
+              `PREFLIGHT SAFETY: ${symbol}`,
+              ``,
+              `⚠️ Cannot run safety check:`,
+              ...missing.map(m => `  • ${m}`),
+              ``,
+              `safetyStatus: UNKNOWN_RISK`,
+            ].join("\n"),
+            confidence: "LOW",
+            warnings: missing,
+          });
         }
 
         const tokenAddr    = cleanTokenAddress(rawTokenAddress);
@@ -240,7 +244,13 @@ Args:
           lines.push(`  Safety data incomplete — ${risk.missingData.length} data points unavailable.`);
         }
 
-        return mcpOk(lines.join("\n"));
+        return mcpResponse({
+          text: lines.join("\n"),
+          confidence: risk.confidence === "HIGH" ? "HIGH" : risk.confidence === "MEDIUM" ? "MEDIUM" : "LOW",
+          freshnessSec: Math.round((Date.now() - risk.checkedAt) / 1000),
+          dataQuality: { risk: risk.source === "goplus" ? "cached" : "missing" },
+          evidence: { safetyStatus, sellability, ownerRisk, riskLevel: risk.riskLevel },
+        });
       } catch (e) { return mcpErr(ERR.INTERNAL, e instanceof Error ? e.message : String(e)); }
     },
   );

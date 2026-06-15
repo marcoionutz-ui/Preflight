@@ -21,6 +21,7 @@ import type { PreflightDrop, PreflightPairContext } from "../lib/preflight-redis
 import { buildWorkerObservation, type ObservationContext } from "../lib/observation";
 import { tokenPools, tokenPoolKey } from "../infra/poolTracker";
 import { WORKER_VERSION } from "../config/constants";
+import { getLifecycle, getRecentLifecycles } from "../state/lifecycle";
 import { CHAINS } from "../config/chains";
 import { writeCoverageSnapshot } from "./coverageSnapshot";
 import { REDIS_KEYS } from "@preflight/schema";

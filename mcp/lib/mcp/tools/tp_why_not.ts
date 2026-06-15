@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { readAllRedis, getPipelineState, findLastEventForPair, findLastDropForPair, formatEth, formatVol } from "../redis-reader";
 import type { PairState } from "../types";
-import { mcpOk, mcpErr, ERR } from "../errors";
+import { mcpResponse, mcpErr, ERR } from "../errors";
 
 export function registerWhyNot(server: McpServer, exposePerformance: boolean) {
   server.registerTool(
@@ -28,8 +28,11 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
         const ctx = await readAllRedis();
         if (!ctx) return mcpErr(ERR.REDIS_DOWN, "Redis not connected");
 
-        const { now, states, watch, hot, armed, snapshot, events, drops } = ctx;
+        const { now, states, watch, hot, armed, snapshot, events, drops, pfLifecycle } = ctx;
         const addr = pair_address.toLowerCase().trim();
+
+        const lifecycle =
+          (pfLifecycle ?? []).find((l: any) => l.pairAddress?.toLowerCase() === addr) ?? null;
 
         const pipeState = getPipelineState(addr, watch, hot, armed);
         const data      = states[addr] ?? snapshot?.memory?.[addr] ?? null;
@@ -43,7 +46,7 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
 
         if (pipeState === "HOT" || pipeState === "ARMED") {
           lines.push(`This pair IS currently ${pipeState} — use tp_candidate_brief for details.`);
-          return mcpOk(lines.join("\n"));
+          return mcpResponse({ text: lines.join("\n"), confidence: "HIGH" });
         }
 
         if (pipeState === "WATCHING") {
@@ -54,7 +57,15 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
           if (w?.priceVsEntryPct !== null && w?.priceVsEntryPct !== undefined) {
             lines.push(`Price vs entry: ${w.priceVsEntryPct > 0 ? "+" : ""}${w.priceVsEntryPct}%`);
           }
-          return mcpOk(lines.join("\n"));
+          if (lifecycle) {
+          const ageSec = Math.round((now - lifecycle.lastOutcomeAt) / 1000);
+          lines.push("");
+          lines.push(`LAST_OUTCOME: ${lifecycle.lastOutcome} | ${ageSec}s ago | from:${lifecycle.fromState}`);
+          lines.push(`  reason: ${lifecycle.reason}`);
+          lines.push(`  candidateActive: false`);
+        }
+
+        return mcpResponse({ text: lines.join("\n"), confidence: "MEDIUM" });
         }
 
         const lastDrop = findLastDropForPair(addr, drops);
@@ -115,7 +126,7 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
           lines.push("It may not have appeared in recent trending/new pool scans.");
         }
 
-        return mcpOk(lines.join("\n"));
+        return mcpResponse({ text: lines.join("\n"), confidence: "MEDIUM" });
       } catch (e) { return mcpErr(ERR.INTERNAL, e instanceof Error ? e.message : String(e)); }
     },
   );

@@ -9,7 +9,8 @@ import * as dotenv from "dotenv";
 dotenv.config();
 
 import { CHAINS } from "./config/chains";
-import { WORKER_VERSION, SCAN_INTERVAL, FOLLOW_REFRESH_MS } from "./config/constants";
+import { WORKER_VERSION } from "./config/constants";
+import { MODE, BUDGET } from "./config/mode";
 import { connectChainWebSocket } from "./ws/manager";
 import { loadMemoryFromRedis, saveMemoryToRedis } from "./state/memory";
 import { refreshEthPrice } from "./infra/ethPrice";
@@ -21,9 +22,14 @@ import { hotCandidatesLoop } from "./pipeline/loops/hot";
 
 console.log(`Preflight Worker ${WORKER_VERSION} starting...`);
 console.log(`Chains: ${CHAINS.map(c => c.id).join(", ")}`);
+console.log(`Mode: ${MODE} | scan:${BUDGET.scanIntervalMs}ms | maxWatch:${BUDGET.maxActiveWatch} | ws:${BUDGET.wsEnabled}`);
 
-// Conectează WS pentru fiecare chain
-CHAINS.forEach(c => connectChainWebSocket(c));
+// Conectează WS pentru fiecare chain (doar dacă mode permite)
+if (BUDGET.wsEnabled) {
+  CHAINS.forEach(c => connectChainWebSocket(c));
+} else {
+  console.log(`[MODE] WS disabled for mode ${MODE} — scan-only`);
+}
 
 let scanning = false;
 
@@ -50,11 +56,11 @@ async function safeScan(): Promise<void> {
   setInterval(saveMemoryToRedis,  60_000);
 
   safeScan();
-  setInterval(safeScan, SCAN_INTERVAL);
+  setInterval(safeScan, BUDGET.scanIntervalMs);
   setInterval(() => { hotCandidatesLoop().catch(err => console.error("[HOT LOOP ERROR]", err)); },     3_000);
   setInterval(() => { verticalCandidatesLoop().catch(err => console.error("[VERTICAL LOOP ERROR]", err)); }, 15_000);
   setInterval(() => { lateCandidatesLoop().catch(err => console.error("[LATE LOOP ERROR]", err)); },   30_000);
   setInterval(() => { fomoCandidatesLoop().catch(err => console.error("[FOMO LOOP ERROR]", err)); },   30_000);
-  setInterval(() => { runFollowRefresh().catch(err => console.error("[FOLLOW REFRESH ERROR]", err)); }, FOLLOW_REFRESH_MS);
+  setInterval(() => { runFollowRefresh().catch(err => console.error("[FOLLOW REFRESH ERROR]", err)); }, BUDGET.followRefreshMs);
   setInterval(() => { runDsBoostedRefresh().catch(err => console.error("[DS BOOSTED ERROR]", err)); }, 60_000);
 })();

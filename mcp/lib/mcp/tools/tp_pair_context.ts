@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { readAllRedis, freshnessLabel, getPipelineState, readPairContext } from "../redis-reader";
 import type { PairState, MemoryEntry } from "../types";
-import { mcpOk, mcpErr, ERR } from "../errors";
+import { mcpResponse, mcpErr, ERR } from "../errors";
 import type { SourceAgreement } from "@preflight/schema";
 
 function getLpCoverage(dexType: string | null | undefined, hasData: boolean): string {
@@ -68,10 +68,10 @@ pipelineState: WATCHING = subscribed via WS, accumulating flow
 
 contextQuality: fresh (<45s), aging (<90s), stale (>90s), snapshot_only, unknown
 
-Args: pair_address (0x... EVM address or V4 pool ID), chain (optional: base/arbitrum)`,
+Args: pair_address (0x... EVM address or V4 pool ID), chain (optional: base/arbitrum/bsc)`,
       inputSchema: {
         pair_address: z.string().min(10).describe("EVM pair address (0x...) or V4 pool ID"),
-        chain:        z.string().optional().describe("Chain hint: 'base' or 'arbitrum'"),
+        chain:        z.string().optional().describe("Chain hint: 'base', 'arbitrum', or 'bsc'"),
       },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
@@ -101,7 +101,8 @@ Args: pair_address (0x... EVM address or V4 pool ID), chain (optional: base/arbi
 
         if (!pairState && !snapMem) {
           if (pfCtx) {
-            return mcpOk({
+            const pfFreshnessSec = pfCtx.updatedAt ? Math.round((now - pfCtx.updatedAt) / 1000) : null;
+            const pfPayload = {
               found: true, pairAddress: addr,
               symbol: pfCtx.symbol,
               chain:  pfCtx.chain,
@@ -109,15 +110,28 @@ Args: pair_address (0x... EVM address or V4 pool ID), chain (optional: base/arbi
               pipeline: { state: pfCtx.pipelineState ?? "NONE", watch: watchOut, hot: hotOut, armed: armedOut },
               contextQuality: pfCtx.contextQuality ?? "fresh",
               dataSource: "preflight_pair_context",
-              freshnessSec: pfCtx.updatedAt ? Math.round((now - pfCtx.updatedAt) / 1000) : null,
+              freshnessSec: pfFreshnessSec,
+            };
+            return mcpResponse({
+              text: JSON.stringify(pfPayload, null, 2),
+              freshnessSec: pfFreshnessSec,
+              confidence:
+                pfFreshnessSec !== null && pfFreshnessSec < 45 ? "HIGH" :
+                pfFreshnessSec !== null && pfFreshnessSec < 90 ? "MEDIUM" :
+                "LOW",
             });
           }
-          return mcpOk({
-            found: false, pairAddress: addr,
-            symbol: watchOut?.symbol ?? hotOut?.symbol ?? armedOut?.symbol ?? null,
-            pipeline: { state: pipelineState, watch: watchOut, hot: hotOut, armed: armedOut },
-            contextQuality: "unknown", dataSource: "none", freshnessSec: null,
-			preflightContext: pfCtx ?? null,
+          return mcpResponse({
+            text: JSON.stringify({
+              found: false, pairAddress: addr,
+              symbol: watchOut?.symbol ?? hotOut?.symbol ?? armedOut?.symbol ?? null,
+              pipeline: { state: pipelineState, watch: watchOut, hot: hotOut, armed: armedOut },
+              contextQuality: "unknown", dataSource: "none", freshnessSec: null,
+              preflightContext: pfCtx ?? null,
+            }, null, 2),
+            freshnessSec: null,
+            confidence: "LOW",
+            warnings: ["pair not found in worker context"],
           });
         }
 
@@ -126,7 +140,7 @@ Args: pair_address (0x... EVM address or V4 pool ID), chain (optional: base/arbi
           ? Math.round((now - pairState.updatedAt) / 1000)
           : snapshot?.savedAt ? Math.round((now - snapshot.savedAt) / 1000) : null;
 
-        return mcpOk({
+        const mainPayload = {
           found: true, pairAddress: addr,
           symbol: data.symbol,
           chain:  chain ?? pairState?.chain ?? watchOut?.chain ?? hotOut?.chain ?? armedOut?.chain ?? null,
@@ -136,83 +150,6 @@ Args: pair_address (0x... EVM address or V4 pool ID), chain (optional: base/arbi
             firstSeenAt:        (pairState as any)?.firstSeenAt  ?? (snapMem as any)?.firstSeen  ?? null,
             lastSeenAt:         (pairState as any)?.lastSeenAt   ?? (snapMem as any)?.lastSeen   ?? null,
             pipelineEnteredAt:  (pairState as any)?.pipelineEnteredAt  ?? null,
-            currentStateAgeSec: (pairState as any)?.currentStateAgeSec ?? null,
-            seenCount:          data.seenCount,
-          },
-		            discovery: (() => {
-            const allSources: string[] =
-              (pairState as any)?.discovery?.discoverySources ??
-              (snapMem as any)?.discoverySources ??
-              [];
-
-            const RETENTION_SOURCES = new Set(["MARKET_FOLLOW_LIST"]);
-            const LOOKUP_SOURCES    = new Set(["DEXSCREENER_PAIR_FALLBACK"]);
-
-            const discoverySources = allSources.filter(
-              s => !RETENTION_SOURCES.has(s) && !LOOKUP_SOURCES.has(s),
-            );
-
-            const retainedVia = allSources.filter(
-              s => RETENTION_SOURCES.has(s),
-            );
-
-            const resolvedVia = allSources.filter(
-              s => LOOKUP_SOURCES.has(s),
-            );
-
-            const rawPrimary =
-              (pairState as any)?.discovery?.primaryDiscoverySource ??
-              (snapMem as any)?.primaryDiscoverySource ??
-              null;
-
-            const primaryDiscoverySource =
-              rawPrimary && discoverySources.includes(rawPrimary)
-                ? rawPrimary
-                : discoverySources[0] ?? null;
-
-            const firstDiscoveredAt =
-              (pairState as any)?.discovery?.firstDiscoveredAt ??
-              (snapMem as any)?.firstDiscoveredAt ?? null;
-
-            const lastDiscoveryAt =
-              (pairState as any)?.discovery?.lastDiscoveryAt ??
-              (snapMem as any)?.lastDiscoveryAt ?? null;
-
-            return {
-              primaryDiscoverySource,
-              discoverySources,
-              retainedVia,
-              resolvedVia,
-              agreement: getSourceAgreement(allSources, lastDiscoveryAt, now),
-              firstDiscoveredAt,
-              lastDiscoveryAt,
-            };
-          })(),
-          priceVsFirstSeenPct: (pairState as any)?.priceVsFirstSeenPct ?? null,
-          dexType:            (pairState as PairState)?.dexType            ?? null,
-          reserveUsd:         (pairState as PairState)?.reserveUsd         ?? null,
-          liqStatus:          (pairState as PairState)?.liqStatus          ?? null,
-          poolCountSameToken: (pairState as PairState)?.poolCountSameToken ?? null,
-          flow: pairState?.flow ?? null,
-          lp:   pairState?.lp  ?? null,
-          dataAvailability: (() => {
-            const hasWsFlow  = !!pairState?.flow?.hasData;
-            const hasLpData  = !!pairState?.lp?.hasData;
-            const liveMonitored = pipelineState === "WATCHING" ||
-              pipelineState === "HOT" || pipelineState === "ARMED";
-            return {
-              marketData: pairState ? "available" : "not_available",
-              wsFlow:    hasWsFlow  ? "available"
-                : liveMonitored     ? "not_available_no_ws_events_yet"
-                :                    "not_available_market_only",
-              lpSignal:  hasLpData  ? "available"
-			  : liveMonitored     ? "not_available_no_lp_events_yet"
-			  :                    "not_available_market_only",
-			lpCoverage: getLpCoverage((pairState as PairState)?.dexType, hasLpData),
-            };
-          })(),
-          marketPattern: {
-            lastMomentumVerdict: (pairState as any)?.lastMomentumVerdict ?? null,
             lastMomentumAt:      (pairState as any)?.lastMomentumAt      ?? null,
             attentionScore:      (pairState as any)?.attentionScore      ?? null,
             monitoringTier:      (pairState as any)?.monitoringTier      ?? null,
@@ -238,7 +175,7 @@ Args: pair_address (0x... EVM address or V4 pool ID), chain (optional: base/arbi
             checkedAt:            (pairState as any).risk.checkedAt,
             checkedAgeSec:        Math.round((Date.now() - (pairState as any).risk.checkedAt) / 1000),
           } : null,
-		  riskCacheStatus: (() => {
+          riskCacheStatus: (() => {
             const r = (pairState as any)?.risk;
             if (!pairState) return "unavailable";
             if (!r) return "missing";
@@ -257,26 +194,51 @@ Args: pair_address (0x... EVM address or V4 pool ID), chain (optional: base/arbi
           } : undefined,
           pipeline: { state: pipelineState, watch: watchOut, hot: hotOut, armed: armedOut },
           reserveEth,
-          reserveNative: (pairState as any)?.reserveNative ?? reserveEth,
-          nativeSymbol:  (pairState as any)?.nativeSymbol  ?? null,
           preflightContext: pfCtx ?? null,
           contextQuality: pfCtx ? "fresh" : pairState ? freshnessLabel(now - pairState.updatedAt) : "snapshot_only",
           dataSource: pfCtx ? "preflight_pair_context" : pairState ? "pair_states" : "worker_snapshot",
           dataReadyForReasoning: (() => {
             const missingCritical: string[] = [];
             const missingNonCritical: string[] = [];
-
             if (!pairState?.flow?.hasData) missingCritical.push("wsFlow");
             if (!(pairState as any)?.risk) missingCritical.push("riskCache");
             if (freshnessSec === null || freshnessSec > 90) missingCritical.push("dataStale");
-
             if (!pairState?.lp?.hasData) missingNonCritical.push("lpHistory");
             if (!(pairState as any)?.pipelineEnteredAt) missingNonCritical.push("pipelineTiming");
-
             const ready = missingCritical.length === 0;
             return { ready, missingCritical, missingNonCritical };
           })(),
-		  freshnessSec,
+          freshnessSec,
+          lifecycle: (() => {
+            const lc = (ctx.pfLifecycle ?? []).find((l: any) => l.pairAddress?.toLowerCase() === addr) ?? null;
+            if (!lc) return null;
+            return {
+              lastOutcome:   lc.lastOutcome,
+              lastOutcomeAt: lc.lastOutcomeAt,
+              ageSec:        Math.round((now - lc.lastOutcomeAt) / 1000),
+              fromState:     lc.fromState,
+              reason:        lc.reason,
+              candidateActive: false,
+            };
+          })(),
+        };
+
+        const riskQuality =
+          mainPayload.riskCacheStatus === "available" ? "cached" :
+          mainPayload.riskCacheStatus === "stale"     ? "stale"  :
+          "missing";
+
+        return mcpResponse({
+          text: JSON.stringify(mainPayload, null, 2),
+          freshnessSec,
+          confidence:
+            freshnessSec !== null && freshnessSec < 45 ? "HIGH" :
+            freshnessSec !== null && freshnessSec < 90 ? "MEDIUM" :
+            "LOW",
+          dataQuality: {
+            wsFlow: pairState?.flow?.hasData ? "present" : "absent",
+            risk:   riskQuality,
+          },
         });
       } catch (e) { return mcpErr(ERR.INTERNAL, e instanceof Error ? e.message : String(e)); }
     },

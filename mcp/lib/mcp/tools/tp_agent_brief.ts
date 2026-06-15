@@ -6,7 +6,7 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { readAllRedis } from "../redis-reader";
-import { mcpOk, mcpErr, ERR } from "../errors";
+import { mcpResponse, mcpErr, ERR } from "../errors";
 
 export function registerNextAction(server: McpServer) {
   server.registerTool(
@@ -150,7 +150,24 @@ Does not advise on trades. Routes to data, not to decisions.`,
           lines.push(`COVERAGE_NOTE: ${coverageNote}`);
         }
 
-        return mcpOk(lines.join("\n"));
+        return mcpResponse({
+          text: lines.join("\n"),
+          confidence:
+            armedCount > 0      ? "HIGH"   :
+            hotCount > 0        ? "MEDIUM" :
+            hotDrops.length > 0 ? "MEDIUM" :
+            watchCount > 0      ? "MEDIUM" :
+            "LOW",
+          coverageNote: coverageNote ?? undefined,
+          evidence: {
+            armed:          armedCount,
+            hot:            hotCount,
+            watching:       watchCount,
+            recentHotDrops: hotDrops.length,
+            coverage,
+            topChain,
+          },
+        });
       } catch (e) { return mcpErr(ERR.INTERNAL, e instanceof Error ? e.message : String(e)); }
     },
   );

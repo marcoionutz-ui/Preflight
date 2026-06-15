@@ -182,6 +182,7 @@ export const REDIS_KEYS = {
   pipelineCoverage:   "preflight:pipeline_coverage",
   scannerStats:       "preflight:scanner_stats",
   agentWatchRequests: "preflight:agent_watch_requests",
+  lifecycle:          "preflight:lifecycle",
 
   // Per-pair
   pairContext: (addr: string) => `preflight:pair_context:${addr.toLowerCase()}`,

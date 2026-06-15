@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { readAllRedis } from "../redis-reader";
 import type { MemoryEntry } from "../types";
-import { mcpOk, mcpErr, ERR } from "../errors";
+import { mcpResponse, mcpErr, ERR } from "../errors";
 
 export function registerMarketOverview(server: McpServer) {
   server.registerTool(
@@ -42,24 +42,41 @@ Args: chain (optional), top_n (default 5, max 20)`,
 
         const newestStateAt = entries.length ? Math.max(...entries.map(([, p]) => p.updatedAt)) : null;
 
-        return mcpOk({
-          phases, flowPressure,
-          topBuyingPairs: entries
-            .filter(([, p]) => p.flow.hasData && p.flow.pressure === "BUYING")
-            .sort(([, a], [, b]) => b.flow.buyVol5m - a.flow.buyVol5m)
-            .slice(0, top_n)
-            .map(([addr, p]) => ({
-              symbol: p.symbol, pairAddress: addr, phase: p.phase,
-              dexType: p.dexType, reserveUsd: p.reserveUsd,
-              buyVol5m: p.flow.buyVol5m, netVol5m: p.flow.netVol5m, buys5m: p.flow.buys5m,
-            })),
-          pipeline: {
-            watching: Object.keys(watch).length,
-            hot:      Object.keys(hot).length,
-            armed:    Object.keys(armed).length,
-          },
-          totalTracked:  entries.length,
-          freshnessSec:  newestStateAt ? Math.round((now - newestStateAt) / 1000) : null,
+       const totalWithFlow = flowPressure.buying + flowPressure.selling + flowPressure.neutral;
+        const wsFlowQuality: "present" | "partial" | "absent" =
+          entries.length === 0  ? "absent" :
+          totalWithFlow === 0   ? "absent" :
+          totalWithFlow < entries.length ? "partial" :
+          "present";
+
+        const freshnessSec = newestStateAt ? Math.round((now - newestStateAt) / 1000) : null;
+
+        return mcpResponse({
+          text: JSON.stringify({
+            phases, flowPressure,
+            topBuyingPairs: entries
+              .filter(([, p]) => p.flow.hasData && p.flow.pressure === "BUYING")
+              .sort(([, a], [, b]) => b.flow.buyVol5m - a.flow.buyVol5m)
+              .slice(0, top_n)
+              .map(([addr, p]) => ({
+                symbol: p.symbol, pairAddress: addr, phase: p.phase,
+                dexType: p.dexType, reserveUsd: p.reserveUsd,
+                buyVol5m: p.flow.buyVol5m, netVol5m: p.flow.netVol5m, buys5m: p.flow.buys5m,
+              })),
+            pipeline: {
+              watching: Object.keys(watch).length,
+              hot:      Object.keys(hot).length,
+              armed:    Object.keys(armed).length,
+            },
+            totalTracked: entries.length,
+            freshnessSec,
+          }, null, 2),
+          freshnessSec,
+          confidence:
+            newestStateAt && now - newestStateAt < 60_000     ? "HIGH" :
+            newestStateAt && now - newestStateAt < 3 * 60_000 ? "MEDIUM" :
+            "LOW",
+          dataQuality: { wsFlow: wsFlowQuality },
         });
       } catch (e) { return mcpErr(ERR.INTERNAL, e instanceof Error ? e.message : String(e)); }
     },

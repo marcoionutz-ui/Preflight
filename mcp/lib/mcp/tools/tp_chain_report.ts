@@ -9,7 +9,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { readAllRedis, formatEth, formatVol, getPipelineState } from "../redis-reader";
-import { mcpOk, mcpErr, ERR } from "../errors";
+import { mcpResponse, mcpErr, ERR } from "../errors";
 
 // Timestamp fallback — events pot folosi ts, detectedAt, sau timestamp
 const eventTs = (e: any): number => e.ts ?? e.detectedAt ?? e.timestamp ?? 0;
@@ -91,7 +91,12 @@ Args: chain — one of: base, arbitrum, eth, bsc, solana`,
 
         if (stateVals.length === 0) {
           lines.push(`No pairs tracked on ${chain.toUpperCase()} yet.`);
-          return mcpOk(lines.join("\n"));
+          return mcpResponse({
+            text: lines.join("\n"),
+            confidence: "LOW",
+            freshnessSec: dataAgeSec,
+            dataQuality: { wsFlow: "absent" },
+          });
         }
 
         // ── Chain-level market context ─────────────────────────────────────
@@ -256,7 +261,24 @@ Args: chain — one of: base, arbitrum, eth, bsc, solana`,
 
         lines.push(`STATUS: ${status}`);
 
-        return mcpOk(lines.join("\n"));
+        return mcpResponse({
+          text: lines.join("\n"),
+          confidence:
+            dataAgeSec !== null && dataAgeSec < 60  ? "HIGH" :
+            dataAgeSec !== null && dataAgeSec < 180 ? "MEDIUM" :
+            "LOW",
+          freshnessSec: dataAgeSec,
+          dataQuality: {
+            wsFlow: coveragePct >= 50 ? "present" : coveragePct > 0 ? "partial" : "absent",
+          },
+          evidence: {
+            trackedPairs: stateVals.length,
+            coveragePct,
+            hot:      chainHot.length,
+            armed:    chainArmed.length,
+            watching: chainWatch.length,
+          },
+        });
       } catch (e) { return mcpErr(ERR.INTERNAL, e instanceof Error ? e.message : String(e)); }
     },
   );

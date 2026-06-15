@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { readAllRedis } from "../redis-reader";
-import { mcpOk, mcpErr, ERR } from "../errors";
+import { mcpResponse, mcpErr, ERR } from "../errors";
 
 export function registerWorkerPipeline(server: McpServer) {
   server.registerTool(
@@ -148,20 +148,37 @@ Args: chain (filter: 'base', 'arbitrum', or 'bsc')`,
             ]
           : null;
 				
-       return mcpOk({
-          pipeline: pipelineEntries,
-          armed: armedEntries,
-          legacy: { activeWatch, hotCandidates, armedEntries },
-          summary: pipelineEntries
-            ? {
-                watching:   pipelineEntries.filter((e: any) => e.pipelineState === "WATCHING").length,
-                hot:        pipelineEntries.filter((e: any) => e.pipelineState === "HOT").length,
-                armed:      pipelineEntries.filter((e: any) => e.pipelineState === "ARMED").length,
-                confirming: pipelineEntries.filter((e: any) => e.pipelineState === "HOT").length,
-                qualified:  pfQualified?.filter((q: any) => filterChain(q.chain)).length ?? 0,
-              }
-            : { watching: activeWatch.length, hot: hotCandidates.length, armed: armedEntries.length },
+       const hasFlow = pipelineEntries?.some((e: any) => e.flow?.hasData || e.flow?.buys5m || e.flow?.buyVol5mUsd) ?? false;
+
+        return mcpResponse({
+          text: JSON.stringify({
+            pipeline: pipelineEntries,
+            armed: armedEntries,
+            legacy: { activeWatch, hotCandidates, armedEntries },
+            summary: pipelineEntries
+              ? {
+                  watching:   pipelineEntries.filter((e: any) => e.pipelineState === "WATCHING").length,
+                  hot:        pipelineEntries.filter((e: any) => e.pipelineState === "HOT").length,
+                  armed:      pipelineEntries.filter((e: any) => e.pipelineState === "ARMED").length,
+                  confirming: pipelineEntries.filter((e: any) => e.pipelineState === "HOT").length,
+                  qualified:  pfQualified?.filter((q: any) => filterChain(q.chain)).length ?? 0,
+                }
+              : { watching: activeWatch.length, hot: hotCandidates.length, armed: armedEntries.length },
+            freshnessSec,
+          }, null, 2),
           freshnessSec,
+          confidence:
+            freshnessSec !== null && freshnessSec < 30 ? "HIGH" :
+            freshnessSec !== null && freshnessSec < 90 ? "MEDIUM" :
+            "LOW",
+          dataQuality: {
+            wsFlow: hasFlow ? "partial" : "absent",
+          },
+          evidence: {
+            watching: activeWatch.length,
+            hot:      hotCandidates.length,
+            armed:    armedEntries.length,
+          },
         });
       } catch (e) { return mcpErr(ERR.INTERNAL, e instanceof Error ? e.message : String(e)); }
     },

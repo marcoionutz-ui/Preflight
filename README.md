@@ -1,36 +1,168 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Preflight
 
-## Getting Started
+**Fast, cheap DEX context for AI trading agents.**
 
-First, run the development server:
+Preflight is a candidate intelligence layer for AI trading agents operating on EVM chains.
+It monitors DEX pair activity across Base, Arbitrum, and BSC in real-time, compresses
+market state into agent-readable signals, and exposes everything through an MCP tool interface.
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+**Preflight reports. The agent decides.**
+
+---
+
+## What it is
+
+- A real-time DEX monitoring layer (GeckoTerminal + Alchemy WebSockets)
+- A Redis-backed state machine tracking pair pipeline: `WATCHING → HOT → ARMED`, with drops and confirmation outcomes tracked separately
+- An MCP server exposing compressed market context to AI agents
+- A data layer — not a decision layer
+
+## What it is NOT
+
+- Not a trading bot
+- Not a signal provider
+- Not an advisor
+- Not a buy/sell signal service
+- Does not execute trades
+- Does not manage positions
+- Does not recommend entries, exits, or position sizes
+
+Preflight describes `market state`, `pipeline state`, `flow quality`, `risk flags`, `freshness`, `coverage`, and `next verification step`.
+
+---
+
+## Architecture
+
+```
+Discovery sources  →  EVM Worker  →  Redis  →  MCP Server  →  Agent
+GeckoTerminal         ENABLED_CHAINS
+DexScreener           Base / Arbitrum / BSC
+Alchemy WS
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+One EVM worker codebase can run one or more chains depending on `ENABLED_CHAINS`.
+For production, workers can be deployed separately per chain on Railway.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+---
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Agent loop
 
-## Learn More
+```
+tp_situation_report → tp_next_action → tp_candidate_brief → tp_chase_risk → tp_preflight_safety → tp_next_action
+```
 
-To learn more about Next.js, take a look at the following resources:
+### Core tools (public)
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+| Tool | What it returns |
+|------|-----------------|
+| `tp_situation_report` | Global market overview — pipeline state across all chains, ARMED first, coverage confidence |
+| `tp_next_action` | Routing signal — tells the agent which tool to call next and why |
+| `tp_candidate_brief(pair)` | Full narrative case file for a specific pair — discovery provenance, flow, risk, sourceAgreement |
+| `tp_chase_risk(pair)` | Chase risk assessment — detects HOT flapping, faded flow, distribution pressure, and FOMO-trap patterns |
+| `tp_preflight_safety(pair)` | Contract/token safety check via GoPlus |
+| `tp_watch_pair(pair, chain)` | Submit an external pair for Preflight monitoring |
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+### Advanced / internal tools
 
-## Deploy on Vercel
+`tp_chain_report`, `tp_pair_context`, `tp_worker_pipeline`, `tp_worker_snapshot`,
+`tp_why_not`, `tp_do_not_chase`, `tp_position_context`, `tp_health_check`, `tp_market_overview`
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+---
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Cost philosophy
+
+> Agents should not scan everything. Agents should ask where to look.
+
+Preflight pre-filters thousands of pairs so the agent only reasons about a handful.
+Fewer tool calls. Fewer LLM tokens. Same (or better) context quality.
+
+---
+
+## Example output
+
+```
+SITUATION REPORT — Base + Arbitrum + BSC
+Tracked: 281 | Watching: 56 | Hot: 2 | Armed: 1
+
+ARMED:
+  TOKEN [base] — pair:0xabc...123
+  Flow: BUYING | buyVol5m:$397 | sells:0 | lpCoverage:V2_NO_EVENTS_5M | age:4m
+  sourceAgreement: MULTI_DISCOVERY_SOURCES
+
+COVERAGE_CONFIDENCE: MEDIUM
+geckoHealth: OK | dexscreenerHealth: OK | wsHealth: ACTIVE
+```
+
+---
+
+## Stack
+
+- **Worker**: TypeScript, `tsx`, Alchemy WebSockets, GeckoTerminal, DexScreener
+- **State**: Redis (ephemeral pipeline state)
+- **Auth**: OAuth Authorization Code + PKCE, client credentials
+- **MCP**: Next.js MCP server via `mcp-handler`, deployed on Railway
+- **Persistent config**: Supabase (`oauth_clients`, usage logs)
+- **Chains**: Base, Arbitrum, BSC (live) — Ethereum, Solana (planned)
+
+---
+
+## Monorepo structure
+
+```
+mcp/                        Next.js MCP server
+workers/evm/                EVM worker (Base, Arbitrum, BSC)
+  config/                   Chain config + env
+  sources/                  GeckoTerminal, DexScreener
+  pipeline/                 WATCHING → HOT → ARMED logic
+  risk/                     Contract risk, LP tracking
+  ws/                       Alchemy WebSocket subscriptions
+  shadow/                   Legacy/internal simulation artifacts — not part of public Preflight product
+packages/preflight-schema/  Shared TypeScript types
+packages/gecko-client/      GeckoTerminal client stub
+packages/risk-layer/        Shared risk primitives
+```
+
+---
+
+## Running locally
+
+```bash
+# Install
+npm install
+
+# Worker (Base only)
+ENABLED_CHAINS=base npm run dev --workspace=@preflight/worker-evm
+
+# MCP server
+npm run dev --workspace=@preflight/mcp
+```
+
+### Environment variables
+
+```
+# Required
+REDIS_URL
+
+# Base
+ALCHEMY_BASE_RPC
+ALCHEMY_BASE_WS
+
+# Arbitrum
+ALCHEMY_ARB_RPC
+ALCHEMY_ARB_WS
+
+# BSC
+ALCHEMY_BNB_RPC
+ALCHEMY_BNB_WS
+
+# MCP / Auth
+SUPABASE_URL
+SUPABASE_SERVICE_KEY
+
+# Optional
+GOPLUS_API_KEY
+```
+
+---
+
+*v5.50 — Base + Arbitrum + BSC live*

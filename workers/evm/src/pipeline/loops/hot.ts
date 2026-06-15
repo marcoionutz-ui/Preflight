@@ -6,6 +6,7 @@
 
 import { hotCandidates, v4PoolMap, v3PoolMap, memory, qualifiedSignalsBuffer } from "../../state/stores";
 import { dropHotCandidate, deleteHotCandidate, recordPipelineEvent } from "../transitions";
+import { recordLifecycleOutcome } from "../../state/lifecycle";
 import { getWsFlow, getLpSignal } from "../../risk/flow";
 import { getLiquidityContext } from "../../risk/liquidity";
 import { quickEdgeScore } from "../../risk/scoring";
@@ -94,6 +95,7 @@ export async function hotCandidatesLoop(): Promise<void> {
 
       console.log(`[HOT] ${mem.symbol} (${chainId}) — source:${source ?? "WS"} Edge ${score}`);
       recordPipelineEvent("ARM_CONFIRMED", mem.symbol, chainId, pairAddress, "HOT", "CONFIRMED");
+      recordLifecycleOutcome(pairAddress, "QUALIFIED_EMITTED", "HOT", "HOT_CONFIRMED: gate + flow held");
 
       const liqCtx = getLiquidityContext(pairAddress);
       const qsHot  = buildQualifiedSignalEntry({

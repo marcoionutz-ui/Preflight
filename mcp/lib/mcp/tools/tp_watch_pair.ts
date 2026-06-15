@@ -7,7 +7,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { readAllRedis } from "../redis-reader";
 import { getRedis } from "@/lib/db/redis";
-import { mcpOk, mcpErr, ERR } from "../errors";
+import { mcpResponse, mcpErr, ERR } from "../errors";
 import { REDIS_KEYS } from "@preflight/schema";
 
 export function registerWatchPair(server: McpServer) {
@@ -62,13 +62,13 @@ Returns current status if pair is already being monitored.`,
         if (inArmed) {
           lines.push(`STATUS: already ARMED — use tp_candidate_brief for full context`);
           lines.push(`NEXT_CHECK: tp_candidate_brief(${addr})`);
-          return mcpOk(lines.join("\n"));
+          return mcpResponse({ text: lines.join("\n"), confidence: "HIGH" });
         }
 
         if (inHot) {
           lines.push(`STATUS: already HOT — use tp_candidate_brief for full context`);
           lines.push(`NEXT_CHECK: tp_candidate_brief(${addr})`);
-          return mcpOk(lines.join("\n"));
+          return mcpResponse({ text: lines.join("\n"), confidence: "HIGH" });
         }
 
         if (inWatch) {
@@ -77,7 +77,7 @@ Returns current status if pair is already being monitored.`,
           lines.push(`STATUS: already WATCHING`);
           lines.push(`  kind: ${watchInfo.kind ?? "?"} | age: ${ageSec}s | chain: ${watchInfo.chain}`);
           lines.push(`NEXT_CHECK: tp_pair_context(${addr}) in ~30s for flow data`);
-          return mcpOk(lines.join("\n"));
+          return mcpResponse({ text: lines.join("\n"), confidence: "MEDIUM" });
         }
 
         const r = getRedis();
@@ -109,7 +109,7 @@ Returns current status if pair is already being monitored.`,
         lines.push(`NEXT_CHECK: tp_pair_context(${addr}) in ~60s`);
         lines.push(`NOTE: pair must pass watch gates to enter pipeline — not guaranteed`);
 
-        return mcpOk(lines.join("\n"));
+        return mcpResponse({ text: lines.join("\n"), confidence: "MEDIUM" });
       } catch (e) { return mcpErr(ERR.INTERNAL, e instanceof Error ? e.message : String(e)); }
     },
   );

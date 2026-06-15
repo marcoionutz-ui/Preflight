@@ -199,6 +199,7 @@ export interface RedisContext {
   pfDrops:          any | null;
   pipelineCoverage: any | null;
   scannerStats:     any | null;
+  pfLifecycle:      any[] | null;
   keyExists: {
     pair_states:     boolean;
     active_watch:    boolean;
@@ -215,6 +216,7 @@ export interface RedisContext {
     pf_drops:             boolean;
     pf_pipeline_coverage: boolean;
     pf_scanner_stats:     boolean;
+    pf_lifecycle:         boolean;
   };
 }
 

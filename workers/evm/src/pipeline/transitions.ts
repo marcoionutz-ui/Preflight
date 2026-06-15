@@ -9,7 +9,8 @@ import {
   activeWatch, hotCandidates, armedEntries, watchedPoolCache,
   recentDrops, pipelineEvents, memory, clearQualifiedForPair,
 } from "../state/stores";
-import { MAX_ACTIVE_WATCH, MAX_ACTIVE_WATCH_BY_CHAIN } from "../config/constants";
+import { BUDGET, maxWatchForChain } from "../config/mode";
+import { recordLifecycleOutcome } from "../state/lifecycle";
 
 const CONTEXT_ONLY_WATCH_KINDS = new Set([
   "CONTEXT_HIGH_LIQ",
@@ -43,6 +44,13 @@ export function recordDrop(
   recentDrops.unshift({ symbol, chain, pairAddress: pairAddr, previousState, reason, droppedAt: Date.now(), priceAtDrop, scoreAtDrop });
   if (recentDrops.length > 50) recentDrops.splice(50);
   clearQualifiedForPair(pairAddr);
+
+  const lifecycleOutcome =
+    reason.toLowerCase().includes("confirmation window expired") ? "EXPIRED" as const :
+    reason.toLowerCase().includes("price failed confirmation")   ? "FAILED_CONFIRMATION" as const :
+    "DROPPED" as const;
+  recordLifecycleOutcome(pairAddr, lifecycleOutcome, previousState, reason);
+
   recordPipelineEvent("DROPPED", symbol, chain, pairAddr, previousState, "NONE", reason);
 }
 
@@ -88,8 +96,8 @@ export function addWatchCandidate(
   const alreadyWatching = activeWatch.has(pairAddr);
 
   if (!alreadyWatching) {
-    if (activeWatch.size >= MAX_ACTIVE_WATCH) return;
-    const maxForChain = MAX_ACTIVE_WATCH_BY_CHAIN[info.chain] ?? 10;
+    if (activeWatch.size >= BUDGET.maxActiveWatch) return;
+	const maxForChain = maxWatchForChain(info.chain);
     let chainCount = 0;
     for (const w of activeWatch.values()) {
       if (w.chain === info.chain) chainCount++;

@@ -89,6 +89,13 @@ export interface PreflightSignalPipelineEntry {
   priceVsEntryPct:    number | null;
   workerObservation:  string;
   updatedAt:          number;
+  lifecycle?: {
+    lastOutcome:   string;
+    lastOutcomeAt: number;
+    ageSec:        number;
+    fromState:     string;
+    reason:        string;
+  } | null;
 }
 
 export interface PreflightQualifiedSignal {

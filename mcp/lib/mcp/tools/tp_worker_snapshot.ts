@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { readAllRedis } from "../redis-reader";
 import type { PairState, MemoryEntry } from "../types";
-import { mcpOk, mcpErr, ERR } from "../errors";
+import { mcpResponse, mcpErr, ERR } from "../errors";
 
 export function registerWorkerSnapshot(server: McpServer, exposePerformance: boolean) {
   server.registerTool(
@@ -50,27 +50,36 @@ Args:
         const total     = pairs.length;
         const paginated = pairs.slice(offset, offset + limit);
 
-        return mcpOk({
-          total, count: paginated.length, offset,
-          has_more: total > offset + paginated.length,
-          pairs: paginated.map(({ addr, data }) => ({
-            pairAddress: addr, symbol: data.symbol, phase: data.phase,
-            seenCount: data.seenCount, currentPrice: data.currentPrice,
-            dexType:    (states[addr] as PairState)?.dexType    ?? null,
-            reserveUsd: (states[addr] as PairState)?.reserveUsd ?? null,
-            liqStatus:  (states[addr] as PairState)?.liqStatus  ?? null,
-            flow:       states[addr]?.flow ?? null,
-            history: exposePerformance ? {
-              totalEntries:      data.totalEntries,
-              wins24h:           data.wins24h,
-              losses24h:         data.losses24h,
-              badExits24h:       data.badExits24h,
-              consecutiveLosses: data.consecutiveLosses,
-            } : undefined,
-            updatedAt: states[addr]?.updatedAt ?? null,
-          })),
-          snapshotAgeSec: snapshot?.savedAt ? Math.round((now - snapshot.savedAt) / 1000) : null,
-          workerVersion:  snapshot?.version ?? null,
+        const snapshotFreshnessSec = snapshot?.savedAt ? Math.round((now - snapshot.savedAt) / 1000) : null;
+
+        return mcpResponse({
+          text: JSON.stringify({
+            total, count: paginated.length, offset,
+            has_more: total > offset + paginated.length,
+            pairs: paginated.map(({ addr, data }) => ({
+              pairAddress: addr, symbol: data.symbol, phase: data.phase,
+              seenCount: data.seenCount, currentPrice: data.currentPrice,
+              dexType:    (states[addr] as PairState)?.dexType    ?? null,
+              reserveUsd: (states[addr] as PairState)?.reserveUsd ?? null,
+              liqStatus:  (states[addr] as PairState)?.liqStatus  ?? null,
+              flow:       states[addr]?.flow ?? null,
+              history: exposePerformance ? {
+                totalEntries:      data.totalEntries,
+                wins24h:           data.wins24h,
+                losses24h:         data.losses24h,
+                badExits24h:       data.badExits24h,
+                consecutiveLosses: data.consecutiveLosses,
+              } : undefined,
+              updatedAt: states[addr]?.updatedAt ?? null,
+            })),
+            snapshotAgeSec: snapshotFreshnessSec,
+            workerVersion:  snapshot?.version ?? null,
+          }, null, 2),
+          freshnessSec: snapshotFreshnessSec,
+          confidence:
+            snapshotFreshnessSec !== null && snapshotFreshnessSec < 60  ? "HIGH" :
+            snapshotFreshnessSec !== null && snapshotFreshnessSec < 180 ? "MEDIUM" :
+            "LOW",
         });
       } catch (e) { return mcpErr(ERR.INTERNAL, e instanceof Error ? e.message : String(e)); }
     },
