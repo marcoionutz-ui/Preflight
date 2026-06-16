@@ -12,6 +12,7 @@ export interface AuthResult {
   ok:          boolean;
   clientId?:   string;
   scopes?:     string[];
+  plan?:       string;
   error?:      string;
   errorCode?:  string;
   status?:     number;
@@ -21,7 +22,7 @@ export interface AuthResult {
 export async function authenticate(req: NextRequest): Promise<AuthResult> {
   // Dev mode fără key configurat
   if (!process.env.MCP_API_KEY && process.env.NODE_ENV !== "production") {
-    return { ok: true, clientId: "dev", scopes: ["read:all"] };
+    return { ok: true, clientId: "dev", scopes: ["read:all"], plan: "internal" };
   }
 
   const authHeader = (req.headers.get("authorization") ?? "").trim();
@@ -58,7 +59,7 @@ export async function authenticate(req: NextRequest): Promise<AuthResult> {
 
   touchClient(client.client_id);
 
-  return { ok: true, clientId: client.client_id, scopes: payload.scopes };
+  return { ok: true, clientId: client.client_id, scopes: payload.scopes, plan: client.plan };
 }
 
 export function authErrorResponse(auth: AuthResult): Response {

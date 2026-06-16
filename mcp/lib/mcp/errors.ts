@@ -72,4 +72,5 @@ export const ERR = {
   UNAUTHORIZED:     "UNAUTHORIZED",
   RATE_LIMITED:     "RATE_LIMITED",
   FORBIDDEN:        "FORBIDDEN",
+  QUOTA_EXCEEDED:   "QUOTA_EXCEEDED",
 } as const;

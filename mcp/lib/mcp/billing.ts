@@ -21,12 +21,20 @@ export interface PlanConfig {
 }
 
 export const PLANS: Record<string, PlanConfig> = {
-  free_trial: {
+ free_trial: {
     name:                  "Free Trial",
     monthly_quota:         1_000,
     rate_limit_per_minute: 10,
     rate_limit_per_day:    500,
-    allowed_scopes:        ["read:all"],
+    allowed_scopes:        ["read:basic"],
+    billing_rail:          "subscription",
+  },
+  basic: {
+    name:                  "Basic",
+    monthly_quota:         10_000,
+    rate_limit_per_minute: 30,
+    rate_limit_per_day:    2_000,
+    allowed_scopes:        ["read:basic"],
     billing_rail:          "subscription",
   },
   starter: {
@@ -65,6 +73,30 @@ export const PLANS: Record<string, PlanConfig> = {
 
 export function getPlanConfig(plan: string): PlanConfig {
   return PLANS[plan] ?? PLANS.starter;
+}
+
+// ── Credit weights per tool ───────────────────────────────────────────────────
+
+export const TOOL_CREDITS: Record<string, number> = {
+  tp_situation_report: 1,
+  tp_next_action:      1,
+  tp_health_check:     1,
+  tp_market_overview:  1,
+  tp_chain_report:     1,
+  tp_candidate_brief:  2,
+  tp_chase_risk:       2,
+  tp_pair_context:     2,
+  tp_worker_pipeline:  2,
+  tp_worker_snapshot:  2,
+  tp_why_not:          2,
+  tp_do_not_chase:     2,
+  tp_position_context: 2,
+  tp_watch_pair:       3,
+  tp_preflight_safety: 5,
+};
+
+export function getToolCredits(toolName: string): number {
+  return TOOL_CREDITS[toolName] ?? 1;
 }
 
 /**

@@ -231,6 +231,10 @@ Observed movers section shows tokens moving on market that haven't passed pipeli
 
 		lines.push(`STATUS: ${status}`);
 
+        // ── Compression metric ─────────────────────────────────────────────
+        const priorityCount = armedCount > 0 ? armedCount : hotCount;
+        lines.push(`COMPRESSION: ${stateVals.length} tracked → ${watchCount} watching → ${hotCount} hot → ${priorityCount} priority`);
+
         const warnings = [
   !workerOnline ? "Worker snapshot offline or stale" : null,
   globalCoverage < 20 ? `WS coverage ${globalCoverage}% — flow signals partial` : null,
@@ -255,6 +259,12 @@ return mcpResponse({
     qualifiedActive: activeQualified.length,
     qualifiedStale:  staleCount,
     workerOnline,
+    compression: {
+      tracked:  stateVals.length,
+      watching: watchCount,
+      hot:      hotCount,
+      priority: priorityCount,
+    },
   },
 });
       } catch (e) { return mcpErr(ERR.INTERNAL, e instanceof Error ? e.message : String(e)); }

@@ -70,7 +70,7 @@ export function touchClient(clientId: string): void {
 export async function createOAuthClient({
   name,
   plan                  = "starter",
-  scopes                = ["read:all"],
+  scopes,
   rate_limit_per_minute = 60,
   rate_limit_per_day    = 10_000,
   notes,
@@ -86,8 +86,14 @@ export async function createOAuthClient({
   const client_secret = randomBytes(32).toString("hex");
   const secret_hash   = hashSecret(client_secret);
 
+  const finalScopes = scopes ?? (
+    plan === "free_trial" || plan === "basic"
+      ? ["read:basic"]
+      : ["read:all"]
+  );
+
   const { error } = await supabaseAdmin.from("oauth_clients").insert({
-    client_id, secret_hash, name, plan, scopes,
+    client_id, secret_hash, name, plan, scopes: finalScopes,
     rate_limit_per_minute, rate_limit_per_day,
     notes: notes ?? null,
   });

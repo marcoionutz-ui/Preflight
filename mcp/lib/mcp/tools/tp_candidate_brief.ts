@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { readAllRedis, getPipelineState, findLastEventForPair, formatEth, formatVol } from "../redis-reader";
 import type { PairState } from "../types";
-import { mcpOk, mcpErr, mcpResponse, ERR } from "../errors";
+import { mcpErr, mcpResponse, ERR } from "../errors";
 import type { SourceAgreement } from "@preflight/schema";
 
 function getLpCoverage(dexType: string | null | undefined, hasData: boolean): string {
@@ -95,7 +95,11 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
         const chain  = watchEntry?.chain ?? hotEntry?.chain ?? armedEntry?.chain ?? "unknown";
 
         if (!data && pipeState === "NONE") {
-          return mcpOk(`${symbol} — not found in worker context.\nThe worker has no data for this pair.`);
+          return mcpResponse({
+            text: `${symbol} — not found in worker context.\nThe worker has no data for this pair.`,
+            confidence: "LOW",
+            warnings: ["pair not found in worker context"],
+          });
         }
 
         const lines: string[] = [];
@@ -252,7 +256,7 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
 
         lines.push("");
         lines.push("DATA_AVAILABLE:");
-        lines.push(`  • tp_chase_risk — full chase risk scoring`);
+        lines.push(`  • tp_chase_risk — chase risk assessment`);
         lines.push(`  • tp_preflight_safety — contract/token safety check`);
         lines.push(`  • tp_why_not — pipeline rejection reasons`);
         lines.push(`  • tp_pair_context — raw worker context`);

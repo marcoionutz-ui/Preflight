@@ -30,7 +30,7 @@ export function registerChaseRisk(server: McpServer) {
     "tp_chase_risk",
     {
       title: "Preflight Chase Risk",
-      description: `Summarize execution-risk evidence for a HOT or WATCHING pair, including late-chase conditions.
+      description: `Summarize late-chase risk evidence for a HOT or WATCHING pair, including repeated drops, sell pressure, and failed confirmations.
 
 Detects:
 - HOT flapping (promoted and dropped repeatedly — distribution pattern)

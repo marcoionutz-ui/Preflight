@@ -57,15 +57,7 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
           if (w?.priceVsEntryPct !== null && w?.priceVsEntryPct !== undefined) {
             lines.push(`Price vs entry: ${w.priceVsEntryPct > 0 ? "+" : ""}${w.priceVsEntryPct}%`);
           }
-          if (lifecycle) {
-          const ageSec = Math.round((now - lifecycle.lastOutcomeAt) / 1000);
-          lines.push("");
-          lines.push(`LAST_OUTCOME: ${lifecycle.lastOutcome} | ${ageSec}s ago | from:${lifecycle.fromState}`);
-          lines.push(`  reason: ${lifecycle.reason}`);
-          lines.push(`  candidateActive: false`);
-        }
-
-        return mcpResponse({ text: lines.join("\n"), confidence: "MEDIUM" });
+          return mcpResponse({ text: lines.join("\n"), confidence: "MEDIUM" });
         }
 
         const lastDrop = findLastDropForPair(addr, drops);

@@ -17,6 +17,6 @@ export async function GET(req: NextRequest) {
     resource:                 `${issuer}/api/mcp`,
     authorization_servers:    [`${issuer}`],
     bearer_methods_supported: ["header"],
-    scopes_supported:         ["read:all"],
+    scopes_supported:         ["read:basic", "read:all", "read:market", "read:pipeline", "read:pair", "read:safety", "read:reports"],
   });
 }

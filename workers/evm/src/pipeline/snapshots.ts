@@ -67,6 +67,18 @@ export async function writeAllSnapshots(r: Redis): Promise<void> {
     console.error("[PREFLIGHT REDIS] Write failed:", e instanceof Error ? e.message : e);
   }
 
+// ── preflight:lifecycle ───────────────────────────────────────────────────
+  try {
+    await r.set(
+      REDIS_KEYS.lifecycle,
+      JSON.stringify(getRecentLifecycles()),
+      "EX",
+      600,
+    );
+  } catch (e) {
+    console.error("[LIFECYCLE] Write failed:", e instanceof Error ? e.message : e);
+  }
+
 // ── preflight:pipeline_coverage ───────────────────────────────────────────
   try {
     await writeCoverageSnapshot(r, states);
@@ -184,6 +196,8 @@ function buildPairContextMap(): Record<string, PreflightPairContext> {
       priceVsEntryPct: (entryPrice && mem3?.currentPrice)
         ? Number(((mem3.currentPrice - entryPrice) / entryPrice * 100).toFixed(2)) : null,
     };
+    const lifecycle = getLifecycle(addr);
+
     return {
       schemaVersion: "preflight-scanner-v1", workerVersion: WORKER_VERSION,
       symbol: mem3?.symbol ?? addr.slice(0, 8), chain, pairAddress: addr, pipelineState,
@@ -199,6 +213,13 @@ function buildPairContextMap(): Record<string, PreflightPairContext> {
       riskFlags: rf3, opportunitySignals: [],
       workerObservation: buildWorkerObservation(obsCtx3),
       updatedAt: Date.now(),
+      lifecycle: lifecycle ? {
+        lastOutcome:   lifecycle.lastOutcome,
+        lastOutcomeAt: lifecycle.lastOutcomeAt,
+        ageSec:        Math.round((Date.now() - lifecycle.lastOutcomeAt) / 1000),
+        fromState:     lifecycle.fromState,
+        reason:        lifecycle.reason,
+      } : null,
     };
   };
 

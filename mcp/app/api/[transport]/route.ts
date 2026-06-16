@@ -30,7 +30,7 @@ export async function GET(req: NextRequest) {
   const auth = await authenticate(req);
   if (!auth.ok) return authErrorResponse(auth);
   return withToolContext(
-    { clientId: auth.clientId!, scopes: auth.scopes! },
+    { clientId: auth.clientId!, scopes: auth.scopes!, plan: auth.plan },
     () => handler(req),
   );
 }
@@ -39,7 +39,7 @@ export async function POST(req: NextRequest) {
   const auth = await authenticate(req);
   if (!auth.ok) return authErrorResponse(auth);
   return withToolContext(
-    { clientId: auth.clientId!, scopes: auth.scopes! },
+    { clientId: auth.clientId!, scopes: auth.scopes!, plan: auth.plan },
     () => handler(req),
   );
 }

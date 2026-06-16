@@ -21,7 +21,7 @@ export async function GET(req: NextRequest) {
     grant_types_supported:                 ["authorization_code", "client_credentials"],
     code_challenge_methods_supported:      ["S256", "plain"],
     token_endpoint_auth_methods_supported: ["client_secret_post", "none"],
-    scopes_supported:                      ["read:all"],
+    scopes_supported:                      ["read:basic", "read:all", "read:market", "read:pipeline", "read:pair", "read:safety", "read:reports"],
     subject_types_supported:               ["public"],
   });
 }

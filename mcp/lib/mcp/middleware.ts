@@ -9,15 +9,17 @@
 
 import { AsyncLocalStorage }           from "async_hooks";
 import type { McpServer }              from "@modelcontextprotocol/sdk/server/mcp.js";
-import { logUsage, generateRequestId } from "./usage";
-import { hasScope }                    from "./scopes";
-import { mcpErr, ERR }                 from "./errors";
+import { logUsage, generateRequestId, isQuotaExceeded } from "./usage";
+import { getToolCredits, getPlanConfig }                 from "./billing";
+import { hasScope }                                      from "./scopes";
+import { mcpErr, ERR }                                   from "./errors";
 
 // ── Request context ───────────────────────────────────────────────────────────
 
 export interface ToolContext {
   clientId: string;
   scopes:   string[];
+  plan?:    string;
 }
 
 const contextStorage = new AsyncLocalStorage<ToolContext>();
@@ -57,12 +59,13 @@ export function createInstrumentedServer(server: McpServer): McpServer {
       if (!hasScope(ctx.scopes, name)) {
         const latency = Date.now() - startTime;
         logUsage({
-          client_id:  ctx.clientId,
-          tool_name:  name,
-          status:     "error",
-          error_code: ERR.FORBIDDEN,
-          latency_ms: latency,
-          request_id: requestId,
+          client_id:    ctx.clientId,
+          tool_name:    name,
+          status:       "error",
+          error_code:   ERR.FORBIDDEN,
+          latency_ms:   latency,
+          request_id:   requestId,
+          credits_used: 0,
         });
         return mcpErr(
           ERR.FORBIDDEN,
@@ -70,7 +73,28 @@ export function createInstrumentedServer(server: McpServer): McpServer {
         );
       }
 
-      // 2. Execute original handler
+      // 2. Quota check
+      const plan       = ctx.plan ?? "starter";
+      const planConfig = getPlanConfig(plan);
+      const credits    = getToolCredits(name);
+
+      if (planConfig.monthly_quota !== -1) {
+        const exceeded = await isQuotaExceeded(ctx.clientId, planConfig.monthly_quota, credits);
+        if (exceeded) {
+          logUsage({
+            client_id:    ctx.clientId,
+            tool_name:    name,
+            status:       "error",
+            error_code:   ERR.QUOTA_EXCEEDED,
+            latency_ms:   Date.now() - startTime,
+            request_id:   requestId,
+            credits_used: 0,
+          });
+          return mcpErr(ERR.QUOTA_EXCEEDED, `Monthly quota exceeded for plan ${plan}.`);
+        }
+      }
+
+      // 3. Execute original handler
       try {
         const result  = await handler(args);
         const latency = Date.now() - startTime;
@@ -90,24 +114,26 @@ export function createInstrumentedServer(server: McpServer): McpServer {
         } catch { /* non-JSON response = ok */ }
 
         logUsage({
-          client_id:  ctx.clientId,
-          tool_name:  name,
+          client_id:    ctx.clientId,
+          tool_name:    name,
           status,
-          error_code: errorCode,
-          latency_ms: latency,
-          request_id: requestId,
+          error_code:   errorCode,
+          latency_ms:   latency,
+          request_id:   requestId,
+          credits_used: status === "ok" ? credits : 0,
         });
 
         return result;
       } catch (e) {
         const latency = Date.now() - startTime;
-        logUsage({
-          client_id:  ctx.clientId,
-          tool_name:  name,
-          status:     "error",
-          error_code: ERR.INTERNAL,
-          latency_ms: latency,
-          request_id: requestId,
+       logUsage({
+          client_id:    ctx.clientId,
+          tool_name:    name,
+          status:       "error",
+          error_code:   ERR.INTERNAL,
+          latency_ms:   latency,
+          request_id:   requestId,
+          credits_used: 0,
         });
         return mcpErr(ERR.INTERNAL, e instanceof Error ? e.message : String(e));
       }

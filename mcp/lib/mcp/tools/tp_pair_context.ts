@@ -150,10 +150,8 @@ Args: pair_address (0x... EVM address or V4 pool ID), chain (optional: base/arbi
             firstSeenAt:        (pairState as any)?.firstSeenAt  ?? (snapMem as any)?.firstSeen  ?? null,
             lastSeenAt:         (pairState as any)?.lastSeenAt   ?? (snapMem as any)?.lastSeen   ?? null,
             pipelineEnteredAt:  (pairState as any)?.pipelineEnteredAt  ?? null,
-            lastMomentumAt:      (pairState as any)?.lastMomentumAt      ?? null,
-            attentionScore:      (pairState as any)?.attentionScore      ?? null,
-            monitoringTier:      (pairState as any)?.monitoringTier      ?? null,
-            patternTags:         (pairState as any)?.patternTags         ?? null,
+            currentStateAgeSec: (pairState as any)?.currentStateAgeSec ?? null,
+            seenCount:          data.seenCount,
           },
           risk: (pairState as any)?.risk ? {
             riskLevel:            (pairState as any).risk.riskLevel,
@@ -192,6 +190,57 @@ Args: pair_address (0x... EVM address or V4 pool ID), chain (optional: base/arbi
             badExits24h:       data.badExits24h,
             consecutiveLosses: data.consecutiveLosses,
           } : undefined,
+          discovery: (() => {
+            const allSources: string[] =
+              (pairState as any)?.discovery?.discoverySources ??
+              (snapMem as any)?.discoverySources ?? [];
+            const RETENTION_SOURCES = new Set(["MARKET_FOLLOW_LIST"]);
+            const LOOKUP_SOURCES    = new Set(["DEXSCREENER_PAIR_FALLBACK"]);
+            const discoverySources  = allSources.filter(s => !RETENTION_SOURCES.has(s) && !LOOKUP_SOURCES.has(s));
+            const retainedVia       = allSources.filter(s => RETENTION_SOURCES.has(s));
+            const resolvedVia       = allSources.filter(s => LOOKUP_SOURCES.has(s));
+            const rawPrimary =
+              (pairState as any)?.discovery?.primaryDiscoverySource ??
+              (snapMem as any)?.primaryDiscoverySource ?? null;
+            const primaryDiscoverySource =
+              rawPrimary && discoverySources.includes(rawPrimary) ? rawPrimary : discoverySources[0] ?? null;
+            const firstDiscoveredAt =
+              (pairState as any)?.discovery?.firstDiscoveredAt ?? (snapMem as any)?.firstDiscoveredAt ?? null;
+            const lastDiscoveryAt =
+              (pairState as any)?.discovery?.lastDiscoveryAt ?? (snapMem as any)?.lastDiscoveryAt ?? null;
+            return {
+              primaryDiscoverySource, discoverySources, retainedVia, resolvedVia,
+              agreement: getSourceAgreement(allSources, lastDiscoveryAt, now),
+              firstDiscoveredAt, lastDiscoveryAt,
+            };
+          })(),
+          priceVsFirstSeenPct: (pairState as any)?.priceVsFirstSeenPct ?? null,
+          dexType:            (pairState as PairState)?.dexType            ?? null,
+          reserveUsd:         (pairState as PairState)?.reserveUsd         ?? null,
+          liqStatus:          (pairState as PairState)?.liqStatus          ?? null,
+          poolCountSameToken: (pairState as PairState)?.poolCountSameToken ?? null,
+          reserveNative:      (pairState as any)?.reserveNative            ?? reserveEth,
+          nativeSymbol:       (pairState as any)?.nativeSymbol             ?? null,
+          flow: pairState?.flow ?? null,
+          lp:   pairState?.lp  ?? null,
+          dataAvailability: (() => {
+            const hasWsFlow = !!pairState?.flow?.hasData;
+            const hasLpData = !!pairState?.lp?.hasData;
+            const liveMonitored = pipelineState === "WATCHING" || pipelineState === "HOT" || pipelineState === "ARMED";
+            return {
+              marketData: pairState ? "available" : "not_available",
+              wsFlow:    hasWsFlow  ? "available" : liveMonitored ? "not_available_no_ws_events_yet" : "not_available_market_only",
+              lpSignal:  hasLpData  ? "available" : liveMonitored ? "not_available_no_lp_events_yet" : "not_available_market_only",
+              lpCoverage: getLpCoverage((pairState as PairState)?.dexType, hasLpData),
+            };
+          })(),
+          marketPattern: {
+            lastMomentumVerdict: (pairState as any)?.lastMomentumVerdict ?? null,
+            lastMomentumAt:      (pairState as any)?.lastMomentumAt      ?? null,
+            attentionScore:      (pairState as any)?.attentionScore      ?? null,
+            monitoringTier:      (pairState as any)?.monitoringTier      ?? null,
+            patternTags:         (pairState as any)?.patternTags         ?? null,
+          },
           pipeline: { state: pipelineState, watch: watchOut, hot: hotOut, armed: armedOut },
           reserveEth,
           preflightContext: pfCtx ?? null,

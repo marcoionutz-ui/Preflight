@@ -5,23 +5,29 @@
  * Future: read:pipeline, read:market, read:pair, read:safety, read:reports
  */
 
+// Core public tools — accesibile cu read:basic
+// Advanced / internal — necesită read:all sau scope granular dedicat
+
 export const TOOL_SCOPES: Record<string, string[]> = {
+  // ── Core public (6 tools) ─────────────────────────────────────────────────
+  tp_situation_report:  ["read:basic", "read:all", "read:reports"],
+  tp_next_action:       ["read:basic", "read:all", "read:reports"],
+  tp_candidate_brief:   ["read:basic", "read:all", "read:reports"],
+  tp_chase_risk:        ["read:basic", "read:all", "read:pipeline"],
+  tp_preflight_safety:  ["read:basic", "read:all", "read:safety"],
+  tp_watch_pair:        ["read:basic", "read:all"],
+
+  // ── Advanced / internal ───────────────────────────────────────────────────
   tp_health_check:      ["read:all", "read:market"],
   tp_market_overview:   ["read:all", "read:market"],
-  tp_situation_report:  ["read:all", "read:reports"],
   tp_worker_pipeline:   ["read:all", "read:pipeline"],
   tp_worker_snapshot:   ["read:all", "read:pipeline"],
   tp_pair_context:      ["read:all", "read:pair"],
-  tp_candidate_brief:   ["read:all", "read:reports"],
   tp_why_not:           ["read:all", "read:reports"],
   tp_do_not_chase:      ["read:all", "read:reports"],
-  tp_preflight_safety:  ["read:all", "read:safety"],
-  tp_chase_risk:        ["read:all", "read:pipeline"],
   tp_position_context:  ["read:all", "read:positions"],
   tp_chain_report:      ["read:all", "read:reports", "read:market"],
-  tp_next_action:       ["read:all", "read:reports"],
   tp_agent_brief:       ["read:all", "read:reports"],
-  tp_watch_pair:        ["read:all"],
 };
 
 /**

@@ -89,13 +89,6 @@ export interface PreflightSignalPipelineEntry {
   priceVsEntryPct:    number | null;
   workerObservation:  string;
   updatedAt:          number;
-  lifecycle?: {
-    lastOutcome:   string;
-    lastOutcomeAt: number;
-    ageSec:        number;
-    fromState:     string;
-    reason:        string;
-  } | null;
 }
 
 export interface PreflightQualifiedSignal {
@@ -221,6 +214,13 @@ export interface PreflightPairContext {
   opportunitySignals: string[];
   workerObservation:  string;
   updatedAt:          number;
+  lifecycle?: {
+    lastOutcome:   string;
+    lastOutcomeAt: number;
+    ageSec:        number;
+    fromState:     string;
+    reason:        string;
+  } | null;
 }
 
 // ── Main write function ───────────────────────────────────────────────────────
