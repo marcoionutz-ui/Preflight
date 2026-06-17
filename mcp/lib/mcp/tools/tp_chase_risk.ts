@@ -17,6 +17,8 @@ import {
   getPipelineState,
   formatEth,
   formatVol,
+  wsFlowQuality,
+  combineConfidence,
 } from "../redis-reader";
 import { mcpErr, mcpResponse, ERR } from "../errors";
 
@@ -54,7 +56,8 @@ Args: pair_address (0x... EVM address)`,
         const ctx = await readAllRedis();
         if (!ctx) return mcpErr(ERR.REDIS_DOWN, "Redis not connected");
 
-        const { now, states, watch, hot, armed, snapshot, events, drops } = ctx;
+        const { now, states, watch, hot, armed, snapshot, events, drops, pfMarket, regime } = ctx;
+        const coveragePct = (pfMarket ?? regime as any)?.flowCoveragePct ?? null;
         const addr = pair_address.toLowerCase().trim();
 
         const pipeState  = getPipelineState(addr, watch, hot, armed);
@@ -221,17 +224,15 @@ Args: pair_address (0x... EVM address)`,
   ? Math.round((now - pairState.updatedAt) / 1000)
   : null;
 
-const confidence =
-  flow?.hasData && dataAgeSec !== null && dataAgeSec <= 120 ? "HIGH" :
-  flow?.hasData                                              ? "MEDIUM" :
-  "LOW";
+const hasDirectFlow = !!flow?.hasData;
+const confidence    = combineConfidence(dataAgeSec, coveragePct, hasDirectFlow);
 
 return mcpResponse({
   text:         lines.join("\n"),
   freshnessSec: dataAgeSec,
   confidence,
   dataQuality: {
-    wsFlow:    flow?.hasData ? "present" : "absent",
+    wsFlow:    wsFlowQuality(hasDirectFlow, coveragePct),
     liquidity: pairState?.lp?.hasData ? "confirmed" : pairState ? "estimated" : "unknown",
   },
   evidence: {

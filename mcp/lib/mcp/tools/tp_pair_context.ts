@@ -1,6 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { readAllRedis, freshnessLabel, getPipelineState, readPairContext } from "../redis-reader";
+import { readAllRedis, freshnessLabel, getPipelineState, readPairContext, wsFlowQuality, combineConfidence } from "../redis-reader";
 import type { PairState, MemoryEntry } from "../types";
 import { mcpResponse, mcpErr, ERR } from "../errors";
 import type { SourceAgreement } from "@preflight/schema";
@@ -80,7 +80,8 @@ Args: pair_address (0x... EVM address or V4 pool ID), chain (optional: base/arbi
         const ctx = await readAllRedis();
         if (!ctx) return mcpErr(ERR.REDIS_DOWN, "Redis not connected");
 
-        const { now, states, watch, hot, armed, snapshot } = ctx;
+        const { now, states, watch, hot, armed, snapshot, pfMarket, regime } = ctx;
+        const coveragePct = (pfMarket ?? regime as any)?.flowCoveragePct ?? null;
         const addr = pair_address.toLowerCase().trim();
 		
 		// Try preflight:pair_context first — richest data
@@ -272,20 +273,22 @@ Args: pair_address (0x... EVM address or V4 pool ID), chain (optional: base/arbi
           })(),
         };
 
+        // rawRisk accesat direct din pairState — mainPayload.risk nu expune source
+        const rawRisk    = (pairState as any)?.risk;
         const riskQuality =
-          mainPayload.riskCacheStatus === "available" ? "cached" :
-          mainPayload.riskCacheStatus === "stale"     ? "stale"  :
+          rawRisk?.source === "unavailable"             ? "missing" :
+          mainPayload.riskCacheStatus === "available"   ? "cached"  :
+          mainPayload.riskCacheStatus === "stale"       ? "stale"   :
           "missing";
+
+        const hasDirectFlow = !!pairState?.flow?.hasData;
 
         return mcpResponse({
           text: JSON.stringify(mainPayload, null, 2),
           freshnessSec,
-          confidence:
-            freshnessSec !== null && freshnessSec < 45 ? "HIGH" :
-            freshnessSec !== null && freshnessSec < 90 ? "MEDIUM" :
-            "LOW",
+          confidence: combineConfidence(freshnessSec, coveragePct, hasDirectFlow),
           dataQuality: {
-            wsFlow: pairState?.flow?.hasData ? "present" : "absent",
+            wsFlow: wsFlowQuality(hasDirectFlow, coveragePct),
             risk:   riskQuality,
           },
         });

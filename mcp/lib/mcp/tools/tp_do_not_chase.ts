@@ -1,6 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { readAllRedis } from "../redis-reader";
+import { readAllRedis, dedupeByPair } from "../redis-reader";
 import { mcpResponse, mcpErr, ERR } from "../errors";
 
 export function registerDoNotChase(server: McpServer) {
@@ -26,26 +26,30 @@ Args: limit (default 10, max 30), minutes_back (default 10, max 10)`,
         if (!ctx) return mcpErr(ERR.REDIS_DOWN, "Redis not connected");
 
         const { now, drops, states } = ctx;
-        const cutoff = now - minutes_back * 60_000;
-        const recent = drops.filter(d => d.droppedAt >= cutoff).slice(0, limit);
+        const cutoff     = now - minutes_back * 60_000;
+        const rawRecent  = drops.filter(d => d.droppedAt >= cutoff);
+        const deduped    = dedupeByPair(rawRecent as any[], "droppedAt")
+          .sort((a: any, b: any) => (b.droppedAt ?? 0) - (a.droppedAt ?? 0))
+          .slice(0, limit);
 
-        if (!recent.length) return mcpResponse({ text: `No drops in the last ${minutes_back} minutes. Pipeline has been stable.`, confidence: "HIGH" });
+        if (!deduped.length) return mcpResponse({ text: `No drops in the last ${minutes_back} minutes. Pipeline has been stable.`, confidence: "HIGH" });
 
         const lines: string[] = [];
-        lines.push(`DO NOT CHASE — dropped in last ${minutes_back}m (${recent.length} total):`);
+        lines.push(`DO NOT CHASE — dropped in last ${minutes_back}m (${deduped.length} pairs):`);
         lines.push("");
 
-        for (const d of recent) {
-          const ageSec   = Math.round((now - d.droppedAt) / 1000);
-          const pairData = states[d.pairAddress];
-          const phase    = pairData?.phase ?? "?";
+        for (const d of deduped) {
+          const ageSec    = Math.round((now - d.droppedAt) / 1000);
+          const pairData  = states[d.pairAddress ?? ""];
+          const phase     = pairData?.phase ?? "?";
+          const countNote = d._eventCount > 1 ? ` (${d._eventCount} drops in ${minutes_back}m)` : "";
 
           const fromState = (d as any).wasIn ?? d.previousState ?? "UNKNOWN";
           const reason    = (d as any).dropReason ?? d.reason ?? "unknown";
           const symbol    = d.symbol ?? d.pairAddress?.slice(0, 8) ?? "UNKNOWN";
           const chain     = d.chain ?? "unknown";
 
-          let line = `${symbol} [${chain}] — dropped from ${fromState} ${ageSec}s ago`;
+          let line = `${symbol} [${chain}] — dropped from ${fromState} ${ageSec}s ago${countNote}`;
           line += `\n  Reason: ${reason}`;
           if (phase !== "?") line += ` | phase: ${phase}`;
           if (pairData?.flow?.hasData) line += ` | flow now: ${pairData.flow.pressure}`;
@@ -56,7 +60,7 @@ Args: limit (default 10, max 30), minutes_back (default 10, max 10)`,
 			} else if (r.includes("too late") || r.includes("vertical")) {
             line += "\n  → Price extension risk elevated; late-chase conditions detected.";
           } else if (r.includes("dump") || r.includes("-")) {
-            line += "\n  → Price dumped after signal. Avoid until structure rebuilds.";
+            line += "\n  → Price dumped after signal. Continuation evidence absent until structure rebuilds.";
           } else if (r.includes("gate") || r.includes("score") || r.includes("evidence")) {
             line += "\n  → Failed quality check. Worker's criteria not met.";
           } else if (r.includes("no ws") || r.includes("no confirmation")) {
@@ -72,7 +76,7 @@ Args: limit (default 10, max 30), minutes_back (default 10, max 10)`,
         return mcpResponse({
           text: lines.join("\n").trim(),
           confidence: "HIGH",
-          freshnessSec: Math.round((Date.now() - (recent[0]?.droppedAt ?? Date.now())) / 1000),
+          freshnessSec: Math.round((now - (deduped[0]?.droppedAt ?? now)) / 1000),
 		});
       } catch (e) { return mcpErr(ERR.INTERNAL, e instanceof Error ? e.message : String(e)); }
     },

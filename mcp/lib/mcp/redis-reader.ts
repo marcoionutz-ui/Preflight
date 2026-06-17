@@ -164,4 +164,87 @@ export async function readPairContext(addr: string): Promise<any | null> {
   } catch { return null; }
 }
 
+// ── Pas 7B helpers ────────────────────────────────────────────────────────────
+
+/**
+ * Formatează un procent cu cap și protecție NaN/Infinity/null.
+ */
+export function formatPct(
+  v:   number | null | undefined,
+  cap = 9999,
+): string {
+  if (typeof v !== "number" || !Number.isFinite(v)) return "N/A";
+  if (v >  cap) return `>${cap}%`;
+  if (v < -cap) return `<-${cap}%`;
+  return `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`;
+}
+
+/**
+ * Derivă calitatea WS flow pentru un tool — pair-level sau global.
+ * hasPairFlow: true dacă pair-ul specific are flow.hasData
+ * coveragePct: flowCoveragePct global (0-100)
+ */
+export function wsFlowQuality(
+  hasPairFlow: boolean,
+  coveragePct: number | null | undefined,
+): "present" | "partial" | "absent" {
+  if (hasPairFlow) return "present";
+  if ((coveragePct ?? 0) > 0) return "partial";
+  return "absent";
+}
+
+/**
+ * Combină freshness + coverage în confidence.
+ * hasDirectFlow = true: pair-ul are WS flow real → nu penaliza pentru coverage global mic.
+ */
+export function combineConfidence(
+  freshnessSec:  number | null,
+  coveragePct:   number | null | undefined,
+  hasDirectFlow = false,
+): "LOW" | "MEDIUM" | "HIGH" {
+  const freshnessConfidence: "LOW" | "MEDIUM" | "HIGH" =
+    freshnessSec !== null && freshnessSec < 45 ? "HIGH"   :
+    freshnessSec !== null && freshnessSec < 90 ? "MEDIUM" :
+    "LOW";
+
+  // Pair cu flow direct — nu penaliza pentru coverage global mic
+  if (hasDirectFlow) return freshnessConfidence;
+
+  const cov = coveragePct ?? null;
+  if (cov === null) return freshnessConfidence;
+  if (cov < 20) return "LOW";
+  if (cov < 50 && freshnessConfidence === "HIGH") return "MEDIUM";
+  return freshnessConfidence;
+}
+
+/**
+ * Dedupe un array by pairAddress, păstrând cel mai recent entry.
+ * Atașează `_eventCount` cu numărul total de intrări pentru același pair.
+ * tsField: câmpul timestamp folosit pentru comparație (droppedAt, detectedAt, etc.)
+ */
+export function dedupeByPair<T extends { pairAddress?: string | null }>(
+  arr:     T[] | null | undefined,
+  tsField: keyof T,
+): Array<T & { _eventCount: number }> {
+  const map = new Map<string, T & { _eventCount: number }>();
+
+  for (const item of arr ?? []) {
+    const addr = item.pairAddress?.toLowerCase();
+    if (!addr) continue;
+
+    const ts       = Number(item[tsField] ?? 0);
+    const existing = map.get(addr);
+
+    if (!existing) {
+      map.set(addr, { ...item, _eventCount: 1 });
+    } else if (ts >= Number(existing[tsField] ?? 0)) {
+      map.set(addr, { ...item, _eventCount: existing._eventCount + 1 });
+    } else {
+      existing._eventCount += 1;
+    }
+  }
+
+  return [...map.values()];
+}
+
 export { type MemoryEntry, type PairState };

@@ -1,5 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { readAllRedis, formatEth, formatVol } from "../redis-reader";
+import { readAllRedis, formatEth, formatVol, formatPct, combineConfidence, dedupeByPair } from "../redis-reader";
 import { mcpErr, mcpResponse, ERR } from "../errors";
 
 export function registerSituationReport(server: McpServer) {
@@ -140,9 +140,8 @@ Observed movers section shows tokens moving on market that haven't passed pipeli
           Math.abs(s.priceChange?.h24 ?? 0) / 8,
         );
 
-        const fmtPct = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`;
         const moverLine = (s: any) =>
-          `  → ${s.symbol} [${s.chain}] pair:${s.pairAddress} m5:${fmtPct(s.priceChange.m5)} h1:${fmtPct(s.priceChange.h1)} h24:${fmtPct(s.priceChange.h24)} liq:$${Math.round((s.reserveUsd ?? 0) / 1000)}K`;
+          `  → ${s.symbol} [${s.chain}] pair:${s.pairAddress} m5:${formatPct(s.priceChange.m5)} h1:${formatPct(s.priceChange.h1)} h24:${formatPct(s.priceChange.h24)} liq:$${Math.round((s.reserveUsd ?? 0) / 1000)}K`;
 
         const moverBase = stateVals.filter((s: any) =>
           s.pipelineState === "NONE" &&
@@ -188,11 +187,14 @@ Observed movers section shows tokens moving on market that haven't passed pipeli
 
         // ── Momentum events recente ────────────────────────────────────────
         if (pfMomentum && pfMomentum.length > 0) {
-          const mLines = pfMomentum.slice(0, 5).map((m: any) => {
-            const ageSec = Math.round((now - m.detectedAt) / 1000);
-            return `  ${ageSec}s: ${m.symbol} [${m.chain}] pair:${m.pairAddress} ${m.verdict} m5:${m.m5Pct?.toFixed(1)}%`;
+          const deduped = dedupeByPair(pfMomentum as any[], "detectedAt")
+            .sort((a: any, b: any) => (b.detectedAt ?? 0) - (a.detectedAt ?? 0));
+          const mLines  = deduped.slice(0, 5).map((m: any) => {
+            const ageSec    = Math.round((now - m.detectedAt) / 1000);
+            const countNote = m._eventCount > 1 ? ` (${m._eventCount}x)` : "";
+            return `  ${ageSec}s: ${m.symbol} [${m.chain}] pair:${m.pairAddress} ${m.verdict} m5:${formatPct(m.m5Pct)}${countNote}`;
           });
-          lines.push(`MOMENTUM EVENTS (last 10m, ${pfMomentum.length} total):\n${mLines.join("\n")}`);
+          lines.push(`MOMENTUM EVENTS (last 10m, ${deduped.length} pairs):\n${mLines.join("\n")}`);
         }
         		
         // ── Recent drops ───────────────────────────────────────────────────
@@ -243,13 +245,13 @@ Observed movers section shows tokens moving on market that haven't passed pipeli
 return mcpResponse({
   text:         lines.join("\n"),
   freshnessSec: freshnessSec ?? null,
-  confidence:   !workerOnline ? "LOW" : coverageConfidence as "LOW" | "MEDIUM" | "HIGH",
+  confidence:   !workerOnline ? "LOW" : combineConfidence(freshnessSec, globalCoverage, false),
   coverageNote: globalCoverage < 20
     ? `WS coverage ${globalCoverage}% — flow signals partial`
     : null,
   warnings,
   dataQuality: {
-    wsFlow: globalCoverage >= 50 ? "present" : globalCoverage >= 20 ? "partial" : "absent",
+    wsFlow: globalCoverage >= 50 ? "present" : globalCoverage > 0 ? "partial" : "absent",
   },
   evidence: {
     trackedPairs:    stateVals.length,

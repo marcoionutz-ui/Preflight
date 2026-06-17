@@ -5,7 +5,7 @@
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { readAllRedis } from "../redis-reader";
+import { readAllRedis, formatPct, combineConfidence, dedupeByPair } from "../redis-reader";
 import { mcpResponse, mcpErr, ERR } from "../errors";
 
 export function registerNextAction(server: McpServer) {
@@ -32,29 +32,41 @@ Does not advise on trades. Routes to data, not to decisions.`,
         const ctx = await readAllRedis();
         if (!ctx) return mcpErr(ERR.REDIS_DOWN, "Redis not connected");
 
-        const { now, watch, hot, armed, drops, pfDrops, pfMomentum, pfMarket, regime } = ctx;
+        const { now, states, watch, hot, armed, drops, pfDrops, pfMomentum, pfMarket, regime } = ctx;
 
         const armedCount = Object.keys(armed).length;
         const hotCount   = Object.keys(hot).length;
         const watchCount = Object.keys(watch).length;
 
-        const r           = pfMarket ?? regime as any;
-        const coverage    = r?.flowCoveragePct ?? 0;
-        const marketDead  = coverage < 5;
+        const r          = pfMarket ?? regime as any;
+        const coverage   = r?.flowCoveragePct ?? 0;
+        const marketDead = coverage < 5;
 
-        // Recent drops in last 5m
+        // Freshness din cel mai recent pair state
+        const stateVals     = Object.values(states) as any[];
+        const newestStateAt = stateVals.length
+          ? Math.max(...stateVals.map((s: any) => s.updatedAt ?? 0))
+          : null;
+        const freshnessSec  = newestStateAt
+          ? Math.round((now - newestStateAt) / 1000)
+          : null;
+
+        // Recent drops in last 5m — deduped
         const dropsSource = (pfDrops && pfDrops.length > 0 ? pfDrops : drops) ?? [];
-		const recentDrops = dropsSource.filter((d: any) => now - d.droppedAt < 5 * 60_000);
-        const hotDrops    = recentDrops.filter((d: any) =>
+        const recentDrops = dedupeByPair(
+          (dropsSource as any[]).filter((d: any) => now - d.droppedAt < 5 * 60_000),
+          "droppedAt",
+        );
+        const hotDrops = recentDrops.filter((d: any) =>
           (d.wasIn ?? d.previousState) === "HOT" ||
           (d.wasIn ?? d.previousState) === "ARMED"
         );
 
-        // Coverage confidence
-        const coverageNote = coverage < 10
-          ? `WS coverage is ${coverage}% — flow signals are partial. Treat flow-derived context with lower confidence.`
-          : coverage < 30
-          ? `WS coverage is ${coverage}% — moderate confidence on flow signals.`
+        // Coverage note — LOW sub 20%, nu "moderate"
+        const coverageNote = coverage < 20
+          ? `WS coverage is ${coverage}% — flow signals are LOW confidence. Treat flow-derived context with caution.`
+          : coverage < 50
+          ? `WS coverage is ${coverage}% — MEDIUM confidence on flow signals.`
           : null;
 
         // Chain with most activity
@@ -139,7 +151,7 @@ Does not advise on trades. Routes to data, not to decisions.`,
             lines.push("");
             lines.push(`MOMENTUM SIDEBAR (${recent.length} events <5m):`);
             recent.slice(0, 3).forEach((m: any) => {
-              lines.push(`  ${m.symbol} [${m.chain}] ${m.verdict} m5:${m.m5Pct?.toFixed(1)}% pair:${m.pairAddress}`);
+              lines.push(`  ${m.symbol} [${m.chain}] ${m.verdict} m5:${formatPct(m.m5Pct)} pair:${m.pairAddress}`);
             });
           }
         }
@@ -150,14 +162,22 @@ Does not advise on trades. Routes to data, not to decisions.`,
           lines.push(`COVERAGE_NOTE: ${coverageNote}`);
         }
 
+        // Confidence: pipeline state ca upper bound, coverage+freshness ca floor
+        const baseConfidence: "LOW" | "MEDIUM" | "HIGH" =
+          armedCount > 0      ? "HIGH"   :
+          hotCount > 0        ? "MEDIUM" :
+          hotDrops.length > 0 ? "MEDIUM" :
+          watchCount > 0      ? "MEDIUM" :
+          "LOW";
+        const coverageConfidence = combineConfidence(freshnessSec, coverage, false);
+        const finalConfidence: "LOW" | "MEDIUM" | "HIGH" =
+          baseConfidence === "LOW" || coverageConfidence === "LOW" ? "LOW" :
+          baseConfidence === "MEDIUM" || coverageConfidence === "MEDIUM" ? "MEDIUM" :
+          "HIGH";
+
         return mcpResponse({
           text: lines.join("\n"),
-          confidence:
-            armedCount > 0      ? "HIGH"   :
-            hotCount > 0        ? "MEDIUM" :
-            hotDrops.length > 0 ? "MEDIUM" :
-            watchCount > 0      ? "MEDIUM" :
-            "LOW",
+          confidence: finalConfidence,
           coverageNote: coverageNote ?? undefined,
           evidence: {
             armed:          armedCount,

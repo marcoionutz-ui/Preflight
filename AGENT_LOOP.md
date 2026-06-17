@@ -82,7 +82,7 @@ Agent calls: tp_watch_pair(pair_address="0xdef...999", chain="base", reason="use
 Returns:
   WATCH REQUEST: 0xdef...999 [base]
   STATUS: queued for monitoring
-  NEXT_CHECK: tp_pair_context(0xdef...999) in ~60s
+  NEXT_CHECK: re-run tp_situation_report or tp_next_action after the next worker refresh
   NOTE: pair must pass watch gates to enter pipeline — not guaranteed
 
 Agent rechecks with: tp_situation_report or tp_next_action

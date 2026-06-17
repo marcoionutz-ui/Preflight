@@ -244,11 +244,24 @@ Args:
           lines.push(`  Safety data incomplete — ${risk.missingData.length} data points unavailable.`);
         }
 
+        const riskQuality =
+          safetyStatus === "UNKNOWN_RISK" || risk.missingData.length >= 5
+            ? "missing"
+            : risk.source === "goplus"
+              ? "cached"
+              : "missing";
+
+        const warnings =
+          risk.missingData.length > 0
+            ? [`Safety data incomplete — ${risk.missingData.length} data points unavailable`]
+            : undefined;
+
         return mcpResponse({
           text: lines.join("\n"),
           confidence: risk.confidence === "HIGH" ? "HIGH" : risk.confidence === "MEDIUM" ? "MEDIUM" : "LOW",
           freshnessSec: Math.round((Date.now() - risk.checkedAt) / 1000),
-          dataQuality: { risk: risk.source === "goplus" ? "cached" : "missing" },
+          warnings,
+          dataQuality: { risk: riskQuality },
           evidence: { safetyStatus, sellability, ownerRisk, riskLevel: risk.riskLevel },
         });
       } catch (e) { return mcpErr(ERR.INTERNAL, e instanceof Error ? e.message : String(e)); }

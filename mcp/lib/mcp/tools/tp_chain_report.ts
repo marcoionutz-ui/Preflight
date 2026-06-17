@@ -8,7 +8,7 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { readAllRedis, formatEth, formatVol, getPipelineState } from "../redis-reader";
+import { readAllRedis, formatEth, formatVol, formatPct, combineConfidence, getPipelineState } from "../redis-reader";
 import { mcpResponse, mcpErr, ERR } from "../errors";
 
 // Timestamp fallback — events pot folosi ts, detectedAt, sau timestamp
@@ -152,14 +152,13 @@ Args: chain — one of: base, arbitrum, eth, bsc, solana`,
             .map(([addr, h]) => {
               const ageSec    = Math.round((now - h.promotedAt) / 1000);
               const pairState = states[addr];
-              const pc        = pairState?.priceChange;
-              const fmt       = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`;
-              let line = `  → ${h.symbol ?? addr.slice(0, 8)} pair:${addr}`;
+              const pc   = pairState?.priceChange;
+              let line   = `  → ${h.symbol ?? addr.slice(0, 8)} pair:${addr}`;
               line += `\n     source:${h.source ?? "WS"} age:${ageSec}s phase:${h.phase ?? "?"}`;
               // fix ChatGPT #3: ?? 0 pe formatEth
               const flow = pairState?.flow ?? h.flow;
               line += `\n     flow:${flow?.pressure} | buys:${flow?.buys5m} buyVol:${formatVol((flow as any)?.buyVol5mUsd, flow?.buyVol5m ?? 0)} netVol:${formatVol((flow as any)?.netVol5mUsd, flow?.netVol5m ?? 0)}`;
-              if (pc) line += `\n     priceChange: m5:${fmt(pc.m5)} h1:${fmt(pc.h1)} h24:${fmt(pc.h24)}`;
+              if (pc) line += `\n     priceChange: m5:${formatPct(pc.m5)} h1:${formatPct(pc.h1)} h24:${formatPct(pc.h24)}`;
               if (pairState) {
                 // fix ChatGPT #2: ?? 0 pe reserveUsd
                 line += `\n     liq:$${Math.round((pairState.reserveUsd ?? 0) / 1000)}K lp:${pairState.lp?.status ?? "?"}(${getLpCoverage(pairState.dexType, pairState.lp?.hasData ?? false)})`;
@@ -194,11 +193,10 @@ Args: chain — one of: base, arbitrum, eth, bsc, solana`,
           .slice(0, 10);
 
         if (observedMovers.length > 0) {
-          const fmt = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`;
           const moverLines = observedMovers.map(([addr, s]) => {
             const pc = s.priceChange!;
             let line = `  → ${s.symbol ?? addr.slice(0, 8)} pair:${addr}`;
-            line += `\n     m5:${fmt(pc.m5)} h1:${fmt(pc.h1)} h24:${fmt(pc.h24)} liq:$${Math.round((s.reserveUsd ?? 0) / 1000)}K`;
+            line += `\n     m5:${formatPct(pc.m5)} h1:${formatPct(pc.h1)} h24:${formatPct(pc.h24)} liq:$${Math.round((s.reserveUsd ?? 0) / 1000)}K`;
             // fix ChatGPT #3: ?? 0 pe formatEth
             line += `\n     flow:${s.flow?.hasData ? `${s.flow.pressure} buys:${s.flow.buys5m} netVol:${formatVol((s.flow as any).netVol5mUsd, s.flow.netVol5m ?? 0)}` : "NO_WS_DATA"} lp:${s.lp?.status ?? "?"}(${getLpCoverage(s.dexType, s.lp?.hasData ?? false)})`;
             return line;
@@ -215,13 +213,12 @@ Args: chain — one of: base, arbitrum, eth, bsc, solana`,
           .slice(0, 5);
 
         if (watchingWithFlow.length > 0) {
-          const fmt = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`;
           const watchLines = watchingWithFlow.map(({ addr, w, pairState }) => {
             const pc = pairState?.priceChange;
             let line = `  → ${w.symbol ?? addr.slice(0, 8)} pair:${addr}`;
             // fix ChatGPT #3: ?? 0 pe formatEth
             line += `\n     flow:${pairState!.flow.pressure} buys:${pairState!.flow.buys5m} buyVol:${formatVol(pairState!.flow.buyVol5mUsd, pairState!.flow.buyVol5m ?? 0)} netVol:${formatVol(pairState!.flow.netVol5mUsd, pairState!.flow.netVol5m ?? 0)}`;
-            if (pc) line += `\n     priceChange: m5:${fmt(pc.m5)} h1:${fmt(pc.h1)} h24:${fmt(pc.h24)}`;
+            if (pc) line += `\n     priceChange: m5:${formatPct(pc.m5)} h1:${formatPct(pc.h1)} h24:${formatPct(pc.h24)}`;
             line += `\n     liq:$${Math.round((pairState?.reserveUsd ?? 0) / 1000)}K lp:${pairState?.lp?.status ?? "?"}(${getLpCoverage(pairState?.dexType, pairState?.lp?.hasData ?? false)})`;
             return line;
           });
@@ -263,10 +260,7 @@ Args: chain — one of: base, arbitrum, eth, bsc, solana`,
 
         return mcpResponse({
           text: lines.join("\n"),
-          confidence:
-            dataAgeSec !== null && dataAgeSec < 60  ? "HIGH" :
-            dataAgeSec !== null && dataAgeSec < 180 ? "MEDIUM" :
-            "LOW",
+          confidence: combineConfidence(dataAgeSec, coveragePct, false),
           freshnessSec: dataAgeSec,
           dataQuality: {
             wsFlow: coveragePct >= 50 ? "present" : coveragePct > 0 ? "partial" : "absent",

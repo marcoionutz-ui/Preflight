@@ -1,6 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { readAllRedis, getPipelineState, findLastEventForPair, formatEth, formatVol } from "../redis-reader";
+import { readAllRedis, getPipelineState, findLastEventForPair, formatEth, formatVol, formatPct, wsFlowQuality, combineConfidence } from "../redis-reader";
 import type { PairState } from "../types";
 import { mcpErr, mcpResponse, ERR } from "../errors";
 import type { SourceAgreement } from "@preflight/schema";
@@ -80,7 +80,8 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
         const ctx = await readAllRedis();
         if (!ctx) return mcpErr(ERR.REDIS_DOWN, "Redis not connected");
 
-        const { now, states, watch, hot, armed, snapshot, events } = ctx;
+        const { now, states, watch, hot, armed, snapshot, events, pfMarket, regime } = ctx;
+        const coveragePct = (pfMarket ?? regime as any)?.flowCoveragePct ?? null;
         const addr = pair_address.toLowerCase().trim();
 
         const pairState  = states[addr]             ?? null;
@@ -114,7 +115,7 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
         if (pipeState === "ARMED") {
           const ageSec = Math.round((now - (armedEntry?.armedAt ?? now)) / 1000);
           lines.push(`  • ARMED ${ageSec}s ago — qualification criteria observed, awaiting 30s price confirmation`);
-          lines.push(`  • Entry score: ${armedEntry?.score ?? "?"} | flow: ${armedEntry?.flowPressure ?? "?"}`);
+          lines.push(`  • Qualification score: ${armedEntry?.score ?? "?"} | flow: ${armedEntry?.flowPressure ?? "?"}`);
         } else if (pipeState === "HOT") {
           const ageSec = Math.round((now - (hotEntry?.promotedAt ?? now)) / 1000);
           lines.push(`  • Promoted to HOT ${ageSec}s ago from source: ${hotEntry?.source ?? "WS"}`);
@@ -159,14 +160,10 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
 		
 		if (pairState?.priceChange) {
 		const pc = pairState.priceChange;
-	    const fmt = (n: number | null | undefined) =>
-		  typeof n === "number" && Number.isFinite(n)
-		    ? `${n > 0 ? "+" : ""}${n.toFixed(1)}%`
-		    : "n/a";
 	    lines.push("");
 	    lines.push("PRICE CHANGE:");
-	    lines.push(`  • m5: ${fmt(pc.m5)} | h1: ${fmt(pc.h1)} | h24: ${fmt(pc.h24)}`);
-	    }	
+	    lines.push(`  • m5: ${formatPct(pc.m5)} | h1: ${formatPct(pc.h1)} | h24: ${formatPct(pc.h24)}`);
+	    }
 		
         if (pairState?.flow?.hasData) {
           lines.push("");
@@ -259,19 +256,17 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
         lines.push(`  • tp_chase_risk — chase risk assessment`);
         lines.push(`  • tp_preflight_safety — contract/token safety check`);
         lines.push(`  • tp_why_not — pipeline rejection reasons`);
-        lines.push(`  • tp_pair_context — raw worker context`);
+        lines.push(`  • tp_pair_context — raw worker context (advanced/read:all)`);
  
-const confidence =
-  pairState?.flow?.hasData && pipeState === "ARMED" ? "HIGH" :
-  pairState?.flow?.hasData || pipeState === "ARMED" || pipeState === "HOT" ? "MEDIUM" :
-  "LOW";
+const hasDirectFlow = !!pairState?.flow?.hasData;
+const confidence    = combineConfidence(dataAgeSec, coveragePct, hasDirectFlow);
 
 return mcpResponse({
   text:         lines.join("\n"),
   freshnessSec: dataAgeSec,
   confidence,
   dataQuality: {
-    wsFlow:    pairState?.flow?.hasData ? "present" : "absent",
+    wsFlow:    wsFlowQuality(hasDirectFlow, coveragePct),
     liquidity: pairState?.lp?.hasData ? "confirmed" : pairState?.reserveUsd ? "estimated" : "unknown",
   },
   evidence: {
