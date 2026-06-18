@@ -1,0 +1,19 @@
+{
+  "name": "@preflight/indexer-evm",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "tsx --env-file=../../.env.local src/index.ts",
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "ioredis": "^5.10.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "tsx": "^4.22.2",
+    "typescript": "^5"
+  }
+}

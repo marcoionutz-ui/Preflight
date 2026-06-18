@@ -153,7 +153,8 @@ export type DiscoverySource =
   | "DEXSCREENER_PROFILE"
   | "DEXSCREENER_PAIR_FALLBACK"
   | "MARKET_FOLLOW_LIST"
-  | "AGENT_SUPPLIED";
+  | "AGENT_SUPPLIED"
+  | "INDEXER";            // Faza 6.3 — pool descoperit de indexer-evm
 
 export type SourceAgreement =
   | "MULTI_DISCOVERY_SOURCES"

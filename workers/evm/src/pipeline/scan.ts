@@ -16,10 +16,12 @@ import { trackPool, tokenPools, tokenPoolKey } from "../infra/poolTracker";
 import { getRedis } from "../infra/redis";
 import { sendTelegram } from "../infra/telegram";
 import { fetchDiscoveryPools, fetchPoolByAddress } from "../sources/gecko";
+import { fetchIndexedDiscoveryPools, getIndexedSourceHealth } from "../sources/indexed";
 import { fetchDsPairByAddress, fetchDsTokenPairs, fetchDsBoostedTokens } from "../sources/dexscreener";
 import { isBlockedSymbol } from "../sources/normalize";
 import type { SourcePool } from "../sources/normalize";
 import { CHAINS } from "../config/chains";
+import type { ChainConfig } from "../config/chains";
 import {
   WORKER_VERSION, MAX_SHADOW_PER_SCAN, MAX_VERTICAL_WATCH, MAX_LATE_WATCH,
   MAX_QUALIFIED_BUFFER, ARM_CONFIRM_MS, ARM_MIN_PRICE_CONFIRM, V3_DEXES,
@@ -129,6 +131,72 @@ async function writeScannerStats(
   }), "EX", 300);
 }
 
+// ── Source dispatch ───────────────────────────────────────────────────────────
+
+/**
+ * Minimum indexed pools to consider the indexer registry ready for use.
+ * Below this threshold we fall back to Gecko even if health is OK.
+ */
+const MIN_INDEXED_POOLS = 5;
+
+/**
+ * Health-aware pool fetcher for one chain.
+ *
+ * DISCOVERY_SOURCE env:
+ *   "gecko"   → always use GeckoTerminal (current behaviour)
+ *   "indexer" → always use indexer registry (even if health is degraded)
+ *   "auto"    → use indexer if healthy + enough pools + has price data, else Gecko
+ *
+ * "auto" default means: in Faza 6.3 (no price data yet) the indexer registry
+ * is always bypassed because indexed pools have priceUsd=0.
+ * In Faza 6.5+ (price data available) auto will activate INDEXER_PRIMARY.
+ */
+async function fetchPoolsForChain(chain: ChainConfig): Promise<SourcePool[]> {
+  const mode = process.env.DISCOVERY_SOURCE ?? "auto";
+
+  if (mode === "gecko") {
+    return fetchDiscoveryPools(chain);
+  }
+
+  const [health, indexed] = await Promise.all([
+    getIndexedSourceHealth(chain.id),
+    fetchIndexedDiscoveryPools(chain),
+  ]);
+
+  if (mode === "indexer") {
+    // Explicit override — use indexer regardless of health
+    console.log(`[SOURCE] ${chain.id}: INDEXER_FORCED (${indexed.length} pools, status:${health.status})`);
+    return indexed;
+  }
+
+  // auto: switch to INDEXER_PRIMARY only when indexer is healthy AND has price data
+  // priceUsd>0 gate: keeps Gecko as default until Faza 6.5 populates price data
+  const indexerHealthy =
+    health.status === "OK" &&
+    (health.blocksBehind ?? 999999) <= 20 &&
+    indexed.length >= MIN_INDEXED_POOLS &&
+    indexed.some(p => p.priceUsd > 0); // gate: Faza 6.5+ only
+
+  if (indexerHealthy) {
+    console.log(
+      `[SOURCE] ${chain.id}: INDEXER_PRIMARY ` +
+      `(${indexed.length} pools, behind:${health.blocksBehind})`,
+    );
+    return indexed;
+  }
+
+  const reason =
+    health.status === "MISSING"  ? "indexer_missing_health" :
+    health.status === "DEGRADED" ? "indexer_degraded" :
+    (health.blocksBehind ?? 999999) > 20 ? "indexer_behind" :
+    indexed.length < MIN_INDEXED_POOLS    ? "indexer_pool_count_low" :
+    !indexed.some(p => p.priceUsd > 0)   ? "indexer_no_price_data" :
+    "unknown";
+
+  console.log(`[SOURCE] ${chain.id}: GECKO_FALLBACK reason:${reason}`);
+  return fetchDiscoveryPools(chain);
+}
+
 export async function scan(): Promise<void> {
   const ts        = new Date().toISOString();
   const scanStart = Date.now();
@@ -136,9 +204,13 @@ export async function scan(): Promise<void> {
   clearExpiredArmedEntries();
   pruneMemory();
 
-  const allPoolsPerChain = await Promise.all(CHAINS.map(c => fetchDiscoveryPools(c)));
+  const allPoolsPerChain = await Promise.all(CHAINS.map(c => fetchPoolsForChain(c)));
 
   // Actualizează Gecko source health per chain
+  // TODO(Faza 6.5): geckoSourceHealth assumes allPoolsPerChain came from Gecko.
+  // In auto mode this holds because INDEXER_PRIMARY is gated on priceUsd>0 (not yet populated).
+  // Before activating INDEXER_PRIMARY, split source health so indexer pools don't
+  // update geckoSourceHealth — e.g. have fetchPoolsForChain return { pools, source }.
   CHAINS.forEach((chain, i) => {
     const count = allPoolsPerChain[i]?.length ?? 0;
     const prev  = geckoSourceHealth.get(chain.id);

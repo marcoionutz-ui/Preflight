@@ -1,0 +1,222 @@
+/**
+ * sources/indexed.ts
+ * Reads discovered pools from the Preflight Indexer EVM registry in Redis.
+ *
+ * Redis keys (written by workers/indexer-evm):
+ *   preflight:indexer:health:{chain}       — IndexerHealth JSON (TTL 60s)
+ *   preflight:indexed:pairs:{chain}        — ZSET by blockNumber (permanent)
+ *   preflight:indexed:pair:{chain}:{addr}  — IndexedPair JSON (permanent)
+ *
+ * Defensive: returns [] / MISSING status if Redis unavailable or keys missing.
+ * Never throws — all errors are caught and logged.
+ *
+ * Faza 6.3: pools have priceUsd=0 (token metadata + price not available yet).
+ *   INDEXER_PRIMARY is gated on indexed.some(p => p.priceUsd > 0) so the
+ *   fallback to Gecko remains in effect until Faza 6.5 adds price data.
+ * Faza 6.5+: once price data exists, indexed pools pass processPool's price check.
+ */
+
+import { getRedis } from "../infra/redis";
+import { CHAINS } from "../config/chains";
+import type { ChainConfig } from "../config/chains";
+import type { SourcePool, DexType } from "./normalize";
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Health of the indexer-evm source for a given chain.
+ * "MISSING" = Redis key absent or Redis unavailable (not an indexer-written status).
+ */
+export interface IndexedSourceHealth {
+  status:          "OK" | "CATCHING_UP" | "DEGRADED" | "MISSING";
+  blocksBehind:    number | null;
+  lastSuccessAt:   number | null;
+  pairsDiscovered: number;
+  freshPairs24h:   number;
+  reason?:         string;
+}
+
+/** Shape written by workers/indexer-evm/src/discovery/pairRegistry.ts */
+interface IndexedPair {
+  // Core (always present)
+  chain:        string;
+  dexId:        string;
+  pairAddress:  string;
+  token0:       string;
+  token1:       string;
+  fee?:         number;
+  stable?:      boolean;
+  blockNumber:  number;
+  txHash:       string;
+  discoveredAt: number;
+
+  // Faza 6.4: token metadata (optional — present after enrichment by indexer-evm)
+  baseToken?:      string;
+  quoteToken?:     string | null;
+  quoteStatus?:    "OK" | "NO_KNOWN_QUOTE" | "AMBIGUOUS_QUOTE";
+  baseSymbol?:     string | null;
+  quoteSymbol?:    string | null;
+  baseDecimals?:   number | null;
+  quoteDecimals?:  number | null;
+  metadataStatus?: "OK" | "PARTIAL" | "FAILED";
+
+  // Faza 6.5: price + liquidity (optional — present after enrichment by indexer-evm)
+  priceUsd?:    number;
+  reserveUsd?:  number;
+  priceStatus?: string;
+}
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+const HEALTH_KEY    = (chain: string) => `preflight:indexer:health:${chain}`;
+const BLOCK_SET_KEY = (chain: string) => `preflight:indexed:pairs:${chain}`;
+const PAIR_KEY      = (chain: string, addr: string) => `preflight:indexed:pair:${chain}:${addr}`;
+
+/** Maximum pairs to load per chain per scan — keeps pipeline bounded */
+const MAX_PAIRS = 200;
+
+/** dexIds that correspond to V3 pools (fee in topics[3], not data) */
+const V3_DEX_IDS = new Set(["uniswap-v3", "pancakeswap-v3"]);
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function findChainConfig(chainId: string): ChainConfig | undefined {
+  return CHAINS.find(c => c.id === chainId.toLowerCase());
+}
+
+function dexTypeFromId(dexId: string): DexType {
+  return V3_DEX_IDS.has(dexId) ? "V3" : "V2";
+}
+
+function toSourcePool(pair: IndexedPair, chainCfg: ChainConfig): SourcePool {
+  return {
+    chain:           pair.chain,
+    pairAddress:     pair.pairAddress,
+    tokenAddress:    pair.baseToken  ?? pair.token0,   // 6.4: enriched base, fallback to token0
+    symbol:          pair.baseSymbol ?? "UNKNOWN",     // 6.4: enriched symbol, fallback to UNKNOWN
+    dexType:         dexTypeFromId(pair.dexId),
+    dexId:           pair.dexId,
+    discoverySource: "INDEXER",
+    priceUsd:        pair.priceUsd   ?? 0, // 6.5: enriched price, fallback 0
+    priceChange:     { m5: 0, h1: 0, h24: 0 },
+    reserveUsd:      pair.reserveUsd ?? 0, // 6.5: enriched TVL, fallback 0
+    volumeUsd24h:    0,
+    transactions:    { buys5m: 0, sells5m: 0, buys1h: 0, sells1h: 0 },
+    _chain:          chainCfg,
+    _raw:            pair,
+  };
+}
+
+// ── Public API ────────────────────────────────────────────────────────────────
+
+/**
+ * Reads indexer health from Redis for a given chain.
+ * Returns { status: "MISSING" } if key absent or Redis unavailable.
+ */
+export async function getIndexedSourceHealth(
+  chainId: string,
+): Promise<IndexedSourceHealth> {
+  const r = getRedis();
+  if (!r) {
+    return {
+      status: "MISSING", blocksBehind: null, lastSuccessAt: null,
+      pairsDiscovered: 0, freshPairs24h: 0, reason: "redis_unavailable",
+    };
+  }
+
+  try {
+    const raw = await r.get(HEALTH_KEY(chainId.toLowerCase()));
+    if (!raw) {
+      return {
+        status: "MISSING", blocksBehind: null, lastSuccessAt: null,
+        pairsDiscovered: 0, freshPairs24h: 0, reason: "health_key_missing",
+      };
+    }
+
+    const h = JSON.parse(raw) as {
+      status:          string;
+      blocksBehind:    number;
+      lastSuccessAt:   number | null;
+      pairsDiscovered: number;
+      freshPairs24h:   number;
+    };
+
+    return {
+      status:          (h.status as IndexedSourceHealth["status"]) ?? "DEGRADED",
+      blocksBehind:    h.blocksBehind ?? null,
+      lastSuccessAt:   h.lastSuccessAt ?? null,
+      pairsDiscovered: h.pairsDiscovered ?? 0,
+      freshPairs24h:   h.freshPairs24h ?? 0,
+    };
+  } catch (err) {
+    console.error(`[INDEXED] getIndexedSourceHealth(${chainId}) error:`, (err as Error).message);
+    return {
+      status: "MISSING", blocksBehind: null, lastSuccessAt: null,
+      pairsDiscovered: 0, freshPairs24h: 0, reason: "parse_error",
+    };
+  }
+}
+
+/**
+ * Fetches up to MAX_PAIRS most recent pairs from indexer registry (by blockNumber desc).
+ * Returns [] if Redis unavailable, chain unknown, or registry is empty.
+ */
+export async function fetchIndexedDiscoveryPools(
+  chain: ChainConfig,
+): Promise<SourcePool[]> {
+  const r = getRedis();
+  if (!r) return [];
+
+  const chainId  = chain.id.toLowerCase();
+  const chainCfg = findChainConfig(chainId);
+  if (!chainCfg) return [];
+
+  try {
+    const addrs = await r.zrevrange(BLOCK_SET_KEY(chainId), 0, MAX_PAIRS - 1);
+    if (addrs.length === 0) return [];
+
+    const pipe = r.pipeline();
+    for (const addr of addrs) pipe.get(PAIR_KEY(chainId, addr));
+    const results = await pipe.exec();
+    if (!results) return [];
+
+    const pools: SourcePool[] = [];
+    for (const [err, raw] of results) {
+      if (err || !raw) continue;
+      try {
+        const pair = JSON.parse(raw as string) as IndexedPair;
+        pools.push(toSourcePool(pair, chainCfg));
+      } catch {
+        // skip malformed entries silently
+      }
+    }
+
+    return pools;
+  } catch (err) {
+    console.error(`[INDEXED] fetchIndexedDiscoveryPools(${chain.id}) error:`, (err as Error).message);
+    return [];
+  }
+}
+
+/**
+ * Fetches a single pool from indexer registry by pair address.
+ * Returns null if not found, Redis unavailable, or parse error.
+ */
+export async function fetchIndexedPoolByAddress(
+  chain:       ChainConfig,
+  pairAddress: string,
+): Promise<SourcePool | null> {
+  const r = getRedis();
+  if (!r) return null;
+
+  const chainId = chain.id.toLowerCase();
+  try {
+    const raw = await r.get(PAIR_KEY(chainId, pairAddress.toLowerCase()));
+    if (!raw) return null;
+    const pair = JSON.parse(raw) as IndexedPair;
+    return toSourcePool(pair, chain);
+  } catch (err) {
+    console.error(`[INDEXED] fetchIndexedPoolByAddress(${chain.id}, ${pairAddress}) error:`, (err as Error).message);
+    return null;
+  }
+}
