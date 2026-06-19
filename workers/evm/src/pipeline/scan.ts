@@ -109,6 +109,7 @@ async function writeScannerStats(
   scanStart: number,
   totalFetched: number,
   processedPools: number,
+  sourceByChain: Record<string, any> = {},
 ): Promise<void> {
   const chainsHealth: Record<string, any> = {};
   for (const [chainId, health] of geckoSourceHealth.entries()) {
@@ -118,6 +119,7 @@ async function writeScannerStats(
     savedAt: Date.now(),
     scan: { durationMs: Date.now() - scanStart, totalFetched, processedPools },
     chains: chainsHealth,
+    sourceByChain,
     dexscreener: {
       lastFetchAgeSec:  dexscreenerSourceHealth.lastFetchAt
         ? Math.round((Date.now() - dexscreenerSourceHealth.lastFetchAt) / 1000)
@@ -151,11 +153,23 @@ const MIN_INDEXED_POOLS = 5;
  * is always bypassed because indexed pools have priceUsd=0.
  * In Faza 6.5+ (price data available) auto will activate INDEXER_PRIMARY.
  */
-async function fetchPoolsForChain(chain: ChainConfig): Promise<SourcePool[]> {
+// ── Source fetch result (Faza 6.6: sourceByChain tracking) ───────────────────
+
+interface FetchResult {
+  pools:         SourcePool[];
+  source:        "INDEXER_PRIMARY" | "GECKO_FALLBACK" | "INDEXER_FORCED";
+  reason?:       string;
+  indexedCount?: number;
+  geckoCount?:   number;
+  indexedHealth?: { status: string; blocksBehind: number | null };
+}
+
+async function fetchPoolsForChain(chain: ChainConfig): Promise<FetchResult> {
   const mode = process.env.DISCOVERY_SOURCE ?? "auto";
 
   if (mode === "gecko") {
-    return fetchDiscoveryPools(chain);
+    const pools = await fetchDiscoveryPools(chain);
+    return { pools, source: "GECKO_FALLBACK", reason: "forced_gecko", geckoCount: pools.length };
   }
 
   const [health, indexed] = await Promise.all([
@@ -164,25 +178,31 @@ async function fetchPoolsForChain(chain: ChainConfig): Promise<SourcePool[]> {
   ]);
 
   if (mode === "indexer") {
-    // Explicit override — use indexer regardless of health
     console.log(`[SOURCE] ${chain.id}: INDEXER_FORCED (${indexed.length} pools, status:${health.status})`);
-    return indexed;
+    return {
+      pools: indexed, source: "INDEXER_FORCED",
+      indexedCount: indexed.length,
+      indexedHealth: { status: health.status, blocksBehind: health.blocksBehind },
+    };
   }
 
   // auto: switch to INDEXER_PRIMARY only when indexer is healthy AND has price data
-  // priceUsd>0 gate: keeps Gecko as default until Faza 6.5 populates price data
   const indexerHealthy =
     health.status === "OK" &&
     (health.blocksBehind ?? 999999) <= 20 &&
     indexed.length >= MIN_INDEXED_POOLS &&
-    indexed.some(p => p.priceUsd > 0); // gate: Faza 6.5+ only
+    indexed.some(p => p.priceUsd > 0);
 
   if (indexerHealthy) {
     console.log(
       `[SOURCE] ${chain.id}: INDEXER_PRIMARY ` +
       `(${indexed.length} pools, behind:${health.blocksBehind})`,
     );
-    return indexed;
+    return {
+      pools: indexed, source: "INDEXER_PRIMARY",
+      indexedCount: indexed.length,
+      indexedHealth: { status: health.status, blocksBehind: health.blocksBehind },
+    };
   }
 
   const reason =
@@ -193,8 +213,9 @@ async function fetchPoolsForChain(chain: ChainConfig): Promise<SourcePool[]> {
     !indexed.some(p => p.priceUsd > 0)   ? "indexer_no_price_data" :
     "unknown";
 
-  console.log(`[SOURCE] ${chain.id}: GECKO_FALLBACK reason:${reason}`);
-  return fetchDiscoveryPools(chain);
+  const geckoPools = await fetchDiscoveryPools(chain);
+  console.log(`[SOURCE] ${chain.id}: GECKO_FALLBACK (${geckoPools.length} pools, reason:${reason})`);
+  return { pools: geckoPools, source: "GECKO_FALLBACK", reason, geckoCount: geckoPools.length };
 }
 
 export async function scan(): Promise<void> {
@@ -204,21 +225,53 @@ export async function scan(): Promise<void> {
   clearExpiredArmedEntries();
   pruneMemory();
 
-  const allPoolsPerChain = await Promise.all(CHAINS.map(c => fetchPoolsForChain(c)));
+  const fetchResults     = await Promise.all(CHAINS.map(c => fetchPoolsForChain(c)));
+  const allPoolsPerChain = fetchResults.map(r => r.pools);
 
-  // Actualizează Gecko source health per chain
-  // TODO(Faza 6.5): geckoSourceHealth assumes allPoolsPerChain came from Gecko.
-  // In auto mode this holds because INDEXER_PRIMARY is gated on priceUsd>0 (not yet populated).
-  // Before activating INDEXER_PRIMARY, split source health so indexer pools don't
-  // update geckoSourceHealth — e.g. have fetchPoolsForChain return { pools, source }.
+  // ── sourceByChain (Faza 6.6) ──────────────────────────────────────────────
+  const sourceByChain: Record<string, any> = {};
+  fetchResults.forEach((result, i) => {
+    const chainId = CHAINS[i].id;
+    if (result.source === "INDEXER_PRIMARY" || result.source === "INDEXER_FORCED") {
+      sourceByChain[chainId] = {
+        source:        result.source,
+        indexedCount:  result.indexedCount,
+        indexedHealth: result.indexedHealth,
+        fallbackUsed:  false,
+      };
+    } else {
+      sourceByChain[chainId] = {
+        source:       result.source,
+        reason:       result.reason,
+        geckoCount:   result.geckoCount,
+        fallbackUsed: true,
+      };
+    }
+  });
+
+  // ── geckoSourceHealth — actualizat doar pentru chain-uri pe Gecko (Faza 6.6) ─
   CHAINS.forEach((chain, i) => {
-    const count = allPoolsPerChain[i]?.length ?? 0;
-    const prev  = geckoSourceHealth.get(chain.id);
-    const now      = Date.now();
+    const result = fetchResults[i];
+    const now    = Date.now();
+
+    if (result.source === "INDEXER_PRIMARY" || result.source === "INDEXER_FORCED") {
+      // Nu actualizăm geckoHealth pentru chain-uri pe indexer — reset + marchează ca STANDBY
+      geckoSourceHealth.set(chain.id, {
+        lastResultCount:  0,
+        emptyStreak:      0,
+        consecutiveEmpty: 0,
+        lastFetchAt:      0,
+        last429At:        geckoSourceHealth.get(chain.id)?.last429At ?? null,
+        status:           "STANDBY_INDEXER_PRIMARY" as any,
+      });
+      return;
+    }
+
+    const count    = result.pools.length;
+    const prev     = geckoSourceHealth.get(chain.id);
     const newEmpty = count === 0 ? (prev?.consecutiveEmpty ?? prev?.emptyStreak ?? 0) + 1 : 0;
 
-    const hit429ThisScan =
-      !!prev?.last429At && now - prev.last429At < 60_000;
+    const hit429ThisScan = !!prev?.last429At && now - prev.last429At < 60_000;
 
     const status: "OK" | "DEGRADED" | "RATE_LIMITED" =
       hit429ThisScan && count === 0 ? "RATE_LIMITED" :
@@ -255,7 +308,7 @@ export async function scan(): Promise<void> {
     if (!allPools.length) {
       console.log("No pools fetched");
       const rEmpty = getRedis();
-      if (rEmpty) await writeScannerStats(rEmpty, scanStart, 0, 0).catch(() => {});
+      if (rEmpty) await writeScannerStats(rEmpty, scanStart, 0, 0, sourceByChain).catch(() => {});
       return;
     }
   }
@@ -294,7 +347,7 @@ export async function scan(): Promise<void> {
     if (r) {
       await writeAllSnapshots(r);
       console.log(`[REDIS] watch:${activeWatch.size} hot:${hotCandidates.size} armed:${armedEntries.size}`);
-      await writeScannerStats(r, scanStart, allPools.length, allPools.length).catch(() => {});
+      await writeScannerStats(r, scanStart, allPools.length, allPools.length, sourceByChain).catch(() => {});
     }
   } catch { /* Redis optional */ }
 

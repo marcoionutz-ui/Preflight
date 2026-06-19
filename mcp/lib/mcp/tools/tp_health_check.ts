@@ -66,6 +66,25 @@ Use this first to verify the worker is running before calling other tools.`,
 			  totalFetched:   scannerStats.scan?.totalFetched   ?? null,
 			  processedPools: scannerStats.scan?.processedPools ?? null,
 			},
+			sourceByChain: Object.fromEntries(
+			  Object.entries(scannerStats.sourceByChain ?? {}).map(([chainId, s]: [string, any]) => [
+				chainId,
+				s.source === "INDEXER_PRIMARY" || s.source === "INDEXER_FORCED"
+				  ? {
+					  source:        s.source,
+					  indexedCount:  s.indexedCount,
+					  blocksBehind:  s.indexedHealth?.blocksBehind ?? null,
+					  indexerStatus: s.indexedHealth?.status ?? null,
+					  fallbackUsed:  false,
+					}
+				  : {
+					  source:       s.source,
+					  reason:       s.reason ?? null,
+					  geckoCount:   s.geckoCount ?? null,
+					  fallbackUsed: s.fallbackUsed ?? true,
+					},
+			  ])
+			),
 			geckoHealth: Object.fromEntries(
 			  Object.entries(scannerStats.chains ?? {}).map(([chainId, c]: [string, any]) => [
 				chainId,
