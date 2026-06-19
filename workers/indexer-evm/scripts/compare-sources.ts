@@ -60,11 +60,24 @@ if (!geckoNetwork) {
 
 const r = new Redis(REDIS_URL);
 
+// ── EVM address filter ────────────────────────────────────────────────────────
+
+const EVM_ADDR_RE = /^0x[a-fA-F0-9]{40}$/;
+
+function isSupportedDex(dex: string): boolean {
+  const d = dex.toLowerCase();
+  return d.includes("uniswap") || d.includes("aerodrome") ||
+         d.includes("pancake") || d.includes("camelot");
+}
+
 // ── Gecko fetch ───────────────────────────────────────────────────────────────
 
-async function fetchGeckoPools(): Promise<Set<string>> {
+async function fetchGeckoPools(): Promise<{ addrs: Set<string>; partial: boolean }> {
   const addrs = new Set<string>();
-  const urls  = [
+  let partial  = false;
+  let skipped  = 0;
+
+  const urls = [
     `${GECKO_BASE}/networks/${geckoNetwork}/trending_pools?page=1`,
     `${GECKO_BASE}/networks/${geckoNetwork}/trending_pools?page=2`,
     `${GECKO_BASE}/networks/${geckoNetwork}/new_pools?page=1`,
@@ -78,22 +91,27 @@ async function fetchGeckoPools(): Promise<Set<string>> {
       });
       if (res.status === 429) {
         console.warn(`  [GECKO] 429 on ${url} — partial results`);
+        partial = true;
         continue;
       }
-      if (!res.ok) continue;
+      if (!res.ok) { partial = true; continue; }
       const json = await res.json() as any;
       for (const item of json.data ?? []) {
         const addr = item.attributes?.address?.toLowerCase();
-        if (addr) addrs.add(addr);
+        const dex  = item.relationships?.dex?.data?.id ?? "";
+        if (!addr || !EVM_ADDR_RE.test(addr)) { skipped++; continue; }
+        if (dex && !isSupportedDex(dex))      { skipped++; continue; }
+        addrs.add(addr);
       }
-      // Politeness delay
       await new Promise(r => setTimeout(r, 700));
     } catch (e) {
       console.warn(`  [GECKO] fetch error: ${(e as Error).message}`);
+      partial = true;
     }
   }
 
-  return addrs;
+  if (skipped > 0) console.log(`  [GECKO] skipped ${skipped} non-EVM / unsupported DEX addresses`);
+  return { addrs, partial };
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -125,8 +143,8 @@ async function main() {
 
   // ── Fetch Gecko pools ─────────────────────────────────────────────────────
   console.log("Fetching Gecko pools (trending p1+p2 + new)...");
-  const geckoAddrs = await fetchGeckoPools();
-  console.log(`Gecko pools fetched: ${geckoAddrs.size}`);
+  const { addrs: geckoAddrs, partial: geckoPartial } = await fetchGeckoPools();
+  console.log(`Gecko pools fetched: ${geckoAddrs.size}${geckoPartial ? " (PARTIAL — 429 observed)" : ""}`);
 
   // ── Compute overlap ───────────────────────────────────────────────────────
   const overlap     = [...indexedAddrs].filter(a => geckoAddrs.has(a));
@@ -137,7 +155,11 @@ async function main() {
     ? ((overlap.length / geckoAddrs.size) * 100).toFixed(1)
     : "N/A";
 
-  const insufficientSample = addrs.length < 10 || hours < 2;
+  const insufficientSample =
+    geckoPartial        ||
+    addrs.length < 10   ||
+    geckoAddrs.size < 10 ||
+    hours < 2;
 
   // ── Latency estimation ────────────────────────────────────────────────────
   // For overlapping pairs, we only know indexer discoveredAt.
@@ -178,7 +200,9 @@ async function main() {
   }
 
   // ── Alert ─────────────────────────────────────────────────────────────────
-  if (!insufficientSample && geckoAddrs.size > 0) {
+  if (geckoPartial) {
+    console.log("\n  ⚠️  GECKO_PARTIAL — overlap warning disabled (429 observed, results unreliable)");
+  } else if (!insufficientSample && geckoAddrs.size > 0) {
     const pct = (overlap.length / geckoAddrs.size) * 100;
     if (pct < 90) {
       console.log(`\n  ⚠️  WARNING: overlap < 90% (${overlapPct}%) — indexer may be missing pools`);
