@@ -101,7 +101,7 @@ export const FACTORIES: FactoryConfig[] = [
     confidence: "HIGH",
   },
 
-  // ── BSC (disabled — Faza 6.9) ───────────────────────────────────────────────
+  // ── BSC (env-gated — setează INDEXER_ENABLE_BSC=1 în Railway pentru activare) ──
   {
     chain:      "bsc",
     dexId:      "pancakeswap-v2",
@@ -110,7 +110,7 @@ export const FACTORIES: FactoryConfig[] = [
     adapter:    "PANCAKE_V2",
     event:      "PairCreated",
     topic0:     TOPIC0_PAIR_CREATED_V2,
-    enabled:    false,
+    enabled:    process.env.INDEXER_ENABLE_BSC === "1",
     confidence: "HIGH",
   },
   {
@@ -121,11 +121,11 @@ export const FACTORIES: FactoryConfig[] = [
     adapter:    "PANCAKE_V3",
     event:      "PoolCreated",
     topic0:     TOPIC0_POOL_CREATED_V3,
-    enabled:    false,
+    enabled:    process.env.INDEXER_ENABLE_BSC === "1",
     confidence: "HIGH",
   },
 
-  // ── ARBITRUM (disabled — Faza 6.9) ─────────────────────────────────────────
+  // ── ARBITRUM (env-gated — setează INDEXER_ENABLE_ARBITRUM=1 în Railway pentru activare) ──
   {
     chain:      "arbitrum",
     dexId:      "uniswap-v3",
@@ -134,7 +134,7 @@ export const FACTORIES: FactoryConfig[] = [
     adapter:    "UNISWAP_V3",
     event:      "PoolCreated",
     topic0:     TOPIC0_POOL_CREATED_V3,
-    enabled:    false,
+    enabled:    process.env.INDEXER_ENABLE_ARBITRUM === "1",
     confidence: "HIGH",
   },
   {
@@ -146,7 +146,7 @@ export const FACTORIES: FactoryConfig[] = [
     adapter:    "CAMELOT",
     event:      "PairCreated",
     topic0:     TOPIC0_PAIR_CREATED_V2,
-    enabled:    false,
+    enabled:    process.env.INDEXER_ENABLE_ARBITRUM === "1",
     confidence: "HIGH",
   },
 ];

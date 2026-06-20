@@ -3,12 +3,11 @@
  * USD price lookup pentru quote tokens cunoscuți.
  *
  * Stablecoins → 1.0 (hardcodat, nu fetch extern)
- * WETH/WBNB   → INDEXER_WETH_USD env (0 = unknown, pair rămâne priceUsd=0)
+ * WETH (Base/Arb) → INDEXER_WETH_USD env
+ * WBNB (BSC)      → INDEXER_BNB_USD env  ← separat! ETH ≠ BNB ca preț
+ * Ecosystem       → INDEXER_{SYMBOL}_USD env (ex: INDEXER_VIRTUAL_USD)
  *
- * Motivul pentru env în loc de feed extern:
- *   - Faza 6.5 minimal, fără dependențe externe de price
- *   - La deploy Railway setezi INDEXER_WETH_USD=3500
- *   - Dacă env lipsește, WETH pairs au priceStatus=QUOTE_PRICE_UNKNOWN (corect, nu fake)
+ * Fără env → priceStatus=QUOTE_PRICE_UNKNOWN (corect, nu fake 0)
  */
 
 // ── Stablecoins ───────────────────────────────────────────────────────────────
@@ -29,11 +28,16 @@ const STABLE_ADDRESSES = new Set([
   "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d", // USDC BSC
 ]);
 
-// ── WETH / native wrapped ─────────────────────────────────────────────────────
+// ── WETH (Base + Arbitrum) ────────────────────────────────────────────────────
 
 const WETH_ADDRESSES = new Set([
   "0x4200000000000000000000000000000000000006", // WETH Base
   "0x82af49447d8a07e3bd95bd0d56f35241523fbab1", // WETH Arbitrum
+]);
+
+// ── WBNB (BSC) — preț separat de WETH ────────────────────────────────────────
+
+const WBNB_ADDRESSES = new Set([
   "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c", // WBNB BSC
 ]);
 
@@ -50,23 +54,13 @@ const ECOSYSTEM_TOKEN_ENV: Record<string, string> = {
 
 // ── Price env cache ───────────────────────────────────────────────────────────
 
-let _wethUsd: number | null = null;
-const _ecosystemCache = new Map<string, number | null>();
+const _envCache = new Map<string, number | null>();
 
-function readWethUsd(): number {
-  if (_wethUsd !== null) return _wethUsd;
-  const v = Number(process.env.INDEXER_WETH_USD ?? 0);
-  _wethUsd = Number.isFinite(v) && v > 0 ? v : 0;
-  return _wethUsd;
-}
-
-function readEcosystemPrice(addr: string): number | null {
-  if (_ecosystemCache.has(addr)) return _ecosystemCache.get(addr) ?? null;
-  const envKey = ECOSYSTEM_TOKEN_ENV[addr];
-  if (!envKey) return null;
-  const v = Number(process.env[envKey] ?? 0);
+function readPositiveEnvNumber(key: string): number | null {
+  if (_envCache.has(key)) return _envCache.get(key) ?? null;
+  const v = Number(process.env[key] ?? 0);
   const price = Number.isFinite(v) && v > 0 ? v : null;
-  _ecosystemCache.set(addr, price);
+  _envCache.set(key, price);
   return price;
 }
 
@@ -75,8 +69,9 @@ function readEcosystemPrice(addr: string): number | null {
 /**
  * Returns the USD price of a known quote token:
  *   stable    → 1.0
- *   WETH/WBNB → INDEXER_WETH_USD env value, or null if not configured
- *   ecosystem → INDEXER_{SYMBOL}_USD env value, or null if not configured
+ *   WETH      → INDEXER_WETH_USD env (Base + Arbitrum)
+ *   WBNB      → INDEXER_BNB_USD env  (BSC — separat de WETH!)
+ *   ecosystem → INDEXER_{SYMBOL}_USD env (ex: INDEXER_VIRTUAL_USD)
  *   other     → null (unknown)
  *
  * Returning null signals caller to set priceStatus="QUOTE_PRICE_UNKNOWN"
@@ -85,10 +80,8 @@ function readEcosystemPrice(addr: string): number | null {
 export function getQuotePrice(tokenAddress: string): number | null {
   const addr = tokenAddress.toLowerCase();
   if (STABLE_ADDRESSES.has(addr)) return 1.0;
-  if (WETH_ADDRESSES.has(addr)) {
-    const price = readWethUsd();
-    return price > 0 ? price : null;
-  }
-  if (addr in ECOSYSTEM_TOKEN_ENV) return readEcosystemPrice(addr);
+  if (WETH_ADDRESSES.has(addr))   return readPositiveEnvNumber("INDEXER_WETH_USD");
+  if (WBNB_ADDRESSES.has(addr))   return readPositiveEnvNumber("INDEXER_BNB_USD");
+  if (addr in ECOSYSTEM_TOKEN_ENV) return readPositiveEnvNumber(ECOSYSTEM_TOKEN_ENV[addr]);
   return null;
 }
