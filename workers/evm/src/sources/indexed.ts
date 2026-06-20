@@ -181,15 +181,32 @@ export async function fetchIndexedDiscoveryPools(
     if (!results) return [];
 
     const pools: SourcePool[] = [];
+    const skipped: Record<string, number> = {};
+
     for (const [err, raw] of results) {
       if (err || !raw) continue;
       try {
         const pair = JSON.parse(raw as string) as IndexedPair;
+
+        // Servim doar pairs priced OK — registry le păstrează pe toate
+        if (pair.priceStatus !== "OK") {
+          const key = pair.priceStatus ?? "MISSING";
+          skipped[key] = (skipped[key] ?? 0) + 1;
+          continue;
+        }
+
         pools.push(toSourcePool(pair, chainCfg));
       } catch {
         // skip malformed entries silently
       }
     }
+
+    const skippedStr = Object.entries(skipped).map(([k, v]) => `${k}:${v}`).join(" ");
+    console.log(
+      `[INDEXED] ${chain.id}: loaded ${addrs.length} indexed, ` +
+      `served ${pools.length} OK` +
+      (skippedStr ? `, skipped ${skippedStr}` : ""),
+    );
 
     return pools;
   } catch (err) {

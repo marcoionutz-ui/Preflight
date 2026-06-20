@@ -172,13 +172,15 @@ export const marketFollowList = new Map<string, {
 }>();
 
 // ── Gecko source health ───────────────────────────────────────────────────────
+export type GeckoHealthStatus = "OK" | "DEGRADED" | "RATE_LIMITED" | "STANDBY_INDEXER_PRIMARY";
+
 export const geckoSourceHealth = new Map<string, {
   lastResultCount:  number;
   emptyStreak:      number;
   lastFetchAt:      number;
   last429At:        number | null;
   consecutiveEmpty: number;
-  status:           "OK" | "DEGRADED" | "RATE_LIMITED";
+  status:           GeckoHealthStatus;
 }>();
 
 // ── DexScreener source health ───────────────────────────────────────────────────────

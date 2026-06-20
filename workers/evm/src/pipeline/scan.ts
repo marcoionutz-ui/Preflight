@@ -110,6 +110,7 @@ async function writeScannerStats(
   totalFetched: number,
   processedPools: number,
   sourceByChain: Record<string, any> = {},
+  discoverySource: string = "auto",
 ): Promise<void> {
   const chainsHealth: Record<string, any> = {};
   for (const [chainId, health] of geckoSourceHealth.entries()) {
@@ -117,6 +118,7 @@ async function writeScannerStats(
   }
   await r.set(REDIS_KEYS.scannerStats, JSON.stringify({
     savedAt: Date.now(),
+    discoverySource,
     scan: { durationMs: Date.now() - scanStart, totalFetched, processedPools },
     chains: chainsHealth,
     sourceByChain,
@@ -169,6 +171,7 @@ async function fetchPoolsForChain(chain: ChainConfig): Promise<FetchResult> {
 
   if (mode === "gecko") {
     const pools = await fetchDiscoveryPools(chain);
+    console.log(`[SOURCE] ${chain.id}: GECKO_FALLBACK (${pools.length} pools, reason:forced_gecko)`);
     return { pools, source: "GECKO_FALLBACK", reason: "forced_gecko", geckoCount: pools.length };
   }
 
@@ -253,6 +256,7 @@ export async function scan(): Promise<void> {
   CHAINS.forEach((chain, i) => {
     const result = fetchResults[i];
     const now    = Date.now();
+    const prev   = geckoSourceHealth.get(chain.id);
 
     if (result.source === "INDEXER_PRIMARY" || result.source === "INDEXER_FORCED") {
       // Nu actualizăm geckoHealth pentru chain-uri pe indexer — reset + marchează ca STANDBY
@@ -260,15 +264,14 @@ export async function scan(): Promise<void> {
         lastResultCount:  0,
         emptyStreak:      0,
         consecutiveEmpty: 0,
-        lastFetchAt:      0,
-        last429At:        geckoSourceHealth.get(chain.id)?.last429At ?? null,
-        status:           "STANDBY_INDEXER_PRIMARY" as any,
+        lastFetchAt:      prev?.lastFetchAt ?? now,
+        last429At:        prev?.last429At ?? null,
+        status:           "STANDBY_INDEXER_PRIMARY",
       });
       return;
     }
 
     const count    = result.pools.length;
-    const prev     = geckoSourceHealth.get(chain.id);
     const newEmpty = count === 0 ? (prev?.consecutiveEmpty ?? prev?.emptyStreak ?? 0) + 1 : 0;
 
     const hit429ThisScan = !!prev?.last429At && now - prev.last429At < 60_000;
@@ -308,7 +311,7 @@ export async function scan(): Promise<void> {
     if (!allPools.length) {
       console.log("No pools fetched");
       const rEmpty = getRedis();
-      if (rEmpty) await writeScannerStats(rEmpty, scanStart, 0, 0, sourceByChain).catch(() => {});
+      if (rEmpty) await writeScannerStats(rEmpty, scanStart, 0, 0, sourceByChain, process.env.DISCOVERY_SOURCE ?? "auto").catch(() => {});
       return;
     }
   }
@@ -347,7 +350,7 @@ export async function scan(): Promise<void> {
     if (r) {
       await writeAllSnapshots(r);
       console.log(`[REDIS] watch:${activeWatch.size} hot:${hotCandidates.size} armed:${armedEntries.size}`);
-      await writeScannerStats(r, scanStart, allPools.length, allPools.length, sourceByChain).catch(() => {});
+      await writeScannerStats(r, scanStart, allPools.length, allPools.length, sourceByChain, process.env.DISCOVERY_SOURCE ?? "auto").catch(() => {});
     }
   } catch { /* Redis optional */ }
 

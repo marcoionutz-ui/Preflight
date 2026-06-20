@@ -16,7 +16,7 @@
  *   AERODROME:  PairCreated(address,address,bool,address,uint256)  ← semnătură diferită! câmp stable în plus
  *   UNISWAP_V3 / PANCAKE_V3: PoolCreated(address,address,uint24,int24,address)
  *
- * Faza 6.0: Base only. BSC + Arbitrum enabled:false până la Faza 6.6.
+ * Faza 6.0: Base only. BSC + Arbitrum enabled:false până la Faza 6.9.
  */
 
 export type ChainId = "base" | "bsc" | "arbitrum";
@@ -101,7 +101,7 @@ export const FACTORIES: FactoryConfig[] = [
     confidence: "HIGH",
   },
 
-  // ── BSC (disabled — Faza 6.6) ───────────────────────────────────────────────
+  // ── BSC (disabled — Faza 6.9) ───────────────────────────────────────────────
   {
     chain:      "bsc",
     dexId:      "pancakeswap-v2",
@@ -125,7 +125,7 @@ export const FACTORIES: FactoryConfig[] = [
     confidence: "HIGH",
   },
 
-  // ── ARBITRUM (disabled — Faza 6.6) ─────────────────────────────────────────
+  // ── ARBITRUM (disabled — Faza 6.9) ─────────────────────────────────────────
   {
     chain:      "arbitrum",
     dexId:      "uniswap-v3",
