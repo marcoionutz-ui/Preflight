@@ -82,22 +82,46 @@ async function main() {
 
   // ── Counters ───────────────────────────────────────────────────────────────
 
-  const byPriceStatus    = new Map<string, number>();
-  const byDexId          = new Map<string, number>();
-  const byQuoteStatus    = new Map<string, number>();
-  const byMetadataStatus = new Map<string, number>();
+  const byPriceStatus       = new Map<string, number>();
+  const byDexId             = new Map<string, number>();
+  const byQuoteStatus       = new Map<string, number>();
+  const byMetadataStatus    = new Map<string, number>();
+  const byNoKnownQuoteToken = new Map<string, number>();
 
   const sampleBad: any[] = [];
 
   for (const p of pairs) {
-    const ps = p.priceStatus  ?? "MISSING";
+    const ps = p.priceStatus    ?? "MISSING";
     const ms = p.metadataStatus ?? "MISSING";
-    const qs = p.quoteStatus  ?? "MISSING";
+    const qs = p.quoteStatus    ?? "MISSING";
 
     inc(byPriceStatus,    ps);
     inc(byDexId,          p.dexId ?? "unknown");
     inc(byQuoteStatus,    qs);
     inc(byMetadataStatus, ms);
+
+    // ── NO_KNOWN_QUOTE breakdown ──────────────────────────────────────────────
+    // Pentru fiecare pereche unde quote detection a picat, numărăm ambele
+    // token-uri (base + "celălalt") ca să identificăm ce tokens lipsesc din quotes.ts.
+    // baseSymbol e disponibil (fetched); "celălalt" îl identificăm prin adresă.
+    if (qs === "NO_KNOWN_QUOTE") {
+      const base  = (p.baseToken ?? "").toLowerCase();
+      const t0    = (p.token0    ?? "").toLowerCase();
+      const t1    = (p.token1    ?? "").toLowerCase();
+      const other = t0 === base ? t1 : t0;
+
+      // Base token — avem simbol
+      if (base) {
+        const sym   = p.baseSymbol;
+        const label = sym ? `${sym} (${base.slice(0, 10)})` : base.slice(0, 10);
+        inc(byNoKnownQuoteToken, label);
+      }
+
+      // "Celălalt" token — fără simbol (nu a fost fetched), doar adresă
+      if (other && other !== base) {
+        inc(byNoKnownQuoteToken, `? ${other.slice(0, 10)}`);
+      }
+    }
 
     if (ps !== "OK" && ps !== "V3_SKIP" && sampleBad.length < 5) {
       sampleBad.push({
@@ -149,6 +173,23 @@ async function main() {
   }
   if (noPrice / total > 0.2) {
     console.log("\n  ⚠️  WARNING: QUOTE_PRICE_UNKNOWN > 20% — set INDEXER_WETH_USD env var");
+  }
+
+  // ── Top token candidates în NO_KNOWN_QUOTE pairs ───────────────────────────
+  if (byNoKnownQuoteToken.size > 0) {
+    const noKnownQuote = byQuoteStatus.get("NO_KNOWN_QUOTE") ?? 0;
+    const topN = [...byNoKnownQuoteToken.entries()]
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 20);
+    console.log(`\nTop token candidates în NO_KNOWN_QUOTE pairs (top ${topN.length}):`);
+    console.log("  (tokens cu simbol = base token cunoscut; '? 0x...' = celălalt token fără simbol)");
+    console.log("  (procentele pot însuma peste 100%, fiindcă numărăm ambele tokenuri din fiecare pereche)");
+    for (const [k, v] of topN) {
+      const pct = noKnownQuote > 0 ? ((v / noKnownQuote) * 100).toFixed(1) : "0.0";
+      console.log(`  ${k.padEnd(40)} ${v.toString().padStart(4)}  (${pct}% din NO_KNOWN_QUOTE)`);
+    }
+    console.log("  → Tokens cu simbol care apar des = candidați pentru quotes.ts");
+    console.log("  → '?' cu adrese repetate = tokens necunoscuți care ar putea fi quote common");
   }
 
   await r.quit();
