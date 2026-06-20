@@ -16,6 +16,7 @@ const QUOTE_TOKENS: Record<string, Set<string>> = {
     "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", // USDC
     "0xd9aaec86b65d86f6a7b5b1b0c42ffa531710b6ca", // USDbC (bridged USDC)
     "0x50c5725949a6f0c72e6c4a641f24049a917db0cb", // DAI
+    "0x0b3e328455c4059eeb9e3f84b5543f74e24e7e1b", // VIRTUAL (Virtuals Protocol) — verificat din Redis
   ]),
   arbitrum: new Set([
     "0x82af49447d8a07e3bd95bd0d56f35241523fbab1", // WETH

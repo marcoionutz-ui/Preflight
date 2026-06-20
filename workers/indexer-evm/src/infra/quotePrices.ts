@@ -37,9 +37,21 @@ const WETH_ADDRESSES = new Set([
   "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c", // WBNB BSC
 ]);
 
-// ── WETH price from env (cached on first read) ────────────────────────────────
+// ── Ecosystem tokens (non-stable, non-WETH, dar comune ca quote pe chain-ul lor) ──
+
+/**
+ * Ecosystem quote tokens cu preț din env.
+ * Adaugă INDEXER_{SYMBOL}_USD în Railway dacă vrei pricing corect.
+ * Fără env → priceStatus=QUOTE_PRICE_UNKNOWN (mai bun decât NO_QUOTE).
+ */
+const ECOSYSTEM_TOKEN_ENV: Record<string, string> = {
+  "0x0b3e328455c4059eeb9e3f84b5543f74e24e7e1b": "INDEXER_VIRTUAL_USD", // VIRTUAL (Base) — verificat din Redis
+};
+
+// ── Price env cache ───────────────────────────────────────────────────────────
 
 let _wethUsd: number | null = null;
+const _ecosystemCache = new Map<string, number | null>();
 
 function readWethUsd(): number {
   if (_wethUsd !== null) return _wethUsd;
@@ -48,13 +60,24 @@ function readWethUsd(): number {
   return _wethUsd;
 }
 
+function readEcosystemPrice(addr: string): number | null {
+  if (_ecosystemCache.has(addr)) return _ecosystemCache.get(addr) ?? null;
+  const envKey = ECOSYSTEM_TOKEN_ENV[addr];
+  if (!envKey) return null;
+  const v = Number(process.env[envKey] ?? 0);
+  const price = Number.isFinite(v) && v > 0 ? v : null;
+  _ecosystemCache.set(addr, price);
+  return price;
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /**
  * Returns the USD price of a known quote token:
- *   stable → 1.0
- *   WETH   → INDEXER_WETH_USD env value, or null if not configured
- *   other  → null (unknown)
+ *   stable    → 1.0
+ *   WETH/WBNB → INDEXER_WETH_USD env value, or null if not configured
+ *   ecosystem → INDEXER_{SYMBOL}_USD env value, or null if not configured
+ *   other     → null (unknown)
  *
  * Returning null signals caller to set priceStatus="QUOTE_PRICE_UNKNOWN"
  * rather than writing a fake 0 price.
@@ -66,5 +89,6 @@ export function getQuotePrice(tokenAddress: string): number | null {
     const price = readWethUsd();
     return price > 0 ? price : null;
   }
+  if (addr in ECOSYSTEM_TOKEN_ENV) return readEcosystemPrice(addr);
   return null;
 }
