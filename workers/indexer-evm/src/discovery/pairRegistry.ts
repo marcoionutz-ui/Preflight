@@ -29,7 +29,7 @@ import type { QuoteStatus } from "../config/quotes";
 import { fetchAndCacheTokenMetadata } from "../infra/tokenMetadata";
 import { getQuotePrice } from "../infra/quotePrices";
 import { fetchV2Price } from "../infra/v2Pricing";
-import type { PriceStatus } from "../infra/v2Pricing";
+import type { PriceStatus, AmmVersion, PricingSource, ReserveSource } from "../infra/v2Pricing";
 
 // ── Enrichment concurrency guard ──────────────────────────────────────────────
 
@@ -68,6 +68,11 @@ export interface IndexedPair {
   priceUsd?:    number;
   reserveUsd?:  number;
   priceStatus?: PriceStatus;
+
+  // ── Faza 6.9b: pricing metadata (opțional — prezent după enrichment) ──────
+  ammVersion?:    AmmVersion;
+  pricingSource?: PricingSource;
+  reserveSource?: ReserveSource;
 }
 
 // ── Key helpers ───────────────────────────────────────────────────────────────
@@ -114,11 +119,12 @@ async function enrichPairMetadata(
   // ── Faza 6.5: V2 price + liquidity ──────────────────────────────────────────
   const quotePriceUsd = quoteToken ? getQuotePrice(quoteToken) : null;
 
-  const { priceUsd, reserveUsd, priceStatus } = await fetchV2Price({
+  const { priceUsd, reserveUsd, priceStatus, ammVersion, pricingSource, reserveSource } = await fetchV2Price({
     rpcUrl,
     pairAddress:   pair.pairAddress,
     dexId:         pair.dexId,
     token0:        pair.token0,
+    token1:        pair.token1,
     baseToken,
     baseDecimals:  baseMeta.decimals,
     quoteToken,
@@ -143,6 +149,10 @@ async function enrichPairMetadata(
     priceUsd,
     reserveUsd,
     priceStatus,
+    // 6.9b: pricing metadata
+    ammVersion,
+    pricingSource,
+    reserveSource,
   };
 
   const r = getRedis();
