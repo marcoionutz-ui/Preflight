@@ -10,6 +10,11 @@
  * Fără env → priceStatus=QUOTE_PRICE_UNKNOWN (corect, nu fake 0)
  */
 
+// ── Native currency (V4) ──────────────────────────────────────────────────────
+
+/** address(0) = native ETH or BNB depending on chain. */
+const NATIVE_ADDRESS = "0x0000000000000000000000000000000000000000";
+
 // ── Stablecoins ───────────────────────────────────────────────────────────────
 
 const STABLE_ADDRESSES = new Set([
@@ -76,12 +81,21 @@ function readPositiveEnvNumber(key: string): number | null {
  *
  * Returning null signals caller to set priceStatus="QUOTE_PRICE_UNKNOWN"
  * rather than writing a fake 0 price.
+ *
+ * @param tokenAddress  lowercase token address (or address(0) for native)
+ * @param chain         chain id — required only for address(0) (ETH vs BNB)
  */
-export function getQuotePrice(tokenAddress: string): number | null {
+export function getQuotePrice(tokenAddress: string, chain?: string): number | null {
   const addr = tokenAddress.toLowerCase();
   if (STABLE_ADDRESSES.has(addr)) return 1.0;
   if (WETH_ADDRESSES.has(addr))   return readPositiveEnvNumber("INDEXER_WETH_USD");
   if (WBNB_ADDRESSES.has(addr))   return readPositiveEnvNumber("INDEXER_BNB_USD");
+  // Native currency: address(0) — ETH on most chains, BNB on BSC
+  if (addr === NATIVE_ADDRESS) {
+    return chain?.toLowerCase() === "bsc"
+      ? readPositiveEnvNumber("INDEXER_BNB_USD")
+      : readPositiveEnvNumber("INDEXER_WETH_USD");
+  }
   if (addr in ECOSYSTEM_TOKEN_ENV) return readPositiveEnvNumber(ECOSYSTEM_TOKEN_ENV[addr]);
   return null;
 }

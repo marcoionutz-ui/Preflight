@@ -23,6 +23,7 @@
 import { getRedis } from "../infra/redis";
 import { getRpcUrl } from "../infra/rpc";
 import type { ChainId } from "../config/factories";
+import { getV4Config } from "../config/factories";
 import type { DecodedPair } from "./eventDecoder";
 import { chooseBaseQuote } from "../config/quotes";
 import type { QuoteStatus } from "../config/quotes";
@@ -45,11 +46,13 @@ export interface IndexedPair {
   // ── Core (scris întotdeauna) ──────────────────────────────────────────────
   chain:        string;
   dexId:        string;
-  pairAddress:  string;
-  token0:       string;
-  token1:       string;
-  fee?:         number;   // V3 only
+  pairAddress:  string;   // V2/V3: pool contract address; V4: poolId bytes32 (66 chars)
+  token0:       string;   // V4: currency0 (poate fi address(0) pentru native ETH/BNB)
+  token1:       string;   // V4: currency1
+  fee?:         number;   // V3/V4
   stable?:      boolean;  // Aerodrome only
+  hooks?:       string;   // V4 only — hooks contract (address(0) = vanilla pool)
+  tickSpacing?: number;   // V4 only
   blockNumber:  number;
   txHash:       string;
   discoveredAt: number;   // Unix ms
@@ -117,20 +120,24 @@ async function enrichPairMetadata(
     "PARTIAL";
 
   // ── Faza 6.5: V2 price + liquidity ──────────────────────────────────────────
-  const quotePriceUsd = quoteToken ? getQuotePrice(quoteToken) : null;
+  const quotePriceUsd = quoteToken ? getQuotePrice(quoteToken, chain) : null;
+
+  // V4: pass StateView address for pricing via PoolManager lens
+  const v4Config = getV4Config(chain);
 
   const { priceUsd, reserveUsd, priceStatus, ammVersion, pricingSource, reserveSource } = await fetchV2Price({
     rpcUrl,
-    pairAddress:   pair.pairAddress,
-    dexId:         pair.dexId,
-    token0:        pair.token0,
-    token1:        pair.token1,
+    pairAddress:       pair.pairAddress,
+    dexId:             pair.dexId,
+    token0:            pair.token0,
+    token1:            pair.token1,
     baseToken,
-    baseDecimals:  baseMeta.decimals,
+    baseDecimals:      baseMeta.decimals,
     quoteToken,
-    quoteDecimals: quoteMeta?.decimals ?? null,
+    quoteDecimals:     quoteMeta?.decimals ?? null,
     quoteStatus,
     quotePriceUsd,
+    stateViewAddress:  v4Config?.stateViewAddress,
   });
 
   // ── Write enriched pair ───────────────────────────────────────────────────
@@ -164,7 +171,8 @@ async function enrichPairMetadata(
       `[INDEXED] enriched ${pair.pairAddress} ` +
       `base:${baseMeta.symbol ?? "?"} quote:${quoteMeta?.symbol ?? "?"} ` +
       `price:$${priceUsd.toFixed(6)} reserve:$${reserveUsd.toFixed(0)} ` +
-      `meta:${metadataStatus} price_status:${priceStatus}`,
+      `meta:${metadataStatus} price_status:${priceStatus} ` +
+      `amm:${ammVersion ?? "?"} price_src:${pricingSource ?? "?"} reserve_src:${reserveSource ?? "?"}`,
     );
   } catch (err) {
     console.error(`[REGISTRY] enrich SET(${pair.pairAddress}) error:`, (err as Error).message);
@@ -208,6 +216,8 @@ export async function writePair(
     token1:       decoded.token1,
     fee:          decoded.fee,
     stable:       decoded.stable,
+    hooks:        decoded.hooks,
+    tickSpacing:  decoded.tickSpacing,
     blockNumber:  decoded.blockNumber,
     txHash:       decoded.txHash,
     discoveredAt: now,

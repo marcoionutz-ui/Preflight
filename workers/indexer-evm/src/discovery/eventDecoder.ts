@@ -6,6 +6,7 @@
  *   UNISWAP_V2 / PANCAKE_V2 / CAMELOT — PairCreated(address,address,address,uint256)
  *   AERODROME                          — PairCreated(address,address,bool,address,uint256)
  *   UNISWAP_V3 / PANCAKE_V3            — PoolCreated(address,address,uint24,int24,address)
+ *   UNISWAP_V4                         — Initialize(bytes32,address,address,uint24,int24,address,uint160,int24)
  *
  * Decoding via raw ABI rules (32-byte slots) — no ethers.js.
  * Returns null on any malformed input; caller skips nulls.
@@ -15,11 +16,13 @@ import type { RpcLog } from "../infra/rpc";
 import type { AdapterType } from "../config/factories";
 
 export interface DecodedPair {
-  token0:      string;  // lowercase hex, e.g. "0xabc..."
-  token1:      string;  // lowercase hex
-  pairAddress: string;  // lowercase hex
-  fee?:        number;  // V3 only — e.g. 500, 3000, 10000
+  token0:      string;  // lowercase hex, e.g. "0xabc..." (or address(0) for V4 native)
+  token1:      string;  // lowercase hex (or address(0) for V4 native)
+  pairAddress: string;  // V2/V3: pool contract address (42 chars); V4: poolId bytes32 (66 chars)
+  fee?:        number;  // V3/V4 — e.g. 500, 3000, 10000
   stable?:     boolean; // Aerodrome only
+  hooks?:      string;  // V4 only — hooks contract address (address(0) = no hooks)
+  tickSpacing?: number; // V4 only
   blockNumber: number;
   txHash:      string;
   logIndex:    number;
@@ -70,6 +73,16 @@ function isValidAddress(addr: string): boolean {
   return /^0x[0-9a-f]{40}$/.test(addr) && addr !== ZERO_ADDRESS;
 }
 
+/** Valid V4 poolId: non-zero bytes32 (66 chars including 0x prefix). */
+function isValidPoolId(hex: string): boolean {
+  return /^0x[0-9a-f]{64}$/.test(hex) && hex !== "0x" + "0".repeat(64);
+}
+
+/** V4 currencies can be address(0) (native ETH/BNB) — allow zero address. */
+function isValidCurrency(addr: string): boolean {
+  return /^0x[0-9a-f]{40}$/.test(addr);
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /**
@@ -116,6 +129,33 @@ export function decodeLog(log: RpcLog, adapter: AdapterType): DecodedPair | null
         return { token0, token1, pairAddress, fee, blockNumber, txHash, logIndex };
       }
 
+      case "UNISWAP_V4": {
+        // Initialize(bytes32 indexed id, address indexed currency0, address indexed currency1,
+        //             uint24 fee, int24 tickSpacing, address hooks, uint160 sqrtPriceX96, int24 tick)
+        // topics[1] = poolId (bytes32) — used as pairAddress (66 chars)
+        // topics[2] = currency0 (address) — can be address(0) for native ETH/BNB
+        // topics[3] = currency1 (address)
+        // data: [fee uint24][tickSpacing int24][hooks address][sqrtPriceX96 uint160][tick int24]
+        if (!log.topics[1] || !log.topics[2] || !log.topics[3]) return null;
+        const poolId      = log.topics[1].toLowerCase();     // bytes32 → pairAddress
+        const currency0   = slotToAddress(log.topics[2].slice(2)); // override token0 for V4
+        const currency1   = slotToAddress(log.topics[3].slice(2)); // override token1 for V4
+        const fee         = slotToUint(getSlot(log.data, 0));
+        const tickSpacing = slotToUint(getSlot(log.data, 1)); // note: int24 but we only use for info
+        const hooks       = slotToAddress(getSlot(log.data, 2));
+        return {
+          token0:      currency0,
+          token1:      currency1,
+          pairAddress: poolId,
+          fee,
+          tickSpacing,
+          hooks,
+          blockNumber,
+          txHash,
+          logIndex,
+        };
+      }
+
       default:
         return null;
     }
@@ -125,12 +165,22 @@ export function decodeLog(log: RpcLog, adapter: AdapterType): DecodedPair | null
 }
 
 /**
- * Validates a decoded pair for obvious corruption:
- * - no zero addresses
- * - token0 ≠ token1
- * - pairAddress ≠ either token
+ * Validates a decoded pair for obvious corruption.
+ *
+ * V4: pairAddress = poolId (bytes32, 66 chars), currencies can be address(0).
+ * V2/V3: pairAddress = pool contract (42 chars), zero addresses invalid.
  */
 export function sanityCheck(pair: DecodedPair): boolean {
+  // V4 — poolId is bytes32 (66 chars); currencies may include address(0) for native
+  if (pair.pairAddress.length === 66) {
+    return (
+      isValidPoolId(pair.pairAddress) &&
+      isValidCurrency(pair.token0) &&
+      isValidCurrency(pair.token1) &&
+      pair.token0 !== pair.token1
+    );
+  }
+  // V2/V3 — all must be non-zero addresses, pair ≠ tokens
   return (
     isValidAddress(pair.token0) &&
     isValidAddress(pair.token1) &&

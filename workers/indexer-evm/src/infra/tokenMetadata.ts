@@ -16,6 +16,14 @@
 
 import { getRedis } from "./redis";
 
+// ── Native currency (V4) ──────────────────────────────────────────────────────
+
+/**
+ * V4 pools can use native currency (ETH/BNB) as address(0).
+ * No eth_call possible — return hardcoded metadata immediately.
+ */
+const NATIVE_ADDRESS = "0x0000000000000000000000000000000000000000";
+
 // ── Selectors ─────────────────────────────────────────────────────────────────
 
 const SEL_SYMBOL   = "0x95d89b41";
@@ -154,8 +162,15 @@ export async function fetchAndCacheTokenMetadata(
   tokenAddress: string,
 ): Promise<IndexedTokenMeta> {
   const addr = tokenAddress.toLowerCase();
-  const r    = getRedis();
-  const now  = Date.now();
+
+  // Native currency guard (V4 — address(0) = ETH/BNB, no eth_call needed)
+  if (addr === NATIVE_ADDRESS) {
+    const symbol = chain.toLowerCase() === "bsc" ? "BNB" : "ETH";
+    return { chain, tokenAddress: addr, symbol, decimals: 18, status: "OK", fetchedAt: Date.now() };
+  }
+
+  const r   = getRedis();
+  const now = Date.now();
 
   // Cache check
   if (r) {

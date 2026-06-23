@@ -24,12 +24,13 @@ export type ChainId = "base" | "bsc" | "arbitrum";
 export type AdapterType =
   | "UNISWAP_V2"
   | "UNISWAP_V3"
+  | "UNISWAP_V4"
   | "AERODROME"
   | "PANCAKE_V2"
   | "PANCAKE_V3"
   | "CAMELOT";
 
-export type FactoryEvent = "PairCreated" | "PoolCreated";
+export type FactoryEvent = "PairCreated" | "PoolCreated" | "Initialize";
 
 export interface FactoryConfig {
   chain:      ChainId;
@@ -61,6 +62,49 @@ export const TOPIC0_PAIR_CREATED_AERODROME =
 /** PoolCreated(address,address,uint24,int24,address) — Uniswap V3, PancakeSwap V3 */
 export const TOPIC0_POOL_CREATED_V3 =
   "0x783cca1c0412dd0d695e784568c96da2e9c22ff989357a2e8b1d9b2b4e6b7118" as const;
+
+/**
+ * Initialize(bytes32,address,address,uint24,int24,address,uint160,int24) — Uniswap V4 PoolManager
+ * Emis de PoolManager singleton la inițializarea unui pool nou.
+ * topics[1]=poolId, topics[2]=currency0, topics[3]=currency1 (indexed)
+ * data = fee(uint24) + tickSpacing(int24) + hooks(address) + sqrtPriceX96(uint160) + tick(int24)
+ */
+export const TOPIC0_INITIALIZE_V4 =
+  "0xdd466e674ea557f56295e2d0218a125ea4b4f0f6f3307b95f85e6110838d6438" as const;
+
+// ── V4 chain config (StateView per chain) ─────────────────────────────────────
+
+/**
+ * V4 chains config — PoolManager + StateView addresses.
+ * PoolManager = singleton, acționează ca "factory" pentru pool discovery.
+ * StateView   = contract lens pentru reads offchain (getSlot0, getLiquidity).
+ *
+ * Adrese verificate din docs.uniswap.org/contracts/v4/deployments (2026-06-23).
+ */
+export interface V4ChainConfig {
+  poolManagerAddress: `0x${string}`;
+  stateViewAddress:   `0x${string}`;
+}
+
+export const V4_CHAIN_CONFIG: Partial<Record<ChainId, V4ChainConfig>> = {
+  base: {
+    poolManagerAddress: "0x498581ff718922c3f8e6a244956af099b2652b2b",
+    stateViewAddress:   "0xa3c0c9b65bad0b08107aa264b0f3db444b867a71",
+  },
+  arbitrum: {
+    poolManagerAddress: "0x360e68faccca8ca495c1b759fd9eee466db9fb32",
+    stateViewAddress:   "0x76fd297e2d437cd7f76d50f01afe6160f86e9990",
+  },
+  bsc: {
+    poolManagerAddress: "0x28e2ea090877bf75740558f6bfb36a5ffee9e9df",
+    stateViewAddress:   "0xd13dd3d6e93f276fafc9db9e6bb47c1180aee0c4",
+  },
+};
+
+/** Returns the V4 config for a chain, or null if not available. */
+export function getV4Config(chain: ChainId): V4ChainConfig | null {
+  return V4_CHAIN_CONFIG[chain] ?? null;
+}
 
 // ── Factory definitions ───────────────────────────────────────────────────────
 
@@ -122,6 +166,45 @@ export const FACTORIES: FactoryConfig[] = [
     event:      "PoolCreated",
     topic0:     TOPIC0_POOL_CREATED_V3,
     enabled:    process.env.INDEXER_ENABLE_BSC === "1",
+    confidence: "HIGH",
+  },
+
+  // ── V4 BASE (env-gated — INDEXER_ENABLE_V4=1) ─────────────────────────────────
+  {
+    chain:      "base",
+    dexId:      "uniswap-v4",
+    dexType:    "V4",
+    address:    "0x498581ff718922c3f8e6a244956af099b2652b2b", // PoolManager Base
+    adapter:    "UNISWAP_V4",
+    event:      "Initialize",
+    topic0:     TOPIC0_INITIALIZE_V4,
+    enabled:    process.env.INDEXER_ENABLE_V4 === "1",
+    confidence: "HIGH",
+  },
+
+  // ── V4 ARBITRUM (env-gated — INDEXER_ENABLE_V4=1 + INDEXER_ENABLE_ARBITRUM=1) ──
+  {
+    chain:      "arbitrum",
+    dexId:      "uniswap-v4",
+    dexType:    "V4",
+    address:    "0x360e68faccca8ca495c1b759fd9eee466db9fb32", // PoolManager Arbitrum
+    adapter:    "UNISWAP_V4",
+    event:      "Initialize",
+    topic0:     TOPIC0_INITIALIZE_V4,
+    enabled:    process.env.INDEXER_ENABLE_V4 === "1" && process.env.INDEXER_ENABLE_ARBITRUM === "1",
+    confidence: "HIGH",
+  },
+
+  // ── V4 BSC (env-gated — INDEXER_ENABLE_V4=1 + INDEXER_ENABLE_BSC=1) ──────────
+  {
+    chain:      "bsc",
+    dexId:      "uniswap-v4",
+    dexType:    "V4",
+    address:    "0x28e2ea090877bf75740558f6bfb36a5ffee9e9df", // PoolManager BSC
+    adapter:    "UNISWAP_V4",
+    event:      "Initialize",
+    topic0:     TOPIC0_INITIALIZE_V4,
+    enabled:    process.env.INDEXER_ENABLE_V4 === "1" && process.env.INDEXER_ENABLE_BSC === "1",
     confidence: "HIGH",
   },
 

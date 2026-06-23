@@ -118,8 +118,10 @@ export async function runDiscovery(
         console.log(
           `[DISCOVERY][DRY_RUN][${chain.toUpperCase()}] ${factory.dexId}: ` +
           `${decoded.token0} / ${decoded.token1} → ${decoded.pairAddress}` +
-          (decoded.stable !== undefined ? ` stable:${decoded.stable}` : "") +
-          (decoded.fee    !== undefined ? ` fee:${decoded.fee}`        : "") +
+          (decoded.stable      !== undefined ? ` stable:${decoded.stable}`           : "") +
+          (decoded.fee         !== undefined ? ` fee:${decoded.fee}`                  : "") +
+          (decoded.tickSpacing !== undefined ? ` tickSpacing:${decoded.tickSpacing}` : "") +
+          (decoded.hooks       !== undefined ? ` hooks:${decoded.hooks}`             : "") +
           ` block:${decoded.blockNumber}`,
         );
         batchNew++;

@@ -17,9 +17,11 @@
  *   priceStatus=OK + ammVersion=V3 + pricingSource=V3_SLOT0
  *
  * Faza 6.9b: V3_SKIP eliminat din output nou — historical Redis entries îl pot păstra.
+ * Faza 6.9c: V4 routing via v4Pricing.ts (StateView.getSlot0 + getLiquidity).
  */
 
 import { fetchV3Price } from "./v3Pricing";
+import { fetchV4Price } from "./v4Pricing";
 
 const SEL_GET_RESERVES = "0x0902f1ac";
 
@@ -32,6 +34,9 @@ const TIMEOUT_MS = (() => {
 /** dexIds care folosesc V3 pool style — rutate spre v3Pricing.ts (slot0 + balanceOf). */
 const V3_DEX_IDS = new Set(["uniswap-v3", "pancakeswap-v3"]);
 
+/** dexIds care folosesc V4 PoolManager — rutate spre v4Pricing.ts (StateView). */
+const V4_DEX_IDS = new Set(["uniswap-v4"]);
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export type PriceStatus =
@@ -39,6 +44,8 @@ export type PriceStatus =
   | "V3_SKIP"               // deprecated (Faza 6.5) — historical Redis entries only
   | "V3_NO_SLOT0"           // V3 pool — slot0() failed or pool uninitialized
   | "V3_PRICE_ONLY"         // V3 pool — price OK, balanceOf reserve failed → not served
+  | "V4_NO_SLOT0"           // V4 pool — StateView.getSlot0() failed or pool uninitialized
+  | "V4_PRICE_ONLY"         // V4 pool — price OK, getLiquidity=0 or reserve=0 → not served
   | "AMBIGUOUS_QUOTE"       // ambele tokens sunt quote (ex: USDC/DAI) — skip pricing
   | "NO_QUOTE"              // quoteStatus=NO_KNOWN_QUOTE
   | "QUOTE_PRICE_UNKNOWN"   // quoteToken recunoscut dar quotePriceUsd=null (WETH fără env)
@@ -48,7 +55,7 @@ export type PriceStatus =
 
 export type AmmVersion    = "V2" | "V3" | "V4";
 export type PricingSource = "V2_RESERVES" | "V3_SLOT0" | "V4_STATE_VIEW";
-export type ReserveSource = "V2_RESERVES" | "BALANCE_OF" | "UNKNOWN" | "V4_STATE_LIQUIDITY";
+export type ReserveSource = "V2_RESERVES" | "BALANCE_OF" | "UNKNOWN" | "UNKNOWN_V4" | "V4_STATE_LIQUIDITY";
 
 export interface V2PriceResult {
   priceUsd:       number;
@@ -122,20 +129,51 @@ function zero(priceStatus: PriceStatus): V2PriceResult {
  * @param quotePriceUsd USD price for quote token (null → QUOTE_PRICE_UNKNOWN)
  */
 export async function fetchV2Price(args: {
-  rpcUrl:        string;
-  pairAddress:   string;
-  dexId:         string;
-  token0:        string;
-  token1:        string;
-  baseToken:     string;
-  baseDecimals:  number | null | undefined;
-  quoteToken:    string | null | undefined;
-  quoteDecimals: number | null | undefined;
-  quoteStatus:   "OK" | "NO_KNOWN_QUOTE" | "AMBIGUOUS_QUOTE";
-  quotePriceUsd: number | null;
+  rpcUrl:            string;
+  pairAddress:       string;    // V2/V3: pool address; V4: poolId (bytes32, 66 chars)
+  dexId:             string;
+  token0:            string;
+  token1:            string;
+  baseToken:         string;
+  baseDecimals:      number | null | undefined;
+  quoteToken:        string | null | undefined;
+  quoteDecimals:     number | null | undefined;
+  quoteStatus:       "OK" | "NO_KNOWN_QUOTE" | "AMBIGUOUS_QUOTE";
+  quotePriceUsd:     number | null;
+  stateViewAddress?: string;    // V4 only — StateView lens contract address
 }): Promise<V2PriceResult> {
   const { rpcUrl, pairAddress, dexId, token0, token1, baseToken,
-          baseDecimals, quoteToken, quoteDecimals, quoteStatus, quotePriceUsd } = args;
+          baseDecimals, quoteToken, quoteDecimals, quoteStatus, quotePriceUsd,
+          stateViewAddress } = args;
+
+  // V4: route to v4Pricing (StateView.getSlot0 + getLiquidity) — Faza 6.9c
+  if (V4_DEX_IDS.has(dexId)) {
+    if (!stateViewAddress) {
+      // No StateView configured for this chain — cannot price
+      return zero("NO_RESERVES");
+    }
+    const v4 = await fetchV4Price({
+      rpcUrl,
+      stateViewAddress,
+      poolId:        pairAddress,
+      token0,
+      token1,
+      baseToken,
+      quoteToken,
+      baseDecimals,
+      quoteDecimals,
+      quoteStatus,
+      quotePriceUsd,
+    });
+    return {
+      priceUsd:      v4.priceUsd,
+      reserveUsd:    v4.reserveUsd,
+      priceStatus:   v4.priceStatus as PriceStatus,
+      ammVersion:    v4.ammVersion,
+      pricingSource: v4.pricingSource ?? undefined,
+      reserveSource: v4.reserveSource ?? undefined,
+    };
+  }
 
   // V3: route to v3Pricing (slot0 + balanceOf) — Faza 6.9b
   if (V3_DEX_IDS.has(dexId)) {
