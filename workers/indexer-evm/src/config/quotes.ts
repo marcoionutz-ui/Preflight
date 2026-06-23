@@ -26,6 +26,7 @@ const QUOTE_TOKENS: Record<string, Set<string>> = {
     "0xd9aaec86b65d86f6a7b5b1b0c42ffa531710b6ca", // USDbC (bridged USDC)
     "0x50c5725949a6f0c72e6c4a641f24049a917db0cb", // DAI
     "0x0b3e328455c4059eeb9e3f84b5543f74e24e7e1b", // VIRTUAL (Virtuals Protocol) — verificat din Redis
+    "0x1111111111166b7fe7bd91427724b487980afc69", // ZORA — common quote on Base V4
   ]),
   arbitrum: new Set([
     NATIVE_ADDRESS,                                // ETH native (V4)

@@ -55,6 +55,7 @@ const WBNB_ADDRESSES = new Set([
  */
 const ECOSYSTEM_TOKEN_ENV: Record<string, string> = {
   "0x0b3e328455c4059eeb9e3f84b5543f74e24e7e1b": "INDEXER_VIRTUAL_USD", // VIRTUAL (Base) — verificat din Redis
+  "0x1111111111166b7fe7bd91427724b487980afc69": "INDEXER_ZORA_USD",    // ZORA (Base) — common quote on Base V4
 };
 
 // ── Price env cache ───────────────────────────────────────────────────────────
