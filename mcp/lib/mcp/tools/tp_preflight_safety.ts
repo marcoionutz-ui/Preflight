@@ -6,6 +6,9 @@ import { checkTokenRisk } from "@preflight/risk-layer";
 import type { RiskResult } from "@preflight/risk-layer";
 import { mcpResponse, mcpErr, ERR } from "../errors";
 
+/** V4 poolId = bytes32 (0x + 64 hex) — not an EVM contract address */
+const BYTES32_RE = /^0x[a-f0-9]{64}$/i;
+
 // fix ChatGPT: cache comun cu workerul — același key ca riskChecker.ts
 const RISK_CACHE_TTL_SEC       = 6 * 60 * 60;
 const RISK_UNAVAILABLE_TTL_SEC = 10 * 60;
@@ -127,6 +130,8 @@ Args:
         const ctx  = await readAllRedis();
         const addr = pair_address.toLowerCase().trim();
 
+        const inputLooksLikeV4PoolId = BYTES32_RE.test(addr);
+
         let rawTokenAddress: string | null = token_address ?? null;
         let resolvedChain = chain ?? null;
 
@@ -151,7 +156,11 @@ Args:
 
         if (!rawTokenAddress || !resolvedChain) {
           const missing: string[] = [];
-          if (!rawTokenAddress) missing.push("token address not found — pass token_address explicitly");
+          if (!rawTokenAddress && inputLooksLikeV4PoolId) {
+            missing.push("V4 poolId detected — poolId is not an EVM token contract address; pass token_address (base token) or ensure indexed pair metadata is available in Redis");
+          } else if (!rawTokenAddress) {
+            missing.push("token address not found — pass token_address explicitly");
+          }
           if (!resolvedChain)   missing.push("chain could not be determined — pass chain: 'base', 'arbitrum', or 'bsc'");
           return mcpResponse({
             text: [

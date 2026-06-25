@@ -49,6 +49,10 @@ export const RISK_UNAVAILABLE: RiskResult = {
   missingData:          ["GoPlus API unavailable"],
 };
 
+// V4 poolId = bytes32 (66 chars: 0x + 64 hex) — NOT an EVM token contract address
+const BYTES32_RE    = /^0x[a-f0-9]{64}$/i;
+const EVM_ADDR_RE   = /^0x[a-f0-9]{40}$/i;
+
 export async function fetchGoPlusRaw(
   tokenAddress: string,
   chain:        string,
@@ -57,6 +61,27 @@ export async function fetchGoPlusRaw(
   // fix ChatGPT: normalize o dată, folosit peste tot inclusiv în error returns
   const token    = tokenAddress.toLowerCase();
   const chainKey = chain.toLowerCase();
+
+  // V4 poolId guard — bytes32 nu e un token contract address
+  if (BYTES32_RE.test(token)) {
+    return {
+      ...RISK_UNAVAILABLE,
+      chain: chainKey, tokenAddress: token, checkedAt: Date.now(),
+      summary:     "V4 poolId detected — not an EVM token contract address. Pass the base token address for safety check.",
+      missingData: ["V4 poolId (bytes32) cannot be checked with GoPlus — use token address from indexed pair metadata"],
+    };
+  }
+
+  // Sanity check — rejectăm orice nu e 20-byte EVM address
+  if (!EVM_ADDR_RE.test(token)) {
+    return {
+      ...RISK_UNAVAILABLE,
+      chain: chainKey, tokenAddress: token, checkedAt: Date.now(),
+      summary:     "Invalid EVM token address format — expected 0x + 40 hex chars",
+      missingData: ["Invalid token address format"],
+    };
+  }
+
   const chainId  = GOPLUS_CHAIN_IDS[chainKey];
   if (!chainId) {
     return {

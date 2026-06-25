@@ -78,6 +78,9 @@ const MAX_PAIRS = 200;
 /** dexIds that correspond to V3 pools (fee in topics[3], not data) */
 const V3_DEX_IDS = new Set(["uniswap-v3", "pancakeswap-v3"]);
 
+/** dexIds that correspond to V4 PoolManager singleton pools */
+const V4_DEX_IDS = new Set(["uniswap-v4"]);
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function findChainConfig(chainId: string): ChainConfig | undefined {
@@ -85,7 +88,9 @@ function findChainConfig(chainId: string): ChainConfig | undefined {
 }
 
 function dexTypeFromId(dexId: string): DexType {
-  return V3_DEX_IDS.has(dexId) ? "V3" : "V2";
+  if (V4_DEX_IDS.has(dexId)) return "V4";
+  if (V3_DEX_IDS.has(dexId)) return "V3";
+  return "V2";
 }
 
 function toSourcePool(pair: IndexedPair, chainCfg: ChainConfig): SourcePool {
