@@ -4,7 +4,7 @@
  * Zero imports din alte module interne.
  */
 
-export const WORKER_VERSION = "v6.9";
+export const WORKER_VERSION = "v5.50";
 
 export const GECKO_BASE = "https://api.geckoterminal.com/api/v2";
 
@@ -109,6 +109,15 @@ export const V3_DEXES = new Set([
 ]);
 
 // ── V4 constants ──────────────────────────────────────────────────────────────
-export const UNISWAP_V4_POOL_MANAGER   = "0x498581ff718922c3f8e6a244956af099b2652b2b";
+
+/** V4 PoolManager address per chain (deterministic deployment differs per chain) */
+export const V4_POOL_MANAGERS: Record<string, string> = {
+  base:     "0x498581ff718922c3f8e6a244956af099b2652b2b",
+  arbitrum: "0x360e68faccca8ca495c1b759fd9eee466db9fb32",
+  bsc:      "0x28e2ea090877bf75740558f6bfb36a5ffee9e9df",
+};
+
+/** @deprecated Use V4_POOL_MANAGERS[chain.id] — kept for backward compat */
+export const UNISWAP_V4_POOL_MANAGER   = V4_POOL_MANAGERS["base"];
 export const SWAP_V4_TOPIC             = "0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f";
 export const MODIFY_LIQUIDITY_V4_TOPIC = "0x26f6a048ee9138f2c0ce266f322cb99228e8d619ae2bff30c67f8dcf9d2377b4";

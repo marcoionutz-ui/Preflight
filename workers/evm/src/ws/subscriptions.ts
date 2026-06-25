@@ -19,7 +19,7 @@ import {
   MAX_V3_WATCH, MAX_V4_WATCH,
   WATCH_NO_FLOW_MAX_AGE_MS, WATCH_SELLING_MAX_AGE_MS,
   WATCH_MAX_AGE_MS, FOMO_WATCH_TTL_MS,
-  UNISWAP_V4_POOL_MANAGER, SWAP_V4_TOPIC, MODIFY_LIQUIDITY_V4_TOPIC, SHORT_WATCH_TTL_MS,
+  V4_POOL_MANAGERS, SWAP_V4_TOPIC, MODIFY_LIQUIDITY_V4_TOPIC, SHORT_WATCH_TTL_MS,
 } from "../config/constants";
 import { cleanEvmAddress } from "../sources/normalize";
 
@@ -196,6 +196,12 @@ export function subscribeV4Scoped(chain: ChainConfig): void {
     return;
   }
 
+  const poolManager = V4_POOL_MANAGERS[chain.id];
+  if (!poolManager) {
+    console.log(`[V4] No PoolManager configured for chain ${chain.id} — skipping subscribe`);
+    return;
+  }
+
   const snapshot = poolIds.join(",");
   if (v4SwapSubIds.get(chain.id + "_snap") === snapshot) return;
   v4SwapSubIds.set(chain.id + "_snap", snapshot);
@@ -207,9 +213,9 @@ export function subscribeV4Scoped(chain: ChainConfig): void {
   ws.send(JSON.stringify({
     jsonrpc: "2.0", id: 5,
     method: "eth_subscribe",
-    params: ["logs", { address: UNISWAP_V4_POOL_MANAGER, topics: [[SWAP_V4_TOPIC, MODIFY_LIQUIDITY_V4_TOPIC], poolIds] }],
+    params: ["logs", { address: poolManager, topics: [[SWAP_V4_TOPIC, MODIFY_LIQUIDITY_V4_TOPIC], poolIds] }],
   }));
-  console.log(`[V4] Scoped subscribe: ${poolIds.length} watched pools`);
+  console.log(`[V4] Scoped subscribe: ${poolIds.length} watched pools (${chain.id})`);
 }
 
 export function requestImmediateScopedSubscribe(chain: ChainConfig): void {

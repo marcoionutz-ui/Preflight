@@ -29,15 +29,42 @@ import {
 import { supabase } from "../infra/supabase";
 import { sendTelegram } from "../infra/telegram";
 import { getNativePrice } from "../infra/nativePrice";
-import { isBlockedSymbol, cleanEvmAddress } from "../sources/normalize";
+import { isBlockedSymbol } from "../sources/normalize";
 import {
   SWAP_V4_TOPIC, MODIFY_LIQUIDITY_V4_TOPIC,
+  V4_POOL_MANAGERS,
   MIN_LP_REMOVE_ETH, INSTANT_LP_EXIT_PCT,
 } from "../config/constants";
 
 function int256FromWord(hex64: string): bigint {
   const x = BigInt("0x" + hex64);
   return x >= (1n << 255n) ? x - (1n << 256n) : x;
+}
+
+/**
+ * Extrage baseToken + quoteToken dintr-un SourcePool.
+ * INDEXER pools au _raw.baseToken / _raw.quoteToken direct (IndexedPair format).
+ * Gecko pools au _raw.relationships.{base,quote}_token.data.id cu prefix chain.
+ */
+function extractBaseQuote(pool: { discoverySource?: string; _raw?: unknown; tokenAddress?: string }, chainId: string): { baseToken: string; quoteToken: string } {
+  const raw = pool._raw as Record<string, unknown> | undefined;
+  if (!raw) return { baseToken: pool.tokenAddress?.toLowerCase() ?? "", quoteToken: "" };
+
+  // IndexedPair format: baseToken / quoteToken direct pe _raw (indiferent de discoverySource)
+  const indexedBase  = typeof raw.baseToken  === "string" ? raw.baseToken.toLowerCase()  : "";
+  const indexedQuote = typeof raw.quoteToken === "string" ? raw.quoteToken.toLowerCase() : "";
+  if (indexedBase || indexedQuote) {
+    return {
+      baseToken:  indexedBase  || pool.tokenAddress?.toLowerCase() || "",
+      quoteToken: indexedQuote,
+    };
+  }
+
+  // Gecko format: relationships.{base,quote}_token.data.id cu prefix chain_
+  const rel = raw.relationships as Record<string, unknown> | undefined;
+  const base  = (((rel?.base_token  as Record<string, unknown>)?.data as Record<string, unknown>)?.id  as string | undefined)?.replace(`${chainId}_`, "").toLowerCase() ?? "";
+  const quote = (((rel?.quote_token as Record<string, unknown>)?.data as Record<string, unknown>)?.id as string | undefined)?.replace(`${chainId}_`, "").toLowerCase() ?? "";
+  return { baseToken: base, quoteToken: quote };
 }
 
 function getQuoteFlowAsEth(
@@ -160,9 +187,12 @@ export function connectChainWebSocket(chain: ChainConfig): void {
         }
       }
 
-      // ── V4 Swap ──────────────────────────────────────────────────────────
-      if (chain.id === "base" && msg.params?.result?.topics?.[0] === SWAP_V4_TOPIC) {
+      // ── V4 Swap (all chains) ─────────────────────────────────────────────
+      if (msg.params?.result?.topics?.[0] === SWAP_V4_TOPIC) {
         const log4   = msg.params.result;
+        // Guard: only process if log came from the correct PoolManager for this chain
+        if (log4.address?.toLowerCase() !== V4_POOL_MANAGERS[chain.id]?.toLowerCase()) return;
+
         const raw4   = log4.data?.slice(2) ?? "";
         const poolId = log4.topics?.[1]?.toLowerCase();
         if (!poolId || raw4.length < 128) return;
@@ -177,8 +207,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
         const amount0 = int256FromWord(raw4.slice(0,  64));
         const amount1 = int256FromWord(raw4.slice(64, 128));
 
-        const baseToken  = pool._raw ? (pool._raw as any).relationships?.base_token?.data?.id?.replace(`${chain.id}_`, "").toLowerCase() : "";
-        const quoteToken = pool._raw ? (pool._raw as any).relationships?.quote_token?.data?.id?.replace(`${chain.id}_`, "").toLowerCase() : "";
+        const { baseToken, quoteToken } = extractBaseQuote(pool, chain.id);
         if (!quoteToken) {
           console.log(`[V4 SKIP] ${memV4.symbol} missing quote token for poolId=${poolId}`);
           return;
@@ -212,7 +241,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
       }
 
       // ── V4 ModifyLiquidity (investigating layout) ─────────────────────────
-      if (chain.id === "base" && msg.params?.result?.topics?.[0] === MODIFY_LIQUIDITY_V4_TOPIC) {
+      if (msg.params?.result?.topics?.[0] === MODIFY_LIQUIDITY_V4_TOPIC && msg.params?.result?.address?.toLowerCase() === V4_POOL_MANAGERS[chain.id]?.toLowerCase()) {
         const log4   = msg.params.result;
         const poolId = log4.topics?.[1]?.toLowerCase();
         const mem4   = poolId ? memory.get(poolId) : null;
@@ -235,8 +264,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
 
         const amount0 = int256FromWord(raw3.slice(0,  64));
         const amount1 = int256FromWord(raw3.slice(64, 128));
-        const base3   = pool3._raw ? (pool3._raw as any).relationships?.base_token?.data?.id?.replace(`${chain.id}_`, "").toLowerCase() : "";
-        const quote3  = pool3._raw ? (pool3._raw as any).relationships?.quote_token?.data?.id?.replace(`${chain.id}_`, "").toLowerCase() : "";
+        const { baseToken: base3, quoteToken: quote3 } = extractBaseQuote(pool3, chain.id);
 
         const qflow3 = getQuoteFlowAsEth(chain, base3, quote3, amount0, amount1);
         if (!qflow3.ok) return;
@@ -266,8 +294,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
         // V3 Mint data: sender(32) amount(32) amount0(32) amount1(32)
         const amount0 = BigInt("0x" + raw3.slice(128, 192));
         const amount1 = BigInt("0x" + raw3.slice(192, 256));
-        const base3  = pool3._raw ? (pool3._raw as any).relationships?.base_token?.data?.id?.replace(`${chain.id}_`, "").toLowerCase() : "";
-        const quote3 = pool3._raw ? (pool3._raw as any).relationships?.quote_token?.data?.id?.replace(`${chain.id}_`, "").toLowerCase() : "";
+        const { baseToken: base3, quoteToken: quote3 } = extractBaseQuote(pool3, chain.id);
         const qflow3 = getQuoteFlowAsEth(chain, base3, quote3, amount0, amount1);
         if (qflow3.ok && qflow3.ethAmount > 0) {
           recordLp(addr3, true, qflow3.ethAmount);
@@ -288,8 +315,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
         // V3 Burn data: amount(32) amount0(32) amount1(32)
         const amount0 = BigInt("0x" + raw3.slice(64, 128));
         const amount1 = BigInt("0x" + raw3.slice(128, 192));
-        const base3  = pool3._raw ? (pool3._raw as any).relationships?.base_token?.data?.id?.replace(`${chain.id}_`, "").toLowerCase() : "";
-        const quote3 = pool3._raw ? (pool3._raw as any).relationships?.quote_token?.data?.id?.replace(`${chain.id}_`, "").toLowerCase() : "";
+        const { baseToken: base3, quoteToken: quote3 } = extractBaseQuote(pool3, chain.id);
         const qflow3 = getQuoteFlowAsEth(chain, base3, quote3, amount0, amount1);
         if (qflow3.ok && qflow3.ethAmount > 0) {
           recordLp(addr3, false, qflow3.ethAmount);
@@ -323,12 +349,9 @@ export function connectChainWebSocket(chain: ChainConfig): void {
         const mem   = memory.get(pairAddress)!;
         const pool2 = watchedPoolCache.get(pairAddress);
 
-        const base2  = pool2?._raw
-          ? (pool2._raw as any).relationships?.base_token?.data?.id?.replace(`${chain.id}_`, "").toLowerCase()
-          : "";
-        const quote2 = pool2?._raw
-          ? (pool2._raw as any).relationships?.quote_token?.data?.id?.replace(`${chain.id}_`, "").toLowerCase()
-          : "";
+        const { baseToken: base2, quoteToken: quote2 } = pool2
+          ? extractBaseQuote(pool2, chain.id)
+          : { baseToken: "", quoteToken: "" };
 
         if (!base2 || !quote2) return;
 
