@@ -1,6 +1,6 @@
 /**
  * pipeline/snapshots.ts
- * Scrie toate Redis snapshot-urile: supreme:* și preflight:*
+ * Scrie toate Redis snapshot-urile: supreme:*, preflight:* și preflight:trending:*
  * Extras din scan.ts pentru separare clară.
  */
 
@@ -24,6 +24,7 @@ import { WORKER_VERSION } from "../config/constants";
 import { getLifecycle, getRecentLifecycles } from "../state/lifecycle";
 import { CHAINS } from "../config/chains";
 import { writeCoverageSnapshot } from "./coverageSnapshot";
+import { writeTrendingSnapshots } from "../trending/trendingSnapshots";
 import { REDIS_KEYS } from "@preflight/schema";
 
 export async function writeAllSnapshots(r: Redis): Promise<void> {
@@ -84,6 +85,13 @@ export async function writeAllSnapshots(r: Redis): Promise<void> {
     await writeCoverageSnapshot(r, states);
   } catch (e) {
     console.error("[COVERAGE] Write failed:", e instanceof Error ? e.message : e);
+  }
+
+  // ── 6.10: preflight:trending:snapshot:{chain}:{pair} ──────────────────────
+  try {
+    await writeTrendingSnapshots(r, states);
+  } catch (e) {
+    console.error("[TRENDING] Write failed:", e instanceof Error ? e.message : e);
   }
 }
 

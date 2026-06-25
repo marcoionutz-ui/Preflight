@@ -186,8 +186,12 @@ export const REDIS_KEYS = {
   lifecycle:          "preflight:lifecycle",
 
   // Per-pair
-  pairContext: (addr: string) => `preflight:pair_context:${addr.toLowerCase()}`,
-  risk:        (chain: string, token: string) => `preflight:risk:${chain}:${token.toLowerCase()}`,
+  pairContext:       (addr: string) => `preflight:pair_context:${addr.toLowerCase()}`,
+  risk:              (chain: string, token: string) => `preflight:risk:${chain}:${token.toLowerCase()}`,
+
+  // 6.10 — Own trending
+  trendingSnapshot:  (chain: string, addr: string) => `preflight:trending:snapshot:${chain}:${addr.toLowerCase()}`,
+  trendingMovers:    (chain: string) => `preflight:trending:movers:${chain}`,
 } as const;
 
 export const SCHEMA_VERSION = "preflight-schema-v1";
