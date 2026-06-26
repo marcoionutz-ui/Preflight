@@ -116,8 +116,14 @@ export async function calculateMovers(
 
   for (const [chain, movers] of Object.entries(moversByChain)) {
     const sorted = movers
-      .filter(m => m.priceChange5m !== null)
-      .sort((a, b) => Math.abs(b.priceChange5m!) - Math.abs(a.priceChange5m!))
+      .filter(m => m.priceChange5m !== null || m.priceChange1h !== null)
+      .sort((a, b) => {
+        const d5m = Math.abs(b.priceChange5m ?? 0) - Math.abs(a.priceChange5m ?? 0);
+        if (d5m !== 0) return d5m;
+        const d1h = Math.abs(b.priceChange1h ?? 0) - Math.abs(a.priceChange1h ?? 0);
+        if (d1h !== 0) return d1h;
+        return b.reserveUsd - a.reserveUsd;
+      })
       .slice(0, TOP_N_PER_CHAIN);
 
     if (!sorted.length) continue;
