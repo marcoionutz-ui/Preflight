@@ -248,3 +248,34 @@ export function dedupeByPair<T extends { pairAddress?: string | null }>(
 }
 
 export { type MemoryEntry, type PairState };
+
+// ── 6.10: Trending movers reader ─────────────────────────────────────────────
+
+export interface MoverEntry {
+  chain:          string;
+  pairAddress:    string;
+  tokenAddress:   string | null;
+  symbol:         string;
+  dexType:        string;
+  priceUsd:       number;
+  reserveUsd:     number;
+  priceChange5m:  number | null;
+  priceChange1h:  number | null;
+  priceChange24h: number | null;
+  snapshotCount:  number;
+  ts:             number;
+}
+
+/**
+ * Citește movers per chain din preflight:trending:movers:{chain}.
+ * Returnează [] dacă nu există date (shadow mode sau primul ciclu).
+ */
+export async function readTrendingMovers(chain: string): Promise<MoverEntry[]> {
+  const r = getRedis();
+  if (!r) return [];
+  try {
+    const raw = await r.get(REDIS_KEYS.trendingMovers(chain));
+    if (!raw) return [];
+    return JSON.parse(raw) as MoverEntry[];
+  } catch { return []; }
+}

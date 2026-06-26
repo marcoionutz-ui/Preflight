@@ -1,6 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { readAllRedis } from "../redis-reader";
+import { readAllRedis, readTrendingMovers } from "../redis-reader";
 import type { MemoryEntry } from "../types";
 import { mcpResponse, mcpErr, ERR } from "../errors";
 
@@ -11,7 +11,7 @@ export function registerMarketOverview(server: McpServer) {
       title: "Preflight Market Overview",
       description: `High-level view of current DEX market conditions from the worker's perspective.
 
-Shows phase distribution, flow pressure, top buying pairs, pipeline counts.
+Shows phase distribution, flow pressure, top buying pairs, pipeline counts, and own-source trending movers.
 Args: chain (optional), top_n (default 5, max 20)`,
       inputSchema: {
         chain: z.string().optional(),
@@ -25,10 +25,36 @@ Args: chain (optional), top_n (default 5, max 20)`,
         if (!ctx) return mcpErr(ERR.REDIS_DOWN, "Redis not connected");
 
         const { now, states, watch, hot, armed, snapshot } = ctx;
+
+        // ── 6.10: trending movers per chain ──────────────────────────────────
+        const chainId = chain?.toLowerCase().trim();
+        const chains  = chainId ? [chainId] : ["base", "arbitrum", "bsc"];
+        const moversByChain: Record<string, unknown[]> = {};
+        for (const c of chains) {
+          const movers = await readTrendingMovers(c);
+          if (movers.length) {
+            moversByChain[c] = movers.slice(0, top_n).map(m => ({
+              symbol:         m.symbol,
+              dexType:        m.dexType,
+              pairAddress:    m.pairAddress,
+              tokenAddress:   m.tokenAddress,
+              priceUsd:       m.priceUsd,
+              reserveUsd:     m.reserveUsd,
+              priceChange5m:  m.priceChange5m,
+              priceChange1h:  m.priceChange1h,
+              priceChange24h: m.priceChange24h,
+              snapshotCount:  m.snapshotCount,
+            }));
+          }
+        }
+
         let entries = Object.entries(states);
-        if (chain) entries = entries.filter(([addr]) =>
-          (snapshot?.memory?.[addr] as MemoryEntry)?.tokenAddress?.startsWith(chain) ?? false
-        );
+        if (chainId) {
+          entries = entries.filter(([addr, p]) => {
+            const mem = snapshot?.memory?.[addr] as MemoryEntry | undefined;
+            return p.chain === chainId || mem?.chain === chainId;
+          });
+        }
 
         const phases: Record<string, number> = {};
         const flowPressure = { buying: 0, selling: 0, neutral: 0, noWsData: 0 };
@@ -70,6 +96,7 @@ Args: chain (optional), top_n (default 5, max 20)`,
             },
             totalTracked: entries.length,
             freshnessSec,
+            trendingMovers: Object.keys(moversByChain).length ? moversByChain : null,
           }, null, 2),
           freshnessSec,
           confidence:
