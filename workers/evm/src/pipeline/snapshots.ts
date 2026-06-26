@@ -25,6 +25,7 @@ import { getLifecycle, getRecentLifecycles } from "../state/lifecycle";
 import { CHAINS } from "../config/chains";
 import { writeCoverageSnapshot } from "./coverageSnapshot";
 import { writeTrendingSnapshots } from "../trending/trendingSnapshots";
+import { calculateMovers } from "../trending/trendingMovers";
 import { REDIS_KEYS } from "@preflight/schema";
 
 export async function writeAllSnapshots(r: Redis): Promise<void> {
@@ -92,6 +93,13 @@ export async function writeAllSnapshots(r: Redis): Promise<void> {
     await writeTrendingSnapshots(r, states);
   } catch (e) {
     console.error("[TRENDING] Write failed:", e instanceof Error ? e.message : e);
+  }
+
+  // ── 6.10: preflight:trending:movers:{chain} ────────────────────────────────
+  try {
+    await calculateMovers(r, states);
+  } catch (e) {
+    console.error("[TRENDING] Movers failed:", e instanceof Error ? e.message : e);
   }
 }
 
