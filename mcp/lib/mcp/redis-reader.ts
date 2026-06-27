@@ -249,6 +249,128 @@ export function dedupeByPair<T extends { pairAddress?: string | null }>(
 
 export { type MemoryEntry, type PairState };
 
+// ── 6.11: Quote price health readers ─────────────────────────────────────────
+
+// ── Oracle freshness (Chainlink cache keys) ───────────────────────────────────
+
+export interface QuoteOracleEntry {
+  price:   number;
+  ageSec:  number;
+  fresh:   boolean;   // ageSec < 300 (TTL Chainlink cache)
+  source:  "CHAINLINK" | "MISSING";
+}
+
+const CHAINLINK_CHAINS: Array<{ chain: string; symbol: string }> = [
+  { chain: "base",     symbol: "ETH" },
+  { chain: "arbitrum", symbol: "ETH" },
+  { chain: "bsc",      symbol: "BNB" },
+];
+
+/**
+ * Citește Chainlink cache keys și raportează oracle freshness per chain.
+ * Nu spune câte pairs folosesc sursa asta — pentru aia e readQuotePriceHealth().
+ */
+export async function readQuoteOracleHealth(): Promise<Record<string, Record<string, QuoteOracleEntry>>> {
+  const r = getRedis();
+  if (!r) return {};
+  const now    = Date.now();
+  const result: Record<string, Record<string, QuoteOracleEntry>> = {};
+  try {
+    const keys = CHAINLINK_CHAINS.map(({ chain, symbol }) =>
+      `preflight:indexer:quoteprice:${chain}:${symbol}`,
+    );
+    const values = await r.mget(...keys);
+    for (let i = 0; i < CHAINLINK_CHAINS.length; i++) {
+      const { chain, symbol } = CHAINLINK_CHAINS[i];
+      const raw = values[i];
+      if (!result[chain]) result[chain] = {};
+      if (!raw) {
+        result[chain][symbol] = { price: 0, ageSec: -1, fresh: false, source: "MISSING" };
+        continue;
+      }
+      try {
+        const p = JSON.parse(raw) as { price: number; updatedAt: number };
+        const ageSec = Math.round((now - Number(p.updatedAt ?? 0)) / 1000);
+        result[chain][symbol] = { price: p.price, ageSec, fresh: ageSec >= 0 && ageSec < 300, source: "CHAINLINK" };
+      } catch {
+        result[chain][symbol] = { price: 0, ageSec: -1, fresh: false, source: "MISSING" };
+      }
+    }
+  } catch { /* ignoră Redis errors */ }
+  return result;
+}
+
+// ── Pair-level quote source distribution ─────────────────────────────────────
+
+export interface QuotePriceChainHealth {
+  sampleSize:    number;
+  sources:       Record<string, number>;  // CHAINLINK/STATIC_STABLE/ENV_FALLBACK/UNKNOWN → count
+  priceStatuses: Record<string, number>;  // OK/NO_QUOTE/QUOTE_PRICE_UNKNOWN/... → count
+  maxAgeSec:     number | null;           // max quotePriceAgeSec din sample
+  warnings:      string[];
+}
+
+const QUOTE_HEALTH_CHAINS = ["base", "arbitrum", "bsc"] as const;
+const QUOTE_SAMPLE_SIZE   = 500;
+
+/**
+ * Samplez top QUOTE_SAMPLE_SIZE pairs din indexer registry per chain (by ts ZSET).
+ * Numără distribuția quotePriceSource și priceStatus — fără SCAN, safe.
+ */
+export async function readQuotePriceHealth(): Promise<Record<string, QuotePriceChainHealth>> {
+  const r = getRedis();
+  if (!r) return {};
+  const result: Record<string, QuotePriceChainHealth> = {};
+
+  for (const chain of QUOTE_HEALTH_CHAINS) {
+    try {
+      const addrs = await r.zrevrange(`preflight:indexed:pairs:ts:${chain}`, 0, QUOTE_SAMPLE_SIZE - 1);
+      if (!addrs.length) continue;
+
+      const pipe = r.pipeline();
+      for (const addr of addrs) pipe.get(`preflight:indexed:pair:${chain}:${addr}`);
+      const results = await pipe.exec();
+      if (!results) continue;
+
+      const sources:       Record<string, number> = {};
+      const priceStatuses: Record<string, number> = {};
+      let maxAgeSec:     number | null = null;
+      let parsed         = 0;
+      let unknownOkCount = 0;
+
+      for (const [err, raw] of results) {
+        if (err || !raw) continue;
+        try {
+          const p = JSON.parse(raw as string) as {
+            quotePriceSource?: string;
+            quotePriceAgeSec?: number;
+            priceStatus?:      string;
+          };
+          parsed++;
+          const src = p.quotePriceSource ?? "UNKNOWN";
+          const ps  = p.priceStatus ?? "MISSING";
+          sources[src]       = (sources[src] ?? 0) + 1;
+          priceStatuses[ps]  = (priceStatuses[ps] ?? 0) + 1;
+          if (src === "UNKNOWN" && ps === "OK") unknownOkCount++;
+          if (typeof p.quotePriceAgeSec === "number") {
+            maxAgeSec = maxAgeSec === null ? p.quotePriceAgeSec : Math.max(maxAgeSec, p.quotePriceAgeSec);
+          }
+        } catch { /* skip malformed */ }
+      }
+
+      const warnings: string[] = [];
+      const envCount        = sources["ENV_FALLBACK"] ?? 0;
+      if (unknownOkCount > 0)                           warnings.push(`${unknownOkCount} OK-priced pairs with UNKNOWN quote source`);
+      if (envCount > parsed * 0.1 && parsed > 10)      warnings.push(`${envCount} pairs using ENV_FALLBACK (>${Math.round(envCount / parsed * 100)}%)`);
+      if (maxAgeSec !== null && maxAgeSec > 600)        warnings.push(`max quotePriceAgeSec=${maxAgeSec}s — possible stale prices`);
+
+      result[chain] = { sampleSize: parsed, sources, priceStatuses, maxAgeSec, warnings };
+    } catch { /* ignoră chain errors */ }
+  }
+
+  return result;
+}
+
 // ── 6.10: Trending movers reader ─────────────────────────────────────────────
 
 export interface MoverEntry {

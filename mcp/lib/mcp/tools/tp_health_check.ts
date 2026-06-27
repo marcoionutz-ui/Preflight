@@ -1,5 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { readAllRedis, freshnessLabel, safeMinAge } from "../redis-reader";
+import { readAllRedis, freshnessLabel, safeMinAge, readQuoteOracleHealth, readQuotePriceHealth } from "../redis-reader";
 import { mcpResponse, mcpErr, ERR } from "../errors";
 
 export function registerHealthCheck(server: McpServer, exposePerformance: boolean) {
@@ -18,7 +18,11 @@ Use this first to verify the worker is running before calling other tools.`,
     },
     async () => {
       try {
-        const ctx = await readAllRedis();
+        const [ctx, quoteOracleHealth, quotePriceHealth] = await Promise.all([
+          readAllRedis(),
+          readQuoteOracleHealth(),
+          readQuotePriceHealth(),
+        ]);
         if (!ctx) return mcpErr(ERR.REDIS_DOWN, "Redis not connected");
 
         const { now, states, watch, hot, armed, snapshot, pipelineCoverage, scannerStats } = ctx;
@@ -114,6 +118,8 @@ Use this first to verify the worker is running before calling other tools.`,
 			),
 			dexscreenerHealth: scannerStats.dexscreener ?? null,
 		  } : null,
+		  quoteOracleHealth: Object.keys(quoteOracleHealth).length ? quoteOracleHealth : null,
+		  quotePriceHealth:  Object.keys(quotePriceHealth).length  ? quotePriceHealth  : null,
 		  pipelineCoverage: pipelineCoverage ? {
 			savedAgeSec: Math.round((now - pipelineCoverage.savedAt) / 1000),
 			chains: Object.fromEntries(
