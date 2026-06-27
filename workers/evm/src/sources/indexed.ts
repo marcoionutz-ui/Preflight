@@ -19,7 +19,7 @@
 import { getRedis } from "../infra/redis";
 import { CHAINS } from "../config/chains";
 import type { ChainConfig } from "../config/chains";
-import type { SourcePool, DexType } from "./normalize";
+import type { SourcePool, DexType, QuotePriceSource } from "./normalize";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -64,6 +64,10 @@ interface IndexedPair {
   priceUsd?:    number;
   reserveUsd?:  number;
   priceStatus?: string;
+
+  // Faza 6.11: quote price transparency
+  quotePriceSource?: QuotePriceSource;
+  quotePriceAgeSec?: number;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -95,20 +99,23 @@ function dexTypeFromId(dexId: string): DexType {
 
 function toSourcePool(pair: IndexedPair, chainCfg: ChainConfig): SourcePool {
   return {
-    chain:           pair.chain,
-    pairAddress:     pair.pairAddress,
-    tokenAddress:    pair.baseToken  ?? pair.token0,   // 6.4: enriched base, fallback to token0
-    symbol:          pair.baseSymbol ?? "UNKNOWN",     // 6.4: enriched symbol, fallback to UNKNOWN
-    dexType:         dexTypeFromId(pair.dexId),
-    dexId:           pair.dexId,
-    discoverySource: "INDEXER",
-    priceUsd:        pair.priceUsd   ?? 0, // 6.5: enriched price, fallback 0
-    priceChange:     { m5: 0, h1: 0, h24: 0 },
-    reserveUsd:      pair.reserveUsd ?? 0, // 6.5: enriched TVL, fallback 0
-    volumeUsd24h:    0,
-    transactions:    { buys5m: 0, sells5m: 0, buys1h: 0, sells1h: 0 },
-    _chain:          chainCfg,
-    _raw:            pair,
+    chain:             pair.chain,
+    pairAddress:       pair.pairAddress,
+    tokenAddress:      pair.baseToken  ?? pair.token0,   // 6.4: enriched base, fallback to token0
+    symbol:            pair.baseSymbol ?? "UNKNOWN",     // 6.4: enriched symbol, fallback to UNKNOWN
+    dexType:           dexTypeFromId(pair.dexId),
+    dexId:             pair.dexId,
+    discoverySource:   "INDEXER",
+    priceUsd:          pair.priceUsd   ?? 0, // 6.5: enriched price, fallback 0
+    priceChange:       { m5: 0, h1: 0, h24: 0 },
+    reserveUsd:        pair.reserveUsd ?? 0, // 6.5: enriched TVL, fallback 0
+    volumeUsd24h:      0,
+    transactions:      { buys5m: 0, sells5m: 0, buys1h: 0, sells1h: 0 },
+    _chain:            chainCfg,
+    _raw:              pair,
+    // 6.11: quote price transparency
+    quotePriceSource:  pair.quotePriceSource,
+    quotePriceAgeSec:  pair.quotePriceAgeSec,
   };
 }
 

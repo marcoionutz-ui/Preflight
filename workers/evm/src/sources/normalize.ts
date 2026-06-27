@@ -11,6 +11,9 @@ import type { DiscoverySource } from "@preflight/schema";
 
 export type DexType = "V2" | "V3" | "V4" | "UNKNOWN";
 
+/** Sursa prețului quote token — oglindă a QuotePriceSource din indexer-evm. */
+export type QuotePriceSource = "STATIC_STABLE" | "CHAINLINK" | "ENV_FALLBACK" | "UNKNOWN";
+
 export interface SourcePool {
   // Identity
   chain:        string;
@@ -21,6 +24,9 @@ export interface SourcePool {
   dexId:        string;
   // Discovery provenance
   discoverySource?: DiscoverySource;
+  // 6.11: quote price transparency (prezent doar pentru INDEXER source)
+  quotePriceSource?: QuotePriceSource;
+  quotePriceAgeSec?: number;
 
   // Price
   priceUsd: number;
