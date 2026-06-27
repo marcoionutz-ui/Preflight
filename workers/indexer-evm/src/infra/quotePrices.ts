@@ -1,21 +1,41 @@
 /**
  * infra/quotePrices.ts
- * USD price lookup pentru quote tokens cunoscuți.
+ * USD price resolver pentru quote tokens.
  *
- * Stablecoins → 1.0 (hardcodat, nu fetch extern)
- * WETH (Base/Arb) → INDEXER_WETH_USD env
- * WBNB (BSC)      → INDEXER_BNB_USD env  ← separat! ETH ≠ BNB ca preț
- * Ecosystem       → INDEXER_{SYMBOL}_USD env (ex: INDEXER_VIRTUAL_USD)
+ * Priority order:
+ *   1. STATIC_STABLE — stablecoins → $1.00 always
+ *   2. CHAINLINK     — ETH/BNB din on-chain Chainlink feed (Redis cache, TTL 5min)
+ *   3. ENV_FALLBACK  — INDEXER_WETH_USD / INDEXER_BNB_USD / INDEXER_{SYMBOL}_USD
+ *   4. null          — unknown, caller setează priceStatus=QUOTE_PRICE_UNKNOWN
  *
- * Fără env → priceStatus=QUOTE_PRICE_UNKNOWN (corect, nu fake 0)
+ * Faza 6.11: getQuotePriceResult() async (Chainlink + Redis cache) este sursa primară.
+ * getQuotePrice() sync rămâne ca fallback pentru contexte unde async nu e posibil.
  */
 
-// ── Native currency (V4) ──────────────────────────────────────────────────────
+import type { Redis } from "ioredis";
 
-/** address(0) = native ETH or BNB depending on chain. */
-const NATIVE_ADDRESS = "0x0000000000000000000000000000000000000000";
+// ── Types ─────────────────────────────────────────────────────────────────────
 
-// ── Stablecoins ───────────────────────────────────────────────────────────────
+export type QuotePriceSource =
+  | "STATIC_STABLE"   // stablecoin → always $1.00, nu se schimbă
+  | "CHAINLINK"       // fetched de la Chainlink on-chain oracle (Redis cached)
+  | "ENV_FALLBACK"    // citit din env var Railway (INDEXER_WETH_USD etc.)
+  | "UNKNOWN";        // fără preț disponibil
+
+export interface QuotePriceResult {
+  price:     number;
+  source:    QuotePriceSource;
+  updatedAt: number;  // ms timestamp când prețul a fost obținut
+}
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+const NATIVE_ADDRESS          = "0x0000000000000000000000000000000000000000";
+const CHAINLINK_CACHE_TTL_SEC = 300;   // 5 min
+const CHAINLINK_TIMEOUT_MS    = 4_000;
+const SEL_LATEST_ROUND_DATA   = "0xfeaf968c"; // latestRoundData()
+
+// ── Token address sets ────────────────────────────────────────────────────────
 
 const STABLE_ADDRESSES = new Set([
   // Base
@@ -33,70 +53,175 @@ const STABLE_ADDRESSES = new Set([
   "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d", // USDC BSC
 ]);
 
-// ── WETH (Base + Arbitrum) ────────────────────────────────────────────────────
-
 const WETH_ADDRESSES = new Set([
   "0x4200000000000000000000000000000000000006", // WETH Base
   "0x82af49447d8a07e3bd95bd0d56f35241523fbab1", // WETH Arbitrum
 ]);
 
-// ── WBNB (BSC) — preț separat de WETH ────────────────────────────────────────
-
 const WBNB_ADDRESSES = new Set([
   "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c", // WBNB BSC
 ]);
 
-// ── Ecosystem tokens (non-stable, non-WETH, dar comune ca quote pe chain-ul lor) ──
+// ── Chainlink ETH/USD + BNB/USD feed addresses per chain ─────────────────────
 
-/**
- * Ecosystem quote tokens cu preț din env.
- * Adaugă INDEXER_{SYMBOL}_USD în Railway dacă vrei pricing corect.
- * Fără env → priceStatus=QUOTE_PRICE_UNKNOWN (mai bun decât NO_QUOTE).
- */
-const ECOSYSTEM_TOKEN_ENV: Record<string, string> = {
-  "0x0b3e328455c4059eeb9e3f84b5543f74e24e7e1b": "INDEXER_VIRTUAL_USD", // VIRTUAL (Base) — verificat din Redis
-  "0x1111111111166b7fe7bd91427724b487980afc69": "INDEXER_ZORA_USD",    // ZORA (Base) — common quote on Base V4
+const CHAINLINK_ETH_FEED: Record<string, string> = {
+  base:     "0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70",
+  arbitrum: "0x639Fe6ab55C921f74e7fac1ee960C0B6293ba612",
 };
 
-// ── Price env cache ───────────────────────────────────────────────────────────
+const CHAINLINK_BNB_FEED: Record<string, string> = {
+  bsc: "0x0567F2323251f0Aab15c8dFb1967E4e8A7D42aeE",
+};
 
-const _envCache = new Map<string, number | null>();
+// ── Ecosystem tokens — env-gated, no Chainlink feed ──────────────────────────
 
-function readPositiveEnvNumber(key: string): number | null {
-  if (_envCache.has(key)) return _envCache.get(key) ?? null;
+const ECOSYSTEM_TOKEN_ENV: Record<string, string> = {
+  "0x0b3e328455c4059eeb9e3f84b5543f74e24e7e1b": "INDEXER_VIRTUAL_USD", // VIRTUAL (Base)
+  "0x1111111111166b7fe7bd91427724b487980afc69": "INDEXER_ZORA_USD",    // ZORA (Base)
+};
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function chainlinkCacheKey(chain: string, symbol: "ETH" | "BNB"): string {
+  return `preflight:indexer:quoteprice:${chain}:${symbol}`;
+}
+
+function readEnvPrice(key: string): number | null {
   const v = Number(process.env[key] ?? 0);
-  const price = Number.isFinite(v) && v > 0 ? v : null;
-  _envCache.set(key, price);
-  return price;
+  return Number.isFinite(v) && v > 0 ? v : null;
+}
+
+async function fetchChainlink(rpcUrl: string, feedAddress: string): Promise<number | null> {
+  const controller = new AbortController();
+  const timer      = setTimeout(() => controller.abort(), CHAINLINK_TIMEOUT_MS);
+  try {
+    const res = await fetch(rpcUrl, {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify({
+        jsonrpc: "2.0", id: 1,
+        method:  "eth_call",
+        params:  [{ to: feedAddress, data: SEL_LATEST_ROUND_DATA }, "latest"],
+      }),
+      signal: controller.signal,
+    });
+    if (!res.ok) return null;
+    const json = (await res.json()) as { result?: string; error?: unknown };
+    if (json.error || !json.result || json.result === "0x") return null;
+    // Decode: 5 × 32 bytes — answer (int256) la offset 32 bytes (chars 64–127)
+    const hex = json.result.startsWith("0x") ? json.result.slice(2) : json.result;
+    if (hex.length < 320) return null;
+    const raw    = BigInt("0x" + hex.slice(64, 128));
+    const signed = raw > (1n << 255n) - 1n ? raw - (1n << 256n) : raw; // int256 sign fix
+    const price  = Number(signed) / 1e8;
+    return price > 0 ? price : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /**
- * Returns the USD price of a known quote token:
- *   stable    → 1.0
- *   WETH      → INDEXER_WETH_USD env (Base + Arbitrum)
- *   WBNB      → INDEXER_BNB_USD env  (BSC — separat de WETH!)
- *   ecosystem → INDEXER_{SYMBOL}_USD env (ex: INDEXER_VIRTUAL_USD)
- *   other     → null (unknown)
+ * Async price resolver — sursa primară pentru enrichment.
+ * Priority: STATIC_STABLE → CHAINLINK (Redis cache) → ENV_FALLBACK → null
  *
- * Returning null signals caller to set priceStatus="QUOTE_PRICE_UNKNOWN"
- * rather than writing a fake 0 price.
- *
- * @param tokenAddress  lowercase token address (or address(0) for native)
- * @param chain         chain id — required only for address(0) (ETH vs BNB)
+ * @param tokenAddress  lowercase token address (sau address(0) pentru native)
+ * @param chain         chain id (obligatoriu pentru address(0) și routing Chainlink)
+ * @param rpcUrl        RPC URL pentru Chainlink fetch
+ * @param r             Redis client pentru cache (opțional)
+ */
+export async function getQuotePriceResult(
+  tokenAddress: string,
+  chain:        string,
+  rpcUrl?:      string,
+  r?:           Redis | null,
+): Promise<QuotePriceResult | null> {
+  const addr = tokenAddress.toLowerCase();
+  const now  = Date.now();
+
+  // 1. Stables → always $1.00
+  if (STABLE_ADDRESSES.has(addr)) {
+    return { price: 1.0, source: "STATIC_STABLE", updatedAt: now };
+  }
+
+  // Determină dacă e ETH sau BNB (wrapped sau native)
+  const isEth = WETH_ADDRESSES.has(addr) || (addr === NATIVE_ADDRESS && chain !== "bsc");
+  const isBnb = WBNB_ADDRESSES.has(addr) || (addr === NATIVE_ADDRESS && chain === "bsc");
+
+  if (isEth || isBnb) {
+    const symbol   = isEth ? "ETH" as const : "BNB" as const;
+    const feedMap  = isEth ? CHAINLINK_ETH_FEED : CHAINLINK_BNB_FEED;
+    const feedAddr = feedMap[chain];
+    const envKey   = isEth ? "INDEXER_WETH_USD" : "INDEXER_BNB_USD";
+    const cacheKey = chainlinkCacheKey(chain, symbol);
+
+    // 2a. Redis cache (serve if fresh + stale guard)
+    if (r) {
+      try {
+        const cached = await r.get(cacheKey);
+        if (cached) {
+          const p      = JSON.parse(cached) as { price: number; updatedAt: number };
+          const ageMs  = now - Number(p.updatedAt ?? 0);
+          if (
+            Number.isFinite(p.price) && p.price > 0 &&
+            Number.isFinite(ageMs)  && ageMs >= 0 &&
+            ageMs <= CHAINLINK_CACHE_TTL_SEC * 1000
+          ) {
+            return { price: p.price, source: "CHAINLINK", updatedAt: p.updatedAt };
+          }
+        }
+      } catch { /* ignoră Redis errors */ }
+    }
+
+    // 2b. Fetch Chainlink on-chain
+    if (feedAddr && rpcUrl) {
+      const chainlinkPrice = await fetchChainlink(rpcUrl, feedAddr);
+      if (chainlinkPrice) {
+        if (r) {
+          try {
+            await r.set(cacheKey, JSON.stringify({ price: chainlinkPrice, updatedAt: now }), "EX", CHAINLINK_CACHE_TTL_SEC);
+          } catch { /* ignoră */ }
+        }
+        return { price: chainlinkPrice, source: "CHAINLINK", updatedAt: now };
+      }
+    }
+
+    // 3. Env fallback
+    const envPrice = readEnvPrice(envKey);
+    if (envPrice) return { price: envPrice, source: "ENV_FALLBACK", updatedAt: now };
+
+    return null;
+  }
+
+  // ── Ecosystem tokens (VIRTUAL, ZORA) — env only ───────────────────────────
+  const envKey = ECOSYSTEM_TOKEN_ENV[addr];
+  if (envKey) {
+    const envPrice = readEnvPrice(envKey);
+    if (envPrice) return { price: envPrice, source: "ENV_FALLBACK", updatedAt: now };
+    return null;
+  }
+
+  return null;
+}
+
+/**
+ * Sync wrapper — env only, fără Chainlink și Redis.
+ * Folosit doar unde async nu e posibil. Preferă getQuotePriceResult() pentru enrichment.
  */
 export function getQuotePrice(tokenAddress: string, chain?: string): number | null {
   const addr = tokenAddress.toLowerCase();
   if (STABLE_ADDRESSES.has(addr)) return 1.0;
-  if (WETH_ADDRESSES.has(addr))   return readPositiveEnvNumber("INDEXER_WETH_USD");
-  if (WBNB_ADDRESSES.has(addr))   return readPositiveEnvNumber("INDEXER_BNB_USD");
-  // Native currency: address(0) — ETH on most chains, BNB on BSC
+  if (WETH_ADDRESSES.has(addr))   return readEnvPrice("INDEXER_WETH_USD");
+  if (WBNB_ADDRESSES.has(addr))   return readEnvPrice("INDEXER_BNB_USD");
   if (addr === NATIVE_ADDRESS) {
     return chain?.toLowerCase() === "bsc"
-      ? readPositiveEnvNumber("INDEXER_BNB_USD")
-      : readPositiveEnvNumber("INDEXER_WETH_USD");
+      ? readEnvPrice("INDEXER_BNB_USD")
+      : readEnvPrice("INDEXER_WETH_USD");
   }
-  if (addr in ECOSYSTEM_TOKEN_ENV) return readPositiveEnvNumber(ECOSYSTEM_TOKEN_ENV[addr]);
+  const envKey = ECOSYSTEM_TOKEN_ENV[addr];
+  if (envKey) return readEnvPrice(envKey);
   return null;
 }

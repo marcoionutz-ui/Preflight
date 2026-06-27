@@ -28,7 +28,8 @@ import type { DecodedPair } from "./eventDecoder";
 import { chooseBaseQuote } from "../config/quotes";
 import type { QuoteStatus } from "../config/quotes";
 import { fetchAndCacheTokenMetadata } from "../infra/tokenMetadata";
-import { getQuotePrice } from "../infra/quotePrices";
+import { getQuotePriceResult } from "../infra/quotePrices";
+import type { QuotePriceSource } from "../infra/quotePrices";
 import { fetchV2Price } from "../infra/v2Pricing";
 import type { PriceStatus, AmmVersion, PricingSource, ReserveSource } from "../infra/v2Pricing";
 
@@ -73,9 +74,13 @@ export interface IndexedPair {
   priceStatus?: PriceStatus;
 
   // ── Faza 6.9b: pricing metadata (opțional — prezent după enrichment) ──────
-  ammVersion?:    AmmVersion;
-  pricingSource?: PricingSource;
-  reserveSource?: ReserveSource;
+  ammVersion?:       AmmVersion;
+  pricingSource?:    PricingSource;
+  reserveSource?:    ReserveSource;
+
+  // ── Faza 6.11: quote price source tracking ───────────────────────────────
+  quotePriceSource?: QuotePriceSource;
+  quotePriceAgeSec?: number;
 }
 
 // ── Key helpers ───────────────────────────────────────────────────────────────
@@ -106,6 +111,9 @@ async function enrichPairMetadata(
 ): Promise<void> {
   const { baseToken, quoteToken, quoteStatus } = chooseBaseQuote(chain, pair.token0, pair.token1);
 
+  // Redis disponibil devreme — necesar pentru Chainlink cache (6.11)
+  const r = getRedis();
+
   // Fetch metadata for both tokens in parallel (cache-aware)
   const [baseMeta, quoteMeta] = await Promise.all([
     fetchAndCacheTokenMetadata(rpcUrl, chain, baseToken),
@@ -119,8 +127,11 @@ async function enrichPairMetadata(
     baseMeta.status === "FAILED" && (quoteMeta === null || quoteMeta?.status === "FAILED") ? "FAILED" :
     "PARTIAL";
 
-  // ── Faza 6.5: V2 price + liquidity ──────────────────────────────────────────
-  const quotePriceUsd = quoteToken ? getQuotePrice(quoteToken, chain) : null;
+  // ── Faza 6.11: quote price async cu Chainlink + Redis cache ─────────────────
+  const quotePriceResult = quoteToken
+    ? await getQuotePriceResult(quoteToken, chain, rpcUrl, r)
+    : null;
+  const quotePriceUsd = quotePriceResult?.price ?? null;
 
   // V4: pass StateView address for pricing via PoolManager lens
   const v4Config = getV4Config(chain);
@@ -160,9 +171,13 @@ async function enrichPairMetadata(
     ammVersion,
     pricingSource,
     reserveSource,
+    // 6.11: quote price source + age
+    quotePriceSource: quotePriceResult?.source ?? "UNKNOWN",
+    quotePriceAgeSec: quotePriceResult
+      ? Math.max(0, Math.floor((Date.now() - quotePriceResult.updatedAt) / 1000))
+      : undefined,
   };
 
-  const r = getRedis();
   if (!r) return;
 
   try {
@@ -172,7 +187,8 @@ async function enrichPairMetadata(
       `base:${baseMeta.symbol ?? "?"} quote:${quoteMeta?.symbol ?? "?"} ` +
       `price:$${priceUsd.toFixed(6)} reserve:$${reserveUsd.toFixed(0)} ` +
       `meta:${metadataStatus} price_status:${priceStatus} ` +
-      `amm:${ammVersion ?? "?"} price_src:${pricingSource ?? "?"} reserve_src:${reserveSource ?? "?"}`,
+      `amm:${ammVersion ?? "?"} price_src:${pricingSource ?? "?"} reserve_src:${reserveSource ?? "?"} ` +
+      `quote_price_src:${quotePriceResult?.source ?? "none"} quote_price_age:${enriched.quotePriceAgeSec ?? "n/a"}s`,
     );
   } catch (err) {
     console.error(`[REGISTRY] enrich SET(${pair.pairAddress}) error:`, (err as Error).message);
