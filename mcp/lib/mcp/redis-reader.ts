@@ -262,6 +262,8 @@ export interface MoverEntry {
   priceChange5m:  number | null;
   priceChange1h:  number | null;
   priceChange24h: number | null;
+  direction:      "UP" | "DOWN" | "FLAT";
+  historyStatus:  "WARMING_UP" | "PARTIAL" | "READY";
   snapshotCount:  number;
   ts:             number;
 }

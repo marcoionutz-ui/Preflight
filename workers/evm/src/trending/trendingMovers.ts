@@ -7,6 +7,7 @@
 import type { Redis } from "ioredis";
 import type { PairStateSnapshot } from "../state/pairStates";
 import { REDIS_KEYS } from "@preflight/schema";
+import { BLOCKED_SYMBOLS } from "../config/constants";
 
 // Indici în lista snapshot (LPUSH = newest first, index 0 = cel mai nou)
 const IDX_5M  = 1;    // 1 × 5min în urmă
@@ -29,6 +30,8 @@ export interface MoverEntry {
   priceChange5m:  number | null;  // null dacă nu există snapshot la 5m
   priceChange1h:  number | null;  // null dacă nu există snapshot la 1h
   priceChange24h: number | null;  // null până la 24h de history
+  direction:      "UP" | "DOWN" | "FLAT";
+  historyStatus:  "WARMING_UP" | "PARTIAL" | "READY";
   snapshotCount:  number;
   ts:             number;
 }
@@ -49,6 +52,17 @@ function parseSnap(raw: unknown): { priceUsd: number } | null {
   } catch { return null; }
 }
 
+function deriveDirection(priceChange5m: number | null): "UP" | "DOWN" | "FLAT" {
+  if (priceChange5m === null || priceChange5m === 0) return "FLAT";
+  return priceChange5m > 0 ? "UP" : "DOWN";
+}
+
+function deriveHistoryStatus(snapshotCount: number): "WARMING_UP" | "PARTIAL" | "READY" {
+  if (snapshotCount >= 288) return "READY";
+  if (snapshotCount >= 12)  return "PARTIAL";
+  return "WARMING_UP";
+}
+
 let lastMoversAt = 0;
 
 export async function calculateMovers(
@@ -59,9 +73,17 @@ export async function calculateMovers(
   if (now - lastMoversAt < MOVERS_INTERVAL_MS) return;
 
   const eligible = Object.values(states).filter(
-    s => s.currentPrice > 0 && s.reserveUsd >= MIN_RESERVE_USD && s.chain && s.pairAddress,
+    s =>
+      s.currentPrice > 0 &&
+      s.reserveUsd >= MIN_RESERVE_USD &&
+      s.chain &&
+      s.pairAddress &&
+      !BLOCKED_SYMBOLS.has((s.symbol ?? "").toLowerCase()),
   );
-  if (!eligible.length) return;
+  if (!eligible.length) {
+    lastMoversAt = now;
+    return;
+  }
 
   // ── Batch LINDEX reads: 5 comenzi per pool ─────────────────────────────────
   const readPipeline = r.pipeline();
@@ -91,6 +113,10 @@ export async function calculateMovers(
 
     if (!snapNow) continue;  // pool fără snapshot scris încă
 
+    const priceChange5m  = calcChange(snapNow.priceUsd, snap5m?.priceUsd);
+    const priceChange1h  = calcChange(snapNow.priceUsd, snap1h?.priceUsd);
+    const priceChange24h = calcChange(snapNow.priceUsd, snap24h?.priceUsd);
+
     const entry: MoverEntry = {
       chain:          s.chain,
       pairAddress:    s.pairAddress,
@@ -99,9 +125,11 @@ export async function calculateMovers(
       dexType:        s.dexType,
       priceUsd:       snapNow.priceUsd,
       reserveUsd:     s.reserveUsd,
-      priceChange5m:  calcChange(snapNow.priceUsd, snap5m?.priceUsd),
-      priceChange1h:  calcChange(snapNow.priceUsd, snap1h?.priceUsd),
-      priceChange24h: calcChange(snapNow.priceUsd, snap24h?.priceUsd),
+      priceChange5m,
+      priceChange1h,
+      priceChange24h,
+      direction:      deriveDirection(priceChange5m),
+      historyStatus:  deriveHistoryStatus(snapCount),
       snapshotCount:  snapCount,
       ts:             now,
     };

@@ -43,6 +43,8 @@ Args: chain (optional), top_n (default 5, max 20)`,
               priceChange5m:  m.priceChange5m,
               priceChange1h:  m.priceChange1h,
               priceChange24h: m.priceChange24h,
+              direction:      m.direction,
+              historyStatus:  m.historyStatus,
               snapshotCount:  m.snapshotCount,
             }));
           }
