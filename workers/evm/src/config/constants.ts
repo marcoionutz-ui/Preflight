@@ -97,6 +97,7 @@ export const BLOCKED_SYMBOLS = new Set([
 
 // ── V3 DEXes ──────────────────────────────────────────────────────────────────
 export const V3_DEXES = new Set([
+  "uniswap-v3",           // generic — toate chain-urile indexate (ETH, Base, Arb, BSC)
   "uniswap-v3-base",
   "aerodrome-slipstream",
   "pancakeswap-v3-base",
