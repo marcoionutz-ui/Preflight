@@ -38,6 +38,10 @@ const SEL_LATEST_ROUND_DATA   = "0xfeaf968c"; // latestRoundData()
 // ── Token address sets ────────────────────────────────────────────────────────
 
 const STABLE_ADDRESSES = new Set([
+  // Ethereum mainnet
+  "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", // USDC
+  "0xdac17f958d2ee523a2206206994597c13d831ec7", // USDT
+  "0x6b175474e89094c44da98b954eedeac495271d0f", // DAI
   // Base
   "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", // USDC
   "0xd9aaec86b65d86f6a7b5b1b0c42ffa531710b6ca", // USDbC
@@ -54,6 +58,7 @@ const STABLE_ADDRESSES = new Set([
 ]);
 
 const WETH_ADDRESSES = new Set([
+  "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", // WETH Ethereum mainnet
   "0x4200000000000000000000000000000000000006", // WETH Base
   "0x82af49447d8a07e3bd95bd0d56f35241523fbab1", // WETH Arbitrum
 ]);
@@ -65,6 +70,7 @@ const WBNB_ADDRESSES = new Set([
 // ── Chainlink ETH/USD + BNB/USD feed addresses per chain ─────────────────────
 
 const CHAINLINK_ETH_FEED: Record<string, string> = {
+  ethereum: "0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419", // ETH/USD Ethereum mainnet
   base:     "0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70",
   arbitrum: "0x639Fe6ab55C921f74e7fac1ee960C0B6293ba612",
 };

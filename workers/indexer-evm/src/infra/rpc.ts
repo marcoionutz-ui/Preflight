@@ -108,6 +108,7 @@ export function getRpcEnvName(chain: string): string {
     base:     "ALCHEMY_BASE_RPC",
     bsc:      "ALCHEMY_BNB_RPC",
     arbitrum: "ALCHEMY_ARB_RPC",
+    ethereum: "ALCHEMY_ETH_RPC",
   };
   return map[chain.toLowerCase()] ?? `ALCHEMY_${chain.toUpperCase()}_RPC`;
 }
@@ -118,6 +119,7 @@ export function getRpcUrl(chain: string): string {
     base:     process.env.ALCHEMY_BASE_RPC,
     bsc:      process.env.ALCHEMY_BNB_RPC,
     arbitrum: process.env.ALCHEMY_ARB_RPC,
+    ethereum: process.env.ALCHEMY_ETH_RPC,
   };
   return map[chain.toLowerCase()] ?? "";
 }

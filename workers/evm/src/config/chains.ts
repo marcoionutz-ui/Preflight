@@ -42,15 +42,29 @@ const ALL_CHAINS: ChainConfig[] = [
     gecko: "bsc",
     weth:  "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c", // WBNB
     usdc:  "0x55d398326f99059ff775485246999027b3197955", // USDT (câmp usdc = stable quote token)
-	stableQuotes: [
+    stableQuotes: [
       "0x55d398326f99059ff775485246999027b3197955", // USDT
       "0xe9e7cea3dedca5984780bafc599bd69add087d56", // BUSD
       "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d", // USDC BSC
     ],
     wsUrl: process.env.ALCHEMY_BNB_WS ?? "",
   },
+  // ── Ethereum mainnet (shadow-first — requires ENABLED_CHAINS=...ethereum AND INDEXER_ENABLE_ETHEREUM=1) ──
+  {
+    id:    "ethereum",
+    gecko: "eth",
+    weth:  "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+    usdc:  "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+    stableQuotes: [
+      "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", // USDC
+      "0xdAC17F958D2ee523a2206206994597C13D831ec7", // USDT
+      "0x6B175474E89094C44Da98b954EedeAC495271d0F", // DAI
+    ],
+    wsUrl: process.env.ALCHEMY_ETH_WS ?? "",
+  },
 ];
 
 export const CHAINS: ChainConfig[] = ALL_CHAINS.filter(c =>
-  enabledChains.has(c.id)
+  enabledChains.has(c.id) &&
+  (c.id !== "ethereum" || process.env.INDEXER_ENABLE_ETHEREUM === "1")
 );

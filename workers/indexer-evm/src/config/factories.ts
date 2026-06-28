@@ -19,7 +19,7 @@
  * Faza 6.0: Base only. BSC + Arbitrum enabled:false până la Faza 6.9.
  */
 
-export type ChainId = "base" | "bsc" | "arbitrum";
+export type ChainId = "base" | "bsc" | "arbitrum" | "ethereum";
 
 export type AdapterType =
   | "UNISWAP_V2"
@@ -87,6 +87,11 @@ export interface V4ChainConfig {
 }
 
 export const V4_CHAIN_CONFIG: Partial<Record<ChainId, V4ChainConfig>> = {
+  // Adrese verificate din docs.uniswap.org/contracts/v4/deployments
+  ethereum: {
+    poolManagerAddress: "0x000000000004444c5dc75cB358380D2e3dE08A90",
+    stateViewAddress:   "0x7fFE42C4a5DEeA5b0feC41C94C136Cf115597227",
+  },
   base: {
     poolManagerAddress: "0x498581ff718922c3f8e6a244956af099b2652b2b",
     stateViewAddress:   "0xa3c0c9b65bad0b08107aa264b0f3db444b867a71",
@@ -230,6 +235,33 @@ export const FACTORIES: FactoryConfig[] = [
     event:      "PairCreated",
     topic0:     TOPIC0_PAIR_CREATED_V2,
     enabled:    process.env.INDEXER_ENABLE_ARBITRUM === "1",
+    confidence: "HIGH",
+  },
+
+  // ── ETHEREUM MAINNET (env-gated — INDEXER_ENABLE_ETHEREUM=1) ──────────────────
+  //   Adrese verificate din:
+  //     Uniswap V3: developers.uniswap.org/docs/protocols/v3/deployments/v3-ethereum-deployments
+  //     Uniswap V4: docs.uniswap.org/contracts/v4/deployments
+  {
+    chain:      "ethereum",
+    dexId:      "uniswap-v3",
+    dexType:    "V3",
+    address:    "0x1F98431c8aD98523631AE4a59f267346ea31F984",
+    adapter:    "UNISWAP_V3",
+    event:      "PoolCreated",
+    topic0:     TOPIC0_POOL_CREATED_V3,
+    enabled:    process.env.INDEXER_ENABLE_ETHEREUM === "1",
+    confidence: "HIGH",
+  },
+  {
+    chain:      "ethereum",
+    dexId:      "uniswap-v4",
+    dexType:    "V4",
+    address:    "0x000000000004444c5dc75cB358380D2e3dE08A90", // PoolManager Ethereum
+    adapter:    "UNISWAP_V4",
+    event:      "Initialize",
+    topic0:     TOPIC0_INITIALIZE_V4,
+    enabled:    process.env.INDEXER_ENABLE_V4 === "1" && process.env.INDEXER_ENABLE_ETHEREUM === "1",
     confidence: "HIGH",
   },
 ];
