@@ -261,6 +261,7 @@ export interface QuoteOracleEntry {
 }
 
 const CHAINLINK_CHAINS: Array<{ chain: string; symbol: string }> = [
+  { chain: "ethereum", symbol: "ETH" },
   { chain: "base",     symbol: "ETH" },
   { chain: "arbitrum", symbol: "ETH" },
   { chain: "bsc",      symbol: "BNB" },
@@ -310,7 +311,7 @@ export interface QuotePriceChainHealth {
   warnings:      string[];
 }
 
-const QUOTE_HEALTH_CHAINS = ["base", "arbitrum", "bsc"] as const;
+const QUOTE_HEALTH_CHAINS = ["ethereum", "base", "arbitrum", "bsc"] as const;
 const QUOTE_SAMPLE_SIZE   = 500;
 
 /**
