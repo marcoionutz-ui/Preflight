@@ -4,7 +4,7 @@
  * Zero imports din alte module interne.
  */
 
-export const WORKER_VERSION = "v6.11";
+export const WORKER_VERSION = "v7.0";
 
 export const GECKO_BASE = "https://api.geckoterminal.com/api/v2";
 
@@ -112,6 +112,7 @@ export const V3_DEXES = new Set([
 
 /** V4 PoolManager address per chain (deterministic deployment differs per chain) */
 export const V4_POOL_MANAGERS: Record<string, string> = {
+  ethereum: "0x000000000004444c5dc75cB358380D2e3dE08A90",
   base:     "0x498581ff718922c3f8e6a244956af099b2652b2b",
   arbitrum: "0x360e68faccca8ca495c1b759fd9eee466db9fb32",
   bsc:      "0x28e2ea090877bf75740558f6bfb36a5ffee9e9df",
