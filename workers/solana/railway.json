@@ -5,7 +5,7 @@
     "buildCommand": "npm install --legacy-peer-deps"
   },
   "deploy": {
-    "startCommand": "npm run start --workspace=@preflight/indexer-solana",
+    "startCommand": "npm run start",
     "restartPolicyType": "ON_FAILURE"
   }
 }
