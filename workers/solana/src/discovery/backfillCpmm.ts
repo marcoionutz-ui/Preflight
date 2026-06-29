@@ -39,8 +39,9 @@ const MINT0_OFFSET = 0;
 const MINT1_OFFSET = 32;
 const MIN_DATA_LEN = 64;
 
-// Marker Redis — backfill rulează o singură dată per versiune
-const BACKFILL_MARKER = `preflight:indexer:backfill:cpmm:${INDEXER_VERSION}`;
+// PoolState account size (Anchor layout complet, fără dataSlice)
+// Filtrul dataSize se aplică pe accountul complet, indiferent de dataSlice.
+const POOL_STATE_SIZE = 637;
 
 const BATCH_SIZE   = 50;
 const BATCH_DELAY  = 150; // ms între batch-uri — protecție RPC
@@ -65,16 +66,21 @@ export async function runCpmmBackfill(connection: Connection): Promise<void> {
     return;
   }
 
-  // Verifică marker — skip dacă backfill-ul pentru această versiune a rulat deja
-  const redis = getRedis();
-  const alreadyDone = await redis.get(BACKFILL_MARKER);
-  if (alreadyDone) {
-    console.log("[SOLANA][BACKFILL] already done for " + INDEXER_VERSION + " (marker=" + BACKFILL_MARKER + ") -- skipping");
+  const redis       = getRedis();
+  const maxAccounts = getMaxAccounts();
+
+  // Verifică dacă un backfill cu același cap (sau full) a rulat deja pentru această versiune
+  const sampleMarker = `preflight:indexer:backfill:cpmm:${INDEXER_VERSION}:sample:${maxAccounts}`;
+  const fullMarker   = `preflight:indexer:backfill:cpmm:${INDEXER_VERSION}:full`;
+
+  const [sampleDone, fullDone] = await redis.mget(sampleMarker, fullMarker);
+  if (sampleDone || fullDone) {
+    const which = fullDone ? fullMarker : sampleMarker;
+    console.log("[SOLANA][BACKFILL] already done for " + INDEXER_VERSION + " (marker=" + which + ") -- skipping");
     return;
   }
 
-  const maxAccounts = getMaxAccounts();
-  console.log("[SOLANA][BACKFILL] cpmm starting | max=" + maxAccounts + " | marker=" + BACKFILL_MARKER);
+  console.log("[SOLANA][BACKFILL] cpmm starting | max=" + maxAccounts);
 
   let rawAccounts: Awaited<ReturnType<typeof connection.getProgramAccounts>>;
   try {
@@ -83,8 +89,10 @@ export async function runCpmmBackfill(connection: Connection): Promise<void> {
       {
         commitment: "confirmed",
         // dataSlice: fetch DOAR mint0 (32) + mint1 (32) — reduce payload ~90%
+        // dataSize filtrul se aplică pe accountul COMPLET (nu pe slice)
         dataSlice: { offset: 168, length: 64 },
         filters: [
+          { dataSize: POOL_STATE_SIZE },
           {
             memcmp: {
               offset: 0,
@@ -99,9 +107,21 @@ export async function runCpmmBackfill(connection: Connection): Promise<void> {
     return;
   }
 
-  const total = rawAccounts.length;
-  const capped = Math.min(total, maxAccounts);
-  console.log("[SOLANA][BACKFILL] cpmm fetched=" + total + " | processing=" + capped);
+  const total   = rawAccounts.length;
+  const capped  = Math.min(total, maxAccounts);
+  const partial = capped < total;
+
+  // Marker key diferit pentru sample vs full — nu mintim că am procesat tot
+  const markerKey = partial
+    ? `preflight:indexer:backfill:cpmm:${INDEXER_VERSION}:sample:${maxAccounts}`
+    : `preflight:indexer:backfill:cpmm:${INDEXER_VERSION}:full`;
+
+  console.log(
+    "[SOLANA][BACKFILL] cpmm fetched=" + total
+    + " | processing=" + capped
+    + " | partial=" + partial
+    + " | marker=" + markerKey,
+  );
 
   // Validare offset-uri pe primele 3 accounts — pentru debugging
   for (let i = 0; i < Math.min(3, capped); i++) {
@@ -170,10 +190,10 @@ export async function runCpmmBackfill(connection: Connection): Promise<void> {
     + " errors=" + stats.errors,
   );
 
-  // Scrie marker — backfill-ul nu va rula din nou pentru această versiune
+  // Scrie marker — folosim markerKey derivat din partial/full
   try {
-    await redis.set(BACKFILL_MARKER, new Date().toISOString());
-    console.log("[SOLANA][BACKFILL] marker written: " + BACKFILL_MARKER);
+    await redis.set(markerKey, new Date().toISOString());
+    console.log("[SOLANA][BACKFILL] marker written: " + markerKey);
   } catch (err) {
     console.error("[SOLANA][BACKFILL] marker write failed:", (err as Error).message);
   }
