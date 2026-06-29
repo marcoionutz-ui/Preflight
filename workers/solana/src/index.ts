@@ -1,14 +1,16 @@
 /**
  * workers/solana/src/index.ts
  * Entry point indexer-solana.
- * 8.0c: cursor logic real + logsSubscribe shadow discovery (Raydium + pump.fun).
+ * 8.0d: CPMM pool discovery -> Redis. Filter + dedupe + fetch + write.
  */
 
 import { getSolanaRpcUrl, getSolanaWsUrl, getSlot, getVersion, getConnection } from "./infra/rpc";
 import { getRedis }                 from "./infra/redis";
-import { readCursor, advanceCursor }  from "./infra/cursor";
+import { readCursor, advanceCursor } from "./infra/cursor";
 import { buildHealth, writeHealth } from "./infra/health";
 import { startLogSubscriptions }    from "./discovery/logSubscriber";
+import { isCpmmInitLog, fetchCpmmInit } from "./discovery/txFetcher";
+import { buildSolanaPool, writeSolanaPool } from "./discovery/pairWriter";
 import {
   CHAIN, INDEXER_VERSION, POLL_INTERVAL_MS, KEY_PAIRS,
 } from "./config/constants";
@@ -20,15 +22,42 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// ── Dedupe ───────────────────────────────────────────────────────────────────
+// Key = "{program}:{signature}" — dedupam per-program, nu global.
+// Previne situatia in care aceeasi tx vine intai pe alt subscription si e
+// marcata "vazuta" inainte sa ajunga pe subscriptionul relevant (CPMM).
+const seenKeys = new Set<string>();
+const MAX_SEEN = 10_000;
+
+function isDuplicate(key: string): boolean {
+  if (seenKeys.has(key)) return true;
+  if (seenKeys.size >= MAX_SEEN) seenKeys.clear();
+  seenKeys.add(key);
+  return false;
+}
+
+// ── Stats ────────────────────────────────────────────────────────────────────
+const stats = { events: 0, deduped: 0, candidates: 0, fetched: 0, inserted: 0, errors: 0 };
+
+function logStats(): void {
+  console.log(
+    "[SOLANA][STATS]"
+    + " events=" + stats.events
+    + " deduped=" + stats.deduped
+    + " candidates=" + stats.candidates
+    + " fetched=" + stats.fetched
+    + " inserted=" + stats.inserted
+    + " errors=" + stats.errors,
+  );
+}
+
+// ── Health loop ──────────────────────────────────────────────────────────────
 async function healthLoop(nodeVersion: string): Promise<void> {
+  let statsTick = 0;
   while (true) {
     try {
       const latestSlot = await getSlot();
       const cursorSlot = await readCursor();
-
-      // 8.0c: cursorul e avansat de discovery loop (onLogs callback).
-      // healthLoop il citeste si calculeaza behindSlots real.
-      // La primul start (cursorSlot === null) -> status STARTING.
       const health = buildHealth(latestSlot, cursorSlot, nodeVersion);
       await writeHealth(health);
 
@@ -39,6 +68,8 @@ async function healthLoop(nodeVersion: string): Promise<void> {
         + " | behind:" + behind
         + " | status:" + health.status,
       );
+
+      if (++statsTick % 6 === 0) logStats();
     } catch (err) {
       console.error("[SOLANA] health loop error:", (err as Error).message);
     }
@@ -47,6 +78,48 @@ async function healthLoop(nodeVersion: string): Promise<void> {
   }
 }
 
+// ── CPMM init pipeline ───────────────────────────────────────────────────────
+function handleCpmmCandidate(
+  connection: ReturnType<typeof getConnection>,
+  signature:  string,
+  slot:       number,
+): void {
+  stats.candidates++;
+  fetchCpmmInit(connection, signature)
+    .then(async (result) => {
+      stats.fetched++;
+      if (!result) return;
+
+      const pool = buildSolanaPool(
+        result.poolAddress,
+        result.mint0,
+        result.mint1,
+        slot,
+        signature,
+        "raydium_cpmm",
+      );
+
+      const outcome = await writeSolanaPool(pool);
+      if (outcome === "inserted") {
+        stats.inserted++;
+        console.log(
+          "[SOLANA][POOL] raydium_cpmm inserted"
+          + " pool=" + result.poolAddress.slice(0, 8) + "..."
+          + " mint0=" + result.mint0.slice(0, 8) + "..."
+          + " mint1=" + result.mint1.slice(0, 8) + "..."
+          + " slot=" + slot,
+        );
+      } else if (outcome === "error") {
+        stats.errors++;
+      }
+    })
+    .catch((err: Error) => {
+      stats.errors++;
+      console.error("[SOLANA][CPMM] pipeline error:", err.message);
+    });
+}
+
+// ── Main ─────────────────────────────────────────────────────────────────────
 async function main(): Promise<void> {
   console.log("[SOLANA] indexer-solana " + INDEXER_VERSION + " starting");
   console.log("[SOLANA] chain=" + CHAIN);
@@ -72,22 +145,29 @@ async function main(): Promise<void> {
     console.warn("[SOLANA] getVersion() failed -- continuing");
   }
 
-  // Discovery: logsSubscribe shadow mode
-  // Primim evenimente in real-time; cursorul avanseaza la slot-ul fiecarui log.
   const connection = getConnection();
+
   startLogSubscriptions(connection, (event) => {
-    console.log(
-      "[SOLANA][DISCOVERY] program=" + event.program
-      + " slot=" + event.slot
-      + " sig=" + event.signature.slice(0, 8) + "...",
-    );
-    // TODO 8.0d: parse event.logs pentru pool init events + scrie in Redis
+    stats.events++;
+
+    // Avanseaza cursorul pentru orice event (independent de program)
     advanceCursor(event.slot).catch((err: Error) => {
-      console.error("[SOLANA][DISCOVERY] writeCursor error:", err.message);
+      console.error("[SOLANA][DISCOVERY] advanceCursor error:", err.message);
     });
+
+    // Filter intai, dedupe dupa — evita ca un event ne-relevant pe alta
+    // subscription sa "consume" dedup-ul pentru eventul CPMM valid.
+    if (event.program !== "raydium_cpmm" || !isCpmmInitLog(event.logs)) return;
+
+    if (isDuplicate("raydium_cpmm:" + event.signature)) {
+      stats.deduped++;
+      return;
+    }
+
+    handleCpmmCandidate(connection, event.signature, event.slot);
+    // TODO 8.0e: pump.fun Create + Raydium CLMM CreatePool
   });
 
-  // Health loop: HTTP polling
   await healthLoop(nodeVersion);
 }
 
