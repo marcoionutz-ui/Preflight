@@ -29,6 +29,9 @@ function sleep(ms: number): Promise<void> {
 const seenKeys = new Set<string>();
 const MAX_SEEN = 10_000;
 
+// Debug sampler — primele 10 CPMM tx-uri, pentru calibrare log pattern (TODO: remove dupa 8.0d)
+let cpmmDebugSamples = 0;
+
 function isDuplicate(key: string): boolean {
   if (seenKeys.has(key)) return true;
   if (seenKeys.size >= MAX_SEEN) seenKeys.clear();
@@ -37,7 +40,7 @@ function isDuplicate(key: string): boolean {
 }
 
 // ── Stats ────────────────────────────────────────────────────────────────────
-const stats = { events: 0, deduped: 0, candidates: 0, fetched: 0, inserted: 0, errors: 0 };
+const stats = { events: 0, cpmmTotal: 0, deduped: 0, candidates: 0, fetched: 0, inserted: 0, errors: 0 };
 
 function logStats(): void {
   console.log(
@@ -47,6 +50,7 @@ function logStats(): void {
     + " candidates=" + stats.candidates
     + " fetched=" + stats.fetched
     + " inserted=" + stats.inserted
+    + " cpmmTotal=" + stats.cpmmTotal
     + " errors=" + stats.errors,
   );
 }
@@ -61,7 +65,7 @@ async function healthLoop(nodeVersion: string): Promise<void> {
       const health = buildHealth(latestSlot, cursorSlot, nodeVersion);
       await writeHealth(health);
 
-      const behind = cursorSlot !== null ? latestSlot - cursorSlot : "?";
+      const behind = cursorSlot !== null ? Math.max(0, latestSlot - cursorSlot) : "?";
       console.log(
         "[SOLANA] latest:" + latestSlot
         + " | cursor:" + (cursorSlot ?? "null")
@@ -157,6 +161,17 @@ async function main(): Promise<void> {
 
     // Filter intai, dedupe dupa — evita ca un event ne-relevant pe alta
     // subscription sa "consume" dedup-ul pentru eventul CPMM valid.
+    if (event.program === "raydium_cpmm") {
+      stats.cpmmTotal++;
+      if (cpmmDebugSamples < 10) {
+        cpmmDebugSamples++;
+        console.log(
+          "[SOLANA][CPMM DEBUG] slot=" + event.slot
+          + " sig=" + event.signature.slice(0, 8)
+          + " logs=" + JSON.stringify(event.logs.slice(0, 8)),
+        );
+      }
+    }
     if (event.program !== "raydium_cpmm" || !isCpmmInitLog(event.logs)) return;
 
     if (isDuplicate("raydium_cpmm:" + event.signature)) {
