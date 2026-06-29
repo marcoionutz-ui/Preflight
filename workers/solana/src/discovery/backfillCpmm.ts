@@ -2,19 +2,21 @@
  * discovery/backfillCpmm.ts
  * 8.0e: Snapshot backfill pentru Raydium CPMM via getProgramAccounts.
  *
+ * Optimizări production:
+ *   dataSlice { offset: 168, length: 64 } — Alchemy returnează doar mint0+mint1,
+ *   nu tot accountul de 637 bytes. Reduce payload-ul cu ~90%.
+ *
+ *   Marker Redis preflight:indexer:backfill:cpmm:{version} — backfill-ul rulează
+ *   o singură dată per versiune. La startup următor e skip automat.
+ *
  * Filtre:
  *   memcmp @ offset 0 = Anchor discriminator "account:PoolState"
  *   → returnează DOAR PoolState accounts, nu și config/observation accounts
  *
- * Layout PoolState (Anchor, fixed offsets):
- *   [0..7]     discriminator   (8 bytes)
- *   [8..39]    amm_config      (Pubkey)
- *   [40..71]   pool_creator    (Pubkey)
- *   [72..103]  token0_vault    (Pubkey)
- *   [104..135] token1_vault    (Pubkey)
- *   [136..167] lp_mint         (Pubkey)
- *   [168..199] token0_mint     (Pubkey)  ← citim asta
- *   [200..231] token1_mint     (Pubkey)  ← și asta
+ * Layout PoolState (Anchor, fixed offsets în accountul COMPLET):
+ *   [168..199] token0_mint  ← dataSlice offset=168, length=64
+ *   [200..231] token1_mint  ← în data slice: offset 32
+ *   Cu dataSlice activ: data[0..31]=mint0, data[32..63]=mint1
  *
  * Env vars:
  *   SOLANA_BACKFILL_ENABLED=1       (default: off)
@@ -23,6 +25,8 @@
 
 import { Connection, PublicKey } from "@solana/web3.js";
 import { RAYDIUM_CPMM } from "../config/programs";
+import { getRedis }     from "../infra/redis";
+import { INDEXER_VERSION } from "../config/constants";
 import { buildSolanaPool, writeSolanaPool } from "./pairWriter";
 
 // Anchor discriminator pentru "account:PoolState"
@@ -30,9 +34,13 @@ import { buildSolanaPool, writeSolanaPool } from "./pairWriter";
 // Derivat din: crypto.createHash('sha256').update('account:PoolState').digest().slice(0,8)
 const POOL_STATE_DISCRIMINATOR_B58 = "iUE1qg7KXeV";
 
-const MINT0_OFFSET = 168;
-const MINT1_OFFSET = 200;
-const MIN_DATA_LEN = MINT1_OFFSET + 32; // 232 bytes minim
+// Cu dataSlice activ, data returnată = [mint0 (32 bytes) | mint1 (32 bytes)]
+const MINT0_OFFSET = 0;
+const MINT1_OFFSET = 32;
+const MIN_DATA_LEN = 64;
+
+// Marker Redis — backfill rulează o singură dată per versiune
+const BACKFILL_MARKER = `preflight:indexer:backfill:cpmm:${INDEXER_VERSION}`;
 
 const BATCH_SIZE   = 50;
 const BATCH_DELAY  = 150; // ms între batch-uri — protecție RPC
@@ -49,6 +57,7 @@ function getMaxAccounts(): number {
 /**
  * Rulează snapshot backfill CPMM.
  * Nu aruncă erori — logează și returnează stats.
+ * Rulează o singură dată per versiune (controlat de marker Redis).
  */
 export async function runCpmmBackfill(connection: Connection): Promise<void> {
   if (!process.env.SOLANA_BACKFILL_ENABLED || process.env.SOLANA_BACKFILL_ENABLED !== "1") {
@@ -56,8 +65,16 @@ export async function runCpmmBackfill(connection: Connection): Promise<void> {
     return;
   }
 
+  // Verifică marker — skip dacă backfill-ul pentru această versiune a rulat deja
+  const redis = getRedis();
+  const alreadyDone = await redis.get(BACKFILL_MARKER);
+  if (alreadyDone) {
+    console.log("[SOLANA][BACKFILL] already done for " + INDEXER_VERSION + " (marker=" + BACKFILL_MARKER + ") -- skipping");
+    return;
+  }
+
   const maxAccounts = getMaxAccounts();
-  console.log("[SOLANA][BACKFILL] cpmm starting | max=" + maxAccounts);
+  console.log("[SOLANA][BACKFILL] cpmm starting | max=" + maxAccounts + " | marker=" + BACKFILL_MARKER);
 
   let rawAccounts: Awaited<ReturnType<typeof connection.getProgramAccounts>>;
   try {
@@ -65,6 +82,8 @@ export async function runCpmmBackfill(connection: Connection): Promise<void> {
       new PublicKey(RAYDIUM_CPMM),
       {
         commitment: "confirmed",
+        // dataSlice: fetch DOAR mint0 (32) + mint1 (32) — reduce payload ~90%
+        dataSlice: { offset: 168, length: 64 },
         filters: [
           {
             memcmp: {
@@ -150,4 +169,12 @@ export async function runCpmmBackfill(connection: Connection): Promise<void> {
     + " skipped=" + stats.skipped
     + " errors=" + stats.errors,
   );
+
+  // Scrie marker — backfill-ul nu va rula din nou pentru această versiune
+  try {
+    await redis.set(BACKFILL_MARKER, new Date().toISOString());
+    console.log("[SOLANA][BACKFILL] marker written: " + BACKFILL_MARKER);
+  } catch (err) {
+    console.error("[SOLANA][BACKFILL] marker write failed:", (err as Error).message);
+  }
 }
