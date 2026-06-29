@@ -26,3 +26,13 @@ export async function writeCursor(slot: number): Promise<void> {
   const redis = getRedis();
   await redis.set(KEY_CURSOR, String(slot));
 }
+
+/**
+ * Avansează cursorul doar dacă slot > valoarea curentă.
+ * Previne regresia cursorului când vin events interleaved din subscriptions paralele.
+ */
+export async function advanceCursor(slot: number): Promise<void> {
+  const current = await readCursor();
+  if (current !== null && slot <= current) return;
+  await writeCursor(slot);
+}

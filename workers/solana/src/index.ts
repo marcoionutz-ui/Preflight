@@ -1,13 +1,14 @@
 /**
  * workers/solana/src/index.ts
  * Entry point indexer-solana.
- * 8.0b: Alchemy/Helius RPC + getSlot health loop + cursor slot in Redis.
+ * 8.0c: cursor logic real + logsSubscribe shadow discovery (Raydium + pump.fun).
  */
 
-import { getSolanaRpcUrl, getSlot, getVersion } from "./infra/rpc";
-import { getRedis }       from "./infra/redis";
-import { writeCursor }    from "./infra/cursor";
+import { getSolanaRpcUrl, getSolanaWsUrl, getSlot, getVersion, getConnection } from "./infra/rpc";
+import { getRedis }                 from "./infra/redis";
+import { readCursor, advanceCursor }  from "./infra/cursor";
 import { buildHealth, writeHealth } from "./infra/health";
+import { startLogSubscriptions }    from "./discovery/logSubscriber";
 import {
   CHAIN, INDEXER_VERSION, POLL_INTERVAL_MS, KEY_PAIRS,
 } from "./config/constants";
@@ -23,18 +24,19 @@ async function healthLoop(nodeVersion: string): Promise<void> {
   while (true) {
     try {
       const latestSlot = await getSlot();
+      const cursorSlot = await readCursor();
 
-      // TODO 8.0c: cursor logic se schimba -- read cursor, process batch cursor+1->target,
-      // write cursor doar dupa processing cu succes. Acum cursor=latest doar pt health proof.
-      // La 8.0c cursorul va avansa doar dupa ce procesam un batch real
-      await writeCursor(latestSlot);
-
-      const health = buildHealth(latestSlot, latestSlot, nodeVersion);
+      // 8.0c: cursorul e avansat de discovery loop (onLogs callback).
+      // healthLoop il citeste si calculeaza behindSlots real.
+      // La primul start (cursorSlot === null) -> status STARTING.
+      const health = buildHealth(latestSlot, cursorSlot, nodeVersion);
       await writeHealth(health);
 
+      const behind = cursorSlot !== null ? latestSlot - cursorSlot : "?";
       console.log(
         "[SOLANA] latest:" + latestSlot
-        + " | behind:0"
+        + " | cursor:" + (cursorSlot ?? "null")
+        + " | behind:" + behind
         + " | status:" + health.status,
       );
     } catch (err) {
@@ -49,6 +51,7 @@ async function main(): Promise<void> {
   console.log("[SOLANA] indexer-solana " + INDEXER_VERSION + " starting");
   console.log("[SOLANA] chain=" + CHAIN);
   console.log("[SOLANA] rpc=" + getSolanaRpcUrl().slice(0, 50) + "...");
+  console.log("[SOLANA] ws=" + getSolanaWsUrl().slice(0, 50) + "...");
   console.log(
     "[SOLANA] programs:"
     + " raydium_amm=" + RAYDIUM_AMM_V4.slice(0, 8) + "..."
@@ -69,6 +72,22 @@ async function main(): Promise<void> {
     console.warn("[SOLANA] getVersion() failed -- continuing");
   }
 
+  // Discovery: logsSubscribe shadow mode
+  // Primim evenimente in real-time; cursorul avanseaza la slot-ul fiecarui log.
+  const connection = getConnection();
+  startLogSubscriptions(connection, (event) => {
+    console.log(
+      "[SOLANA][DISCOVERY] program=" + event.program
+      + " slot=" + event.slot
+      + " sig=" + event.signature.slice(0, 8) + "...",
+    );
+    // TODO 8.0d: parse event.logs pentru pool init events + scrie in Redis
+    advanceCursor(event.slot).catch((err: Error) => {
+      console.error("[SOLANA][DISCOVERY] writeCursor error:", err.message);
+    });
+  });
+
+  // Health loop: HTTP polling
   await healthLoop(nodeVersion);
 }
 

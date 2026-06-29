@@ -4,6 +4,7 @@
  *
  * Provider-agnostic: funcționează cu Alchemy, Helius, sau orice RPC standard.
  * URL configurat via SOLANA_RPC_URL (fallback HELIUS_RPC_URL / ALCHEMY_SOLANA_RPC_URL).
+ * WS URL derivat automat din HTTP URL (https→wss), override cu SOLANA_WS_URL.
  */
 
 import { Connection } from "@solana/web3.js";
@@ -26,10 +27,21 @@ export function getSolanaRpcUrl(): string {
   return url;
 }
 
-/** Singleton Connection — refolosit între call-uri. */
+/** Derivă WS URL din HTTP URL (https→wss, http→ws). Override cu SOLANA_WS_URL. */
+export function getSolanaWsUrl(): string {
+  if (process.env.SOLANA_WS_URL) return process.env.SOLANA_WS_URL;
+  return getSolanaRpcUrl()
+    .replace(/^https:\/\//, "wss://")
+    .replace(/^http:\/\//, "ws://");
+}
+
+/** Singleton Connection cu WS endpoint pentru subscriptions. */
 export function getConnection(): Connection {
   if (_connection) return _connection;
-  _connection = new Connection(getSolanaRpcUrl(), "confirmed");
+  _connection = new Connection(getSolanaRpcUrl(), {
+    wsEndpoint: getSolanaWsUrl(),
+    commitment:  "confirmed",
+  });
   return _connection;
 }
 

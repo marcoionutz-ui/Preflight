@@ -48,4 +48,4 @@ export const BEHIND_DEGRADED_SLOTS = 200;
 
 // ── Worker version ────────────────────────────────────────────────────────────
 
-export const INDEXER_VERSION = "v8.0b";
+export const INDEXER_VERSION = "v8.0c";
