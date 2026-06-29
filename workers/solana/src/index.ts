@@ -1,7 +1,7 @@
 /**
  * workers/solana/src/index.ts
  * Entry point indexer-solana.
- * 8.0d: CPMM pool discovery -> Redis. Filter + dedupe + fetch + write.
+ * 8.0e: Quote normalization + CPMM backfill snapshot.
  */
 
 import { getSolanaRpcUrl, getSolanaWsUrl, getSlot, getVersion, getConnection } from "./infra/rpc";
@@ -11,6 +11,7 @@ import { buildHealth, writeHealth } from "./infra/health";
 import { startLogSubscriptions }    from "./discovery/logSubscriber";
 import { isCpmmInitLog, fetchCpmmInit } from "./discovery/txFetcher";
 import { buildSolanaPool, writeSolanaPool } from "./discovery/pairWriter";
+import { runCpmmBackfill }          from "./discovery/backfillCpmm";
 import {
   CHAIN, INDEXER_VERSION, POLL_INTERVAL_MS, KEY_PAIRS,
 } from "./config/constants";
@@ -28,9 +29,6 @@ function sleep(ms: number): Promise<void> {
 // marcata "vazuta" inainte sa ajunga pe subscriptionul relevant (CPMM).
 const seenKeys = new Set<string>();
 const MAX_SEEN = 10_000;
-
-// Debug sampler — primele 10 CPMM tx-uri, pentru calibrare log pattern (TODO: remove dupa 8.0d)
-let cpmmDebugSamples = 0;
 
 function isDuplicate(key: string): boolean {
   if (seenKeys.has(key)) return true;
@@ -151,6 +149,10 @@ async function main(): Promise<void> {
 
   const connection = getConnection();
 
+  // Backfill snapshot — rulează înainte de WS subscription
+  // Activat cu SOLANA_BACKFILL_ENABLED=1
+  await runCpmmBackfill(connection);
+
   startLogSubscriptions(connection, (event) => {
     stats.events++;
 
@@ -161,17 +163,7 @@ async function main(): Promise<void> {
 
     // Filter intai, dedupe dupa — evita ca un event ne-relevant pe alta
     // subscription sa "consume" dedup-ul pentru eventul CPMM valid.
-    if (event.program === "raydium_cpmm") {
-      stats.cpmmTotal++;
-      if (cpmmDebugSamples < 10) {
-        cpmmDebugSamples++;
-        console.log(
-          "[SOLANA][CPMM DEBUG] slot=" + event.slot
-          + " sig=" + event.signature.slice(0, 8)
-          + " logs=" + JSON.stringify(event.logs.slice(0, 8)),
-        );
-      }
-    }
+    if (event.program === "raydium_cpmm") stats.cpmmTotal++;
     if (event.program !== "raydium_cpmm" || !isCpmmInitLog(event.logs)) return;
 
     if (isDuplicate("raydium_cpmm:" + event.signature)) {
@@ -180,7 +172,7 @@ async function main(): Promise<void> {
     }
 
     handleCpmmCandidate(connection, event.signature, event.slot);
-    // TODO 8.0e: pump.fun Create + Raydium CLMM CreatePool
+    // TODO 8.0g: Raydium CLMM CreatePool + pump.fun Create
   });
 
   await healthLoop(nodeVersion);

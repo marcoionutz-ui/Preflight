@@ -1,6 +1,6 @@
 /**
  * discovery/pairWriter.ts
- * 8.0d: Scrie un pool Raydium CPMM in Redis.
+ * 8.0e: Scrie un pool Solana în Redis. Include quote normalization.
  *
  * Redis keys (consistente cu EVM):
  *   preflight:indexed:pair:solana:{poolAddress}  -> JSON (EX: PAIR_TTL_SEC)
@@ -12,12 +12,16 @@ import { getRedis } from "../infra/redis";
 import {
   CHAIN, KEY_PAIR, KEY_PAIRS, KEY_PAIRS_TS, PAIR_TTL_SEC, INDEXER_VERSION,
 } from "../config/constants";
+import { normalizeQuote, SolanaQuoteType } from "./quoteNormalizer";
 
 export interface SolanaPool {
   chain:          typeof CHAIN;
   poolAddress:    string;
   mint0:          string;
   mint1:          string;
+  baseMint:       string;
+  quoteMint:      string;
+  quoteType:      SolanaQuoteType;
   program:        string;
   slot:           number;
   signature:      string;
@@ -57,11 +61,16 @@ export function buildSolanaPool(
   signature:   string,
   program:     string,
 ): SolanaPool {
+  const { baseMint, quoteMint, quoteType } = normalizeQuote(mint0, mint1);
+
   return {
     chain:          CHAIN,
     poolAddress,
     mint0,
     mint1,
+    baseMint,
+    quoteMint,
+    quoteType,
     program,
     slot,
     signature,
