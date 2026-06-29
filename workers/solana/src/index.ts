@@ -24,7 +24,8 @@ async function healthLoop(nodeVersion: string): Promise<void> {
     try {
       const latestSlot = await getSlot();
 
-      // Cursor avanseaza la latestSlot la fiecare heartbeat (8.0b: no discovery yet)
+      // TODO 8.0c: cursor logic se schimba -- read cursor, process batch cursor+1->target,
+      // write cursor doar dupa processing cu succes. Acum cursor=latest doar pt health proof.
       // La 8.0c cursorul va avansa doar dupa ce procesam un batch real
       await writeCursor(latestSlot);
 
