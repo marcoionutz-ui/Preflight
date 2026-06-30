@@ -167,12 +167,13 @@ async function main(): Promise<void> {
   const connection = getConnection();
 
   // Smoke test metadata — validează Jupiter API la fiecare startup
-  // wSOL (KNOWN) + BONK (Jupiter lookup) — confirmare rapidă fără să așteptăm un pool nou
+  // wSOL (KNOWN) + JTO (Jupiter path) — confirmare rapidă fără să așteptăm un pool nou
+  // JTO (Jito) ales intenționat: nu e în KNOWN_MINTS, deci testează Jupiter API end-to-end
   resolveTokenMeta("So11111111111111111111111111111111111111112").then(m =>
     console.log("[SOLANA][META] smoke wSOL: symbol=" + m.symbol + " decimals=" + m.decimals + " source=" + m.source),
   ).catch(() => {});
-  resolveTokenMeta("DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263").then(m =>
-    console.log("[SOLANA][META] smoke BONK: symbol=" + m.symbol + " decimals=" + m.decimals + " source=" + m.source),
+  resolveTokenMeta("jtojtomepa8beP8AuQc6eXt5FriJwfFMwQx2v2f9mCL").then(m =>
+    console.log("[SOLANA][META] smoke JTO: symbol=" + m.symbol + " decimals=" + m.decimals + " source=" + m.source),
   ).catch(() => {});
 
   // Backfill snapshot — rulează înainte de WS subscription
