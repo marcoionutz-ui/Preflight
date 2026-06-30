@@ -1,19 +1,18 @@
 /**
  * discovery/clmmShadow.ts
- * 8.0g-a2: Shadow classifier pentru Raydium CLMM — stack-aware.
+ * 8.0g-a4: CLMM shadow + dry-run parser pentru CreatePool.
  *
- * v1 (a1) extragea instruction names din toate logurile tx-ului,
- * inclusiv cele din CPI-uri catre alte programe (Token Program, ATA etc.)
- * => false positives: InitializeImmutableOwner, CreateTokenAccount etc.
+ * a1: shadow classifier de baza
+ * a2: stack-aware — extrage instruction names doar cand programul din stack e CLMM
+ * a3: delayed tx fetch cu retry (2s → 5s → 15s)
+ * a4: dry-run parser CreatePool (shape 13 + shape 21) — zero Redis
  *
- * v2 (a2) parseaza program stack din logs si extrage instruction names
- * DOAR cand programul curent din stack este RAYDIUM_CLMM.
- *
- * Zero Redis. Zero parser. Zero offsets hardcodate. Doar observam.
+ * Zero Redis writes. Doar observam si validam layout-ul.
  */
 
 import { Connection } from "@solana/web3.js";
 import { RAYDIUM_CLMM } from "../config/programs";
+import { normalizeQuote } from "./quoteNormalizer";
 
 // ── Stats in-memory ───────────────────────────────────────────────────────────
 
@@ -81,6 +80,61 @@ function isCandidate(name: string): boolean {
 
 // ── Fetch sample tx ───────────────────────────────────────────────────────────
 
+// ── Dry-run parser (8.0g-a4) ─────────────────────────────────────────────────
+
+interface ClmmCreatePoolResult {
+  shape:       string;
+  poolAddress: string;
+  mint0:       string;
+  mint1:       string;
+}
+
+/**
+ * Parseaza accounts din instructiunea CLMM CreatePool.
+ * Layout-uri observate live:
+ *   shape=13: [0]=payer [1]=ammConfig [2]=pool [3]=mint0 [4]=mint1 ...
+ *   shape=21: [0]=payer [4]=pool ... [18]=mint0 [19]=mint1 ...
+ *
+ * Returneaza null daca layout-ul nu e recunoscut sau datele nu sunt valide.
+ */
+const CLMM_CREATE_INSTRUCTIONS = new Set(["CreatePool", "CreateCustomizablePool"]);
+
+function parseClmmCreatePool(instructionName: string, accounts: string[]): ClmmCreatePoolResult | null {
+  // Guard: parseaza doar instructiuni de pool creation, nu orice ix cu 13/21 accounts
+  if (!CLMM_CREATE_INSTRUCTIONS.has(instructionName)) return null;
+
+  let result: ClmmCreatePoolResult | null = null;
+
+  if (accounts.length === 13) {
+    result = {
+      shape:       "CREATE_POOL_13",
+      poolAddress: accounts[2],
+      mint0:       accounts[3],
+      mint1:       accounts[4],
+    };
+  } else if (accounts.length === 21) {
+    result = {
+      shape:       "CREATE_POOL_21",
+      poolAddress: accounts[4],
+      mint0:       accounts[18],
+      mint1:       accounts[19],
+    };
+  }
+
+  if (!result) return null;
+
+  // Sanity guards
+  const { poolAddress, mint0, mint1 } = result;
+  if (
+    !poolAddress || !mint0 || !mint1 ||
+    poolAddress === mint0 ||
+    poolAddress === mint1 ||
+    mint0 === mint1
+  ) return null;
+
+  return result;
+}
+
 // Retry delays: 2s → 5s → 15s
 // logsSubscribe poate livra logul inainte ca getParsedTransaction sa fie disponibil la RPC
 const FETCH_RETRY_DELAYS_MS = [2_000, 5_000, 15_000];
@@ -134,6 +188,9 @@ async function fetchSampleTx(
   const inner = (tx.meta?.innerInstructions ?? []).flatMap(i => i.instructions);
   const all   = [...outer, ...inner];
 
+  // Dedupe pool addresses — un tx poate contine mai multe CLMM ix (shape 13 + shape 21)
+  const parsedPools = new Set<string>();
+
   let found = false;
   for (const ix of all) {
     if (ix.programId.toBase58() !== RAYDIUM_CLMM) continue;
@@ -141,8 +198,10 @@ async function fetchSampleTx(
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const accs: { toBase58(): string }[] = (ix as any).accounts;
-    const accList = accs
-      .map((a, idx) => idx + ":" + a.toBase58().slice(0, 12))
+    const accStrs = accs.map(a => a.toBase58());
+
+    const accList = accStrs
+      .map((a, idx) => idx + ":" + a.slice(0, 12))
       .join(" ");
 
     console.log(
@@ -153,6 +212,25 @@ async function fetchSampleTx(
       + " | " + accList,
     );
     found = true;
+
+    // 8.0g-a4 — dry-run parser, zero Redis
+    const parsed = parseClmmCreatePool(instructionName, accStrs);
+    if (parsed && !parsedPools.has(parsed.poolAddress)) {
+      parsedPools.add(parsed.poolAddress);
+
+      const { baseMint, quoteMint, quoteType } = normalizeQuote(parsed.mint0, parsed.mint1);
+      console.log(
+        "[SOLANA][CLMM][PARSED]"
+        + " instruction=" + instructionName
+        + " shape=" + parsed.shape
+        + " pool=" + parsed.poolAddress.slice(0, 12) + "..."
+        + " mint0=" + parsed.mint0.slice(0, 12) + "..."
+        + " mint1=" + parsed.mint1.slice(0, 12) + "..."
+        + " base=" + baseMint.slice(0, 12) + "..."
+        + " quote=" + quoteMint.slice(0, 12) + "..."
+        + " quoteType=" + quoteType,
+      );
+    }
   }
 
   if (!found) {
