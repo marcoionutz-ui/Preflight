@@ -1,12 +1,13 @@
 /**
  * discovery/clmmShadow.ts
- * 8.0g-a1: Shadow classifier pentru Raydium CLMM.
+ * 8.0g-a2: Shadow classifier pentru Raydium CLMM — stack-aware.
  *
- * Scop: invatam ce instruction-uri emite CLMM inainte sa scriem parserul final.
- * - Track stats pentru toate instruction names observate
- * - Log candidates (create/init/pool patterns)
- * - Fetch max 3 sample tx per instruction candidate
- * - Log accounts raw din fiecare sample tx
+ * v1 (a1) extragea instruction names din toate logurile tx-ului,
+ * inclusiv cele din CPI-uri catre alte programe (Token Program, ATA etc.)
+ * => false positives: InitializeImmutableOwner, CreateTokenAccount etc.
+ *
+ * v2 (a2) parseaza program stack din logs si extrage instruction names
+ * DOAR cand programul curent din stack este RAYDIUM_CLMM.
  *
  * Zero Redis. Zero parser. Zero offsets hardcodate. Doar observam.
  */
@@ -16,7 +17,7 @@ import { RAYDIUM_CLMM } from "../config/programs";
 
 // ── Stats in-memory ───────────────────────────────────────────────────────────
 
-/** instruction name -> count total observate */
+/** instruction name -> count total observate (doar CLMM-native) */
 const instructionStats = new Map<string, number>();
 
 /** instruction name -> cate sample tx am fetch-uit */
@@ -26,24 +27,51 @@ const MAX_SAMPLES_PER_INSTRUCTION = 3;
 
 // ── Dedupe pentru fetch ───────────────────────────────────────────────────────
 
-const seenSigs  = new Set<string>();
-const MAX_SIGS  = 5_000;
+const seenSigs = new Set<string>();
+const MAX_SIGS = 5_000;
 
-// ── Patterns ──────────────────────────────────────────────────────────────────
+// ── Log stack parser ──────────────────────────────────────────────────────────
 
-/** Extrage "Instruction: <Name>" din fiecare linie de log */
-const INSTRUCTION_RE = /Program log: Instruction:\s*([A-Za-z0-9_]+)/;
+const PROGRAM_INVOKE_RE  = /^Program ([1-9A-HJ-NP-Za-km-z]+) invoke/;
+const PROGRAM_EXIT_RE    = /^Program ([1-9A-HJ-NP-Za-km-z]+) (?:success|failed)/;
+const INSTRUCTION_RE     = /^Program log: Instruction:\s*([A-Za-z0-9_]+)/;
 
-/** Instructiuni comune care cu siguranta nu sunt pool creation */
-const IGNORE_RE = /swap|increase|decrease|collect|transfer|update|set|close|position|reward/i;
+/**
+ * Extrage instruction names emise DOAR de targetProgramId.
+ * Trateaza logs-urile ca un call stack — ignora instruction-uri
+ * emise de alte programe (Token Program, ATA, Jupiter etc.)
+ */
+function extractTargetProgramInstructions(logs: string[], targetProgramId: string): string[] {
+  const stack: string[] = [];
+  const out:   string[] = [];
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+  for (const line of logs) {
+    const invoke = line.match(PROGRAM_INVOKE_RE);
+    if (invoke) {
+      stack.push(invoke[1]);
+      continue;
+    }
 
-function extractInstructionNames(logs: string[]): string[] {
-  return logs
-    .map(l => l.match(INSTRUCTION_RE)?.[1])
-    .filter((x): x is string => Boolean(x));
+    const instruction = line.match(INSTRUCTION_RE);
+    if (instruction && stack[stack.length - 1] === targetProgramId) {
+      out.push(instruction[1]);
+      continue;
+    }
+
+    const exit = line.match(PROGRAM_EXIT_RE);
+    if (exit) {
+      const idx = stack.lastIndexOf(exit[1]);
+      if (idx >= 0) stack.splice(idx);
+    }
+  }
+
+  return out;
 }
+
+// ── Candidate filter ──────────────────────────────────────────────────────────
+
+/** Instructiuni CLMM cu siguranta non-pool-creation */
+const IGNORE_RE = /swap|increase|decrease|collect|transfer|update|set|close|position|reward/i;
 
 function isCandidate(name: string): boolean {
   const n = name.toLowerCase();
@@ -121,9 +149,10 @@ export function handleClmmShadow(
   slot:       number,
   logs:       string[],
 ): void {
-  const names = extractInstructionNames(logs);
+  // Stack-aware: extrage doar instruction-urile emise de CLMM, nu din CPI-uri catre alte programe
+  const names = extractTargetProgramInstructions(logs, RAYDIUM_CLMM);
 
-  // 1. Track stats pentru toate instruction names
+  // 1. Track stats pentru instruction names CLMM-native
   for (const name of names) {
     instructionStats.set(name, (instructionStats.get(name) ?? 0) + 1);
   }
