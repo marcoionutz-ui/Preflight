@@ -1,18 +1,13 @@
 /**
  * discovery/clmmShadow.ts
- * 8.0g-a4: CLMM shadow + dry-run parser pentru CreatePool.
- *
- * a1: shadow classifier de baza
- * a2: stack-aware — extrage instruction names doar cand programul din stack e CLMM
- * a3: delayed tx fetch cu retry (2s → 5s → 15s)
- * a4: dry-run parser CreatePool (shape 13 + shape 21) — zero Redis
- *
- * Zero Redis writes. Doar observam si validam layout-ul.
+ * CLMM shadow diagnostics / dry-run parser.
+ * Kept for observing CLMM instructions while clmmFetcher handles production writes.
  */
 
 import { Connection } from "@solana/web3.js";
 import { RAYDIUM_CLMM } from "../config/programs";
 import { normalizeQuote } from "./quoteNormalizer";
+import { extractTargetProgramInstructions } from "./logStack";
 
 // ── Stats in-memory ───────────────────────────────────────────────────────────
 
@@ -29,43 +24,7 @@ const MAX_SAMPLES_PER_INSTRUCTION = 3;
 const seenSigs = new Set<string>();
 const MAX_SIGS = 5_000;
 
-// ── Log stack parser ──────────────────────────────────────────────────────────
-
-const PROGRAM_INVOKE_RE  = /^Program ([1-9A-HJ-NP-Za-km-z]+) invoke/;
-const PROGRAM_EXIT_RE    = /^Program ([1-9A-HJ-NP-Za-km-z]+) (?:success|failed)/;
-const INSTRUCTION_RE     = /^Program log: Instruction:\s*([A-Za-z0-9_]+)/;
-
-/**
- * Extrage instruction names emise DOAR de targetProgramId.
- * Trateaza logs-urile ca un call stack — ignora instruction-uri
- * emise de alte programe (Token Program, ATA, Jupiter etc.)
- */
-function extractTargetProgramInstructions(logs: string[], targetProgramId: string): string[] {
-  const stack: string[] = [];
-  const out:   string[] = [];
-
-  for (const line of logs) {
-    const invoke = line.match(PROGRAM_INVOKE_RE);
-    if (invoke) {
-      stack.push(invoke[1]);
-      continue;
-    }
-
-    const instruction = line.match(INSTRUCTION_RE);
-    if (instruction && stack[stack.length - 1] === targetProgramId) {
-      out.push(instruction[1]);
-      continue;
-    }
-
-    const exit = line.match(PROGRAM_EXIT_RE);
-    if (exit) {
-      const idx = stack.lastIndexOf(exit[1]);
-      if (idx >= 0) stack.splice(idx);
-    }
-  }
-
-  return out;
-}
+// extractTargetProgramInstructions vine din logStack.ts (shared cu clmmFetcher.ts)
 
 // ── Candidate filter ──────────────────────────────────────────────────────────
 
@@ -112,9 +71,10 @@ function parseClmmCreatePool(instructionName: string, accounts: string[]): ClmmC
       mint0:       accounts[3],
       mint1:       accounts[4],
     };
-  } else if (accounts.length === 21) {
+  } else if (accounts.length === 20 || accounts.length === 21) {
+    // shape=20 observat live; shape=21 lasat defensiv daca apare alt variant
     result = {
-      shape:       "CREATE_POOL_21",
+      shape:       "CREATE_POOL_" + accounts.length,
       poolAddress: accounts[4],
       mint0:       accounts[18],
       mint1:       accounts[19],

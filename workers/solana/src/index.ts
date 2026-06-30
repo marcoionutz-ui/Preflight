@@ -2,7 +2,7 @@
  * workers/solana/src/index.ts
  * Entry point indexer-solana.
  * 8.0f: Token metadata enrichment async după pool insert.
- * 8.0g-a1: CLMM shadow classifier — invatam instruction patterns inainte de parser.
+ * 8.0g-a5: CLMM pool discovery live — CreatePool + CreateCustomizablePool → Redis.
  */
 
 import { getSolanaRpcUrl, getSolanaWsUrl, getSlot, getVersion, getConnection } from "./infra/rpc";
@@ -14,6 +14,7 @@ import { isCpmmInitLog, fetchCpmmInit } from "./discovery/txFetcher";
 import { buildSolanaPool, writeSolanaPool, enrichSolanaPool } from "./discovery/pairWriter";
 import { runCpmmBackfill }          from "./discovery/backfillCpmm";
 import { handleClmmShadow, logClmmStats } from "./discovery/clmmShadow";
+import { isClmmCreateLog, fetchClmmCreate } from "./discovery/clmmFetcher";
 import { resolveTokenMeta }         from "./infra/tokenMetadata";
 import {
   CHAIN, INDEXER_VERSION, POLL_INTERVAL_MS, KEY_PAIRS,
@@ -142,6 +143,63 @@ function handleCpmmCandidate(
     });
 }
 
+// ── CLMM init pipeline ───────────────────────────────────────────────────────
+function handleClmmCandidate(
+  connection: ReturnType<typeof getConnection>,
+  signature:  string,
+  slot:       number,
+): void {
+  stats.candidates++;
+  fetchClmmCreate(connection, signature)
+    .then(async (result) => {
+      stats.fetched++;
+      if (!result) return;
+
+      const pool = buildSolanaPool(
+        result.poolAddress,
+        result.mint0,
+        result.mint1,
+        slot,
+        signature,
+        "raydium_clmm",
+      );
+
+      const outcome = await writeSolanaPool(pool);
+      if (outcome === "inserted") {
+        stats.inserted++;
+        console.log(
+          "[SOLANA][POOL] raydium_clmm inserted"
+          + " pool=" + result.poolAddress.slice(0, 8) + "..."
+          + " base=" + pool.baseMint.slice(0, 8) + "..."
+          + " quote=" + pool.quoteMint.slice(0, 8) + "..."
+          + " quoteType=" + pool.quoteType
+          + " slot=" + slot,
+        );
+        // Enrichment async — non-blocking
+        Promise.all([
+          resolveTokenMeta(pool.baseMint),
+          resolveTokenMeta(pool.quoteMint),
+        ]).then(([baseMeta, quoteMeta]) => {
+          console.log(
+            "[SOLANA][META] enriched"
+            + " pool=" + result.poolAddress.slice(0, 8) + "..."
+            + " base=" + baseMeta.symbol + "(" + baseMeta.source + ")"
+            + " quote=" + quoteMeta.symbol + "(" + quoteMeta.source + ")",
+          );
+          return enrichSolanaPool(pool, baseMeta, quoteMeta);
+        }).catch((err: Error) => {
+          console.error("[SOLANA][META] enrichment error:", err.message);
+        });
+      } else if (outcome === "error") {
+        stats.errors++;
+      }
+    })
+    .catch((err: Error) => {
+      stats.errors++;
+      console.error("[SOLANA][CLMM] pipeline error:", err.message);
+    });
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 async function main(): Promise<void> {
   console.log("[SOLANA] indexer-solana " + INDEXER_VERSION + " starting");
@@ -192,10 +250,19 @@ async function main(): Promise<void> {
       console.error("[SOLANA][DISCOVERY] advanceCursor error:", err.message);
     });
 
-    // ── CLMM shadow (8.0g-a1) — invatam patterns, nu scriem inca Redis ──────
+    // ── CLMM pipeline (8.0g-a5) ──────────────────────────────────────────────
     if (event.program === "raydium_clmm") {
       stats.clmmTotal++;
+      // Shadow mereu — stats + sample tx logging
       handleClmmShadow(connection, event.signature, event.slot, event.logs);
+
+      // Pipeline real — doar pentru pool creation events
+      if (!isClmmCreateLog(event.logs)) return;
+      if (isDuplicate("raydium_clmm:" + event.signature)) {
+        stats.deduped++;
+        return;
+      }
+      handleClmmCandidate(connection, event.signature, event.slot);
       return;
     }
 
