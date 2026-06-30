@@ -2,6 +2,7 @@
  * workers/solana/src/index.ts
  * Entry point indexer-solana.
  * 8.0f: Token metadata enrichment async după pool insert.
+ * 8.0g-a1: CLMM shadow classifier — invatam instruction patterns inainte de parser.
  */
 
 import { getSolanaRpcUrl, getSolanaWsUrl, getSlot, getVersion, getConnection } from "./infra/rpc";
@@ -12,6 +13,7 @@ import { startLogSubscriptions }    from "./discovery/logSubscriber";
 import { isCpmmInitLog, fetchCpmmInit } from "./discovery/txFetcher";
 import { buildSolanaPool, writeSolanaPool, enrichSolanaPool } from "./discovery/pairWriter";
 import { runCpmmBackfill }          from "./discovery/backfillCpmm";
+import { handleClmmShadow, logClmmStats } from "./discovery/clmmShadow";
 import { resolveTokenMeta }         from "./infra/tokenMetadata";
 import {
   CHAIN, INDEXER_VERSION, POLL_INTERVAL_MS, KEY_PAIRS,
@@ -39,7 +41,7 @@ function isDuplicate(key: string): boolean {
 }
 
 // ── Stats ────────────────────────────────────────────────────────────────────
-const stats = { events: 0, cpmmTotal: 0, deduped: 0, candidates: 0, fetched: 0, inserted: 0, errors: 0 };
+const stats = { events: 0, cpmmTotal: 0, clmmTotal: 0, deduped: 0, candidates: 0, fetched: 0, inserted: 0, errors: 0 };
 
 function logStats(): void {
   console.log(
@@ -50,8 +52,10 @@ function logStats(): void {
     + " fetched=" + stats.fetched
     + " inserted=" + stats.inserted
     + " cpmmTotal=" + stats.cpmmTotal
+    + " clmmTotal=" + stats.clmmTotal
     + " errors=" + stats.errors,
   );
+  logClmmStats();
 }
 
 // ── Health loop ──────────────────────────────────────────────────────────────
@@ -188,8 +192,14 @@ async function main(): Promise<void> {
       console.error("[SOLANA][DISCOVERY] advanceCursor error:", err.message);
     });
 
-    // Filter intai, dedupe dupa — evita ca un event ne-relevant pe alta
-    // subscription sa "consume" dedup-ul pentru eventul CPMM valid.
+    // ── CLMM shadow (8.0g-a1) — invatam patterns, nu scriem inca Redis ──────
+    if (event.program === "raydium_clmm") {
+      stats.clmmTotal++;
+      handleClmmShadow(connection, event.signature, event.slot, event.logs);
+      return;
+    }
+
+    // ── CPMM pipeline ─────────────────────────────────────────────────────────
     if (event.program === "raydium_cpmm") stats.cpmmTotal++;
     if (event.program !== "raydium_cpmm" || !isCpmmInitLog(event.logs)) return;
 
@@ -199,7 +209,7 @@ async function main(): Promise<void> {
     }
 
     handleCpmmCandidate(connection, event.signature, event.slot);
-    // TODO 8.0g: Raydium CLMM CreatePool + pump.fun Create
+    // TODO 8.0g-b: pump.fun Create
   });
 
   await healthLoop(nodeVersion);
