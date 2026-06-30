@@ -24,6 +24,9 @@ export const KEY_CURSOR   = `preflight:indexer:cursor:${CHAIN}`;
 /** Health heartbeat (JSON) */
 export const KEY_HEALTH   = `preflight:indexer:health:${CHAIN}`;
 
+/** Token metadata cache per mint: preflight:solana:token:{mint} */
+export const KEY_TOKEN_META = (mint: string) => `preflight:solana:token:${mint}`;
+
 // ── Discovery params ──────────────────────────────────────────────────────────
 
 /** Câte slot-uri procesăm per batch */
@@ -38,6 +41,9 @@ export const PAIR_TTL_SEC     = 72 * 60 * 60;
 /** TTL pentru health key (5min — reînnoit la fiecare heartbeat) */
 export const HEALTH_TTL_SEC   = 5 * 60;
 
+/** TTL pentru token metadata cache (24h) */
+export const TOKEN_META_TTL_SEC = 24 * 60 * 60;
+
 // ── Health thresholds ─────────────────────────────────────────────────────────
 
 /** Slot-uri în urmă până la care considerăm OK */
@@ -48,4 +54,4 @@ export const BEHIND_DEGRADED_SLOTS = 200;
 
 // ── Worker version ────────────────────────────────────────────────────────────
 
-export const INDEXER_VERSION = "v8.0e";
+export const INDEXER_VERSION = "v8.0f";

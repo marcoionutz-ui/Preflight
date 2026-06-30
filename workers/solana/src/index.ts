@@ -1,7 +1,7 @@
 /**
  * workers/solana/src/index.ts
  * Entry point indexer-solana.
- * 8.0e: Quote normalization + CPMM backfill snapshot.
+ * 8.0f: Token metadata enrichment async după pool insert.
  */
 
 import { getSolanaRpcUrl, getSolanaWsUrl, getSlot, getVersion, getConnection } from "./infra/rpc";
@@ -10,8 +10,9 @@ import { readCursor, advanceCursor } from "./infra/cursor";
 import { buildHealth, writeHealth } from "./infra/health";
 import { startLogSubscriptions }    from "./discovery/logSubscriber";
 import { isCpmmInitLog, fetchCpmmInit } from "./discovery/txFetcher";
-import { buildSolanaPool, writeSolanaPool } from "./discovery/pairWriter";
+import { buildSolanaPool, writeSolanaPool, enrichSolanaPool } from "./discovery/pairWriter";
 import { runCpmmBackfill }          from "./discovery/backfillCpmm";
+import { resolveTokenMeta }         from "./infra/tokenMetadata";
 import {
   CHAIN, INDEXER_VERSION, POLL_INTERVAL_MS, KEY_PAIRS,
 } from "./config/constants";
@@ -107,10 +108,26 @@ function handleCpmmCandidate(
         console.log(
           "[SOLANA][POOL] raydium_cpmm inserted"
           + " pool=" + result.poolAddress.slice(0, 8) + "..."
-          + " mint0=" + result.mint0.slice(0, 8) + "..."
-          + " mint1=" + result.mint1.slice(0, 8) + "..."
+          + " base=" + pool.baseMint.slice(0, 8) + "..."
+          + " quote=" + pool.quoteMint.slice(0, 8) + "..."
+          + " quoteType=" + pool.quoteType
           + " slot=" + slot,
         );
+        // Enrichment async — non-blocking, nu întârzie discovery pipeline
+        Promise.all([
+          resolveTokenMeta(pool.baseMint),
+          resolveTokenMeta(pool.quoteMint),
+        ]).then(([baseMeta, quoteMeta]) => {
+          console.log(
+            "[SOLANA][META] enriched"
+            + " pool=" + result.poolAddress.slice(0, 8) + "..."
+            + " base=" + baseMeta.symbol + "(" + baseMeta.source + ")"
+            + " quote=" + quoteMeta.symbol + "(" + quoteMeta.source + ")",
+          );
+          return enrichSolanaPool(pool, baseMeta, quoteMeta);
+        }).catch((err: Error) => {
+          console.error("[SOLANA][META] enrichment error:", err.message);
+        });
       } else if (outcome === "error") {
         stats.errors++;
       }
@@ -148,6 +165,15 @@ async function main(): Promise<void> {
   }
 
   const connection = getConnection();
+
+  // Smoke test metadata — validează Jupiter API la fiecare startup
+  // wSOL (KNOWN) + BONK (Jupiter lookup) — confirmare rapidă fără să așteptăm un pool nou
+  resolveTokenMeta("So11111111111111111111111111111111111111112").then(m =>
+    console.log("[SOLANA][META] smoke wSOL: symbol=" + m.symbol + " decimals=" + m.decimals + " source=" + m.source),
+  ).catch(() => {});
+  resolveTokenMeta("DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263").then(m =>
+    console.log("[SOLANA][META] smoke BONK: symbol=" + m.symbol + " decimals=" + m.decimals + " source=" + m.source),
+  ).catch(() => {});
 
   // Backfill snapshot — rulează înainte de WS subscription
   // Activat cu SOLANA_BACKFILL_ENABLED=1

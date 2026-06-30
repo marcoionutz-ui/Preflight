@@ -1,6 +1,6 @@
 /**
  * discovery/pairWriter.ts
- * 8.0e: Scrie un pool Solana în Redis. Include quote normalization.
+ * 8.0f: Scrie un pool Solana în Redis. Include quote normalization + metadata enrichment.
  *
  * Redis keys (consistente cu EVM):
  *   preflight:indexed:pair:solana:{poolAddress}  -> JSON (EX: PAIR_TTL_SEC)
@@ -13,6 +13,7 @@ import {
   CHAIN, KEY_PAIR, KEY_PAIRS, KEY_PAIRS_TS, PAIR_TTL_SEC, INDEXER_VERSION,
 } from "../config/constants";
 import { normalizeQuote, SolanaQuoteType } from "./quoteNormalizer";
+import { TokenMeta } from "../infra/tokenMetadata";
 
 export interface SolanaPool {
   chain:          typeof CHAIN;
@@ -27,6 +28,12 @@ export interface SolanaPool {
   signature:      string;
   discoveredAt:   string;
   indexerVersion: string;
+  // 8.0f — token metadata (opțional; populat async după insert)
+  baseSymbol?:    string;
+  quoteSymbol?:   string;
+  baseDecimals?:  number | null;
+  quoteDecimals?: number | null;
+  metaSource?:    string;
 }
 
 export type WriteResult = "inserted" | "exists" | "error";
@@ -77,4 +84,33 @@ export function buildSolanaPool(
     discoveredAt:   new Date().toISOString(),
     indexerVersion: INDEXER_VERSION,
   };
+}
+
+/**
+ * Rescrie pool-ul în Redis cu metadata token (base + quote).
+ * Nu folosește NX — este un update al unui record existent.
+ * Non-blocking: nu aruncă erori.
+ */
+export async function enrichSolanaPool(
+  pool:       SolanaPool,
+  baseMeta:   TokenMeta,
+  quoteMeta:  TokenMeta,
+): Promise<void> {
+  const redis = getRedis();
+  const key   = KEY_PAIR(pool.poolAddress);
+
+  const enriched: SolanaPool = {
+    ...pool,
+    baseSymbol:    baseMeta.symbol,
+    quoteSymbol:   quoteMeta.symbol,
+    baseDecimals:  baseMeta.decimals,
+    quoteDecimals: quoteMeta.decimals,
+    metaSource:    baseMeta.source + "/" + quoteMeta.source,
+  };
+
+  try {
+    await redis.set(key, JSON.stringify(enriched), "EX", PAIR_TTL_SEC);
+  } catch (err) {
+    console.error("[SOLANA][WRITER] enrich error pool=" + pool.poolAddress.slice(0, 8) + ":", (err as Error).message);
+  }
 }
