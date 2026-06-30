@@ -52,7 +52,8 @@ interface ClmmCreatePoolResult {
  * Parseaza accounts din instructiunea CLMM CreatePool.
  * Layout-uri observate live:
  *   shape=13: [0]=payer [1]=ammConfig [2]=pool [3]=mint0 [4]=mint1 ...
- *   shape=21: [0]=payer [4]=pool ... [18]=mint0 [19]=mint1 ...
+ *   shape=15: [2]=pool [3]=mint0 [4]=mint1 ... (variant mai lung decat 13, same offsets)
+ *   shape=20: [0]=payer [4]=pool ... [18]=mint0 [19]=mint1 ...
  *
  * Returneaza null daca layout-ul nu e recunoscut sau datele nu sunt valide.
  */
@@ -67,6 +68,14 @@ function parseClmmCreatePool(instructionName: string, accounts: string[]): ClmmC
   if (accounts.length === 13) {
     result = {
       shape:       "CREATE_POOL_13",
+      poolAddress: accounts[2],
+      mint0:       accounts[3],
+      mint1:       accounts[4],
+    };
+  } else if (accounts.length === 15) {
+    // shape=15: observat live — layout identic cu 13: [2]=pool [3]=mint0 [4]=mint1
+    result = {
+      shape:       "CREATE_POOL_15",
       poolAddress: accounts[2],
       mint0:       accounts[3],
       mint1:       accounts[4],
@@ -173,7 +182,7 @@ async function fetchSampleTx(
     );
     found = true;
 
-    // 8.0g-a4 — dry-run parser, zero Redis
+    // dry-run parser — zero Redis (shadow only)
     const parsed = parseClmmCreatePool(instructionName, accStrs);
     if (parsed && !parsedPools.has(parsed.poolAddress)) {
       parsedPools.add(parsed.poolAddress);

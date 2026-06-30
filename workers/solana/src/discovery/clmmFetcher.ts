@@ -1,11 +1,12 @@
 /**
  * discovery/clmmFetcher.ts
- * 8.0g-a5: Fetch + parse Raydium CLMM CreatePool / CreateCustomizablePool.
+ * 8.0g-a6: Fetch + parse Raydium CLMM CreatePool / CreateCustomizablePool.
  *
- * Layout-uri observate live (a4 dry-run):
+ * Layout-uri observate live:
  *   shape=13: [2]=poolState  [3]=mint0  [4]=mint1
+ *   shape=15: [2]=poolState  [3]=mint0  [4]=mint1
  *   shape=20: [4]=poolState  [18]=mint0 [19]=mint1
- *   shape=21: acelasi ca 20 (variant defensiv)
+ *   shape=21: same as 20, defensive variant
  */
 
 import { Connection } from "@solana/web3.js";
@@ -39,6 +40,11 @@ function parseClmmCreateAccounts(accounts: string[]): ClmmCreateResult | null {
   let mint1:       string | undefined;
 
   if (accounts.length === 13) {
+    poolAddress = accounts[2];
+    mint0       = accounts[3];
+    mint1       = accounts[4];
+  } else if (accounts.length === 15) {
+    // shape=15: observat live — layout identic cu 13: [2]=pool [3]=mint0 [4]=mint1
     poolAddress = accounts[2];
     mint0       = accounts[3];
     mint1       = accounts[4];

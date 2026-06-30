@@ -1,20 +1,21 @@
 /**
  * infra/tokenMetadata.ts
- * 8.0f: Rezolvă symbol + decimals pentru un Solana mint.
+ * 8.0f: Rezolva symbol + decimals pentru un Solana mint.
+ * 8.0g-a6: sanitizeSymbol — strip bidi/control chars din symbol/name (JUPITER + CACHE).
  *
- * Surse (în ordine):
- *   1. KNOWN   — mints hardcodate (wSOL, USDC, USDT) — instant, fără RPC
- *   2. CACHE   — Redis cu TTL 24h
- *   3. JUPITER — https://tokens.jup.ag/token/{mint} — acoperire largă mainnet
- *   4. FALLBACK — mint[:6]+"..." dacă Jupiter nu cunoaște tokenul
+ * Surse (in ordine):
+ *   1. KNOWN   - mints hardcodate (wSOL, USDC, USDT) - instant, fara RPC
+ *   2. CACHE   - Redis cu TTL 24h (sanitizat la citire)
+ *   3. JUPITER - https://api.jup.ag/tokens/v2/search — Jupiter Tokens API V2
+ *   4. FALLBACK - mint[:6]+"..." daca Jupiter nu cunoaste tokenul
  *
- * Nu aruncă erori — returnează FALLBACK în caz de orice problemă.
+ * Nu arunca erori - returneaza FALLBACK in caz de orice problema.
  */
 
 import { getRedis } from "./redis";
 import { TOKEN_META_TTL_SEC, KEY_TOKEN_META } from "../config/constants";
 
-// ── Tipuri ────────────────────────────────────────────────────────────────────
+// ── Tipuri ────────────────────────────────────────────────────────────────────────────────
 
 export type TokenMetaSource = "KNOWN" | "CACHE" | "JUPITER" | "FALLBACK";
 
@@ -27,7 +28,7 @@ export interface TokenMeta {
   cachedAt:  string;
 }
 
-// ── Mints cunoscute (fără niciun apel) ───────────────────────────────────────
+// ── Mints cunoscute (fara niciun apel) ───────────────────────────────────────────────
 
 const KNOWN_MINTS: Record<string, { symbol: string; decimals: number; name: string }> = {
   "So11111111111111111111111111111111111111112":   { symbol: "WSOL",  decimals: 9,  name: "Wrapped SOL"  },
@@ -39,10 +40,23 @@ const KNOWN_MINTS: Record<string, { symbol: string; decimals: number; name: stri
   "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263": { symbol: "BONK",  decimals: 5,  name: "Bonk"         },
 };
 
-// ── Jupiter API ───────────────────────────────────────────────────────────────
+// ── Symbol sanitization ────────────────────────────────────────────────────────────────────
+
+/**
+ * Elimina caractere bidi / control din symbol / name.
+ * Previne log injection si output malformat in MCP / UI.
+ * Acoperite: bidi overrides U+202A-202E, isolates U+2066-2069,
+ * BOM U+FEFF, ASCII control chars U+0000-001F / U+007F.
+ */
+function sanitizeSymbol(s: string): string {
+  // eslint-disable-next-line no-control-regex
+  return s.replace(/[\u0000-\u001F\u007F\u202A-\u202E\u2066-\u2069\uFEFF]/g, "");
+}
+
+// ── Jupiter API ──────────────────────────────────────────────────────────────────────────────
 
 // Jupiter Tokens API V2
-// Default: Pro URL (api.jup.ag) — necesită JUPITER_API_KEY pentru rate limits mai mari
+// Default: Pro URL (api.jup.ag) - necesita JUPITER_API_KEY pentru rate limits mai mari
 // Override via env: JUPITER_TOKEN_SEARCH_URL=https://lite-api.jup.ag/token/v2/search
 const JUPITER_SEARCH_URL =
   process.env.JUPITER_TOKEN_SEARCH_URL ?? "https://api.jup.ag/tokens/v2/search";
@@ -79,15 +93,15 @@ async function fetchFromJupiter(mint: string): Promise<TokenMeta | null> {
     }
 
     const rows = (await res.json()) as JupiterTokenV2[];
-    // Caută match exact pe mint address — search poate returna mai mulți tokens
+    // Cauta match exact pe mint address - search poate returna mai multi tokens
     const token = rows.find(t => t.id === mint) ?? rows[0];
     if (!token) return null;
 
     return {
       mint,
-      symbol:   token.symbol   ?? mint.slice(0, 6) + "...",
+      symbol:   sanitizeSymbol(token.symbol   ?? mint.slice(0, 6) + "..."),
       decimals: token.decimals ?? null,
-      name:     token.name,
+      name:     token.name ? sanitizeSymbol(token.name) : undefined,
       source:   "JUPITER",
       cachedAt: new Date().toISOString(),
     };
@@ -98,11 +112,11 @@ async function fetchFromJupiter(mint: string): Promise<TokenMeta | null> {
     }
     return null;
   } finally {
-    clearTimeout(timer); // rulează mereu — abort sau succes
+    clearTimeout(timer); // ruleaza mereu - abort sau succes
   }
 }
 
-// ── Fallback ──────────────────────────────────────────────────────────────────
+// ── Fallback ────────────────────────────────────────────────────────────────────────────────────
 
 function makeFallback(mint: string): TokenMeta {
   return {
@@ -114,14 +128,14 @@ function makeFallback(mint: string): TokenMeta {
   };
 }
 
-// ── Public API ────────────────────────────────────────────────────────────────
+// ── Public API ──────────────────────────────────────────────────────────────────────────────────
 
 /**
- * Rezolvă metadata pentru un mint.
- * Nu aruncă erori — returnează FALLBACK în cel mai rău caz.
+ * Rezolva metadata pentru un mint.
+ * Nu arunca erori - returneaza FALLBACK in cel mai rau caz.
  */
 export async function resolveTokenMeta(mint: string): Promise<TokenMeta> {
-  // 1. KNOWN — instant
+  // 1. KNOWN - instant
   const known = KNOWN_MINTS[mint];
   if (known) {
     return { mint, ...known, source: "KNOWN", cachedAt: new Date().toISOString() };
@@ -130,34 +144,41 @@ export async function resolveTokenMeta(mint: string): Promise<TokenMeta> {
   const redis    = getRedis();
   const cacheKey = KEY_TOKEN_META(mint);
 
-  // 2. CACHE — Redis
+  // 2. CACHE - Redis
+  // sanitizeSymbol aplicat si la cache - un token cu bidi chars cached inainte de fix
+  // ar ramane murdar pana la expirarea TTL daca nu sanitizam la citire
   try {
     const cached = await redis.get(cacheKey);
     if (cached) {
       const parsed = JSON.parse(cached) as TokenMeta;
-      return { ...parsed, source: "CACHE" };
+      return {
+        ...parsed,
+        symbol: sanitizeSymbol(parsed.symbol),
+        name:   parsed.name ? sanitizeSymbol(parsed.name) : undefined,
+        source: "CACHE",
+      };
     }
   } catch (_err) {
-    // Redis error — continuăm
+    // Redis error - continuam
   }
 
-  // 3. JUPITER — HTTP fetch
+  // 3. JUPITER - HTTP fetch
   const jupiterMeta = await fetchFromJupiter(mint);
   if (jupiterMeta) {
     try {
       await redis.set(cacheKey, JSON.stringify(jupiterMeta), "EX", TOKEN_META_TTL_SEC);
-    } catch (_err) { /* Redis write failure — non-critical */ }
+    } catch (_err) { /* Redis write failure - non-critical */ }
     return jupiterMeta;
   }
 
   // 4. FALLBACK
   const fallback = makeFallback(mint);
-  // Nu cache-uim FALLBACK — poate fi rezolvat mai târziu
+  // Nu cache-uim FALLBACK - poate fi rezolvat mai tarziu
   return fallback;
 }
 
 /**
- * Rezolvă metadata pentru mai multe mints în paralel.
+ * Rezolva metadata pentru mai multe mints in paralel.
  */
 export async function resolveTokenMetaBatch(mints: string[]): Promise<Record<string, TokenMeta>> {
   const unique = [...new Set(mints)];
