@@ -81,24 +81,52 @@ function isCandidate(name: string): boolean {
 
 // ── Fetch sample tx ───────────────────────────────────────────────────────────
 
+// Retry delays: 2s → 5s → 15s
+// logsSubscribe poate livra logul inainte ca getParsedTransaction sa fie disponibil la RPC
+const FETCH_RETRY_DELAYS_MS = [2_000, 5_000, 15_000];
+
+async function fetchParsedTxWithRetry(
+  connection: Connection,
+  signature:  string,
+  instructionName: string,
+) {
+  for (let attempt = 0; attempt < FETCH_RETRY_DELAYS_MS.length; attempt++) {
+    await new Promise(r => setTimeout(r, FETCH_RETRY_DELAYS_MS[attempt]));
+    try {
+      const tx = await connection.getParsedTransaction(signature, {
+        maxSupportedTransactionVersion: 0,
+        commitment: "confirmed",
+      });
+      if (tx) return tx;
+      console.log(
+        "[SOLANA][CLMM][TX_RETRY]"
+        + " instruction=" + instructionName
+        + " sig=" + signature.slice(0, 12) + "..."
+        + " attempt=" + (attempt + 1) + " null",
+      );
+    } catch (err) {
+      console.warn(
+        "[SOLANA][CLMM][TX_RETRY]"
+        + " instruction=" + instructionName
+        + " sig=" + signature.slice(0, 12) + "..."
+        + " attempt=" + (attempt + 1)
+        + " error=" + (err as Error).message,
+      );
+      // continua cu urmatorul attempt — nu iesi din loop
+    }
+  }
+  return null;
+}
+
 async function fetchSampleTx(
   connection:      Connection,
   signature:       string,
   instructionName: string,
 ): Promise<void> {
-  let tx;
-  try {
-    tx = await connection.getParsedTransaction(signature, {
-      maxSupportedTransactionVersion: 0,
-      commitment: "confirmed",
-    });
-  } catch (err) {
-    console.warn("[SOLANA][CLMM][TX] fetch failed sig=" + signature.slice(0, 12) + ":", (err as Error).message);
-    return;
-  }
+  const tx = await fetchParsedTxWithRetry(connection, signature, instructionName);
 
   if (!tx) {
-    console.warn("[SOLANA][CLMM][TX] null tx sig=" + signature.slice(0, 12));
+    console.warn("[SOLANA][CLMM][TX] null after all retries sig=" + signature.slice(0, 12));
     return;
   }
 
