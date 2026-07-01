@@ -43,9 +43,10 @@ export function isPumpfunCreateLog(logs: string[]): boolean {
 
 // ── Account parser ────────────────────────────────────────────────────────────
 
-// Known fixed addresses pentru sanity guards
-const PUMPFUN_GLOBAL  = "TSLvdd1pWpHV2hER4LUwCJpFVJMTt3YMp8GFxKcGp7d";
-const PUMPFUN_FEE     = "4wTV1YmiEkRvbMFrQyGE2n6TyR5NUBBQkbzcEyiJJeaS";
+// Prefixele confirmate live din 3+ TX-uri (shadow truncheaza la 12 chars —
+// adresele complete vor fi verificate dupa primul launch indexat cu succes)
+const PUMPFUN_GLOBAL_PREFIX = "TSLvdd1pWpHV"; // accounts[1] — global PDA fix
+const PUMPFUN_FEE_PREFIX    = "4wTV1YmiEkRv"; // accounts[4] — fee recipient fix
 
 function parsePumpfunCreateAccounts(accounts: string[]): PumpfunCreateResult | null {
   if (accounts.length !== 16) return null;
@@ -57,14 +58,15 @@ function parsePumpfunCreateAccounts(accounts: string[]): PumpfunCreateResult | n
   const feeRecipient           = accounts[4];
   const creatorAddress         = accounts[5];
 
-  // Fixed-address guards — confirma ca e instructiunea corecta din protocolul pump.fun
-  if (global      !== PUMPFUN_GLOBAL) return null;
-  if (feeRecipient !== PUMPFUN_FEE)   return null;
+  // Prefix guards — confirma protocolul pump.fun fara adrese inventate
+  // TODO: inlocuieste cu comparatie exacta dupa ce logam primul insert cu succes
+  if (!global.startsWith(PUMPFUN_GLOBAL_PREFIX))      return null;
+  if (!feeRecipient.startsWith(PUMPFUN_FEE_PREFIX))   return null;
 
   if (!mint || !bondingCurveAddress || !associatedBondingCurve || !creatorAddress) return null;
-  if (mint === bondingCurveAddress)                   return null;
-  if (mint === creatorAddress)                        return null;
-  if (bondingCurveAddress === associatedBondingCurve) return null;
+  if (mint === bondingCurveAddress)                    return null;
+  if (mint === creatorAddress)                         return null;
+  if (bondingCurveAddress === associatedBondingCurve)  return null;
 
   return { mint, bondingCurveAddress, associatedBondingCurve, creatorAddress };
 }
