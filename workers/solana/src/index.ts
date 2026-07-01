@@ -11,6 +11,7 @@
  * 8.0h-a:  migration linking — pump.fun launch → Raydium pool (via pairWriter → launchWriter).
  * 8.0h-b1: Raydium swap shadow classifier — CPMM + CLMM swap instruction stats + account layouts.
  * 8.0h-b2: Dry-run swap parser — pool/mint/flow/amounts din TX (zero Redis writes).
+ * 8.0h-b3: Pool activity state — Redis per pool (sampledSwaps5m, sampledQuoteIn/Out5m, lastSwapAt).
  */
 
 import { getSolanaRpcUrl, getSolanaWsUrl, getSlot, getVersion, getConnection } from "./infra/rpc";
@@ -336,7 +337,7 @@ async function main(): Promise<void> {
     // ── CPMM pipeline (8.0h-b1) ──────────────────────────────────────────────
     if (event.program === "raydium_cpmm") {
       stats.cpmmTotal++;
-      // Swap shadow — observa swap instructions (zero Redis, stats only)
+      // Swap activity shadow — parses sampled swaps, writes activity only for known pools
       handleSwapShadow(connection, event.signature, event.slot, event.logs, "cpmm");
       if (!isCpmmInitLog(event.logs)) return;
       if (isDuplicate("raydium_cpmm:" + event.signature)) { stats.deduped++; return; }

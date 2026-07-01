@@ -63,6 +63,11 @@ export const KEY_LAUNCHES_TS = `preflight:indexed:launches:ts:${CHAIN}`;
 /** JSON per launch: preflight:indexed:launch:solana:{mint} */
 export const KEY_LAUNCH      = (mint: string) => `preflight:indexed:launch:${CHAIN}:${mint}`;
 
+// ── Swap activity namespace ───────────────────────────────────────────────────
+
+/** Activity state per pool (swap counts, volumes, 5m window): preflight:solana:activity:{pool} */
+export const KEY_POOL_ACTIVITY = (pool: string) => `preflight:solana:activity:${pool}`;
+
 // ── Worker version ────────────────────────────────────────────────────────────
 
-export const INDEXER_VERSION = "v8.0h-b2";
+export const INDEXER_VERSION = "v8.0h-b3";

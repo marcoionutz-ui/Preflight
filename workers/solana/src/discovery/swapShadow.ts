@@ -2,19 +2,19 @@
  * discovery/swapShadow.ts
  * 8.0h-b1: Raydium swap shadow classifier — CPMM + CLMM.
  * 8.0h-b2: Dry-run swap parser integrat in sample fetch (parseSwapTx).
+ * 8.0h-b3: Activity state write pentru knownPool=true (recordSwapActivity).
+ *          Sample counters reset la 60s — sampling continuu, nu "ever".
  *
- * Shadow-first: observa swap instructions live, sample account layouts.
- * Zero Redis writes (knownPool = GET read-only).
- *
- * Swap instructions asteptate (confirmate live in 8.0h-b1):
+ * Swap instructions confirmate live (8.0h-b1):
  *   CPMM: SwapBaseInput (accounts[13]), SwapBaseOutput (accounts[13])
- *   CLMM: SwapV2 (accounts[15]), Swap legacy (accounts[12]/[16] — nu parsam in b2)
+ *   CLMM: SwapV2 (accounts[15]), Swap legacy (accounts[12]/[16] — ignorat)
  */
 
 import { Connection, ParsedTransactionWithMeta } from "@solana/web3.js";
 import { RAYDIUM_CPMM, RAYDIUM_CLMM } from "../config/programs";
 import { extractTargetProgramInstructions } from "./logStack";
 import { parseSwapTx } from "./swapParser";
+import { recordSwapActivity } from "./swapActivity";
 
 // ── Tipuri ────────────────────────────────────────────────────────────────────
 
@@ -26,13 +26,31 @@ export type SwapProgram = "cpmm" | "clmm";
 const cpmmStats  = new Map<string, number>();
 const clmmStats  = new Map<string, number>();
 
-/** instruction name -> cate sample TX am fetch-uit */
+/** instruction name -> cate sample TX am fetch-uit in fereastra curenta */
 const cpmmSampled = new Map<string, number>();
 const clmmSampled = new Map<string, number>();
 
-// Conservative: swaps sunt MULT mai frecvente decat pool creation.
-// 2 sample TX per instruction name e suficient pentru layout observation.
+// Max 2 sample TX per instruction name per fereastra de 60s.
+// Dupa reset, se mai pot fetcha inca 2 → sampling continuu, nu "ever".
 const MAX_SAMPLES_PER_INSTRUCTION = 2;
+
+// ── Sample reset periodic ────────────────────────────────────────────────────
+
+const SAMPLE_RESET_INTERVAL_MS = 60_000; // 60 secunde
+let lastSampleReset = Date.now();
+
+/**
+ * Reseteaza contori de sample la fiecare 60s.
+ * Permite sampling continuu pentru activity writes (b3) si nu blocheaza
+ * observarea de noi instructiuni daca apar in viitor.
+ */
+function maybeResetSamples(): void {
+  const now = Date.now();
+  if (now - lastSampleReset < SAMPLE_RESET_INTERVAL_MS) return;
+  lastSampleReset = now;
+  cpmmSampled.clear();
+  clmmSampled.clear();
+}
 
 // ── Dedupe pentru fetch ───────────────────────────────────────────────────────
 
@@ -51,8 +69,7 @@ function isSwapCandidate(name: string): boolean {
 
 // ── Fetch sample TX ───────────────────────────────────────────────────────────
 
-// Un delay simplu — nu e nevoie de multi-retry ca la pool creation.
-// Swap-urile sunt confirmate rapid si RPC le are disponibile mai repede.
+// Un delay simplu — swap-urile sunt confirmate rapid la RPC.
 const FETCH_DELAY_MS = 3_000;
 
 async function fetchSampleTx(
@@ -121,7 +138,7 @@ async function fetchSampleTx(
     return;
   }
 
-  // b2: dry-run parse — zero Redis writes
+  // b2: parse — zero Redis writes in parser
   parseSwapTx(tx, programId, instructionName, program, signature)
     .then((result) => {
       if (!result) {
@@ -132,6 +149,7 @@ async function fetchSampleTx(
         );
         return;
       }
+
       console.log(
         "[SOLANA][SWAP][" + label + "][PARSE]"
         + " pool=" + result.pool.slice(0, 8) + "..."
@@ -143,6 +161,12 @@ async function fetchSampleTx(
         + " knownPool=" + result.knownPool
         + " sig=" + signature.slice(0, 12) + "...",
       );
+
+      // b3: activity write — doar pentru pooluri cunoscute
+      if (!result.knownPool) return;
+      recordSwapActivity(result, signature).catch((err: Error) => {
+        console.warn("[SOLANA][SWAP][" + label + "][ACTIVITY] error:", err.message);
+      });
     })
     .catch((err: Error) => {
       console.warn("[SOLANA][SWAP][" + label + "][PARSE] error:", err.message);
@@ -152,11 +176,11 @@ async function fetchSampleTx(
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /**
- * Proceseaza un event Raydium din onLogs pentru swap shadow.
- * Apelat pentru ORICE event CPMM / CLMM (inclusiv non-swap) — track stats mereu,
- * fetch TX sample doar pentru swap candidates (max MAX_SAMPLES_PER_INSTRUCTION pe instruction name).
+ * Proceseaza un event Raydium din onLogs pentru swap shadow + activity.
+ * Apelat pentru ORICE event CPMM / CLMM — track stats mereu,
+ * fetch TX sample pentru swap candidates (max 2/instruction/60s).
  *
- * Nu incetineste discovery pipeline — fetch e async, non-blocking.
+ * Non-blocking — fetch e async, nu incetineste discovery pipeline.
  */
 export function handleSwapShadow(
   connection: Connection,
@@ -165,9 +189,12 @@ export function handleSwapShadow(
   logs:       string[],
   program:    SwapProgram,
 ): void {
+  // Reset periodic al sample contorilor (60s) — sampling continuu pentru b3
+  maybeResetSamples();
+
   const programId = program === "cpmm" ? RAYDIUM_CPMM : RAYDIUM_CLMM;
   const label     = program.toUpperCase();
-  const stats     = program === "cpmm" ? cpmmStats  : clmmStats;
+  const stats     = program === "cpmm" ? cpmmStats   : clmmStats;
   const sampled   = program === "cpmm" ? cpmmSampled : clmmSampled;
 
   // Stack-aware: extrage instructiunile emise de program, ignora CPI noise
@@ -187,7 +214,7 @@ export function handleSwapShadow(
   if (seenSigs.size >= MAX_SIGS) seenSigs.clear();
   seenSigs.add(signature);
 
-  // 4. Sample TX pentru fiecare swap candidate (max 2 per instruction name, ever)
+  // 4. Sample TX pentru fiecare candidate (max 2/instruction/60s dupa reset)
   for (const name of candidates) {
     const already = sampled.get(name) ?? 0;
     if (already >= MAX_SAMPLES_PER_INSTRUCTION) continue;
