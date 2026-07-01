@@ -1,6 +1,7 @@
 /**
  * discovery/pairWriter.ts
- * 8.0f: Scrie un pool Solana în Redis. Include quote normalization + metadata enrichment.
+ * 8.0f:   Scrie un pool Solana în Redis. Include quote normalization + metadata enrichment.
+ * 8.0h-a: Dupa insert nou, leaga pool-ul de launch record (daca exista) via linkLaunchToPool.
  *
  * Redis keys (consistente cu EVM):
  *   preflight:indexed:pair:solana:{poolAddress}  -> JSON (EX: PAIR_TTL_SEC)
@@ -12,8 +13,12 @@ import { getRedis } from "../infra/redis";
 import {
   CHAIN, KEY_PAIR, KEY_PAIRS, KEY_PAIRS_TS, PAIR_TTL_SEC, INDEXER_VERSION,
 } from "../config/constants";
-import { normalizeQuote, SolanaQuoteType } from "./quoteNormalizer";
+import { normalizeQuote, SolanaQuoteType, WSOL_MINT, USDC_MINT, USDT_MINT } from "./quoteNormalizer";
 import { TokenMeta } from "../infra/tokenMetadata";
+import { linkLaunchToPool } from "./launchWriter";
+
+// Mints care sunt quote assets — nu sunt niciodata launch-uri pump.fun
+const KNOWN_QUOTE_MINTS = new Set([WSOL_MINT, USDC_MINT, USDT_MINT]);
 
 export interface SolanaPool {
   chain:          typeof CHAIN;
@@ -52,6 +57,24 @@ export async function writeSolanaPool(pool: SolanaPool): Promise<WriteResult> {
     pipeline.zadd(KEY_PAIRS,    pool.slot,  pool.poolAddress);
     pipeline.zadd(KEY_PAIRS_TS, Date.now(), pool.poolAddress);
     await pipeline.exec();
+
+    // 8.0h-a — migration linking: leaga launch-ul pump.fun de pool-ul Raydium (daca exista)
+    // Filtram quote mints cunoscute — WSOL/USDC/USDT nu sunt niciodata launch-uri pump.fun
+    const poolInfo = {
+      poolAddress: pool.poolAddress,
+      program:     pool.program,
+      slot:        pool.slot,
+      signature:   pool.signature,
+    };
+    for (const mint of [pool.mint0, pool.mint1]) {
+      if (KNOWN_QUOTE_MINTS.has(mint)) continue;
+      linkLaunchToPool(mint, poolInfo).catch((err: Error) => {
+        console.error(
+          "[SOLANA][WRITER] linkLaunchToPool error mint=" + mint.slice(0, 8) + ":",
+          err.message,
+        );
+      });
+    }
 
     return "inserted";
   } catch (err) {

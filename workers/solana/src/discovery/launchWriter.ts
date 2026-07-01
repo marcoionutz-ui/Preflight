@@ -1,6 +1,7 @@
 /**
  * discovery/launchWriter.ts
  * 8.0g-b5: Scrie pump.fun launch records in Redis.
+ * 8.0h-a:  lifecycleStage + graduated + raydiumPools[] + linkLaunchToPool().
  *
  * Namespace separat de pool registry — launch-urile nu sunt pool-uri:
  *   preflight:indexed:launch:solana:{mint}   → JSON
@@ -21,6 +22,26 @@ import type { PumpfunCreateResult } from "./pumpfunFetcher";
 
 // ── Tipuri ────────────────────────────────────────────────────────────────────
 
+/** Un pool Raydium legat de acest mint (pump.fun → Raydium graduation). */
+export interface RaydiumPoolLink {
+  poolAddress: string;
+  program:     string;
+  slot:        number;
+  signature:   string;
+  linkedAt:    string;
+}
+
+/**
+ * Subset minim din SolanaPool — evita import circular pairWriter ↔ launchWriter.
+ * pairWriter importa launchWriter; launchWriter nu importa pairWriter.
+ */
+export interface PoolLinkInfo {
+  poolAddress: string;
+  program:     string;
+  slot:        number;
+  signature:   string;
+}
+
 export interface SolanaLaunch {
   chain:                    typeof CHAIN;
   recordType:               "TOKEN_LAUNCH";
@@ -39,6 +60,11 @@ export interface SolanaLaunch {
   name?:                    string;
   decimals?:                number | null;
   metaSource?:              string;
+  // 8.0h-a — lifecycle: pump.fun launch → Raydium graduation
+  lifecycleStage?:          "PUMPFUN_LAUNCHED" | "RAYDIUM_POOL_FOUND";
+  graduated?:               boolean;
+  graduatedAt?:             string;
+  raydiumPools?:            RaydiumPoolLink[];
 }
 
 // ── Build ─────────────────────────────────────────────────────────────────────
@@ -95,7 +121,63 @@ export async function writeLaunchRecord(
   }
 }
 
-// ── Enrichment ────────────────────────────────────────────────────────────────
+// ── Migration linking ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Leaga un launch record de un pool Raydium descoperit ulterior.
+ * Apelat din pairWriter dupa insert nou (non-blocking).
+ * Idempotent — daca pool-ul e deja in raydiumPools[], skip.
+ * Nu arunca erori — caller foloseste .catch().
+ */
+export async function linkLaunchToPool(
+  mint: string,
+  pool: PoolLinkInfo,
+): Promise<void> {
+  const redis = getRedis();
+  const key   = KEY_LAUNCH(mint);
+
+  const launchJson = await redis.get(key);
+  if (!launchJson) return; // nu exista launch pentru acest mint — skip
+
+  let launch: SolanaLaunch;
+  try {
+    launch = JSON.parse(launchJson) as SolanaLaunch;
+  } catch (_err) {
+    return; // JSON corupt — skip, nu crasam
+  }
+
+  const link: RaydiumPoolLink = {
+    poolAddress: pool.poolAddress,
+    program:     pool.program,
+    slot:        pool.slot,
+    signature:   pool.signature,
+    linkedAt:    new Date().toISOString(),
+  };
+
+  // Idempotent — nu adaugam acelasi pool de doua ori
+  const existing = launch.raydiumPools ?? [];
+  if (existing.some(p => p.poolAddress === pool.poolAddress)) return;
+
+  const updated: SolanaLaunch = {
+    ...launch,
+    lifecycleStage: "RAYDIUM_POOL_FOUND",
+    graduated:      true,
+    // graduatedAt = prima data cand a absolvit (nu suprascrie la pool-uri ulterioare)
+    graduatedAt:    launch.graduatedAt ?? new Date().toISOString(),
+    raydiumPools:   [...existing, link],
+  };
+
+  await redis.set(key, JSON.stringify(updated));
+
+  console.log(
+    "[SOLANA][LAUNCH] graduated"
+    + " mint=" + mint.slice(0, 8) + "..."
+    + " pool=" + pool.poolAddress.slice(0, 8) + "..."
+    + " program=" + pool.program,
+  );
+}
+
+// ── Enrichment ─────────────────────────────────────────────────────────────────────────────────
 
 // Delay-uri inainte de fiecare incercare Jupiter:
 //   30s  — tokenii noi apar pe Jupiter dupa ~1m, dar incercam devreme
@@ -104,9 +186,32 @@ export async function writeLaunchRecord(
 const ENRICH_DELAYS_MS = [30_000, 120_000, 600_000];
 
 /**
+ * Citeste starea curenta a launch record din Redis.
+ * Folosit de enrichLaunchRecord inainte de fiecare write pentru a nu suprascrie
+ * graduation fields setate intre timp de linkLaunchToPool.
+ * Daca Redis nu are recordul (unlikely) sau JSON corupt, fallback la obiectul initial.
+ */
+async function readCurrentLaunch(
+  mint:     string,
+  fallback: SolanaLaunch,
+): Promise<SolanaLaunch> {
+  try {
+    const raw = await getRedis().get(KEY_LAUNCH(mint));
+    if (!raw) return fallback;
+    return JSON.parse(raw) as SolanaLaunch;
+  } catch {
+    return fallback;
+  }
+}
+
+/**
  * Enricheaza launch record cu metadata din Jupiter.
  * Non-blocking — apelat async dupa writeLaunchRecord.
  * Implementeaza retry cu delay si marcheaza metadataStatus ENRICHED/FAILED.
+ *
+ * IMPORTANT: citeste recordul curent din Redis inainte de fiecare write
+ * pentru a pastra graduation fields (raydiumPools[], graduated, lifecycleStage)
+ * setate intre timp de linkLaunchToPool — evita race condition stale overwrite.
  */
 export async function enrichLaunchRecord(launch: SolanaLaunch): Promise<void> {
   const redis = getRedis();
@@ -126,12 +231,14 @@ export async function enrichLaunchRecord(launch: SolanaLaunch): Promise<void> {
         // Retry — mai avem incercari
         continue;
       }
-      // Ultima incercare — marcam FAILED, adaugam fallback symbol ca recordul sa ramana afisabil
+      // Ultima incercare — citim starea curenta si marcam FAILED
+      // (pastreaza raydiumPools[] / graduated / lifecycleStage daca linkLaunchToPool a scris intre timp)
+      const current = await readCurrentLaunch(launch.mint, launch);
       const failed: SolanaLaunch = {
-        ...launch,
-        symbol:         launch.mint.slice(0, 6) + "...",
-        decimals:       null,
-        metaSource:     "FALLBACK",
+        ...current,
+        symbol:         current.symbol ?? launch.mint.slice(0, 6) + "...",
+        decimals:       current.decimals ?? null,
+        metaSource:     current.metaSource ?? "FALLBACK",
         metadataStatus: "FAILED",
       };
       try {
@@ -146,9 +253,10 @@ export async function enrichLaunchRecord(launch: SolanaLaunch): Promise<void> {
       return;
     }
 
-    // Metadata reala gasita
+    // Metadata reala gasita — citim starea curenta si facem merge
+    const current = await readCurrentLaunch(launch.mint, launch);
     const enriched: SolanaLaunch = {
-      ...launch,
+      ...current,
       symbol:         meta.symbol,
       name:           meta.name,
       decimals:       meta.decimals,

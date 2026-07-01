@@ -8,6 +8,7 @@
  * 8.0g-b4: fix fetcher — cauta in outer+inner (v0 tx outer vine ca ParsedInstruction).
  * 8.0g-b5: Jupiter exact match only, global 429 cooldown, enrichment delayed 30s/2m/10m.
  * 8.0g-b6: support legacy pump.fun Create shape=14 (alaturi de CreateV2 shape=16).
+ * 8.0h-a:  migration linking — pump.fun launch → Raydium pool (via pairWriter → launchWriter).
  */
 
 import { getSolanaRpcUrl, getSolanaWsUrl, getSlot, getVersion, getConnection } from "./infra/rpc";
