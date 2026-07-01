@@ -4,6 +4,7 @@
  * 8.0f: Token metadata enrichment async după pool insert.
  * 8.0g-a6: CLMM pool discovery live — CreatePool + CreateCustomizablePool → Redis.
  * 8.0g-b1: pump.fun shadow diagnostics — observa instructiuni + account layouts.
+ * 8.0g-b3: pump.fun launch registry — CreateV2 → Redis (SET NX, no TTL) + async enrichment.
  */
 
 import { getSolanaRpcUrl, getSolanaWsUrl, getSlot, getVersion, getConnection } from "./infra/rpc";
@@ -17,6 +18,8 @@ import { runCpmmBackfill }          from "./discovery/backfillCpmm";
 import { handleClmmShadow, logClmmStats } from "./discovery/clmmShadow";
 import { isClmmCreateLog, fetchClmmCreate } from "./discovery/clmmFetcher";
 import { handlePumpfunShadow, logPumpfunStats } from "./discovery/pumpfunShadow";
+import { isPumpfunCreateLog, fetchPumpfunCreate } from "./discovery/pumpfunFetcher";
+import { buildLaunchRecord, writeLaunchRecord, enrichLaunchRecord } from "./discovery/launchWriter";
 import { resolveTokenMeta }         from "./infra/tokenMetadata";
 import {
   CHAIN, INDEXER_VERSION, POLL_INTERVAL_MS, KEY_PAIRS,
@@ -44,7 +47,7 @@ function isDuplicate(key: string): boolean {
 }
 
 // ── Stats ────────────────────────────────────────────────────────────────────
-const stats = { events: 0, cpmmTotal: 0, clmmTotal: 0, pumpfunTotal: 0, deduped: 0, candidates: 0, fetched: 0, inserted: 0, errors: 0 };
+const stats = { events: 0, cpmmTotal: 0, clmmTotal: 0, pumpfunTotal: 0, deduped: 0, candidates: 0, fetched: 0, inserted: 0, launchesInserted: 0, errors: 0 };
 
 function logStats(): void {
   console.log(
@@ -54,6 +57,7 @@ function logStats(): void {
     + " candidates=" + stats.candidates
     + " fetched=" + stats.fetched
     + " inserted=" + stats.inserted
+    + " launchesInserted=" + stats.launchesInserted
     + " cpmmTotal=" + stats.cpmmTotal
     + " clmmTotal=" + stats.clmmTotal
     + " pumpfunTotal=" + stats.pumpfunTotal
@@ -204,6 +208,51 @@ function handleClmmCandidate(
     });
 }
 
+// ── pump.fun launch pipeline ──────────────────────────────────────────────────
+function handlePumpfunCandidate(
+  connection: ReturnType<typeof getConnection>,
+  signature:  string,
+  slot:       number,
+): void {
+  stats.candidates++;
+  fetchPumpfunCreate(connection, signature)
+    .then(async (result) => {
+      stats.fetched++;
+      if (!result) return;
+
+      const launch  = buildLaunchRecord(result, slot, signature);
+      const outcome = await writeLaunchRecord(launch);
+
+      if (outcome === "inserted") {
+        stats.launchesInserted++;
+        console.log(
+          "[SOLANA][LAUNCH] pumpfun inserted"
+          + " mint=" + result.mint.slice(0, 8) + "..."
+          + " bondingCurve=" + result.bondingCurveAddress.slice(0, 8) + "..."
+          + " creator=" + result.creatorAddress.slice(0, 8) + "..."
+          + " slot=" + slot,
+        );
+        // Enrichment async — non-blocking
+        enrichLaunchRecord(launch)
+          .then(() => {
+            console.log(
+              "[SOLANA][LAUNCH] enriched"
+              + " mint=" + result.mint.slice(0, 8) + "...",
+            );
+          })
+          .catch((err: Error) => {
+            console.error("[SOLANA][LAUNCH] enrichment error:", err.message);
+          });
+      } else if (outcome === "error") {
+        stats.errors++;
+      }
+    })
+    .catch((err: Error) => {
+      stats.errors++;
+      console.error("[SOLANA][PUMPFUN] pipeline error:", err.message);
+    });
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 async function main(): Promise<void> {
   console.log("[SOLANA] indexer-solana " + INDEXER_VERSION + " starting");
@@ -254,10 +303,13 @@ async function main(): Promise<void> {
       console.error("[SOLANA][DISCOVERY] advanceCursor error:", err.message);
     });
 
-    // ── pump.fun pipeline (8.0g-b1 shadow) ──────────────────────────────────
+    // ── pump.fun launch pipeline (8.0g-b3) ───────────────────────────────────
     if (event.program === "pumpfun") {
       stats.pumpfunTotal++;
       handlePumpfunShadow(connection, event.signature, event.slot, event.logs);
+      if (!isPumpfunCreateLog(event.logs)) return;
+      if (isDuplicate("pumpfun:" + event.signature)) { stats.deduped++; return; }
+      handlePumpfunCandidate(connection, event.signature, event.slot);
       return;
     }
 

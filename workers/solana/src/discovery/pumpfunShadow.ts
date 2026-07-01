@@ -29,21 +29,18 @@ const MAX_SIGS = 10_000; // pump.fun e mult mai voluminos decat CLMM
 // ── Candidate filter ──────────────────────────────────────────────────────────
 
 /** Instructiuni pump.fun cu siguranta non-launch */
-const IGNORE_RE = /^(buy|sell|withdraw|set|update|collect|close|transfer)/i;
+const IGNORE_RE = /^(buy|sell|withdraw|set|update|collect|close|transfer|init|accumulator|cashback|distribute|extend|claim)/i;
 
 /**
  * Returneaza true daca instructiunea ar putea fi un token launch / create.
- * Conservator: mai bine un false positive decat sa ratam Create.
+ * Dupa observare live: instructiunea relevanta este "CreateV2".
  */
 function isCandidate(name: string): boolean {
   const n = name.toLowerCase();
   if (IGNORE_RE.test(n)) return false;
   return (
     n.includes("create") ||
-    n.includes("launch") ||
-    n.includes("initialize") ||
-    n.includes("init") ||
-    n.includes("mint")
+    n.includes("launch")
   );
 }
 
