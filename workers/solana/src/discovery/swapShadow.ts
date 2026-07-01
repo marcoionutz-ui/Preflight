@@ -1,19 +1,20 @@
 /**
  * discovery/swapShadow.ts
  * 8.0h-b1: Raydium swap shadow classifier — CPMM + CLMM.
+ * 8.0h-b2: Dry-run swap parser integrat in sample fetch (parseSwapTx).
  *
  * Shadow-first: observa swap instructions live, sample account layouts.
- * Zero Redis writes. Scopul: identifica instruction names + account layout
- * inainte de parser real in 8.0h-b2.
+ * Zero Redis writes (knownPool = GET read-only).
  *
- * Swap instructions asteptate (bazate pe Raydium IDL):
- *   CPMM: SwapBaseInput, SwapBaseOutput
- *   CLMM: Swap, SwapV2
+ * Swap instructions asteptate (confirmate live in 8.0h-b1):
+ *   CPMM: SwapBaseInput (accounts[13]), SwapBaseOutput (accounts[13])
+ *   CLMM: SwapV2 (accounts[15]), Swap legacy (accounts[12]/[16] — nu parsam in b2)
  */
 
-import { Connection } from "@solana/web3.js";
+import { Connection, ParsedTransactionWithMeta } from "@solana/web3.js";
 import { RAYDIUM_CPMM, RAYDIUM_CLMM } from "../config/programs";
 import { extractTargetProgramInstructions } from "./logStack";
+import { parseSwapTx } from "./swapParser";
 
 // ── Tipuri ────────────────────────────────────────────────────────────────────
 
@@ -60,10 +61,11 @@ async function fetchSampleTx(
   instructionName: string,
   programId:       string,
   label:           string,
+  program:         SwapProgram,
 ): Promise<void> {
   await new Promise(r => setTimeout(r, FETCH_DELAY_MS));
 
-  let tx = null;
+  let tx: ParsedTransactionWithMeta | null = null;
   try {
     tx = await connection.getParsedTransaction(signature, {
       maxSupportedTransactionVersion: 0,
@@ -116,7 +118,35 @@ async function fetchSampleTx(
       + " instruction=" + instructionName
       + " sig=" + signature.slice(0, 12),
     );
+    return;
   }
+
+  // b2: dry-run parse — zero Redis writes
+  parseSwapTx(tx, programId, instructionName, program, signature)
+    .then((result) => {
+      if (!result) {
+        console.log(
+          "[SOLANA][SWAP][" + label + "][PARSE] layout unrecognized"
+          + " instruction=" + instructionName
+          + " sig=" + signature.slice(0, 12),
+        );
+        return;
+      }
+      console.log(
+        "[SOLANA][SWAP][" + label + "][PARSE]"
+        + " pool=" + result.pool.slice(0, 8) + "..."
+        + " base=" + result.baseMint.slice(0, 8) + "..."
+        + " quote=" + result.quoteMint.slice(0, 8) + "..."
+        + " flow=" + result.flow
+        + " inputAmt=" + (result.inputAmount?.toString() ?? "null")
+        + " outputAmt=" + (result.outputAmount?.toString() ?? "null")
+        + " knownPool=" + result.knownPool
+        + " sig=" + signature.slice(0, 12) + "...",
+      );
+    })
+    .catch((err: Error) => {
+      console.warn("[SOLANA][SWAP][" + label + "][PARSE] error:", err.message);
+    });
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -170,7 +200,7 @@ export function handleSwapShadow(
       + " sig=" + signature.slice(0, 12) + "...",
     );
 
-    fetchSampleTx(connection, signature, name, programId, label).catch((err: Error) => {
+    fetchSampleTx(connection, signature, name, programId, label, program).catch((err: Error) => {
       console.warn("[SOLANA][SWAP][" + label + "][SHADOW] error:", err.message);
     });
   }

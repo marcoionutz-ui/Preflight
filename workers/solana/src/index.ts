@@ -10,6 +10,7 @@
  * 8.0g-b6: support legacy pump.fun Create shape=14 (alaturi de CreateV2 shape=16).
  * 8.0h-a:  migration linking — pump.fun launch → Raydium pool (via pairWriter → launchWriter).
  * 8.0h-b1: Raydium swap shadow classifier — CPMM + CLMM swap instruction stats + account layouts.
+ * 8.0h-b2: Dry-run swap parser — pool/mint/flow/amounts din TX (zero Redis writes).
  */
 
 import { getSolanaRpcUrl, getSolanaWsUrl, getSlot, getVersion, getConnection } from "./infra/rpc";
