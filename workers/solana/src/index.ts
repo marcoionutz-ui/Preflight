@@ -5,6 +5,7 @@
  * 8.0g-a6: CLMM pool discovery live — CreatePool + CreateCustomizablePool → Redis.
  * 8.0g-b1: pump.fun shadow diagnostics — observa instructiuni + account layouts.
  * 8.0g-b3: pump.fun launch registry — CreateV2 → Redis (SET NX, no TTL) + async enrichment.
+ * 8.0g-b4: fix fetcher — cauta in outer+inner (v0 tx outer vine ca ParsedInstruction).
  */
 
 import { getSolanaRpcUrl, getSolanaWsUrl, getSlot, getVersion, getConnection } from "./infra/rpc";

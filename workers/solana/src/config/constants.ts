@@ -65,4 +65,4 @@ export const KEY_LAUNCH      = (mint: string) => `preflight:indexed:launch:${CHA
 
 // ── Worker version ────────────────────────────────────────────────────────────
 
-export const INDEXER_VERSION = "v8.0g-b3";
+export const INDEXER_VERSION = "v8.0g-b4";

@@ -11,8 +11,10 @@
  *     [4] = feeRecipient       — 4wTV1YmiEkRv (fix)
  *     [5] = creator            — wallet-ul care lanseaza tokenul
  *
- * Inner instructions (accounts[18], accounts[27], accounts[1]) sunt CPI-uri
- * din acelasi TX — ignorate, parserul ia doar shape=16.
+ * Fetcher-ul cauta in outer + inner instructions — pe unele versiuni de TX,
+ * instructiunea outer vine ca ParsedInstruction (fara camp accounts) si e skipped.
+ * accounts[16] cu layout-ul corect apare in inner. Guardzii (shape=16 +
+ * PUMPFUN_GLOBAL + PUMPFUN_FEE) filtreza tot ce nu e CreateV2 real.
  */
 
 import { Connection } from "@solana/web3.js";
@@ -107,10 +109,15 @@ export async function fetchPumpfunCreate(
 
   if (!tx) return null;
 
-  // Cauta DOAR in outer instructions — inner CPI-uri au alte shape-uri
+  // Cauta in outer + inner — pe unele versiuni de TX (v0 cu ALT), outer
+  // instruction vine ca ParsedInstruction (fara camp "accounts") si e skipped.
+  // Guardzii din parsePumpfunCreateAccounts (shape=16 + PUMPFUN_GLOBAL +
+  // PUMPFUN_FEE) filtreza orice alt inner CPI cu alte shape-uri.
   const outer = tx.transaction.message.instructions;
+  const inner = (tx.meta?.innerInstructions ?? []).flatMap(i => i.instructions);
+  const allIx = [...outer, ...inner];
 
-  for (const ix of outer) {
+  for (const ix of allIx) {
     if (ix.programId.toBase58() !== PUMPFUN_PROGRAM) continue;
     if (!("accounts" in ix)) continue;
 
