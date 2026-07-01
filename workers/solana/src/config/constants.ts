@@ -52,6 +52,17 @@ export const BEHIND_OK_SLOTS      = 50;
 /** Slot-uri în urmă până la care considerăm DEGRADED */
 export const BEHIND_DEGRADED_SLOTS = 200;
 
+// ── pump.fun launch namespace ─────────────────────────────────────────────────
+
+/** ZSET cu toate launch-urile indexate (score = slot descoperire) */
+export const KEY_LAUNCHES    = `preflight:indexed:launches:${CHAIN}`;
+
+/** ZSET sortat după timestamp descoperire (score = Unix ms) */
+export const KEY_LAUNCHES_TS = `preflight:indexed:launches:ts:${CHAIN}`;
+
+/** JSON per launch: preflight:indexed:launch:solana:{mint} */
+export const KEY_LAUNCH      = (mint: string) => `preflight:indexed:launch:${CHAIN}:${mint}`;
+
 // ── Worker version ────────────────────────────────────────────────────────────
 
-export const INDEXER_VERSION = "v8.0g-a6";
+export const INDEXER_VERSION = "v8.0g-b1";
