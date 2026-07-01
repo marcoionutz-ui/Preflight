@@ -4,7 +4,8 @@
  *
  * Layout confirmat live (8.0h-b1 shadow):
  *   CPMM accounts[13]: pool=[3] inputVault=[6] outputVault=[7] inputMint=[10] outputMint=[11]
- *   CLMM SwapV2 accounts[15]: pool=[2] inputVault=[5] outputVault=[6] inputMint=[11] outputMint=[12]
+ *   CLMM SwapV2 accounts[15+]: pool=[2] inputVault=[5] outputVault=[6] inputMint=[11] outputMint=[12]
+ *     (tick arrays variabile la final — vazut accounts[15], [16], [18] in productie)
  *
  * Zero Redis writes. Amounts via vault tokenBalance deltas (BigInt, nu uiAmount).
  */
@@ -151,7 +152,7 @@ export async function parseSwapTx(
       inputVault  = strs[CPMM.INPUT_VAULT];
       outputVault = strs[CPMM.OUTPUT_VAULT];
       prog        = "cpmm";
-    } else if (program === "clmm" && strs.length === 15) {
+    } else if (program === "clmm" && strs.length >= 15) {
       pool        = strs[CLMM_V2.POOL];
       inputMint   = strs[CLMM_V2.INPUT_MINT];
       outputMint  = strs[CLMM_V2.OUTPUT_MINT];
