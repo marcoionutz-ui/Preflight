@@ -7,6 +7,7 @@
  * 8.0g-b3: pump.fun launch registry — CreateV2 → Redis (SET NX, no TTL) + async enrichment.
  * 8.0g-b4: fix fetcher — cauta in outer+inner (v0 tx outer vine ca ParsedInstruction).
  * 8.0g-b5: Jupiter exact match only, global 429 cooldown, enrichment delayed 30s/2m/10m.
+ * 8.0g-b6: support legacy pump.fun Create shape=14 (alaturi de CreateV2 shape=16).
  */
 
 import { getSolanaRpcUrl, getSolanaWsUrl, getSlot, getVersion, getConnection } from "./infra/rpc";
@@ -232,6 +233,7 @@ function handlePumpfunCandidate(
           + " mint=" + result.mint.slice(0, 8) + "..."
           + " bondingCurve=" + result.bondingCurveAddress.slice(0, 8) + "..."
           + " creator=" + result.creatorAddress.slice(0, 8) + "..."
+          + " shape=" + result.instructionShape
           + " slot=" + slot,
         );
         // Enrichment async — non-blocking, delayed (30s/2m/10m), logging in launchWriter
@@ -298,7 +300,7 @@ async function main(): Promise<void> {
       console.error("[SOLANA][DISCOVERY] advanceCursor error:", err.message);
     });
 
-    // ── pump.fun launch pipeline (8.0g-b5) ───────────────────────────────────
+    // ── pump.fun launch pipeline (8.0g-b6) ───────────────────────────────────
     if (event.program === "pumpfun") {
       stats.pumpfunTotal++;
       handlePumpfunShadow(connection, event.signature, event.slot, event.logs);

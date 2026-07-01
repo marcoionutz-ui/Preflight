@@ -1,9 +1,10 @@
 /**
  * discovery/pumpfunFetcher.ts
- * 8.0g-b3: Fetch + parse pump.fun CreateV2 (token launch).
+ * 8.0g-b6: Fetch + parse pump.fun token launches.
  *
- * Layout observat live (b1 shadow — 3 TX-uri confirmate):
- *   shape=16 (outer CreateV2):
+ * Suporta doua instructiuni:
+ *
+ *   shape=16 (CreateV2 — curent):
  *     [0] = mint               — noul token mint
  *     [1] = global             — TSLvdd1pWpHV (fix, PDA global pump.fun)
  *     [2] = bondingCurve       — PDA bonding curve per token
@@ -11,10 +12,24 @@
  *     [4] = feeRecipient       — 4wTV1YmiEkRv (fix)
  *     [5] = creator            — wallet-ul care lanseaza tokenul
  *
+ *   shape=14 (Create — legacy, inca activ):
+ *     [0] = mint
+ *     [1] = global             — TSLvdd1pWpHV (fix)
+ *     [2] = bondingCurve
+ *     [3] = associatedBondingCurve
+ *     [4] = feeRecipient       — 4wTV1YmiEkRv (fix)
+ *     [5] = MPL Token Metadata — metaqbxxUerd (fix)
+ *     [6] = ?                  — PDA metadata per token
+ *     [7] = creator
+ *     [8] = SystemProgram
+ *     [9] = TokenkegQfeZ
+ *     [10] = ATokenGPvbdG
+ *     [11] = SysvarRent
+ *     [12] = Ce6TQqeHC9p8      — pump.fun event authority (fix)
+ *     [13] = 6EF8rrecthR5      — PUMPFUN_PROGRAM (fix, exact)
+ *
  * Fetcher-ul cauta in outer + inner instructions — pe unele versiuni de TX,
  * instructiunea outer vine ca ParsedInstruction (fara camp accounts) si e skipped.
- * accounts[16] cu layout-ul corect apare in inner. Guardzii (shape=16 +
- * PUMPFUN_GLOBAL + PUMPFUN_FEE) filtreza tot ce nu e CreateV2 real.
  */
 
 import { Connection } from "@solana/web3.js";
@@ -26,29 +41,33 @@ export interface PumpfunCreateResult {
   bondingCurveAddress:      string;
   associatedBondingCurve:   string;
   creatorAddress:           string;
+  instructionShape:         "CREATE_V2" | "CREATE_LEGACY";
 }
 
 // ── Pre-filter (ieftin, inainte de fetch) ────────────────────────────────────
 
-const PUMPFUN_CREATE_NAMES = ["CreateV2"];
+const PUMPFUN_CREATE_NAMES = ["CreateV2", "Create"];
 
 /**
- * Verifica daca logs-urile contin o instructiune pump.fun CreateV2.
- * Stack-aware — ignora "Instruction: CreateV2" din alte programe din acelasi tx.
+ * Verifica daca logs-urile contin o instructiune pump.fun de tip create.
+ * Stack-aware — ignora aceleasi instruction names din alte programe CPI.
  */
 export function isPumpfunCreateLog(logs: string[]): boolean {
   const names = extractTargetProgramInstructions(logs, PUMPFUN_PROGRAM);
   return names.some(n => PUMPFUN_CREATE_NAMES.includes(n));
 }
 
-// ── Account parser ────────────────────────────────────────────────────────────
+// ── Adrese fixe (prefixe confirmate live, exact acolo unde stim full address) ─
 
-// Prefixele confirmate live din 3+ TX-uri (shadow truncheaza la 12 chars —
-// adresele complete vor fi verificate dupa primul launch indexat cu succes)
-const PUMPFUN_GLOBAL_PREFIX = "TSLvdd1pWpHV"; // accounts[1] — global PDA fix
-const PUMPFUN_FEE_PREFIX    = "4wTV1YmiEkRv"; // accounts[4] — fee recipient fix
+const PUMPFUN_GLOBAL_PREFIX  = "TSLvdd1pWpHV"; // accounts[1] in ambele shapes
+const PUMPFUN_FEE_PREFIX     = "4wTV1YmiEkRv"; // accounts[4] in ambele shapes
+const MPL_METADATA_PREFIX    = "metaqbxxUerd"; // accounts[5] in shape=14 — MPL Token Metadata
+const PUMPFUN_EVENT_PREFIX   = "Ce6TQqeHC9p8"; // accounts[12] in shape=14 — event authority
 
-function parsePumpfunCreateAccounts(accounts: string[]): PumpfunCreateResult | null {
+// ── Parsere ───────────────────────────────────────────────────────────────────
+
+/** CreateV2 — instructiunea curenta, accounts[16] */
+function parseCreateV2(accounts: string[]): PumpfunCreateResult | null {
   if (accounts.length !== 16) return null;
 
   const mint                   = accounts[0];
@@ -58,29 +77,50 @@ function parsePumpfunCreateAccounts(accounts: string[]): PumpfunCreateResult | n
   const feeRecipient           = accounts[4];
   const creatorAddress         = accounts[5];
 
-  // Prefix guards — confirma protocolul pump.fun fara adrese inventate
-  // TODO: inlocuieste cu comparatie exacta dupa ce logam primul insert cu succes
-  if (!global.startsWith(PUMPFUN_GLOBAL_PREFIX))      return null;
-  if (!feeRecipient.startsWith(PUMPFUN_FEE_PREFIX))   return null;
+  if (!global.startsWith(PUMPFUN_GLOBAL_PREFIX))     return null;
+  if (!feeRecipient.startsWith(PUMPFUN_FEE_PREFIX))  return null;
 
   if (!mint || !bondingCurveAddress || !associatedBondingCurve || !creatorAddress) return null;
   if (mint === bondingCurveAddress)                    return null;
   if (mint === creatorAddress)                         return null;
   if (bondingCurveAddress === associatedBondingCurve)  return null;
 
-  return { mint, bondingCurveAddress, associatedBondingCurve, creatorAddress };
+  return { mint, bondingCurveAddress, associatedBondingCurve, creatorAddress, instructionShape: "CREATE_V2" };
+}
+
+/** Create (legacy) — inca activ, accounts[14] */
+function parseCreateLegacy(accounts: string[]): PumpfunCreateResult | null {
+  if (accounts.length !== 14) return null;
+
+  const mint                   = accounts[0];
+  const global                 = accounts[1];
+  const bondingCurveAddress    = accounts[2];
+  const associatedBondingCurve = accounts[3];
+  const feeRecipient           = accounts[4];
+  const mplMetadata            = accounts[5];
+  const creatorAddress         = accounts[7];
+  const eventAuthority         = accounts[12];
+  const programSelf            = accounts[13];
+
+  // Guards — shape=14 e mai strict, avem mai multe adrese fixe confirmate
+  if (!global.startsWith(PUMPFUN_GLOBAL_PREFIX))       return null;
+  if (!feeRecipient.startsWith(PUMPFUN_FEE_PREFIX))    return null;
+  if (!mplMetadata.startsWith(MPL_METADATA_PREFIX))    return null;
+  if (!eventAuthority.startsWith(PUMPFUN_EVENT_PREFIX)) return null;
+  if (programSelf !== PUMPFUN_PROGRAM)                  return null; // exact — stim full address
+
+  if (!mint || !bondingCurveAddress || !associatedBondingCurve || !creatorAddress) return null;
+  if (mint === bondingCurveAddress)                    return null;
+  if (mint === creatorAddress)                         return null;
+  if (bondingCurveAddress === associatedBondingCurve)  return null;
+
+  return { mint, bondingCurveAddress, associatedBondingCurve, creatorAddress, instructionShape: "CREATE_LEGACY" };
 }
 
 // ── Fetch cu retry ────────────────────────────────────────────────────────────
 
-// logsSubscribe poate livra logul inainte ca tx-ul sa fie disponibil la RPC
 const FETCH_RETRY_DELAYS_MS = [2_000, 5_000, 15_000];
 
-/**
- * Fetch tranzactia si extrage datele de launch.
- * Cauta DOAR instructiunea outer cu shape=16 — ignora inner CPI-uri.
- * Returneaza null daca TX nu poate fi gasit sau parsata.
- */
 export async function fetchPumpfunCreate(
   connection: Connection,
   signature:  string,
@@ -105,16 +145,11 @@ export async function fetchPumpfunCreate(
         + " error sig=" + signature.slice(0, 12) + ":",
         (err as Error).message,
       );
-      // continua cu urmatorul attempt
     }
   }
 
   if (!tx) return null;
 
-  // Cauta in outer + inner — pe unele versiuni de TX (v0 cu ALT), outer
-  // instruction vine ca ParsedInstruction (fara camp "accounts") si e skipped.
-  // Guardzii din parsePumpfunCreateAccounts (shape=16 + PUMPFUN_GLOBAL +
-  // PUMPFUN_FEE) filtreza orice alt inner CPI cu alte shape-uri.
   const outer = tx.transaction.message.instructions;
   const inner = (tx.meta?.innerInstructions ?? []).flatMap(i => i.instructions);
   const allIx = [...outer, ...inner];
@@ -125,7 +160,9 @@ export async function fetchPumpfunCreate(
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const accs: { toBase58(): string }[] = (ix as any).accounts;
-    const result = parsePumpfunCreateAccounts(accs.map(a => a.toBase58()));
+    const strs = accs.map(a => a.toBase58());
+
+    const result = parseCreateV2(strs) ?? parseCreateLegacy(strs);
     if (result) return result;
   }
 
