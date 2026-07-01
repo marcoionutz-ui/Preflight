@@ -2,6 +2,7 @@
  * infra/tokenMetadata.ts
  * 8.0f: Rezolva symbol + decimals pentru un Solana mint.
  * 8.0g-a6: sanitizeSymbol — strip bidi/control chars din symbol/name (JUPITER + CACHE).
+ * 8.0g-b5: exact match only (no fuzzy rows[0]), global 429 cooldown 90s.
  *
  * Surse (in ordine):
  *   1. KNOWN   - mints hardcodate (wSOL, USDC, USDT) - instant, fara RPC
@@ -60,7 +61,11 @@ function sanitizeSymbol(s: string): string {
 // Override via env: JUPITER_TOKEN_SEARCH_URL=https://lite-api.jup.ag/token/v2/search
 const JUPITER_SEARCH_URL =
   process.env.JUPITER_TOKEN_SEARCH_URL ?? "https://api.jup.ag/tokens/v2/search";
-const FETCH_TIMEOUT_MS   = 5_000;
+const FETCH_TIMEOUT_MS      = 5_000;
+const JUPITER_COOLDOWN_MS   = 90_000; // 90s dupa 429
+
+/** Timestamp pana la care nu mai chemam Jupiter (global, per-process) */
+let jupiterCooldownUntil = 0;
 
 interface JupiterTokenV2 {
   id:       string;   // mint address
@@ -78,6 +83,9 @@ function buildJupiterHeaders(): Record<string, string> {
 }
 
 async function fetchFromJupiter(mint: string): Promise<TokenMeta | null> {
+  // Global cooldown — dupa 429 nu mai incercam pana expira cooldown-ul
+  if (Date.now() < jupiterCooldownUntil) return null;
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
@@ -88,14 +96,29 @@ async function fetchFromJupiter(mint: string): Promise<TokenMeta | null> {
     );
 
     if (!res.ok) {
-      console.warn("[SOLANA][META] jupiter status=" + res.status + " mint=" + mint.slice(0, 8));
+      if (res.status === 429) {
+        jupiterCooldownUntil = Date.now() + JUPITER_COOLDOWN_MS;
+        console.warn(
+          "[SOLANA][META] jupiter 429 — cooldown " + (JUPITER_COOLDOWN_MS / 1000) + "s"
+          + " mint=" + mint.slice(0, 8),
+        );
+      } else {
+        console.warn("[SOLANA][META] jupiter status=" + res.status + " mint=" + mint.slice(0, 8));
+      }
       return null;
     }
 
     const rows = (await res.json()) as JupiterTokenV2[];
-    // Cauta match exact pe mint address - search poate returna mai multi tokens
-    const token = rows.find(t => t.id === mint) ?? rows[0];
-    if (!token) return null;
+    // Exact match only — fara fuzzy fallback la rows[0]
+    // rows[0] poate fi un token complet diferit daca search-ul returneaza mai multe
+    const token = rows.find(t => t.id === mint);
+    if (!token) {
+      console.warn(
+        "[SOLANA][META] jupiter no_exact_match mint=" + mint.slice(0, 8)
+        + " results=" + rows.length,
+      );
+      return null;
+    }
 
     return {
       mint,
@@ -112,7 +135,7 @@ async function fetchFromJupiter(mint: string): Promise<TokenMeta | null> {
     }
     return null;
   } finally {
-    clearTimeout(timer); // ruleaza mereu - abort sau succes
+    clearTimeout(timer);
   }
 }
 

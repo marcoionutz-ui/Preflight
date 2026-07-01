@@ -1,16 +1,17 @@
 /**
  * discovery/launchWriter.ts
- * 8.0g-b3: Scrie pump.fun launch records in Redis.
+ * 8.0g-b5: Scrie pump.fun launch records in Redis.
  *
  * Namespace separat de pool registry — launch-urile nu sunt pool-uri:
  *   preflight:indexed:launch:solana:{mint}   → JSON
  *   preflight:indexed:launches:solana        → ZSET (score = slot)
  *   preflight:indexed:launches:ts:solana     → ZSET (score = Unix ms)
  *
+ * Enrichment Jupiter — delayed (30s / 2m / 10m), exact match only.
  * Nu foloseste buildSolanaPool / writeSolanaPool — semantica diferita.
  */
 
-import { getRedis }      from "../infra/redis";
+import { getRedis }         from "../infra/redis";
 import { resolveTokenMeta } from "../infra/tokenMetadata";
 import {
   CHAIN, INDEXER_VERSION,
@@ -32,7 +33,8 @@ export interface SolanaLaunch {
   signature:                string;
   discoveredAt:             string;
   indexerVersion:           string;
-  // metadata (opțional — populat async după insert)
+  metadataStatus:           "PENDING" | "ENRICHED" | "FAILED";
+  // metadata — populat async dupa insert
   symbol?:                  string;
   name?:                    string;
   decimals?:                number | null;
@@ -58,6 +60,7 @@ export function buildLaunchRecord(
     signature,
     discoveredAt:           new Date().toISOString(),
     indexerVersion:         INDEXER_VERSION,
+    metadataStatus:         "PENDING",
   };
 }
 
@@ -72,10 +75,10 @@ export async function writeLaunchRecord(
   launch: SolanaLaunch,
 ): Promise<"inserted" | "exists" | "error"> {
   try {
-    const redis     = getRedis();
-    const key       = KEY_LAUNCH(launch.mint);
-    const nowMs     = Date.now();
-    const json      = JSON.stringify(launch);
+    const redis  = getRedis();
+    const key    = KEY_LAUNCH(launch.mint);
+    const nowMs  = Date.now();
+    const json   = JSON.stringify(launch);
 
     // SET NX — insert doar daca nu exista (fara TTL: launch-urile sunt permanente)
     const set = await redis.set(key, json, "NX");
@@ -94,28 +97,75 @@ export async function writeLaunchRecord(
 
 // ── Enrichment ────────────────────────────────────────────────────────────────
 
+// Delay-uri inainte de fiecare incercare Jupiter:
+//   30s  — tokenii noi apar pe Jupiter dupa ~1m, dar incercam devreme
+//   2m   — retry daca 429 sau nu e inca indexat
+//   10m  — last chance; dupa asta marcam FAILED
+const ENRICH_DELAYS_MS = [30_000, 120_000, 600_000];
+
 /**
  * Enricheaza launch record cu metadata din Jupiter.
  * Non-blocking — apelat async dupa writeLaunchRecord.
- * Actualizeaza JSON-ul din Redis cu symbol/name/decimals.
+ * Implementeaza retry cu delay si marcheaza metadataStatus ENRICHED/FAILED.
  */
 export async function enrichLaunchRecord(launch: SolanaLaunch): Promise<void> {
-  const meta = await resolveTokenMeta(launch.mint);
+  const redis = getRedis();
+  const key   = KEY_LAUNCH(launch.mint);
+  const m8    = launch.mint.slice(0, 8) + "...";
 
-  const enriched: SolanaLaunch = {
-    ...launch,
-    symbol:     meta.symbol,
-    name:       meta.name,
-    decimals:   meta.decimals,
-    metaSource: meta.source,
-  };
+  console.log("[SOLANA][LAUNCH][META] mint=" + m8 + " status=PENDING");
 
-  try {
-    const redis = getRedis();
-    const key   = KEY_LAUNCH(launch.mint);
-    // Suprascrie cu datele enriched (SET fara NX — vrem sa actualizam)
-    await redis.set(key, JSON.stringify(enriched));
-  } catch (err) {
-    console.error("[SOLANA][LAUNCH] enrichment redis write error:", (err as Error).message);
+  for (let attempt = 0; attempt < ENRICH_DELAYS_MS.length; attempt++) {
+    // Asteapta inainte de a intreba Jupiter — tokenii tocmai s-au lansat
+    await new Promise(r => setTimeout(r, ENRICH_DELAYS_MS[attempt]));
+
+    const meta = await resolveTokenMeta(launch.mint);
+
+    if (meta.source === "FALLBACK") {
+      if (attempt < ENRICH_DELAYS_MS.length - 1) {
+        // Retry — mai avem incercari
+        continue;
+      }
+      // Ultima incercare — marcam FAILED, adaugam fallback symbol ca recordul sa ramana afisabil
+      const failed: SolanaLaunch = {
+        ...launch,
+        symbol:         launch.mint.slice(0, 6) + "...",
+        decimals:       null,
+        metaSource:     "FALLBACK",
+        metadataStatus: "FAILED",
+      };
+      try {
+        await redis.set(key, JSON.stringify(failed));
+        console.log(
+          "[SOLANA][LAUNCH][META] mint=" + m8
+          + " source=FALLBACK status=FAILED",
+        );
+      } catch (err) {
+        console.error("[SOLANA][LAUNCH][META] redis write error:", (err as Error).message);
+      }
+      return;
+    }
+
+    // Metadata reala gasita
+    const enriched: SolanaLaunch = {
+      ...launch,
+      symbol:         meta.symbol,
+      name:           meta.name,
+      decimals:       meta.decimals,
+      metaSource:     meta.source,
+      metadataStatus: "ENRICHED",
+    };
+
+    try {
+      await redis.set(key, JSON.stringify(enriched));
+      console.log(
+        "[SOLANA][LAUNCH][META] mint=" + m8
+        + " source=" + meta.source
+        + " symbol=" + meta.symbol,
+      );
+    } catch (err) {
+      console.error("[SOLANA][LAUNCH][META] redis write error:", (err as Error).message);
+    }
+    return;
   }
 }
