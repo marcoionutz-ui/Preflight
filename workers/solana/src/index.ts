@@ -9,6 +9,7 @@
  * 8.0g-b5: Jupiter exact match only, global 429 cooldown, enrichment delayed 30s/2m/10m.
  * 8.0g-b6: support legacy pump.fun Create shape=14 (alaturi de CreateV2 shape=16).
  * 8.0h-a:  migration linking — pump.fun launch → Raydium pool (via pairWriter → launchWriter).
+ * 8.0h-b1: Raydium swap shadow classifier — CPMM + CLMM swap instruction stats + account layouts.
  */
 
 import { getSolanaRpcUrl, getSolanaWsUrl, getSlot, getVersion, getConnection } from "./infra/rpc";
@@ -20,6 +21,7 @@ import { isCpmmInitLog, fetchCpmmInit } from "./discovery/txFetcher";
 import { buildSolanaPool, writeSolanaPool, enrichSolanaPool } from "./discovery/pairWriter";
 import { runCpmmBackfill }          from "./discovery/backfillCpmm";
 import { handleClmmShadow, logClmmStats } from "./discovery/clmmShadow";
+import { handleSwapShadow, logSwapStats } from "./discovery/swapShadow";
 import { isClmmCreateLog, fetchClmmCreate } from "./discovery/clmmFetcher";
 import { handlePumpfunShadow, logPumpfunStats } from "./discovery/pumpfunShadow";
 import { isPumpfunCreateLog, fetchPumpfunCreate } from "./discovery/pumpfunFetcher";
@@ -69,6 +71,7 @@ function logStats(): void {
   );
   logClmmStats();
   logPumpfunStats();
+  logSwapStats();
 }
 
 // ── Health loop ──────────────────────────────────────────────────────────────
@@ -316,6 +319,8 @@ async function main(): Promise<void> {
       stats.clmmTotal++;
       // Shadow mereu — stats + sample tx logging
       handleClmmShadow(connection, event.signature, event.slot, event.logs);
+      // Swap shadow (8.0h-b1) — observa swap instructions in paralel cu pool creation
+      handleSwapShadow(connection, event.signature, event.slot, event.logs, "clmm");
 
       // Pipeline real — doar pentru pool creation events
       if (!isClmmCreateLog(event.logs)) return;
@@ -327,16 +332,16 @@ async function main(): Promise<void> {
       return;
     }
 
-    // ── CPMM pipeline ─────────────────────────────────────────────────────────
-    if (event.program === "raydium_cpmm") stats.cpmmTotal++;
-    if (event.program !== "raydium_cpmm" || !isCpmmInitLog(event.logs)) return;
-
-    if (isDuplicate("raydium_cpmm:" + event.signature)) {
-      stats.deduped++;
+    // ── CPMM pipeline (8.0h-b1) ──────────────────────────────────────────────
+    if (event.program === "raydium_cpmm") {
+      stats.cpmmTotal++;
+      // Swap shadow — observa swap instructions (zero Redis, stats only)
+      handleSwapShadow(connection, event.signature, event.slot, event.logs, "cpmm");
+      if (!isCpmmInitLog(event.logs)) return;
+      if (isDuplicate("raydium_cpmm:" + event.signature)) { stats.deduped++; return; }
+      handleCpmmCandidate(connection, event.signature, event.slot);
       return;
     }
-
-    handleCpmmCandidate(connection, event.signature, event.slot);
   });
 
   await healthLoop(nodeVersion);
