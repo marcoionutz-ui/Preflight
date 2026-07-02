@@ -1,25 +1,28 @@
 /**
  * discovery/priceTracker.ts
  * 8.0h-b4: Price snapshots — preț aproximativ per pool din vault deltas.
+ * 8.0h-b5: Ring buffer history + ZSET index per pool (fara KEYS scan in movers job).
  *
  * Formula: priceInQuote = quoteAmount_normalized / baseAmount_normalized
  *   QUOTE_IN:  quoteAmt = inputAmount,  baseAmt = outputAmount
  *   QUOTE_OUT: quoteAmt = outputAmount, baseAmt = inputAmount
  *
- * Precizie: Number (float64) — suficient pentru b4 aproximare.
- * priceUsd: direct doar pentru USDC/USDT quoted pools.
- *           null pentru SOL-quoted (SOL/USD nu e in scope b4).
- * source: "SWAP_VAULT_DELTA" — nu orderbook, nu TWAP.
- *
- * Apelat pentru knownPool=true si flow !== "UNKNOWN", alaturi de recordSwapActivity.
- * Redis key: preflight:solana:price:{pool}   (TTL 10min, refresh per write)
+ * Redis keys (b5):
+ *   preflight:solana:price:{pool}           — current snapshot (TTL 10m)
+ *   preflight:solana:price:history:{pool}   — ring buffer max 60 intrări (TTL 2h)
+ *   preflight:solana:price:pools            — ZSET index (score = lastUpdatedAt ms)
  */
 
 import { getRedis }             from "../infra/redis";
-import { KEY_PRICE_SNAPSHOT }   from "../config/constants";
+import {
+  KEY_PRICE_SNAPSHOT,
+  KEY_PRICE_HISTORY,
+  KEY_PRICE_POOLS,
+}                               from "../config/constants";
 import { resolveTokenMeta }     from "../infra/tokenMetadata";
 import { SwapParseResult }      from "./swapParser";
 import { USDC_MINT, USDT_MINT, WSOL_MINT } from "../config/programs";
+import { maybeCalculateMovers } from "./moversTracker";
 
 // ── Tipuri ────────────────────────────────────────────────────────────────────
 
@@ -60,7 +63,7 @@ function programLabel(prog: SwapParseResult["program"]): "raydium_cpmm" | "raydi
 
 /**
  * Calculeaza si salveaza un price snapshot pentru un pool dupa un swap parsed.
- * Apelat doar cand result.knownPool === true si flow !== "UNKNOWN".
+ * Apelat pentru orice pool cu flow !== "UNKNOWN" (b4b: nu mai e gated pe knownPool).
  *
  * Nu arunca erori — toate path-urile de esec returneaza silentios.
  */
@@ -126,12 +129,24 @@ export async function recordPriceSnapshot(
     knownPool:     result.knownPool,
   };
 
-  await getRedis().set(
+  const redis = getRedis();
+
+  // b4: current snapshot
+  await redis.set(
     KEY_PRICE_SNAPSHOT(result.pool),
     JSON.stringify(snapshot),
     "EX",
     TTL_SEC,
   );
+
+  // b5: ring buffer history (max 60 intrări, TTL 2h) + ZSET index
+  const historyEntry = JSON.stringify({ p: priceInQuote, ts: snapshot.lastUpdatedAt });
+  const pipeline = redis.pipeline();
+  pipeline.lpush(KEY_PRICE_HISTORY(result.pool), historyEntry);
+  pipeline.ltrim(KEY_PRICE_HISTORY(result.pool), 0, 59);
+  pipeline.expire(KEY_PRICE_HISTORY(result.pool), 2 * 60 * 60);
+  pipeline.zadd(KEY_PRICE_POOLS, snapshot.lastUpdatedAt, result.pool);
+  await pipeline.exec();
 
   console.log(
     "[SOLANA][SWAP][" + progLabel + "][PRICE]"
@@ -142,4 +157,9 @@ export async function recordPriceSnapshot(
     + (priceUsd !== null ? " priceUsd=" + priceUsd.toExponential(4) : "")
     + " sig=" + signature.slice(0, 12) + "...",
   );
+
+  // b5: trigger movers calculation (throttled la 60s in moversTracker)
+  maybeCalculateMovers().catch((err: Error) => {
+    console.warn("[SOLANA][MOVERS] trigger error:", err.message);
+  });
 }

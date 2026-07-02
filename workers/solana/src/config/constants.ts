@@ -71,6 +71,17 @@ export const KEY_POOL_ACTIVITY = (pool: string) => `preflight:solana:activity:${
 /** Price snapshot per pool (priceInQuote, priceUsd): preflight:solana:price:{pool} */
 export const KEY_PRICE_SNAPSHOT = (pool: string) => `preflight:solana:price:${pool}`;
 
+/** Ring buffer de price history per pool (max 60 intrări, TTL 2h): preflight:solana:price:history:{pool} */
+export const KEY_PRICE_HISTORY = (pool: string) => `preflight:solana:price:history:${pool}`;
+
+/** ZSET index cu poolurile care au price snapshot (score = lastUpdatedAt ms) — evita KEYS scan */
+export const KEY_PRICE_POOLS = `preflight:solana:price:pools`;
+
+// ── Trending namespace (comun cu EVM) ─────────────────────────────────────────
+
+/** Top movers pre-calculați per chain: preflight:trending:movers:solana */
+export const KEY_TRENDING_MOVERS = `preflight:trending:movers:${CHAIN}`;
+
 // ── Worker version ────────────────────────────────────────────────────────────
 
-export const INDEXER_VERSION = "v8.0h-b4b";
+export const INDEXER_VERSION = "v8.0h-b5";

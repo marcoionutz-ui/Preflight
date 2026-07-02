@@ -13,6 +13,7 @@
  * 8.0h-b2: Dry-run swap parser — pool/mint/flow/amounts din TX (zero Redis writes).
  * 8.0h-b3: Pool activity state — Redis per pool (sampledSwaps5m, sampledQuoteIn/Out5m, lastSwapAt).
  * 8.0h-b4: Price snapshots — priceInQuote + priceUsd din vault deltas per known pool.
+ * 8.0h-b5: Sampled price history — ring buffer + ZSET index + movers computation (preflight:trending:movers:solana).
  */
 
 import { getSolanaRpcUrl, getSolanaWsUrl, getSlot, getVersion, getConnection } from "./infra/rpc";
