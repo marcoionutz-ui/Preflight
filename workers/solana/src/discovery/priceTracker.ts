@@ -36,6 +36,7 @@ export interface PriceSnapshot {
   lastSignature: string;
   source:        "SWAP_VAULT_DELTA";
   coverage:      "SAMPLED";     // din TX sample (nu firehose) — nu pretinde precizie TWAP
+  knownPool:     boolean;       // true = pool indexat in preflight, false = sampled unknown
 }
 
 // ── Constante ─────────────────────────────────────────────────────────────────
@@ -122,6 +123,7 @@ export async function recordPriceSnapshot(
     lastSignature: signature,
     source:        "SWAP_VAULT_DELTA",
     coverage:      "SAMPLED",
+    knownPool:     result.knownPool,
   };
 
   await getRedis().set(
