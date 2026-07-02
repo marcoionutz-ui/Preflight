@@ -163,12 +163,14 @@ async function fetchSampleTx(
         + " sig=" + signature.slice(0, 12) + "...",
       );
 
-      // b3: activity write — doar pentru pooluri cunoscute
-      if (!result.knownPool) return;
-      recordSwapActivity(result, signature).catch((err: Error) => {
-        console.warn("[SOLANA][SWAP][" + label + "][ACTIVITY] error:", err.message);
-      });
-      // b4: price snapshot — din vault deltas, zero Redis write daca UNKNOWN flow
+      // b3: activity write — doar pentru pooluri cunoscute (indexed)
+      if (result.knownPool) {
+        recordSwapActivity(result, signature).catch((err: Error) => {
+          console.warn("[SOLANA][SWAP][" + label + "][ACTIVITY] error:", err.message);
+        });
+      }
+      // b4: price snapshot — orice pool cu flow valid (nu doar knownPool)
+      // Util pentru discovery; nu e spam — max 2 TX sample/60s per instruction
       recordPriceSnapshot(result, signature).catch((err: Error) => {
         console.warn("[SOLANA][SWAP][" + label + "][PRICE] error:", err.message);
       });

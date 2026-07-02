@@ -73,4 +73,4 @@ export const KEY_PRICE_SNAPSHOT = (pool: string) => `preflight:solana:price:${po
 
 // ── Worker version ────────────────────────────────────────────────────────────
 
-export const INDEXER_VERSION = "v8.0h-b4";
+export const INDEXER_VERSION = "v8.0h-b4b";

@@ -67,7 +67,7 @@ export async function recordPriceSnapshot(
   result:    SwapParseResult,
   signature: string,
 ): Promise<void> {
-  if (!result.knownPool)         return;
+  // knownPool nu mai e required — price e util și pentru pooluri nedescoperite încă
   if (result.flow === "UNKNOWN") return;
 
   // Extrage quote si base amounts in functie de directia fluxului
