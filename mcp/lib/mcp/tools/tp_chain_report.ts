@@ -8,11 +8,16 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { readAllRedis, formatEth, formatVol, formatPct, combineConfidence, getPipelineState } from "../redis-reader";
+import { readAllRedis, formatEth, formatVol, formatPct, combineConfidence, getPipelineState, readSolanaIndexerStats, readSolanaMovers, readSolanaRecentActivity } from "../redis-reader";
 import { mcpResponse, mcpErr, ERR } from "../errors";
 
 // Timestamp fallback — events pot folosi ts, detectedAt, sau timestamp
 const eventTs = (e: any): number => e.ts ?? e.detectedAt ?? e.timestamp ?? 0;
+
+// Normalizeaza alias ETH → ethereum (worker stocheaza "ethereum", enum accepta "eth")
+function normalizeChain(c: string): string {
+  return c === "eth" ? "ethereum" : c;
+}
 
 function getLpCoverage(dexType: string | null | undefined, hasData: boolean): string {
   const d = (dexType ?? "").toUpperCase();
@@ -59,21 +64,84 @@ Args: chain — one of: base, arbitrum, eth, bsc, solana`,
 
         const { now, states, watch, hot, armed, events, drops, pfDrops } = ctx;
 
+        // ── 8.0i-c: Solana — branch special (nu are EVM pair states) ─────────
+        if (chain === "solana") {
+          const [solanaStats, solanaMovers, solanaActivity] = await Promise.all([
+            readSolanaIndexerStats(now),
+            readSolanaMovers(now, 10),
+            readSolanaRecentActivity(5),
+          ]);
+
+          const { health } = solanaStats;
+          const lines: string[] = [];
+          lines.push("CHAIN REPORT: SOLANA");
+          lines.push(`Worker: ${health.status} | v${health.indexerVersion ?? "?"} | behind:${health.blocksBehind ?? "?"} slots | healthAge:${health.ageSec !== null ? health.ageSec + "s" : "OFFLINE"}`);
+          lines.push(`Indexed: ${solanaStats.indexedPools} pools | ${solanaStats.indexedLaunches} launches | ${solanaStats.trackedPricePools} price pools tracked`);
+          lines.push(`Movers: ${solanaStats.moversStatus} (${solanaStats.moversCount} entries${solanaStats.moversComputedAgeSec !== null ? ", " + solanaStats.moversComputedAgeSec + "s old" : ""})`);
+          lines.push("");
+
+          // Recent indexed pools
+          if (solanaActivity.recentPools.length > 0) {
+            lines.push("RECENT RAYDIUM POOLS (indexed):");
+            for (const p of solanaActivity.recentPools) {
+              const ageSec = Math.round((now - p.discoveredAt) / 1000);
+              lines.push(`  ${p.baseSymbol ?? "?"} / ${p.quoteSymbol ?? "?"} (${p.quoteType ?? "?"}) — pool:${p.poolAddress.slice(0, 8)}... ${ageSec}s ago`);
+            }
+            lines.push("");
+          }
+
+          // Recent pump.fun launches
+          if (solanaActivity.recentLaunches.length > 0) {
+            lines.push("RECENT PUMP.FUN LAUNCHES:");
+            for (const l of solanaActivity.recentLaunches) {
+              const ageSec = Math.round((now - l.discoveredAt) / 1000);
+              lines.push(`  ${l.symbol ?? l.mint.slice(0, 8) + "..."} — mint:${l.mint.slice(0, 8)}... ${ageSec}s ago`);
+            }
+            lines.push("");
+          }
+
+          // Sampled movers
+          if (solanaMovers && solanaMovers.items.length > 0) {
+            lines.push(`OBSERVED SOLANA PRICE MOVERS (sampled, coverage: ${solanaMovers.coverage}):`);
+            lines.push(`  ⚠️ Data from swap sampling, not full firehose. priceChange may be null until history accumulates.`);
+            for (const m of solanaMovers.items) {
+              const ch5m = m.priceChange5mPct !== null ? m.priceChange5mPct.toFixed(2) + "%" : "null";
+              const ch1h = m.priceChange1hPct !== null ? m.priceChange1hPct.toFixed(2) + "%" : "null";
+              const known = m.knownPool ? "✓indexed" : "unindexed";
+              lines.push(`  ${m.baseSymbol}/${m.quoteSymbol} [${m.program}] price:${m.priceInQuote.toExponential(4)} | 5m:${ch5m} 1h:${ch1h} | samples:${m.sampleCount} ${m.historyStatus} | ${known}`);
+            }
+            lines.push("");
+          } else {
+            lines.push("No sampled price movers yet (history accumulating).");
+            lines.push("");
+          }
+
+          lines.push(`STATUS: Solana indexer ${health.status}. Sampled coverage — not full firehose.`);
+
+          return mcpResponse({
+            text: lines.join("\n"),
+            confidence: health.workerOnline ? "MEDIUM" : "LOW",
+            freshnessSec: health.ageSec,
+            dataQuality: { wsFlow: "absent" }, // Solana nu are WS flow ca EVM
+          });
+        }
+
         // ── Filter everything to this chain ───────────────────────────────
+        const chainKey    = normalizeChain(chain); // "eth" → "ethereum"
         const chainStates = Object.entries(states).filter(
-          ([, s]) => (s.chain ?? "").toLowerCase() === chain
+          ([, s]) => (s.chain ?? "").toLowerCase() === chainKey
         );
-        const chainWatch = Object.entries(watch).filter(([, w]) => w.chain?.toLowerCase() === chain);
-        const chainHot   = Object.entries(hot).filter(([, h])   => h.chain?.toLowerCase() === chain);
-        const chainArmed = Object.entries(armed).filter(([, a]) => (a.chain ?? "").toLowerCase() === chain);
+        const chainWatch = Object.entries(watch).filter(([, w]) => w.chain?.toLowerCase() === chainKey);
+        const chainHot   = Object.entries(hot).filter(([, h])   => h.chain?.toLowerCase() === chainKey);
+        const chainArmed = Object.entries(armed).filter(([, a]) => (a.chain ?? "").toLowerCase() === chainKey);
 
         const dropsSource = (pfDrops && pfDrops.length > 0 ? pfDrops : drops) as any[];
         const chainDrops  = dropsSource.filter((d: any) =>
-          d.chain?.toLowerCase() === chain && now - d.droppedAt < 10 * 60_000
+          d.chain?.toLowerCase() === chainKey && now - d.droppedAt < 10 * 60_000
         );
         // fix ChatGPT #1: timestamp fallback
         const chainEvents = events.filter((e: any) =>
-          e.chain?.toLowerCase() === chain && now - eventTs(e) < 5 * 60_000
+          e.chain?.toLowerCase() === chainKey && now - eventTs(e) < 5 * 60_000
         );
 
         const stateVals = chainStates.map(([, s]) => s);

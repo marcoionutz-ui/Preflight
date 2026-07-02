@@ -1,6 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { readAllRedis, readTrendingMovers } from "../redis-reader";
+import { readAllRedis, readTrendingMovers, readSolanaMovers } from "../redis-reader";
 import type { MemoryEntry } from "../types";
 import { mcpResponse, mcpErr, ERR } from "../errors";
 
@@ -26,12 +26,32 @@ Args: chain (optional), top_n (default 5, max 20)`,
 
         const { now, states, watch, hot, armed, snapshot } = ctx;
 
-        // ── 6.10: trending movers per chain ──────────────────────────────────
+        // ── 8.0i-b: Solana branch special — nu are EVM pair states ───────────
         const chainId = chain?.toLowerCase().trim();
-        const chains  = chainId ? [chainId] : ["base", "arbitrum", "bsc"];
+        if (chainId === "solana") {
+          const solanaMovers = await readSolanaMovers(now, top_n).catch(() => null);
+          return mcpResponse({
+            text: JSON.stringify({
+              chain:  "solana",
+              note:   "Solana movers are sampled from observed swap vault deltas, not full firehose.",
+              solanaSampledMovers: solanaMovers,
+            }, null, 2),
+            freshnessSec: solanaMovers?.computedAgeSec ?? null,
+            confidence:
+              solanaMovers && solanaMovers.computedAgeSec < 120 ? "MEDIUM" :
+              solanaMovers ? "LOW" :
+              "LOW",
+            dataQuality: { wsFlow: "absent" },
+          });
+        }
+
+        // ── 6.10: trending movers per chain (EVM) ────────────────────────────
+        // Solana are reader separat — exclude din EVM trending movers loop
+        const evmChainId = chainId ?? null;
+        const chains     = evmChainId ? [evmChainId] : ["base", "arbitrum", "bsc", "ethereum"];
         const moversByChain: Record<string, unknown[]> = {};
         for (const c of chains) {
-          const movers = await readTrendingMovers(c);
+          const movers = await readTrendingMovers(c); // EVM only
           if (movers.length) {
             moversByChain[c] = movers.slice(0, top_n).map(m => ({
               symbol:         m.symbol,
@@ -99,6 +119,11 @@ Args: chain (optional), top_n (default 5, max 20)`,
             totalTracked: entries.length,
             freshnessSec,
             trendingMovers: Object.keys(moversByChain).length ? moversByChain : null,
+            // 8.0i-b: Solana sampled movers — separate de EVM, wording honest
+            // chainId === "solana" e deja handled de branch-ul de mai sus
+            solanaSampledMovers: !chainId
+              ? await readSolanaMovers(now, top_n).catch(() => null)
+              : undefined,
           }, null, 2),
           freshnessSec,
           confidence:

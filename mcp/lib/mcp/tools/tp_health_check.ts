@@ -1,5 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { readAllRedis, freshnessLabel, safeMinAge, readQuoteOracleHealth, readQuotePriceHealth } from "../redis-reader";
+import { readAllRedis, freshnessLabel, safeMinAge, readQuoteOracleHealth, readQuotePriceHealth, readSolanaIndexerStats } from "../redis-reader";
 import { mcpResponse, mcpErr, ERR } from "../errors";
 
 export function registerHealthCheck(server: McpServer, exposePerformance: boolean) {
@@ -120,6 +120,7 @@ Use this first to verify the worker is running before calling other tools.`,
 		  } : null,
 		  quoteOracleHealth: Object.keys(quoteOracleHealth).length ? quoteOracleHealth : null,
 		  quotePriceHealth:  Object.keys(quotePriceHealth).length  ? quotePriceHealth  : null,
+		  solana: await readSolanaIndexerStats(now).catch(() => null),
 		  pipelineCoverage: pipelineCoverage ? {
 			savedAgeSec: Math.round((now - pipelineCoverage.savedAt) / 1000),
 			chains: Object.fromEntries(

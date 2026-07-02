@@ -404,3 +404,211 @@ export async function readTrendingMovers(chain: string): Promise<MoverEntry[]> {
     return JSON.parse(raw) as MoverEntry[];
   } catch { return []; }
 }
+
+// ── 8.0i: Solana indexer readers ─────────────────────────────────────────────
+
+export interface SolanaHealthData {
+  workerOnline:   boolean;
+  slot:           number | null;
+  cursor:         number | null;
+  blocksBehind:   number | null;
+  status:         "OK" | "DEGRADED" | "BEHIND" | "STARTING" | "OFFLINE";
+  indexerVersion: string | null;
+  ageSec:         number | null;
+}
+
+export interface SolanaIndexerStats {
+  health:              SolanaHealthData;
+  indexedPools:        number;
+  indexedLaunches:     number;
+  trackedPricePools:   number;
+  moversStatus:        "READY" | "EMPTY" | "STALE";
+  moversCount:         number;
+  moversComputedAgeSec: number | null;
+  coverage:            "SAMPLED";
+}
+
+export interface SolanaMoverItem {
+  poolAddress:      string;
+  program:          string;
+  baseSymbol:       string;
+  quoteSymbol:      string;
+  priceInQuote:     number;
+  priceUsd:         number | null;
+  priceChange5mPct: number | null;
+  priceChange1hPct: number | null;
+  sampleCount:      number;
+  historyStatus:    string;
+  knownPool:        boolean;
+  currentAgeSec:    number;
+}
+
+export interface SolanaMoversData {
+  computedAgeSec: number;
+  totalTracked:   number;
+  coverage:       "SAMPLED";
+  source:         "SWAP_VAULT_DELTA";
+  items:          SolanaMoverItem[];
+}
+
+export interface SolanaRecentPool {
+  poolAddress: string;
+  program:     string;
+  baseSymbol:  string | null;
+  quoteSymbol: string | null;
+  quoteType:   string | null;
+  discoveredAt: number;
+}
+
+export interface SolanaRecentLaunch {
+  mint:        string;
+  symbol:      string | null;
+  bondingCurve: string | null;
+  discoveredAt: number;
+}
+
+/**
+ * Citeste health + stats indexer Solana fara KEYS scan.
+ * Toate citirile sunt ZCARD / GET directe.
+ */
+export async function readSolanaIndexerStats(now: number): Promise<SolanaIndexerStats> {
+  const r = getRedis();
+  if (!r) {
+    return {
+      health: { workerOnline: false, slot: null, cursor: null, blocksBehind: null, status: "OFFLINE", indexerVersion: null, ageSec: null },
+      indexedPools: 0, indexedLaunches: 0, trackedPricePools: 0,
+      moversStatus: "EMPTY", moversCount: 0, moversComputedAgeSec: null,
+      coverage: "SAMPLED",
+    };
+  }
+
+  const [healthRaw, indexedPools, indexedLaunches, trackedPricePools, moversRaw] = await Promise.all([
+    r.get("preflight:indexer:health:solana"),
+    r.zcard("preflight:indexed:pairs:solana"),
+    r.zcard("preflight:indexed:launches:solana"),
+    r.zcard("preflight:solana:price:pools"),
+    r.get("preflight:trending:movers:solana"),
+  ]);
+
+  let health: SolanaHealthData;
+  if (!healthRaw) {
+    health = { workerOnline: false, slot: null, cursor: null, blocksBehind: null, status: "OFFLINE", indexerVersion: null, ageSec: null };
+  } else {
+    const h    = JSON.parse(healthRaw);
+    const ageSec = Math.round((now - new Date(h.updatedAt).getTime()) / 1000);
+    health = {
+      workerOnline:   ageSec < 5 * 60,
+      slot:           h.latestSlot   ?? null,
+      cursor:         h.cursorSlot   ?? null,
+      blocksBehind:   h.behindSlots  ?? null,
+      status:         ageSec >= 5 * 60 ? "OFFLINE" : (h.status ?? "STARTING"),
+      indexerVersion: h.indexerVersion ?? null,
+      ageSec,
+    };
+  }
+
+  let moversStatus: "READY" | "EMPTY" | "STALE" = "EMPTY";
+  let moversCount = 0;
+  let moversComputedAgeSec: number | null = null;
+
+  if (moversRaw) {
+    const snap = JSON.parse(moversRaw);
+    moversComputedAgeSec = Math.round((now - snap.computedAt) / 1000);
+    moversCount          = snap.movers?.length ?? 0;
+    moversStatus         = moversComputedAgeSec > 10 * 60 ? "STALE" : moversCount > 0 ? "READY" : "EMPTY";
+  }
+
+  return { health, indexedPools, indexedLaunches, trackedPricePools, moversStatus, moversCount, moversComputedAgeSec, coverage: "SAMPLED" };
+}
+
+/**
+ * Citeste sampled Solana movers din preflight:trending:movers:solana.
+ * Returneaza null daca nu exista date sau sunt stale (>10m).
+ */
+export async function readSolanaMovers(now: number, topN = 5): Promise<SolanaMoversData | null> {
+  const r = getRedis();
+  if (!r) return null;
+  try {
+    const raw = await r.get("preflight:trending:movers:solana");
+    if (!raw) return null;
+    const snap           = JSON.parse(raw);
+    const computedAgeSec = Math.round((now - snap.computedAt) / 1000);
+    if (computedAgeSec > 10 * 60) return null;
+
+    return {
+      computedAgeSec,
+      totalTracked: snap.totalTracked ?? 0,
+      coverage:     "SAMPLED",
+      source:       "SWAP_VAULT_DELTA",
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      items: (snap.movers ?? []).slice(0, topN).map((m: any) => ({
+        poolAddress:      String(m.poolAddress ?? ""),
+        program:          String(m.program     ?? "unknown"),
+        baseSymbol:       String(m.baseSymbol  ?? "?"),
+        quoteSymbol:      String(m.quoteSymbol ?? "?"),
+        priceInQuote:     Number(m.priceInQuote ?? 0),
+        priceUsd:         typeof m.priceUsd         === "number" ? m.priceUsd         : null,
+        priceChange5mPct: typeof m.priceChange5mPct === "number" ? m.priceChange5mPct : null,
+        priceChange1hPct: typeof m.priceChange1hPct === "number" ? m.priceChange1hPct : null,
+        sampleCount:      Number(m.sampleCount   ?? 0),
+        historyStatus:    String(m.historyStatus ?? "UNKNOWN"),
+        knownPool:        Boolean(m.knownPool),
+        currentAgeSec:    Number(m.currentAgeSec ?? 0),
+      })),
+    };
+  } catch { return null; }
+}
+
+/**
+ * Citeste ultimele N pooluri + launche-uri indexate pe Solana.
+ * Foloseste ZREVRANGE (score = discoveredAt ms) — fara KEYS.
+ */
+export async function readSolanaRecentActivity(topN = 5): Promise<{
+  recentPools:   SolanaRecentPool[];
+  recentLaunches: SolanaRecentLaunch[];
+}> {
+  const r = getRedis();
+  if (!r) return { recentPools: [], recentLaunches: [] };
+  try {
+    const [poolAddrs, launchMints] = await Promise.all([
+      r.zrevrange("preflight:indexed:pairs:ts:solana",   0, topN - 1, "WITHSCORES"),
+      r.zrevrange("preflight:indexed:launches:ts:solana", 0, topN - 1, "WITHSCORES"),
+    ]);
+
+    // WITHSCORES returneaza [addr, score, addr, score, ...] alternating
+    const poolPairs:   [string, number][] = [];
+    const launchPairs: [string, number][] = [];
+    for (let i = 0; i < poolAddrs.length;   i += 2) poolPairs.push([poolAddrs[i],   Number(poolAddrs[i + 1])]);
+    for (let i = 0; i < launchMints.length; i += 2) launchPairs.push([launchMints[i], Number(launchMints[i + 1])]);
+
+    // Fetch metadata in parallel
+    const [poolRaws, launchRaws] = await Promise.all([
+      poolPairs.length   ? r.mget(poolPairs.map(([addr])  => `preflight:indexed:pair:solana:${addr}`))   : Promise.resolve([]),
+      launchPairs.length ? r.mget(launchPairs.map(([mint]) => `preflight:indexed:launch:solana:${mint}`)) : Promise.resolve([]),
+    ]);
+
+    const recentPools: SolanaRecentPool[] = poolPairs.map(([addr, ts], i) => {
+      const meta = poolRaws[i] ? JSON.parse(poolRaws[i]!) : null;
+      return {
+        poolAddress:  addr,
+        program:      meta?.program     ?? "unknown",
+        baseSymbol:   meta?.baseSymbol  ?? null,
+        quoteSymbol:  meta?.quoteSymbol ?? null,
+        quoteType:    meta?.quoteType   ?? null,
+        discoveredAt: ts,
+      };
+    });
+
+    const recentLaunches: SolanaRecentLaunch[] = launchPairs.map(([mint, ts], i) => {
+      const meta = launchRaws[i] ? JSON.parse(launchRaws[i]!) : null;
+      return {
+        mint,
+        symbol:       meta?.symbol        ?? null,
+        bondingCurve: meta?.bondingCurveAddress ?? meta?.bondingCurve ?? null,
+        discoveredAt: ts,
+      };
+    });
+
+    return { recentPools, recentLaunches };
+  } catch { return { recentPools: [], recentLaunches: [] }; }
+}
