@@ -145,14 +145,26 @@ export async function parseSwapTx(
     let outputVault: string | undefined;
     let prog:        "cpmm" | "clmm_swapv2";
 
-    if (program === "cpmm" && strs.length === 13) {
+    const isCpmmSwap =
+      program === "cpmm"
+      && (instruction === "SwapBaseInput" || instruction === "SwapBaseOutput")
+      && strs.length === 13;
+
+    const isClmmSwapV2 =
+      program === "clmm"
+      && instruction === "SwapV2"
+      && strs.length >= 15;
+    // Guard explicit pe instruction name: previne Swap legacy accounts[16] tratat ca SwapV2.
+    // CLMM Swap legacy (accounts[11]/[12]/[13]/[16]) — ignorat, nu are mints in accounts.
+
+    if (isCpmmSwap) {
       pool        = strs[CPMM.POOL];
       inputMint   = strs[CPMM.INPUT_MINT];
       outputMint  = strs[CPMM.OUTPUT_MINT];
       inputVault  = strs[CPMM.INPUT_VAULT];
       outputVault = strs[CPMM.OUTPUT_VAULT];
       prog        = "cpmm";
-    } else if (program === "clmm" && strs.length >= 15) {
+    } else if (isClmmSwapV2) {
       pool        = strs[CLMM_V2.POOL];
       inputMint   = strs[CLMM_V2.INPUT_MINT];
       outputMint  = strs[CLMM_V2.OUTPUT_MINT];
@@ -160,7 +172,6 @@ export async function parseSwapTx(
       outputVault = strs[CLMM_V2.OUTPUT_VAULT];
       prog        = "clmm_swapv2";
     } else {
-      // layout necunoscut (CLMM Swap legacy accounts[12]/[16] — ignorat in b2)
       continue;
     }
 

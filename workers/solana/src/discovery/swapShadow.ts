@@ -15,6 +15,7 @@ import { RAYDIUM_CPMM, RAYDIUM_CLMM } from "../config/programs";
 import { extractTargetProgramInstructions } from "./logStack";
 import { parseSwapTx } from "./swapParser";
 import { recordSwapActivity } from "./swapActivity";
+import { recordPriceSnapshot } from "./priceTracker";
 
 // ── Tipuri ────────────────────────────────────────────────────────────────────
 
@@ -166,6 +167,10 @@ async function fetchSampleTx(
       if (!result.knownPool) return;
       recordSwapActivity(result, signature).catch((err: Error) => {
         console.warn("[SOLANA][SWAP][" + label + "][ACTIVITY] error:", err.message);
+      });
+      // b4: price snapshot — din vault deltas, zero Redis write daca UNKNOWN flow
+      recordPriceSnapshot(result, signature).catch((err: Error) => {
+        console.warn("[SOLANA][SWAP][" + label + "][PRICE] error:", err.message);
       });
     })
     .catch((err: Error) => {

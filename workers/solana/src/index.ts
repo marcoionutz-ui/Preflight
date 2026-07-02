@@ -12,6 +12,7 @@
  * 8.0h-b1: Raydium swap shadow classifier — CPMM + CLMM swap instruction stats + account layouts.
  * 8.0h-b2: Dry-run swap parser — pool/mint/flow/amounts din TX (zero Redis writes).
  * 8.0h-b3: Pool activity state — Redis per pool (sampledSwaps5m, sampledQuoteIn/Out5m, lastSwapAt).
+ * 8.0h-b4: Price snapshots — priceInQuote + priceUsd din vault deltas per known pool.
  */
 
 import { getSolanaRpcUrl, getSolanaWsUrl, getSlot, getVersion, getConnection } from "./infra/rpc";

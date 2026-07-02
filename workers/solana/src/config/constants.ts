@@ -68,6 +68,9 @@ export const KEY_LAUNCH      = (mint: string) => `preflight:indexed:launch:${CHA
 /** Activity state per pool (swap counts, volumes, 5m window): preflight:solana:activity:{pool} */
 export const KEY_POOL_ACTIVITY = (pool: string) => `preflight:solana:activity:${pool}`;
 
+/** Price snapshot per pool (priceInQuote, priceUsd): preflight:solana:price:{pool} */
+export const KEY_PRICE_SNAPSHOT = (pool: string) => `preflight:solana:price:${pool}`;
+
 // ── Worker version ────────────────────────────────────────────────────────────
 
-export const INDEXER_VERSION = "v8.0h-b3";
+export const INDEXER_VERSION = "v8.0h-b4";
