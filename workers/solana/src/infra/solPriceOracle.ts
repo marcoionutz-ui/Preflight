@@ -11,14 +11,14 @@
 
 import { getRedis }           from "./redis";
 import { KEY_SOL_USD_PRICE }  from "../config/constants";
-import { WSOL_MINT }          from "../config/programs";
 
 // ── Constante ─────────────────────────────────────────────────────────────────
 
-const ORACLE_TTL_SEC    = 5 * 60;   // TTL Redis — prețul vechi e acceptabil 5min
+const ORACLE_TTL_SEC     = 5 * 60;   // TTL Redis — prețul vechi e acceptabil 5min
 const ORACLE_INTERVAL_MS = 30_000;  // refresh la 30s
-const FETCH_TIMEOUT_MS  = 8_000;
-const JUPITER_URL       = `https://api.jup.ag/price/v2?ids=${WSOL_MINT}`;
+const FETCH_TIMEOUT_MS   = 8_000;
+// Binance public API — fără auth, stabil, răspuns simplu
+const BINANCE_URL = "https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT";
 
 // ── Tipuri ────────────────────────────────────────────────────────────────────
 
@@ -35,7 +35,7 @@ export async function fetchAndCacheSolPrice(): Promise<SolPriceEntry | null> {
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
   try {
-    const res = await fetch(JUPITER_URL, {
+    const res = await fetch(BINANCE_URL, {
       signal:  controller.signal,
       headers: { "Accept": "application/json" },
     });
@@ -44,10 +44,11 @@ export async function fetchAndCacheSolPrice(): Promise<SolPriceEntry | null> {
       return null;
     }
 
+    // Binance response: { "symbol": "SOLUSDT", "price": "150.23000000" }
     const json = await res.json() as any;
-    const priceStr = json?.data?.[WSOL_MINT]?.price;
+    const priceStr = json?.price;
     if (!priceStr) {
-      console.warn("[SOLANA][ORACLE] unexpected response shape:", JSON.stringify(json)?.slice(0, 300));
+      console.warn("[SOLANA][ORACLE] unexpected response shape:", JSON.stringify(json)?.slice(0, 200));
       return null;
     }
 
