@@ -58,7 +58,8 @@ export async function fetchAndCacheSolPrice(): Promise<SolPriceEntry | null> {
     await redis.set(KEY_SOL_USD_PRICE, JSON.stringify(entry), "EX", ORACLE_TTL_SEC);
 
     return entry;
-  } catch {
+  } catch (err: any) {
+    console.warn("[SOLANA][ORACLE] fetch error:", err?.message ?? String(err));
     return null;
   } finally {
     clearTimeout(timer);
