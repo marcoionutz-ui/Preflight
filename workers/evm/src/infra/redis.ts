@@ -16,8 +16,9 @@ export function getRedis(): Redis | null {
       enableOfflineQueue: false,
     });
     _redis.on("error", (err) => {
+      // Nu nulificăm singleton-ul pe error — conexiunea se reface automat prin ioredis retry.
+      // Dacă setăm _redis = null, fiecare eroare tranzitorie creează un client nou (leak).
       console.log("[REDIS] Error:", err.message);
-      _redis = null;
     });
   }
   return _redis;

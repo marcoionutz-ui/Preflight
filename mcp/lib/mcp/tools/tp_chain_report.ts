@@ -59,13 +59,10 @@ Args: chain — one of: base, arbitrum, eth, bsc, solana`,
     },
     async ({ chain }: { chain: string }) => {
       try {
-        const ctx = await readAllRedis();
-        if (!ctx) return mcpErr(ERR.REDIS_DOWN, "Redis not connected");
-
-        const { now, states, watch, hot, armed, events, drops, pfDrops } = ctx;
-
-        // ── 8.0i-c: Solana — branch special (nu are EVM pair states) ─────────
+        // ── 8.0i-c/d: Solana — branch special înainte de readAllRedis() ──────
+        // Nu are EVM pair states — citim direct din Solana readers
         if (chain === "solana") {
+          const now = Date.now();
           const [solanaStats, solanaMovers, solanaActivity] = await Promise.all([
             readSolanaIndexerStats(now),
             readSolanaMovers(now, 10),
@@ -75,7 +72,7 @@ Args: chain — one of: base, arbitrum, eth, bsc, solana`,
           const { health } = solanaStats;
           const lines: string[] = [];
           lines.push("CHAIN REPORT: SOLANA");
-          lines.push(`Worker: ${health.status} | v${health.indexerVersion ?? "?"} | behind:${health.blocksBehind ?? "?"} slots | healthAge:${health.ageSec !== null ? health.ageSec + "s" : "OFFLINE"}`);
+          lines.push(`Worker: ${health.status} | ${health.indexerVersion ?? "?"} | behind:${health.blocksBehind ?? "?"} slots | healthAge:${health.ageSec !== null ? health.ageSec + "s" : "OFFLINE"}`);
           lines.push(`Indexed: ${solanaStats.indexedPools} pools | ${solanaStats.indexedLaunches} launches | ${solanaStats.trackedPricePools} price pools tracked`);
           lines.push(`Movers: ${solanaStats.moversStatus} (${solanaStats.moversCount} entries${solanaStats.moversComputedAgeSec !== null ? ", " + solanaStats.moversComputedAgeSec + "s old" : ""})`);
           lines.push("");
@@ -125,6 +122,12 @@ Args: chain — one of: base, arbitrum, eth, bsc, solana`,
             dataQuality: { wsFlow: "absent" }, // Solana nu are WS flow ca EVM
           });
         }
+
+        // ── EVM chains — citim Redis doar dacă nu e Solana ───────────────
+        const ctx = await readAllRedis();
+        if (!ctx) return mcpErr(ERR.REDIS_DOWN, "Redis not connected");
+
+        const { now, states, watch, hot, armed, events, drops, pfDrops } = ctx;
 
         // ── Filter everything to this chain ───────────────────────────────
         const chainKey    = normalizeChain(chain); // "eth" → "ethereum"

@@ -21,14 +21,13 @@ Args: chain (optional), top_n (default 5, max 20)`,
     },
     async ({ chain, top_n }: { chain?: string; top_n: number }) => {
       try {
-        const ctx = await readAllRedis();
-        if (!ctx) return mcpErr(ERR.REDIS_DOWN, "Redis not connected");
+        // ── 8.0i-b/d: Solana branch — înainte de readAllRedis (EVM only) ──────
+        // Normalize "eth" → "ethereum" (worker stochează "ethereum")
+        const rawChainId = chain?.toLowerCase().trim();
+        const chainId = rawChainId === "eth" ? "ethereum" : rawChainId;
 
-        const { now, states, watch, hot, armed, snapshot } = ctx;
-
-        // ── 8.0i-b: Solana branch special — nu are EVM pair states ───────────
-        const chainId = chain?.toLowerCase().trim();
         if (chainId === "solana") {
+          const now = Date.now();
           const solanaMovers = await readSolanaMovers(now, top_n).catch(() => null);
           return mcpResponse({
             text: JSON.stringify({
@@ -44,6 +43,11 @@ Args: chain (optional), top_n (default 5, max 20)`,
             dataQuality: { wsFlow: "absent" },
           });
         }
+
+        const ctx = await readAllRedis();
+        if (!ctx) return mcpErr(ERR.REDIS_DOWN, "Redis not connected");
+
+        const { now, states, watch, hot, armed, snapshot } = ctx;
 
         // ── 6.10: trending movers per chain (EVM) ────────────────────────────
         // Solana are reader separat — exclude din EVM trending movers loop
@@ -90,7 +94,7 @@ Args: chain (optional), top_n (default 5, max 20)`,
 
         const newestStateAt = entries.length ? Math.max(...entries.map(([, p]) => p.updatedAt)) : null;
 
-       const totalWithFlow = flowPressure.buying + flowPressure.selling + flowPressure.neutral;
+        const totalWithFlow = flowPressure.buying + flowPressure.selling + flowPressure.neutral;
         const wsFlowQuality: "present" | "partial" | "absent" =
           entries.length === 0  ? "absent" :
           totalWithFlow === 0   ? "absent" :
@@ -119,7 +123,7 @@ Args: chain (optional), top_n (default 5, max 20)`,
             totalTracked: entries.length,
             freshnessSec,
             trendingMovers: Object.keys(moversByChain).length ? moversByChain : null,
-            // 8.0i-b: Solana sampled movers — separate de EVM, wording honest
+            // Solana sampled movers — incluse doar în global overview (fără chain filter)
             // chainId === "solana" e deja handled de branch-ul de mai sus
             solanaSampledMovers: !chainId
               ? await readSolanaMovers(now, top_n).catch(() => null)

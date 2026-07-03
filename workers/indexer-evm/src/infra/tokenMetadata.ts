@@ -15,6 +15,7 @@
  */
 
 import { getRedis } from "./redis";
+import { intEnv } from "../config/env";
 
 // ── Native currency (V4) ──────────────────────────────────────────────────────
 
@@ -109,11 +110,6 @@ function decodeDecimals(hex: string): number | null {
 }
 
 // ── eth_call (single attempt, timeout-guarded) ────────────────────────────────
-
-function intEnv(name: string, fallback: number): number {
-  const n = Number(process.env[name]);
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
-}
 
 const METADATA_TIMEOUT_MS = intEnv("INDEXER_METADATA_RPC_TIMEOUT_MS", 4_000);
 

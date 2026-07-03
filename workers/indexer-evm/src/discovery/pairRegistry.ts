@@ -32,13 +32,9 @@ import { getQuotePriceResult } from "../infra/quotePrices";
 import type { QuotePriceSource } from "../infra/quotePrices";
 import { fetchV2Price } from "../infra/v2Pricing";
 import type { PriceStatus, AmmVersion, PricingSource, ReserveSource } from "../infra/v2Pricing";
+import { intEnv } from "../config/env";
 
 // ── Enrichment concurrency guard ──────────────────────────────────────────────
-
-function intEnv(name: string, fallback: number): number {
-  const n = Number(process.env[name]);
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
-}
 
 const MAX_ENRICHMENTS = intEnv("INDEXER_METADATA_CONCURRENCY", 4);
 let activeEnrichments = 0;

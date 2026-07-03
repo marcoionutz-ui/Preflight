@@ -117,7 +117,7 @@ function parseCreateLegacy(accounts: string[]): PumpfunCreateResult | null {
   return { mint, bondingCurveAddress, associatedBondingCurve, creatorAddress, instructionShape: "CREATE_LEGACY" };
 }
 
-// ── Fetch cu retry ────────────────────────────────────────────────────────────
+// ── Fetch cu retry ────────────────────────────────────────────────────────────────────────────────────
 
 const FETCH_RETRY_DELAYS_MS = [2_000, 5_000, 15_000];
 

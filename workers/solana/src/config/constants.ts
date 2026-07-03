@@ -46,11 +46,11 @@ export const TOKEN_META_TTL_SEC = 24 * 60 * 60;
 
 // ── Health thresholds ─────────────────────────────────────────────────────────
 
-/** Slot-uri în urmă până la care considerăm OK */
-export const BEHIND_OK_SLOTS      = 50;
+/** Slot-uri în urmă până la care considerăm OK (~45-60s pe Solana) */
+export const BEHIND_OK_SLOTS      = 120;
 
-/** Slot-uri în urmă până la care considerăm DEGRADED */
-export const BEHIND_DEGRADED_SLOTS = 200;
+/** Slot-uri în urmă până la care considerăm DEGRADED (~3-5min pe Solana) */
+export const BEHIND_DEGRADED_SLOTS = 600;
 
 // ── pump.fun launch namespace ─────────────────────────────────────────────────
 
@@ -84,4 +84,4 @@ export const KEY_TRENDING_MOVERS = `preflight:trending:movers:${CHAIN}`;
 
 // ── Worker version ────────────────────────────────────────────────────────────
 
-export const INDEXER_VERSION = "v8.0h-b5";
+export const INDEXER_VERSION = "v8.0i-d";
