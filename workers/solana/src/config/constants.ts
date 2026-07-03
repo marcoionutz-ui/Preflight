@@ -89,4 +89,4 @@ export const KEY_SOL_USD_PRICE = "preflight:solana:oracle:sol_usd";
 
 // ── Worker version ────────────────────────────────────────────────────────────
 
-export const INDEXER_VERSION = "v8.0j";
+export const INDEXER_VERSION = "v8.0k";

@@ -2,6 +2,7 @@
  * discovery/pairWriter.ts
  * 8.0f:   Scrie un pool Solana în Redis. Include quote normalization + metadata enrichment.
  * 8.0h-a: Dupa insert nou, leaga pool-ul de launch record (daca exista) via linkLaunchToPool.
+ * 8.0k-a1: Dupa insert nou, patch price snapshot existent cu knownPool=true (stale sync fix).
  *
  * Redis keys (consistente cu EVM):
  *   preflight:indexed:pair:solana:{poolAddress}  -> JSON (EX: PAIR_TTL_SEC)
@@ -11,7 +12,7 @@
 
 import { getRedis } from "../infra/redis";
 import {
-  CHAIN, KEY_PAIR, KEY_PAIRS, KEY_PAIRS_TS, PAIR_TTL_SEC, INDEXER_VERSION,
+  CHAIN, KEY_PAIR, KEY_PAIRS, KEY_PAIRS_TS, KEY_PRICE_SNAPSHOT, PAIR_TTL_SEC, INDEXER_VERSION,
 } from "../config/constants";
 import { normalizeQuote, SolanaQuoteType, WSOL_MINT, USDC_MINT, USDT_MINT } from "./quoteNormalizer";
 import { TokenMeta } from "../infra/tokenMetadata";
@@ -19,6 +20,29 @@ import { linkLaunchToPool } from "./launchWriter";
 
 // Mints care sunt quote assets — nu sunt niciodata launch-uri pump.fun
 const KNOWN_QUOTE_MINTS = new Set([WSOL_MINT, USDC_MINT, USDT_MINT]);
+
+// ── 8.0k-a1: knownPool stale sync ────────────────────────────────────────────
+
+/**
+ * Dacă există un price snapshot cu knownPool=false pentru poolul tocmai indexat,
+ * îl corectează la true fără să îi modifice TTL-ul.
+ * Fire-and-forget — nu blochează pipeline-ul de insert.
+ */
+async function markPriceSnapshotKnown(poolAddress: string): Promise<void> {
+  const redis = getRedis();
+  const key   = KEY_PRICE_SNAPSHOT(poolAddress);
+
+  const raw = await redis.get(key);
+  if (!raw) return; // snapshot inexistent — nimic de corectat
+
+  const snap = JSON.parse(raw);
+  if (snap.knownPool === true) return; // deja corect
+
+  snap.knownPool = true;
+  // KEEPTTL păstrează TTL-ul original — nu reset la 10m
+  await (redis as any).set(key, JSON.stringify(snap), "KEEPTTL");
+  console.log("[SOLANA][WRITER] knownPool patched pool=" + poolAddress.slice(0, 8) + "...");
+}
 
 export interface SolanaPool {
   chain:          typeof CHAIN;
@@ -57,6 +81,12 @@ export async function writeSolanaPool(pool: SolanaPool): Promise<WriteResult> {
     pipeline.zadd(KEY_PAIRS,    pool.slot,  pool.poolAddress);
     pipeline.zadd(KEY_PAIRS_TS, Date.now(), pool.poolAddress);
     await pipeline.exec();
+
+    // 8.0k-a1 — sync price snapshot knownPool (fire-and-forget)
+    // Daca exista un snapshot cu knownPool=false (sampled inainte de indexare), il corectam
+    markPriceSnapshotKnown(pool.poolAddress).catch((err: Error) => {
+      console.warn("[SOLANA][WRITER] knownPool patch error:", err.message);
+    });
 
     // 8.0h-a — migration linking: leaga launch-ul pump.fun de pool-ul Raydium (daca exista)
     // Filtram quote mints cunoscute — WSOL/USDC/USDT nu sunt niciodata launch-uri pump.fun

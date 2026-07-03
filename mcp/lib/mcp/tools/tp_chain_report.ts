@@ -340,7 +340,7 @@ Args: chain — one of: base, arbitrum, eth, bsc, solana`,
             trackedPairs: stateVals.length,
             coveragePct,
             hot:      chainHot.length,
-            armed:    chainArmed.length,
+                  armed:    chainArmed.length,
             watching: chainWatch.length,
           },
         });

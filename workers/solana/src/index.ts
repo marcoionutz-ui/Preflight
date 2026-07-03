@@ -15,6 +15,7 @@
  * 8.0h-b4: Price snapshots — priceInQuote + priceUsd din vault deltas per known pool.
  * 8.0h-b5: Sampled price history — ring buffer + ZSET index + movers computation (preflight:trending:movers:solana).
  * 8.0j:    SOL/USD oracle via Jupiter Price API v2 — priceUsd populat pentru WSOL-quoted pools.
+ * 8.0k-a:  knownPool stale sync fix — pairWriter patch snapshot + moversTracker batch recheck.
  */
 
 import { getSolanaRpcUrl, getSolanaWsUrl, getSlot, getVersion, getConnection } from "./infra/rpc";

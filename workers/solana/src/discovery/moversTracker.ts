@@ -1,6 +1,7 @@
 /**
  * discovery/moversTracker.ts
  * 8.0h-b5: Calculeaza top movers din sampled price history.
+ * 8.0k-a2: Batch recheck knownPool vs registry la fiecare compute + write-back stale snapshots.
  *
  * ZSET index evita KEYS scan in prod:
  *   ZRANGEBYSCORE preflight:solana:price:pools now-7200000 now
@@ -21,6 +22,7 @@
 
 import { getRedis }        from "../infra/redis";
 import {
+  KEY_PAIR,
   KEY_PRICE_SNAPSHOT,
   KEY_PRICE_HISTORY,
   KEY_PRICE_POOLS,
@@ -143,14 +145,20 @@ async function calculateAndWriteMovers(now: number): Promise<void> {
 
   if (poolAddresses.length === 0) return;
 
-  // Fetch snapshots + history — doua batch-uri, nu N round-trips
+  // Fetch snapshots + history + registry — trei batch-uri, nu N round-trips
   const snapshotKeys = poolAddresses.map(p => KEY_PRICE_SNAPSHOT(p));
   const historyKeys  = poolAddresses.map(p => KEY_PRICE_HISTORY(p));
+  const registryKeys = poolAddresses.map(p => KEY_PAIR(p));
 
-  const snapshotRaws = await redis.mget(snapshotKeys);
-  const historyArrays = await Promise.all(
-    historyKeys.map(k => redis.lrange(k, 0, -1)),
-  );
+  const [snapshotRaws, registryRaws, historyArrays] = await Promise.all([
+    redis.mget(snapshotKeys),
+    redis.mget(registryKeys),
+    Promise.all(historyKeys.map(k => redis.lrange(k, 0, -1))),
+  ]);
+
+  // 8.0k-a2: write-back batch pentru snapshots stale (knownPool false dar pool exista in registry)
+  const writebackPipeline = redis.pipeline();
+  let writebackCount = 0;
 
   const movers: PriceMover[] = [];
 
@@ -161,6 +169,14 @@ async function calculateAndWriteMovers(now: number): Promise<void> {
     const snap: PriceSnapshot        = JSON.parse(snapshotRaw);
     const historyRaw: string[]        = historyArrays[i] ?? [];
     const history: HistoryEntry[]     = historyRaw.map(r => JSON.parse(r) as HistoryEntry);
+
+    // 8.0k-a2: re-check knownPool vs registry (corectare stale data)
+    const isRegistered = Boolean(registryRaws[i]);
+    if (isRegistered && !snap.knownPool) {
+      snap.knownPool = true;
+      (writebackPipeline as any).set(snapshotKeys[i], JSON.stringify(snap), "KEEPTTL");
+      writebackCount++;
+    }
 
     const sampleCount      = history.length;
     const currentAgeSec    = (now - snap.lastUpdatedAt) / 1000;
@@ -202,6 +218,12 @@ async function calculateAndWriteMovers(now: number): Promise<void> {
       lastUpdatedAt:      snap.lastUpdatedAt,
       computedAt:         now,
     });
+  }
+
+  // 8.0k-a2: flush write-backs (corectare snapshot-uri stale, o singura data per pool)
+  if (writebackCount > 0) {
+    await writebackPipeline.exec();
+    console.log("[SOLANA][MOVERS] knownPool write-back count=" + writebackCount);
   }
 
   // Sort: abs(priceChange5mPct) desc, null la coada
