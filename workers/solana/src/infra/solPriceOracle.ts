@@ -39,14 +39,23 @@ export async function fetchAndCacheSolPrice(): Promise<SolPriceEntry | null> {
       signal:  controller.signal,
       headers: { "Accept": "application/json" },
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      console.warn("[SOLANA][ORACLE] HTTP error:", res.status, res.statusText);
+      return null;
+    }
 
     const json = await res.json() as any;
     const priceStr = json?.data?.[WSOL_MINT]?.price;
-    if (!priceStr) return null;
+    if (!priceStr) {
+      console.warn("[SOLANA][ORACLE] unexpected response shape:", JSON.stringify(json)?.slice(0, 300));
+      return null;
+    }
 
     const priceUsd = Number(priceStr);
-    if (!isFinite(priceUsd) || priceUsd <= 0) return null;
+    if (!isFinite(priceUsd) || priceUsd <= 0) {
+      console.warn("[SOLANA][ORACLE] invalid price value:", priceStr);
+      return null;
+    }
 
     const entry: SolPriceEntry = {
       priceUsd,
