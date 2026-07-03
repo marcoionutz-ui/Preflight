@@ -82,6 +82,11 @@ export const KEY_PRICE_POOLS = `preflight:solana:price:pools`;
 /** Top movers pre-calculați per chain: preflight:trending:movers:solana */
 export const KEY_TRENDING_MOVERS = `preflight:trending:movers:${CHAIN}`;
 
+// ── Oracle namespace ──────────────────────────────────────────────────────────
+
+/** SOL/USD price cache (TTL 5min, refresh 30s): preflight:solana:oracle:sol_usd */
+export const KEY_SOL_USD_PRICE = "preflight:solana:oracle:sol_usd";
+
 // ── Worker version ────────────────────────────────────────────────────────────
 
-export const INDEXER_VERSION = "v8.0i-d";
+export const INDEXER_VERSION = "v8.0j";

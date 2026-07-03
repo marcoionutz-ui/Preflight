@@ -2,6 +2,7 @@
  * discovery/priceTracker.ts
  * 8.0h-b4: Price snapshots — preț aproximativ per pool din vault deltas.
  * 8.0h-b5: Ring buffer history + ZSET index per pool (fara KEYS scan in movers job).
+ * 8.0j:    WSOL-quoted pools get priceUsd via cached SOL/USD oracle (Jupiter Price API v2).
  *
  * Formula: priceInQuote = quoteAmount_normalized / baseAmount_normalized
  *   QUOTE_IN:  quoteAmt = inputAmount,  baseAmt = outputAmount
@@ -23,6 +24,7 @@ import { resolveTokenMeta }     from "../infra/tokenMetadata";
 import { SwapParseResult }      from "./swapParser";
 import { USDC_MINT, USDT_MINT, WSOL_MINT } from "../config/programs";
 import { maybeCalculateMovers } from "./moversTracker";
+import { readSolPrice }         from "../infra/solPriceOracle";
 
 // ── Tipuri ────────────────────────────────────────────────────────────────────
 
@@ -34,7 +36,9 @@ export interface PriceSnapshot {
   baseSymbol:    string;
   quoteSymbol:   string;
   priceInQuote:  number;        // preț base in unitati quote (ex: 0.000012 SOL per token)
-  priceUsd:      number | null; // direct doar pentru USDC/USDT quoted, null pentru SOL
+  priceUsd:      number | null; // USDC/USDT direct; WSOL via cached SOL/USD oracle; null dacă oracle indisponibil
+  usdSource:     "STABLE_QUOTE" | "SOL_USD_ORACLE" | null;
+  solUsdPrice?:  number;        // prețul SOL/USD folosit (doar dacă usdSource = SOL_USD_ORACLE)
   lastUpdatedAt: number;
   lastSignature: string;
   source:        "SWAP_VAULT_DELTA";
@@ -107,9 +111,24 @@ export async function recordPriceSnapshot(
   const priceInQuote = quoteNorm / baseNorm;
   if (!isFinite(priceInQuote) || priceInQuote <= 0) return;
 
-  // priceUsd direct doar pentru USDC/USDT quoted pools
-  const isUsdQuote = result.quoteMint === USDC_MINT || result.quoteMint === USDT_MINT;
-  const priceUsd   = isUsdQuote ? priceInQuote : null;
+  // 8.0j: priceUsd — USD/STABLE direct, WSOL via oracle
+  const isUsdQuote  = result.quoteMint === USDC_MINT || result.quoteMint === USDT_MINT;
+  const isWsolQuote = result.quoteMint === WSOL_MINT;
+  let priceUsd:    number | null = null;
+  let usdSource:   PriceSnapshot["usdSource"] = null;
+  let solUsdPrice: number | undefined;
+
+  if (isUsdQuote) {
+    priceUsd  = priceInQuote;
+    usdSource = "STABLE_QUOTE";
+  } else if (isWsolQuote) {
+    const solUsd = await readSolPrice();
+    if (solUsd !== null) {
+      solUsdPrice = solUsd;
+      priceUsd    = priceInQuote * solUsd;
+      usdSource   = "SOL_USD_ORACLE";
+    }
+  }
 
   const progLabel = result.program === "cpmm" ? "CPMM" : "CLMM";
 
@@ -122,6 +141,8 @@ export async function recordPriceSnapshot(
     quoteSymbol:   quoteMeta.symbol ?? result.quoteMint.slice(0, 8),
     priceInQuote,
     priceUsd,
+    usdSource,
+    solUsdPrice,
     lastUpdatedAt: Date.now(),
     lastSignature: signature,
     source:        "SWAP_VAULT_DELTA",
@@ -154,7 +175,7 @@ export async function recordPriceSnapshot(
     + " base=" + snapshot.baseSymbol
     + " price=" + priceInQuote.toExponential(4)
     + " " + snapshot.quoteSymbol
-    + (priceUsd !== null ? " priceUsd=" + priceUsd.toExponential(4) : "")
+    + (priceUsd !== null ? " priceUsd=" + priceUsd.toExponential(4) + " (" + usdSource + ")" : "")
     + " sig=" + signature.slice(0, 12) + "...",
   );
 

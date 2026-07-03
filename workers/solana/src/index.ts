@@ -14,6 +14,7 @@
  * 8.0h-b3: Pool activity state — Redis per pool (sampledSwaps5m, sampledQuoteIn/Out5m, lastSwapAt).
  * 8.0h-b4: Price snapshots — priceInQuote + priceUsd din vault deltas per known pool.
  * 8.0h-b5: Sampled price history — ring buffer + ZSET index + movers computation (preflight:trending:movers:solana).
+ * 8.0j:    SOL/USD oracle via Jupiter Price API v2 — priceUsd populat pentru WSOL-quoted pools.
  */
 
 import { getSolanaRpcUrl, getSolanaWsUrl, getSlot, getVersion, getConnection } from "./infra/rpc";
@@ -31,6 +32,7 @@ import { handlePumpfunShadow, logPumpfunStats } from "./discovery/pumpfunShadow"
 import { isPumpfunCreateLog, fetchPumpfunCreate } from "./discovery/pumpfunFetcher";
 import { buildLaunchRecord, writeLaunchRecord, enrichLaunchRecord } from "./discovery/launchWriter";
 import { resolveTokenMeta }         from "./infra/tokenMetadata";
+import { startSolPriceOracle }      from "./infra/solPriceOracle";
 import {
   CHAIN, INDEXER_VERSION, POLL_INTERVAL_MS, KEY_PAIRS,
 } from "./config/constants";
@@ -285,6 +287,9 @@ async function main(): Promise<void> {
   }
 
   const connection = getConnection();
+
+  // 8.0j: SOL/USD price oracle — fetch imediat + refresh 30s
+  startSolPriceOracle();
 
   // Smoke test metadata — validează Jupiter API la fiecare startup
   // wSOL (KNOWN) + JTO (Jupiter path) — confirmare rapidă fără să așteptăm un pool nou
