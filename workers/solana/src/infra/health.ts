@@ -43,7 +43,7 @@ export function buildHealth(
   cursorSlot: number | null,
   nodeVersion: string,
 ): SolanaHealth {
-  const behindSlots = cursorSlot !== null ? latestSlot - cursorSlot : 0;
+  const behindSlots = cursorSlot !== null ? Math.max(0, latestSlot - cursorSlot) : 0;
   return {
     chain:          CHAIN,
     version:        nodeVersion,

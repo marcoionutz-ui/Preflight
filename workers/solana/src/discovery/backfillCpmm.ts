@@ -21,6 +21,7 @@
  * Env vars:
  *   SOLANA_BACKFILL_ENABLED=1       (default: off)
  *   SOLANA_BACKFILL_MAX_ACCOUNTS    (default: 1000)
+ *   SOLANA_BACKFILL_FORCE=1         (dev: ignora marker, rerun forced)
  */
 
 import { Connection, PublicKey } from "@solana/web3.js";
@@ -73,8 +74,10 @@ export async function runCpmmBackfill(connection: Connection): Promise<void> {
   const sampleMarker = `preflight:indexer:backfill:cpmm:${INDEXER_VERSION}:sample:${maxAccounts}`;
   const fullMarker   = `preflight:indexer:backfill:cpmm:${INDEXER_VERSION}:full`;
 
+  const force = process.env.SOLANA_BACKFILL_FORCE === "1";
+
   const [sampleDone, fullDone] = await redis.mget(sampleMarker, fullMarker);
-  if (sampleDone || fullDone) {
+  if (!force && (sampleDone || fullDone)) {
     const which = fullDone ? fullMarker : sampleMarker;
     console.log("[SOLANA][BACKFILL] already done for " + INDEXER_VERSION + " (marker=" + which + ") -- skipping");
     return;

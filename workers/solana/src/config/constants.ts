@@ -35,8 +35,6 @@ export const BATCH_SLOTS      = 10;
 /** Interval polling când nu folosim WebSocket (ms) */
 export const POLL_INTERVAL_MS = 5_000;
 
-/** TTL pentru perechile indexate (72h) */
-export const PAIR_TTL_SEC     = 72 * 60 * 60;
 
 /** TTL pentru health key (5min — reînnoit la fiecare heartbeat) */
 export const HEALTH_TTL_SEC   = 5 * 60;
@@ -94,4 +92,4 @@ export const KEY_OBSERVED_CANDIDATE = (pool: string) => `preflight:solana:observ
 
 // ── Worker version ────────────────────────────────────────────────────────────
 
-export const INDEXER_VERSION = "v8.0l";
+export const INDEXER_VERSION = "v8.0m";

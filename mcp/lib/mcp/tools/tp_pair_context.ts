@@ -101,7 +101,9 @@ Args: pair_address (0x... EVM address, V4 pool ID, or Solana pool address), chai
             text: JSON.stringify({
               found, pairAddress: poolAddress, chain: "solana", symbol,
               dataSource:     registry ? "solana_registry" : priceSnapshot ? "solana_price_snapshot" : "none",
-              contextQuality: dataAgeSec !== null ? (dataAgeSec < 45 ? "fresh" : dataAgeSec < 90 ? "aging" : "stale") : "unknown",
+              contextQuality: dataAgeSec !== null
+                ? (dataAgeSec < 45 ? "fresh" : dataAgeSec < 90 ? "aging" : "stale")
+                : (recentHistory.length > 0 ? "history_only" : "unknown"),
               registry, priceSnapshot, activity,
               recentHistory:  recentHistory.slice(0, 10),
               observedCandidate, dataAgeSec,

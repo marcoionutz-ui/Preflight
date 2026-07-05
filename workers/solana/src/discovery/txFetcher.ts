@@ -24,12 +24,9 @@ export interface CpmmInitResult {
   mint1:       string;
 }
 
-/** Log pattern emis de Raydium CPMM la Initialize. */
-const CPMM_INIT_LOG = "Program log: Instruction: Initialize";
-
 /** Verifica daca logs-urile contin instructiunea Initialize (filtru ieftin inainte de fetch). */
 export function isCpmmInitLog(logs: string[]): boolean {
-  return logs.some(l => l === CPMM_INIT_LOG);
+  return logs.some(l => l.includes("Instruction: Initialize")); // defensive: includes > strict equality
 }
 
 /**

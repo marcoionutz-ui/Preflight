@@ -21,6 +21,8 @@ export async function readCursor(): Promise<number | null> {
 
 /**
  * Salvează slotul curent în Redis.
+ * @deprecated Folosește advanceCursor() — aceasta suprascrie direct fără compare-and-set
+ * și poate regresa cursorul dacă sunt events paralele.
  */
 export async function writeCursor(slot: number): Promise<void> {
   const redis = getRedis();
@@ -28,11 +30,19 @@ export async function writeCursor(slot: number): Promise<void> {
 }
 
 /**
- * Avansează cursorul doar dacă slot > valoarea curentă.
- * Previne regresia cursorului când vin events interleaved din subscriptions paralele.
+ * Avansează cursorul atomic via Lua — previne race condition când vin
+ * events paralele din subscriptions multiple pe acelasi WS connection.
+ * SET se face doar daca slot > current (compare-and-set atomic).
  */
 export async function advanceCursor(slot: number): Promise<void> {
-  const current = await readCursor();
-  if (current !== null && slot <= current) return;
-  await writeCursor(slot);
+  const redis = getRedis();
+  await (redis as any).eval(
+    `local cur = tonumber(redis.call('GET', KEYS[1]) or '-1')
+     local inc = tonumber(ARGV[1])
+     if inc > cur then redis.call('SET', KEYS[1], ARGV[1]) end
+     return 1`,
+    1,
+    KEY_CURSOR,
+    String(slot),
+  );
 }

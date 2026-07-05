@@ -22,7 +22,7 @@
  *
  * Keys:
  *   preflight:solana:observed_candidate:{pool}  TTL 2h
- *   preflight:indexed:pair:solana:{pool}        SET NX EX 72h la promovare
+ *   preflight:indexed:pair:solana:{pool}        SET NX persistent la promovare
  */
 
 import { getRedis } from "../infra/redis";
@@ -30,7 +30,6 @@ import {
   CHAIN,
   KEY_PAIR, KEY_PAIRS, KEY_PAIRS_TS,
   KEY_OBSERVED_CANDIDATE, KEY_PRICE_SNAPSHOT,
-  PAIR_TTL_SEC,
   INDEXER_VERSION,
 } from "../config/constants";
 import { USDC_MINT, USDT_MINT, WSOL_MINT } from "../config/programs";
@@ -128,7 +127,12 @@ export async function maybeRecordObservedCandidate(
   let candidate: ObservedCandidate;
 
   if (raw) {
-    candidate = JSON.parse(raw) as ObservedCandidate;
+    try {
+      candidate = JSON.parse(raw) as ObservedCandidate;
+    } catch {
+      // JSON corupt / editat manual — resetam candidatul
+      candidate = buildCandidate(snapshot, signature, now);
+    }
 
     // Dacă deja promovat — skip
     if (candidate.promoted) return;
@@ -198,7 +202,7 @@ export async function maybeRecordObservedCandidate(
     });
 
     // SET NX — nu overwrite dacă pool-ul a fost indexat între timp
-    const inserted = await redis.set(pairKey, registryRecord, "EX", PAIR_TTL_SEC, "NX");
+    const inserted = await redis.set(pairKey, registryRecord, "NX"); // permanent — fara TTL (registry)
 
     if (inserted) {
       // Actualizăm ZSET-urile (slot=0 pentru observed, score=now pentru TS)

@@ -5,14 +5,14 @@
  * 8.0k-a1: Dupa insert nou, patch price snapshot existent cu knownPool=true (stale sync fix).
  *
  * Redis keys (consistente cu EVM):
- *   preflight:indexed:pair:solana:{poolAddress}  -> JSON (EX: PAIR_TTL_SEC)
+ *   preflight:indexed:pair:solana:{poolAddress}  -> JSON (persistent — fara TTL)
  *   preflight:indexed:pairs:solana               -> ZSET (score = slot)
  *   preflight:indexed:pairs:ts:solana            -> ZSET (score = Unix ms)
  */
 
 import { getRedis } from "../infra/redis";
 import {
-  CHAIN, KEY_PAIR, KEY_PAIRS, KEY_PAIRS_TS, KEY_PRICE_SNAPSHOT, PAIR_TTL_SEC, INDEXER_VERSION,
+  CHAIN, KEY_PAIR, KEY_PAIRS, KEY_PAIRS_TS, KEY_PRICE_SNAPSHOT, INDEXER_VERSION,
 } from "../config/constants";
 import { normalizeQuote, SolanaQuoteType, WSOL_MINT, USDC_MINT, USDT_MINT } from "./quoteNormalizer";
 import { TokenMeta } from "../infra/tokenMetadata";
@@ -72,8 +72,8 @@ export async function writeSolanaPool(pool: SolanaPool): Promise<WriteResult> {
   const key   = KEY_PAIR(pool.poolAddress);
 
   try {
-    // SET NX EX — atomic: scrie doar daca cheia nu exista
-    const inserted = await redis.set(key, JSON.stringify(pool), "EX", PAIR_TTL_SEC, "NX");
+    // SET NX — atomic: scrie doar daca cheia nu exista; registry persistent
+    const inserted = await redis.set(key, JSON.stringify(pool), "NX"); // permanent — fara TTL (registry)
     if (!inserted) return "exists";
 
     // Actualizeaza ZSET-urile doar daca am inserat cu succes
@@ -162,7 +162,7 @@ export async function enrichSolanaPool(
   };
 
   try {
-    await redis.set(key, JSON.stringify(enriched), "EX", PAIR_TTL_SEC);
+    await redis.set(key, JSON.stringify(enriched)); // permanent — fara TTL
   } catch (err) {
     console.error("[SOLANA][WRITER] enrich error pool=" + pool.poolAddress.slice(0, 8) + ":", (err as Error).message);
   }

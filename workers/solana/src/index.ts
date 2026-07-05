@@ -18,6 +18,7 @@
  * 8.0k-a:  knownPool stale sync fix — pairWriter patch snapshot + moversTracker batch recheck.
  * 8.0k-b:  observed pool candidate promotion — swap-sampled pools promovate în registry după 3 samples/2min.
  * 8.0l:    MCP tools Solana branch — tp_pair_context + tp_preflight_safety Solana-aware.
+ * 8.0m:    Debt sweep — registry permanent (no TTL), atomic cursor Lua, health clamp, defensive log match.
  */
 
 import { getSolanaRpcUrl, getSolanaWsUrl, getSlot, getVersion, getConnection } from "./infra/rpc";
