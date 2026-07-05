@@ -1,6 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { readAllRedis, freshnessLabel, getPipelineState, readPairContext, wsFlowQuality, combineConfidence } from "../redis-reader";
+import { readAllRedis, freshnessLabel, getPipelineState, readPairContext, wsFlowQuality, combineConfidence, readSolanaPoolContext } from "../redis-reader";
 import type { PairState, MemoryEntry } from "../types";
 import { mcpResponse, mcpErr, ERR } from "../errors";
 import type { SourceAgreement } from "@preflight/schema";
@@ -68,21 +68,57 @@ pipelineState: WATCHING = subscribed via WS, accumulating flow
 
 contextQuality: fresh (<45s), aging (<90s), stale (>90s), snapshot_only, unknown
 
-Args: pair_address (0x... EVM address or V4 pool ID), chain (optional: base/arbitrum/bsc)`,
+For Solana pools, returns registry + price snapshot + activity + history + observed candidate.
+
+Args: pair_address (0x... EVM address, V4 pool ID, or Solana pool address), chain (optional: base/arbitrum/bsc/eth/solana)`,
       inputSchema: {
-        pair_address: z.string().min(10).describe("EVM pair address (0x...) or V4 pool ID"),
-        chain:        z.string().optional().describe("Chain hint: 'base', 'arbitrum', or 'bsc'"),
+        pair_address: z.string().min(10).describe("EVM pair address (0x...), V4 pool ID, or Solana pool address (base58)"),
+        chain:        z.string().optional().describe("Chain hint: 'base', 'arbitrum', 'bsc', 'eth', or 'solana'"),
       },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async ({ pair_address, chain }: { pair_address: string; chain?: string }) => {
       try {
+        const rawAddr = pair_address.trim();
+        const evmAddr = rawAddr.toLowerCase();
+
+        // ── 8.0l: Solana branch (runs before readAllRedis — avoids EVM reads) ──
+        // Solana addresses are base58 and case-sensitive — preserve original case.
+        const isSolana = chain?.toLowerCase() === "solana" ||
+          (!rawAddr.startsWith("0x") && rawAddr.length >= 32);
+
+        if (isSolana) {
+          const poolAddress = rawAddr; // preserve case — Redis keys are case-sensitive
+          const now         = Date.now();
+          const poolCtx = await readSolanaPoolContext(poolAddress, now);
+          const { registry, priceSnapshot, activity, recentHistory, observedCandidate, dataAgeSec } = poolCtx;
+          const found  = Boolean(registry || priceSnapshot);
+          const symbol = (priceSnapshot as any)?.baseSymbol ?? (registry as any)?.baseSymbol ?? null;
+          const confidence: "HIGH" | "MEDIUM" | "LOW" =
+            dataAgeSec !== null && dataAgeSec < 45 ? "HIGH" :
+            dataAgeSec !== null && dataAgeSec < 90 ? "MEDIUM" : "LOW";
+          return mcpResponse({
+            text: JSON.stringify({
+              found, pairAddress: poolAddress, chain: "solana", symbol,
+              dataSource:     registry ? "solana_registry" : priceSnapshot ? "solana_price_snapshot" : "none",
+              contextQuality: dataAgeSec !== null ? (dataAgeSec < 45 ? "fresh" : dataAgeSec < 90 ? "aging" : "stale") : "unknown",
+              registry, priceSnapshot, activity,
+              recentHistory:  recentHistory.slice(0, 10),
+              observedCandidate, dataAgeSec,
+            }, null, 2),
+            freshnessSec: dataAgeSec,
+            confidence,
+            warnings: found ? undefined : ["Solana pool not found in registry or price snapshots"],
+          });
+        }
+
+        // ── EVM path ─────────────────────────────────────────────────────────
+        const addr = evmAddr; // EVM addresses are lowercase hex
         const ctx = await readAllRedis();
         if (!ctx) return mcpErr(ERR.REDIS_DOWN, "Redis not connected");
 
         const { now, states, watch, hot, armed, snapshot, pfMarket, regime } = ctx;
         const coveragePct = (pfMarket ?? regime as any)?.flowCoveragePct ?? null;
-        const addr = pair_address.toLowerCase().trim();
 		
 		// Try preflight:pair_context first — richest data
         const pfCtx = await readPairContext(addr);

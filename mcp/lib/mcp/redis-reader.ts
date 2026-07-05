@@ -612,3 +612,57 @@ export async function readSolanaRecentActivity(topN = 5): Promise<{
     return { recentPools, recentLaunches };
   } catch { return { recentPools: [], recentLaunches: [] }; }
 }
+
+// ── 8.0l: Solana per-pool context ────────────────────────────────────────────
+
+export interface SolanaPoolContext {
+  poolAddress:       string;
+  registry:          Record<string, unknown> | null;
+  priceSnapshot:     Record<string, unknown> | null;
+  activity:          Record<string, unknown> | null;
+  recentHistory:     Array<{ p: number; ts: number }>;
+  observedCandidate: Record<string, unknown> | null;
+  dataAgeSec:        number | null;
+}
+
+/**
+ * Citeste tot ce stim despre un pool Solana: registry + price snapshot + activity + history.
+ * Toate citirile sunt GET directe - fara KEYS scan.
+ */
+export async function readSolanaPoolContext(
+  poolAddress: string,
+  now:         number,
+): Promise<SolanaPoolContext> {
+  const r = getRedis();
+  if (!r) {
+    return {
+      poolAddress, registry: null, priceSnapshot: null,
+      activity: null, recentHistory: [], observedCandidate: null, dataAgeSec: null,
+    };
+  }
+
+  const [regRaw, snapRaw, actRaw, histRaws, candRaw] = await Promise.all([
+    r.get(`preflight:indexed:pair:solana:${poolAddress}`),
+    r.get(`preflight:solana:price:${poolAddress}`),
+    r.get(`preflight:solana:activity:${poolAddress}`),
+    r.lrange(`preflight:solana:price:history:${poolAddress}`, 0, 9),
+    r.get(`preflight:solana:observed_candidate:${poolAddress}`),
+  ]);
+
+  const registry      = regRaw  ? safeJson<Record<string, unknown> | null>(regRaw,  null) : null;
+  const priceSnapshot = snapRaw ? safeJson<Record<string, unknown> | null>(snapRaw, null) : null;
+  const activity      = actRaw  ? safeJson<Record<string, unknown> | null>(actRaw,  null) : null;
+  const recentHistory = histRaws
+    .map(h => safeJson<{ p: number; ts: number } | null>(h, null))
+    .filter((h): h is { p: number; ts: number } => h !== null);
+  const observedCandidate = candRaw ? safeJson<Record<string, unknown> | null>(candRaw, null) : null;
+
+  const lastUpdatedAt = typeof priceSnapshot?.lastUpdatedAt === "number"
+    ? priceSnapshot.lastUpdatedAt
+    : null;
+  const dataAgeSec = lastUpdatedAt !== null
+    ? Math.round((now - lastUpdatedAt) / 1000)
+    : null;
+
+  return { poolAddress, registry, priceSnapshot, activity, recentHistory, observedCandidate, dataAgeSec };
+}

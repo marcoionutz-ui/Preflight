@@ -110,25 +110,52 @@ export function registerPreflightSafety(server: McpServer) {
 
 Checks: honeypot detection, buy/sell tax, owner permissions, owner renounced status, token age.
 
-Returns safetyStatus: CRITICAL_RISK | HIGH_RISK | MEDIUM_RISK | LOW_DETECTED_RISK | UNKNOWN_RISK
+Returns safetyStatus: CRITICAL_RISK | HIGH_RISK | MEDIUM_RISK | LOW_DETECTED_RISK | UNKNOWN_RISK | NOT_APPLICABLE
 
 Results are cached in Redis for 6 hours (shared with worker risk cache).
 
+GoPlus is EVM-only. For Solana pools, returns NOT_APPLICABLE — use tp_pair_context instead.
+
 Args:
-  pair_address   — EVM pair address (used to look up token address from worker context)
+  pair_address   — EVM pair address (0x...) or Solana pool address (base58)
   token_address  — optional: pass directly if worker snapshot cannot resolve it
-  chain          — optional: 'base', 'arbitrum', or 'bsc'`,
+  chain          — optional: 'base', 'arbitrum', 'bsc', 'eth', or 'solana'`,
       inputSchema: {
-        pair_address:  z.string().min(10).describe("EVM pair address (0x...) or V4 pool ID"),
-        token_address: z.string().optional().describe("Optional token contract address"),
-        chain:         z.string().optional().describe("Chain: 'base', 'arbitrum', or 'bsc'"),
+        pair_address:  z.string().min(10).describe("EVM pair address (0x...), V4 pool ID, or Solana pool address (base58)"),
+        token_address: z.string().optional().describe("Optional token contract address (EVM only)"),
+        chain:         z.string().optional().describe("Chain: 'base', 'arbitrum', 'bsc', 'eth', or 'solana'"),
       },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async ({ pair_address, token_address, chain }: { pair_address: string; token_address?: string; chain?: string }) => {
       try {
+        const rawAddr = pair_address.trim();
+        const evmAddr = rawAddr.toLowerCase();
+
+        // ── 8.0l: Solana guard — GoPlus not available for Solana ─────────────
+        // Use rawAddr for Solana detection — base58 addresses are case-sensitive.
+        const isSolana = chain?.toLowerCase() === "solana" ||
+          (!rawAddr.startsWith("0x") && rawAddr.length >= 32);
+
+        if (isSolana) {
+          return mcpResponse({
+            text: [
+              `PREFLIGHT SAFETY: ${rawAddr.slice(0, 12)}... (Solana)`,
+              ``,
+              `INFO: GoPlus contract security checks are not available for Solana.`,
+              ``,
+              `safetyStatus: NOT_APPLICABLE`,
+              ``,
+              `For Solana pool context, use tp_pair_context with the pool address.`,
+            ].join("\n"),
+            confidence: "LOW",
+            warnings: ["GoPlus safety check not available for Solana"],
+          });
+        }
+
+        // ── EVM path ─────────────────────────────────────────────────────────
+        const addr = evmAddr; // EVM addresses are lowercase hex
         const ctx  = await readAllRedis();
-        const addr = pair_address.toLowerCase().trim();
 
         const inputLooksLikeV4PoolId = BYTES32_RE.test(addr);
 

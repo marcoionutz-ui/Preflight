@@ -94,4 +94,4 @@ export const KEY_OBSERVED_CANDIDATE = (pool: string) => `preflight:solana:observ
 
 // ── Worker version ────────────────────────────────────────────────────────────
 
-export const INDEXER_VERSION = "v8.0k-b";
+export const INDEXER_VERSION = "v8.0l";

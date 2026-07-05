@@ -17,6 +17,7 @@
  * 8.0j:    SOL/USD oracle via Jupiter Price API v2 — priceUsd populat pentru WSOL-quoted pools.
  * 8.0k-a:  knownPool stale sync fix — pairWriter patch snapshot + moversTracker batch recheck.
  * 8.0k-b:  observed pool candidate promotion — swap-sampled pools promovate în registry după 3 samples/2min.
+ * 8.0l:    MCP tools Solana branch — tp_pair_context + tp_preflight_safety Solana-aware.
  */
 
 import { getSolanaRpcUrl, getSolanaWsUrl, getSlot, getVersion, getConnection } from "./infra/rpc";
