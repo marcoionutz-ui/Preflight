@@ -87,6 +87,11 @@ export const KEY_TRENDING_MOVERS = `preflight:trending:movers:${CHAIN}`;
 /** SOL/USD price cache (TTL 5min, refresh 30s): preflight:solana:oracle:sol_usd */
 export const KEY_SOL_USD_PRICE = "preflight:solana:oracle:sol_usd";
 
+// ── Observed pool candidate namespace (8.0k-b) ────────────────────────────────
+
+/** Candidate record pentru pooluri neindexate observate în swap samples (TTL 2h) */
+export const KEY_OBSERVED_CANDIDATE = (pool: string) => `preflight:solana:observed_candidate:${pool}`;
+
 // ── Worker version ────────────────────────────────────────────────────────────
 
-export const INDEXER_VERSION = "v8.0k";
+export const INDEXER_VERSION = "v8.0k-b";

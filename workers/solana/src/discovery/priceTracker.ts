@@ -23,8 +23,9 @@ import {
 import { resolveTokenMeta }     from "../infra/tokenMetadata";
 import { SwapParseResult }      from "./swapParser";
 import { USDC_MINT, USDT_MINT, WSOL_MINT } from "../config/programs";
-import { maybeCalculateMovers } from "./moversTracker";
-import { readSolPrice }         from "../infra/solPriceOracle";
+import { maybeCalculateMovers }         from "./moversTracker";
+import { readSolPrice }                 from "../infra/solPriceOracle";
+import { maybeRecordObservedCandidate } from "./observedPool";
 
 // ── Tipuri ────────────────────────────────────────────────────────────────────
 
@@ -183,4 +184,11 @@ export async function recordPriceSnapshot(
   maybeCalculateMovers().catch((err: Error) => {
     console.warn("[SOLANA][MOVERS] trigger error:", err.message);
   });
+
+  // 8.0k-b: observed pool candidate — tracking pentru pooluri neindexate
+  if (!result.knownPool) {
+    maybeRecordObservedCandidate(snapshot, signature).catch((err: Error) => {
+      console.warn("[SOLANA][OBSERVED] candidate error:", err.message);
+    });
+  }
 }
