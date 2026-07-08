@@ -130,6 +130,7 @@ function handleCpmmCandidate(
         slot,
         signature,
         "raydium_cpmm",
+        "LIVE",
       );
 
       const outcome = await writeSolanaPool(pool);
@@ -187,6 +188,7 @@ function handleClmmCandidate(
         slot,
         signature,
         "raydium_clmm",
+        "LIVE",
       );
 
       const outcome = await writeSolanaPool(pool);

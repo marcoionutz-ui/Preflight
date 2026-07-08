@@ -10,7 +10,7 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { readAllRedis, formatEth, formatVol, getPipelineState } from "../redis-reader";
+import { readAllRedis, formatVol, getPipelineState } from "../redis-reader";
 import { mcpResponse, mcpErr, ERR } from "../errors";
 
 // Normalizează timestamp: seconds → ms dacă e sub 10B
@@ -20,11 +20,16 @@ const normalizeTs = (v: unknown): number | null => {
   return n < 10_000_000_000 ? n * 1000 : n;
 };
 
+// EVM-only for now — addr lookup below does .toLowerCase() and reads states[addr]
+// from the EVM pair_states map, which is wrong for case-sensitive Solana base58
+// addresses and wouldn't match anything anyway. Add a real Solana branch (mirroring
+// readSolanaPoolContext usage in lib/reports/pair-context-report.ts) before
+// re-enabling "solana" here.
 const positionSchema = z.object({
-  chain:         z.enum(["base", "arbitrum", "bsc", "eth", "solana"]),
-  pair_address:  z.string().optional(),
-  token_address: z.string().optional(),
-  symbol:        z.string().optional(),
+  chain:         z.enum(["base", "arbitrum", "bsc", "eth"]),
+  pair_address:  z.string().max(120).optional(),
+  token_address: z.string().max(120).optional(),
+  symbol:        z.string().max(64).optional(),
   entry_price:   z.union([z.string(), z.number()]),
   entry_time:    z.union([z.string(), z.number()]).optional(),
   sl:            z.union([z.string(), z.number()]).optional(),

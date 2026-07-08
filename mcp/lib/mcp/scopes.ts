@@ -27,7 +27,6 @@ export const TOOL_SCOPES: Record<string, string[]> = {
   tp_do_not_chase:      ["read:all", "read:reports"],
   tp_position_context:  ["read:all", "read:positions"],
   tp_chain_report:      ["read:all", "read:reports", "read:market"],
-  tp_agent_brief:       ["read:all", "read:reports"],
 };
 
 /**

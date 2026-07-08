@@ -167,6 +167,7 @@ export async function runCpmmBackfill(connection: Connection): Promise<void> {
           0,
           "backfill",
           "raydium_cpmm",
+          "BACKFILL",
         );
 
         const result = await writeSolanaPool(pool);

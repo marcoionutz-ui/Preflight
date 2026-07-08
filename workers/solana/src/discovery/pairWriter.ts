@@ -55,6 +55,7 @@ export interface SolanaPool {
   program:        string;
   slot:           number;
   signature:      string;
+  source:         "BACKFILL" | "LIVE";
   discoveredAt:   string;
   indexerVersion: string;
   // 8.0f — token metadata (opțional; populat async după insert)
@@ -120,6 +121,7 @@ export function buildSolanaPool(
   slot:        number,
   signature:   string,
   program:     string,
+  source:      "BACKFILL" | "LIVE",
 ): SolanaPool {
   const { baseMint, quoteMint, quoteType } = normalizeQuote(mint0, mint1);
 
@@ -134,6 +136,7 @@ export function buildSolanaPool(
     program,
     slot,
     signature,
+    source,
     discoveredAt:   new Date().toISOString(),
     indexerVersion: INDEXER_VERSION,
   };

@@ -17,6 +17,12 @@ function riskCacheKey(chain: string, tokenAddress: string): string {
   return `preflight:risk:${chain.toLowerCase()}:${tokenAddress.toLowerCase()}`;
 }
 
+// fix ChatGPT: checkedAt poate lipsi/fi invalid — nu vrem NaN în output
+function safeAgeSec(checkedAt: unknown): number | null {
+  const t = Number(checkedAt ?? 0);
+  return t > 0 ? Math.round((Date.now() - t) / 1000) : null;
+}
+
 async function getTokenRiskForSafety(
   tokenAddress: string,
   chain:        string,
@@ -121,9 +127,9 @@ Args:
   token_address  — optional: pass directly if worker snapshot cannot resolve it
   chain          — optional: 'base', 'arbitrum', 'bsc', 'eth', or 'solana'`,
       inputSchema: {
-        pair_address:  z.string().min(10).describe("EVM pair address (0x...), V4 pool ID, or Solana pool address (base58)"),
-        token_address: z.string().optional().describe("Optional token contract address (EVM only)"),
-        chain:         z.string().optional().describe("Chain: 'base', 'arbitrum', 'bsc', 'eth', or 'solana'"),
+        pair_address:  z.string().min(10).max(120).describe("EVM pair address (0x...), V4 pool ID, or Solana pool address (base58)"),
+        token_address: z.string().max(120).optional().describe("Optional token contract address (EVM only)"),
+        chain:         z.enum(["base", "arbitrum", "bsc", "eth", "solana"]).optional().describe("Chain: 'base', 'arbitrum', 'bsc', 'eth', or 'solana'"),
       },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
@@ -188,7 +194,7 @@ Args:
           } else if (!rawTokenAddress) {
             missing.push("token address not found — pass token_address explicitly");
           }
-          if (!resolvedChain)   missing.push("chain could not be determined — pass chain: 'base', 'arbitrum', or 'bsc'");
+          if (!resolvedChain)   missing.push("chain could not be determined — pass chain: 'base', 'arbitrum', 'bsc', or 'eth'");
           return mcpResponse({
             text: [
               `PREFLIGHT SAFETY: ${symbol}`,
@@ -219,7 +225,7 @@ Args:
         lines.push(`PREFLIGHT SAFETY: ${symbol} / ${resolvedChain.toUpperCase()}`);
         lines.push(`Token: ${tokenAddr}`);
         lines.push(`Source: ${risk.source === "goplus" ? "GoPlus / shared risk cache" : "unavailable"}`);
-        lines.push(`checkedAgeSec: ${Math.round((Date.now() - risk.checkedAt) / 1000)}`);
+        lines.push(`checkedAgeSec: ${safeAgeSec(risk.checkedAt) ?? "unknown"}`);
         lines.push(`riskLevel: ${risk.riskLevel} | confidence: ${risk.confidence}`);
         lines.push(``);
         lines.push(`${statusEmoji} safetyStatus: ${safetyStatus}`);
@@ -295,7 +301,7 @@ Args:
         return mcpResponse({
           text: lines.join("\n"),
           confidence: risk.confidence === "HIGH" ? "HIGH" : risk.confidence === "MEDIUM" ? "MEDIUM" : "LOW",
-          freshnessSec: Math.round((Date.now() - risk.checkedAt) / 1000),
+          freshnessSec: safeAgeSec(risk.checkedAt),
           warnings,
           dataQuality: { risk: riskQuality },
           evidence: { safetyStatus, sellability, ownerRisk, riskLevel: risk.riskLevel },
