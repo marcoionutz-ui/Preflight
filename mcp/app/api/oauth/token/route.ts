@@ -105,15 +105,15 @@ export async function POST(req: NextRequest) {
       return jsonError(400, "invalid_grant", "redirect_uri mismatch");
     }
 
-    // Verifică PKCE code_verifier dacă a fost setat un challenge
-    if (payload.code_challenge) {
-		  if (!code_verifier) {
-			return jsonError(400, "invalid_request", "code_verifier is required when code_challenge was used");
-		  }
-		  const valid = verifyCodeVerifier(code_verifier, payload.code_challenge, payload.code_challenge_method);
-		  if (!valid) return jsonError(400, "invalid_grant", "code_verifier mismatch");
-		}
-    
+    // PKCE e obligatoriu — /authorize refuză să emită un code fără
+    // code_challenge (S256), deci code_verifier trebuie să fie mereu prezent
+    // aici. Nu mai e condiționat de payload.code_challenge fiind truthy.
+    if (!code_verifier) {
+      return jsonError(400, "invalid_request", "code_verifier is required");
+    }
+    const valid = verifyCodeVerifier(code_verifier, payload.code_challenge, payload.code_challenge_method);
+    if (!valid) return jsonError(400, "invalid_grant", "code_verifier mismatch");
+
     // Verifică că clientul e încă activ
     const client = await getClientById(client_id);
     if (!client) {

@@ -19,6 +19,7 @@ export interface OAuthClient {
   created_at:            string;
   last_used_at:          string | null;
   notes:                 string | null;
+  user_id:               string | null;
 }
 
 // ── Hashing ───────────────────────────────────────────────────────────────────
@@ -55,6 +56,20 @@ export async function verifyClientCredentials(
   return client;
 }
 
+// ── Lookup by owning Supabase Auth user (dashboard) ────────────────────────────
+
+export async function getClientByUserId(userId: string): Promise<OAuthClient | null> {
+  const { data, error } = await supabaseAdmin
+    .from("oauth_clients")
+    .select("*")
+    .eq("user_id", userId)
+    .eq("status", "active")
+    .maybeSingle();
+
+  if (error || !data) return null;
+  return data as OAuthClient;
+}
+
 // ── Touch last_used_at (fire and forget) ──────────────────────────────────────
 
 export function touchClient(clientId: string): void {
@@ -74,6 +89,7 @@ export async function createOAuthClient({
   rate_limit_per_minute = 60,
   rate_limit_per_day    = 10_000,
   notes,
+  user_id,
 }: {
   name:                   string;
   plan?:                  string;
@@ -81,6 +97,7 @@ export async function createOAuthClient({
   rate_limit_per_minute?: number;
   rate_limit_per_day?:    number;
   notes?:                 string;
+  user_id?:               string | null;
 }): Promise<{ client_id: string; client_secret: string } | null> {
   const client_id     = "tp_" + randomBytes(16).toString("hex");
   const client_secret = randomBytes(32).toString("hex");
@@ -95,7 +112,8 @@ export async function createOAuthClient({
   const { error } = await supabaseAdmin.from("oauth_clients").insert({
     client_id, secret_hash, name, plan, scopes: finalScopes,
     rate_limit_per_minute, rate_limit_per_day,
-    notes: notes ?? null,
+    notes:   notes ?? null,
+    user_id: user_id ?? null,
   });
 
   if (error) {
@@ -112,4 +130,28 @@ export async function revokeOAuthClient(clientId: string): Promise<void> {
     .from("oauth_clients")
     .update({ status: "revoked" })
     .eq("client_id", clientId);
+}
+
+// ── Rotate secret (dashboard "Rotate secret" action) ────────────────────────────
+
+/**
+ * Generează un secret nou, îl hash-uiește și îl scrie peste cel vechi.
+ * Returnează secretul plain O SINGURĂ DATĂ — la fel ca la createOAuthClient,
+ * nu mai e recuperabil după acest apel.
+ */
+export async function rotateClientSecret(clientId: string): Promise<string | null> {
+  const client_secret = randomBytes(32).toString("hex");
+  const secret_hash   = hashSecret(client_secret);
+
+  const { error } = await supabaseAdmin
+    .from("oauth_clients")
+    .update({ secret_hash })
+    .eq("client_id", clientId)
+    .eq("status", "active");
+
+  if (error) {
+    console.error("[OAUTH] Failed to rotate secret:", error.message);
+    return null;
+  }
+  return client_secret;
 }

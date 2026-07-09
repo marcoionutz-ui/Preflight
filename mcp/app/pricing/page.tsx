@@ -79,7 +79,7 @@ export default function PricingPage() {
         </p>
 
         <div style={styles.ctaRow}>
-          <a href="https://preflight.run" style={styles.ctaPrimary}>Get access →</a>
+          <Link href="/signup" style={styles.ctaPrimary}>Start free trial →</Link>
         </div>
       </main>
 

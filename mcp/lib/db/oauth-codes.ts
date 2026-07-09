@@ -39,12 +39,13 @@ export async function consumeAuthCode(code: string): Promise<AuthCodePayload | n
 }
 
 export function verifyCodeVerifier(verifier: string, challenge: string, method: string): boolean {
-  if (method === "S256") {
-    const computed = createHash("sha256")
-      .update(verifier)
-      .digest("base64url");
-    return computed === challenge;
-  }
-  // plain (fallback)
-  return verifier === challenge;
+  // S256-only — "plain" PKCE is legacy fallback for clients that can't do
+  // SHA256, which no client we support needs. Rejecting it outright avoids
+  // downgrade risk without breaking anything currently in use.
+  if (method !== "S256") return false;
+
+  const computed = createHash("sha256")
+    .update(verifier)
+    .digest("base64url");
+  return computed === challenge;
 }

@@ -150,7 +150,7 @@ export default async function ConnectDocsPage() {
           <p style={styles.bodyText}>
             Client credentials are issued per account, starting on a free trial (
             <code style={styles.inlineCode}>read:basic</code>).{" "}
-            <a href="https://preflight.run" style={styles.inlineLink}>Get access →</a>
+            <Link href="/signup" style={styles.inlineLink}>Get access →</Link>
           </p>
         </Section>
 
