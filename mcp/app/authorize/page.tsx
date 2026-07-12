@@ -4,6 +4,8 @@
  * Claude.ai redirectează aici, userul se "loghează", primește code
  */
 
+import Link from "next/link";
+
 export const dynamic = "force-dynamic";
 
 interface Props {
@@ -95,9 +97,9 @@ export default async function AuthorizePage({ searchParams }: Props) {
 
         <p style={styles.footer}>
           Don&apos;t have credentials?{" "}
-          <a href="https://preflight.run" style={styles.link}>
+          <Link href="/signup" style={styles.link}>
             Get access →
-          </a>
+          </Link>
         </p>
       </div>
     </div>

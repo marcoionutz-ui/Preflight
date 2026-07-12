@@ -12,8 +12,16 @@ import { createClient } from "@/lib/supabase/server";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
-  const { searchParams, origin } = new URL(request.url);
+  const { searchParams } = new URL(request.url);
   const code = searchParams.get("code");
+
+  // Nu folosim origin din new URL(request.url) — în spatele proxy-ului
+  // Railway asta poate reflecta adresa internă a containerului
+  // (localhost:8080), nu domeniul public. Același pattern ca în
+  // app/.well-known/*: derivăm originea din headers.
+  const host  = request.headers.get("x-forwarded-host")  ?? request.headers.get("host") ?? "";
+  const proto = request.headers.get("x-forwarded-proto") ?? "https";
+  const origin = `${proto}://${host}`;
 
   if (code) {
     const supabase = await createClient();
