@@ -73,12 +73,17 @@ export async function getClientByUserId(userId: string): Promise<OAuthClient | n
 // ── Touch last_used_at (fire and forget) ──────────────────────────────────────
 
 export function touchClient(clientId: string): void {
+  // Query builder-ul Supabase e doar PromiseLike, nu un Promise complet —
+  // n-are .catch(). Two-arg .then(onFulfilled, onRejected) e forma corectă
+  // de fire-and-forget cu error handling pe un thenable.
   supabaseAdmin
     .from("oauth_clients")
     .update({ last_used_at: new Date().toISOString() })
     .eq("client_id", clientId)
-    .then(() => {})
-    .catch((err) => console.error("[OAUTH] touchClient failed:", err));
+    .then(
+      () => {},
+      (err: unknown) => console.error("[OAUTH] touchClient failed:", err),
+    );
 }
 
 // ── Admin: create client ──────────────────────────────────────────────────────
