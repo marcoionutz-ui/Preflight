@@ -98,7 +98,7 @@ export async function createOAuthClient({
   rate_limit_per_day?:    number;
   notes?:                 string;
   user_id?:               string | null;
-}): Promise<{ client_id: string; client_secret: string } | null> {
+}): Promise<{ client: OAuthClient; client_secret: string } | null> {
   const client_id     = "tp_" + randomBytes(16).toString("hex");
   const client_secret = randomBytes(32).toString("hex");
   const secret_hash   = hashSecret(client_secret);
@@ -109,20 +109,31 @@ export async function createOAuthClient({
       : ["read:all"]
   );
 
-  const { error } = await supabaseAdmin.from("oauth_clients").insert({
-    client_id, secret_hash, name, plan, scopes: finalScopes,
-    rate_limit_per_minute, rate_limit_per_day,
-    notes:   notes ?? null,
-    user_id: user_id ?? null,
-  });
+  // .select().single() întoarce rândul chiar din insert — nu mai facem un
+  // SELECT separat după. Un al doilea getClientByUserId() imediat după insert
+  // avea exact același URL ca citirea de dinainte de creare, iar Next.js
+  // deduplichează (memoizează) fetch-uri identice în același render pass —
+  // a doua citire era servită din cache-ul primei (null), nu ajungea la
+  // Supabase, deci dashboard-ul credea că "nu s-a putut încărca" deși
+  // insert-ul reușise. Eliminăm al doilea request în loc să luptăm cu cache-ul.
+  const { data, error } = await supabaseAdmin
+    .from("oauth_clients")
+    .insert({
+      client_id, secret_hash, name, plan, scopes: finalScopes,
+      rate_limit_per_minute, rate_limit_per_day,
+      notes:   notes ?? null,
+      user_id: user_id ?? null,
+    })
+    .select("*")
+    .single();
 
-  if (error) {
-    console.error("[OAUTH] Failed to create client:", error.message);
+  if (error || !data) {
+    console.error("[OAUTH] Failed to create client:", error?.message);
     return null;
   }
 
   // Returnează secret plain o singură dată — nu mai e recuperabil
-  return { client_id, client_secret };
+  return { client: data as OAuthClient, client_secret };
 }
 
 export async function revokeOAuthClient(clientId: string): Promise<void> {

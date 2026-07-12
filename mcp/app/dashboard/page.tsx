@@ -51,13 +51,7 @@ export default async function DashboardPage() {
     }
 
     freshSecret = created.client_secret;
-    client = await getClientByUserId(user.id);
-
-    if (!client) {
-      return (
-        <ErrorShell message="Account created but could not be loaded. Refresh to try again." />
-      );
-    }
+    client      = created.client;
   }
 
   const h     = await headers();
