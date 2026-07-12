@@ -37,6 +37,19 @@ async function parseBody(req: NextRequest): Promise<Record<string, string>> {
 }
 
 export async function POST(req: NextRequest) {
+  try {
+    return await handlePost(req);
+  } catch (err) {
+    // Orice excepție necaptată (Redis/Supabase) ieșea până acum ca 500 gol,
+    // fără content-type — imposibil de diagnosticat din client. Acum se
+    // vede mesajul real în JSON, fără să scoatem stack trace-ul complet.
+    const message = err instanceof Error ? err.message : "Unknown error";
+    console.error("[OAUTH TOKEN] Unhandled error:", err);
+    return jsonError(500, "server_error", message);
+  }
+}
+
+async function handlePost(req: NextRequest) {
   const body       = await parseBody(req);
   const grant_type = body.grant_type ?? "";
 

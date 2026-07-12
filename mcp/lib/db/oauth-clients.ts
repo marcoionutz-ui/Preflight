@@ -77,7 +77,8 @@ export function touchClient(clientId: string): void {
     .from("oauth_clients")
     .update({ last_used_at: new Date().toISOString() })
     .eq("client_id", clientId)
-    .then(() => {});
+    .then(() => {})
+    .catch((err) => console.error("[OAUTH] touchClient failed:", err));
 }
 
 // ── Admin: create client ──────────────────────────────────────────────────────
