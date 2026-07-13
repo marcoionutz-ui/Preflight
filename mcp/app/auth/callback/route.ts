@@ -23,13 +23,28 @@ export async function GET(request: Request) {
   const proto = request.headers.get("x-forwarded-proto") ?? "https";
   const origin = `${proto}://${host}`;
 
-  if (code) {
-    const supabase = await createClient();
-    const { error } = await supabase.auth.exchangeCodeForSession(code);
-    if (!error) {
-      return NextResponse.redirect(`${origin}/dashboard`);
-    }
+  if (!code) {
+    // Ajută la diagnosticare — fără cod deloc în URL înseamnă că Supabase
+    // n-a trimis redirect cu ?code=, nu că exchange-ul a eșuat.
+    console.error("[AUTH CALLBACK] No code param on callback URL:", request.url);
+    return NextResponse.redirect(`${origin}/login?error=auth_failed`);
   }
 
-  return NextResponse.redirect(`${origin}/login?error=auth_failed`);
+  const supabase = await createClient();
+  const { error } = await supabase.auth.exchangeCodeForSession(code);
+
+  if (error) {
+    // Înainte, eroarea reală se pierdea complet — nici Supabase Auth Logs,
+    // nici noi nu vedeam DE CE a picat exchangeCodeForSession (verify-ul
+    // Supabase poate reuși cu 303 și totuși schimbul de cod să eșueze aici,
+    // ex: cod expirat/deja folosit, PKCE verifier lipsă). Acum apare în
+    // Railway logs cu mesajul + statusul exact de la Supabase.
+    console.error(
+      "[AUTH CALLBACK] exchangeCodeForSession failed:",
+      error.message, "status:", error.status,
+    );
+    return NextResponse.redirect(`${origin}/login?error=auth_failed`);
+  }
+
+  return NextResponse.redirect(`${origin}/dashboard`);
 }

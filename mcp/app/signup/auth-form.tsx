@@ -8,7 +8,7 @@
  * (unknown email on /login does not silently create an account).
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 
 interface Props {
@@ -20,6 +20,20 @@ export default function AuthForm({ mode }: Props) {
   const [status, setStatus] = useState<"idle" | "loading" | "sent" | "error">("idle");
   const [errorMsg, setErrorMsg] = useState("");
   const [sentTo, setSentTo]     = useState("");
+
+  // app/auth/callback/route.ts redirectează la /login?error=auth_failed
+  // dacă exchangeCodeForSession() eșuează (link expirat/deja folosit). Fără
+  // asta, pagina arăta identic cu formularul gol — imposibil de distins un
+  // fail de callback de o vizită normală pe /login. Citim din window.location
+  // (nu useSearchParams) ca să evităm nevoia unui Suspense boundary pe o
+  // pagină altfel statică.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("error") === "auth_failed") {
+      setStatus("error");
+      setErrorMsg("That sign-in link didn't work — it may have expired or already been used. Request a new one below.");
+    }
+  }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
