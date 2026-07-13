@@ -120,8 +120,24 @@ export function formatAge(ms: number): string {
   return `${Math.round(ms / 3600_000)}h`;
 }
 
-export function formatEth(val: number): string {
-  return val.toFixed(3) + " ETH";
+// Native currency symbol pe chain — folosit de formatEth() ca să nu mai
+// afișeze " ETH" hardcodat pe chain-uri non-Ethereum (ex: BSC arată BNB).
+export function nativeSymbolForChain(chain: string | null | undefined): string {
+  switch (chain?.toLowerCase()) {
+    case "bsc":      return "BNB";
+    case "eth":
+    case "ethereum":
+    case "base":
+    case "arbitrum": return "ETH";
+    // Chain necunoscut/nenormalizat — "native" în loc de a eticheta greșit
+    // cu ETH; consistent cu restul aplicației care preferă "nu știu" în loc
+    // de o afirmație falsă (vezi coverage=SAMPLED, confidence LOW etc).
+    default:         return "native";
+  }
+}
+
+export function formatEth(val: number, chain?: string | null): string {
+  return `${val.toFixed(3)} ${nativeSymbolForChain(chain)}`;
 }
 
 export function formatVol(usd: number | null | undefined, legacyNativeEq: number): string {
@@ -494,17 +510,45 @@ export async function readSolanaIndexerStats(now: number): Promise<SolanaIndexer
   if (!healthRaw) {
     health = { workerOnline: false, slot: null, cursor: null, blocksBehind: null, status: "OFFLINE", indexerVersion: null, ageSec: null };
   } else {
-    const h    = JSON.parse(healthRaw);
-    const ageSec = Math.round((now - new Date(h.updatedAt).getTime()) / 1000);
-    health = {
-      workerOnline:   ageSec < 5 * 60,
-      slot:           h.latestSlot   ?? null,
-      cursor:         h.cursorSlot   ?? null,
-      blocksBehind:   h.behindSlots  ?? null,
-      status:         ageSec >= 5 * 60 ? "OFFLINE" : (h.status ?? "STARTING"),
-      indexerVersion: h.indexerVersion ?? null,
-      ageSec,
-    };
+    // fallback null => tratat identic cu !healthRaw mai jos (un blob corupt
+    // nu trebuie să crape tot chain report-ul, doar să arate Solana OFFLINE).
+    const h = safeJson<Record<string, unknown> | null>(healthRaw, null, "preflight:indexer:health:solana");
+    if (!h) {
+      health = { workerOnline: false, slot: null, cursor: null, blocksBehind: null, status: "OFFLINE", indexerVersion: null, ageSec: null };
+    } else {
+      // safeJson garantează JSON valid, nu forma obiectului — dacă updatedAt
+      // lipsește sau e un timestamp invalid, Date.parse/getTime dă NaN, care
+      // altfel s-ar fi scurs în ageSec/workerOnline/status fără avertisment.
+      const rawUpdatedAt = h.updatedAt;
+      const updatedAtMs  = typeof rawUpdatedAt === "number"
+        ? rawUpdatedAt
+        : Date.parse(String(rawUpdatedAt ?? ""));
+      const ageSec = Number.isFinite(updatedAtMs)
+        ? Math.max(0, Math.round((now - updatedAtMs) / 1000))
+        : null;
+
+      // Redis poate conține orice string pe `status` — safeJson validează
+      // doar sintaxa JSON, nu forma/enum-ul. Fără asta, o valoare stray
+      // (ex: dintr-o versiune veche de worker) s-ar scurge mai departe ca
+      // "status" invalid în raport.
+      const validStatuses = new Set<SolanaHealthData["status"]>(
+        ["OK", "DEGRADED", "BEHIND", "STARTING", "OFFLINE"],
+      );
+      const rawStatus    = String(h.status ?? "STARTING");
+      const parsedStatus = validStatuses.has(rawStatus as SolanaHealthData["status"])
+        ? (rawStatus as SolanaHealthData["status"])
+        : "STARTING";
+
+      health = {
+        workerOnline:   ageSec !== null && ageSec < 5 * 60,
+        slot:           (h.latestSlot   as number | null) ?? null,
+        cursor:         (h.cursorSlot   as number | null) ?? null,
+        blocksBehind:   (h.behindSlots  as number | null) ?? null,
+        status:         ageSec === null || ageSec >= 5 * 60 ? "OFFLINE" : parsedStatus,
+        indexerVersion: (h.indexerVersion as string | null) ?? null,
+        ageSec,
+      };
+    }
   }
 
   let moversStatus: "READY" | "EMPTY" | "STALE" = "EMPTY";
@@ -512,10 +556,24 @@ export async function readSolanaIndexerStats(now: number): Promise<SolanaIndexer
   let moversComputedAgeSec: number | null = null;
 
   if (moversRaw) {
-    const snap = JSON.parse(moversRaw);
-    moversComputedAgeSec = Math.round((now - snap.computedAt) / 1000);
-    moversCount          = snap.movers?.length ?? 0;
-    moversStatus         = moversComputedAgeSec > 10 * 60 ? "STALE" : moversCount > 0 ? "READY" : "EMPTY";
+    const snap = safeJson<{ computedAt?: number; movers?: unknown[] } | null>(
+      moversRaw, null, "preflight:trending:movers:solana",
+    );
+    if (snap) {
+      // computedAt lipsă/invalid nu trebuie să dea o vârstă falsă de ~56 ani
+      // (now - 0) — tratăm asta la fel ca "fără date", nu ca "extrem de stale".
+      const computedAt = typeof snap.computedAt === "number" && Number.isFinite(snap.computedAt)
+        ? snap.computedAt
+        : null;
+
+      moversComputedAgeSec = computedAt !== null
+        ? Math.max(0, Math.round((now - computedAt) / 1000))
+        : null;
+      moversCount   = Array.isArray(snap.movers) ? snap.movers.length : 0;
+      moversStatus  = moversComputedAgeSec === null
+        ? "EMPTY"
+        : moversComputedAgeSec > 10 * 60 ? "STALE" : moversCount > 0 ? "READY" : "EMPTY";
+    }
   }
 
   return { health, indexedPools, indexedLaunches, trackedPricePools, moversStatus, moversCount, moversComputedAgeSec, coverage: "SAMPLED" };
@@ -531,8 +589,14 @@ export async function readSolanaMovers(now: number, topN = 5): Promise<SolanaMov
   try {
     const raw = await r.get("preflight:trending:movers:solana");
     if (!raw) return null;
-    const snap           = JSON.parse(raw);
-    const computedAgeSec = Math.round((now - snap.computedAt) / 1000);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const snap = safeJson<any>(raw, null, "preflight:trending:movers:solana");
+    if (!snap) return null;
+    // computedAt lipsă/invalid → NaN s-ar fi scurs mai departe fără să
+    // treacă de verificarea de staleness de mai jos (NaN > 600 e false).
+    // Tratăm ca "fără date", la fel ca healthRaw lipsă.
+    if (typeof snap.computedAt !== "number" || !Number.isFinite(snap.computedAt)) return null;
+    const computedAgeSec = Math.max(0, Math.round((now - snap.computedAt) / 1000));
     if (computedAgeSec > 10 * 60) return null;
 
     return {
@@ -588,7 +652,8 @@ export async function readSolanaRecentActivity(topN = 5): Promise<{
     ]);
 
     const recentPools: SolanaRecentPool[] = poolPairs.map(([addr, ts], i) => {
-      const meta = poolRaws[i] ? JSON.parse(poolRaws[i]!) : null;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const meta = poolRaws[i] ? safeJson<any>(poolRaws[i], null, `preflight:indexed:pair:solana:${addr}`) : null;
       return {
         poolAddress:  addr,
         program:      meta?.program     ?? "unknown",
@@ -600,7 +665,8 @@ export async function readSolanaRecentActivity(topN = 5): Promise<{
     });
 
     const recentLaunches: SolanaRecentLaunch[] = launchPairs.map(([mint, ts], i) => {
-      const meta = launchRaws[i] ? JSON.parse(launchRaws[i]!) : null;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const meta = launchRaws[i] ? safeJson<any>(launchRaws[i], null, `preflight:indexed:launch:solana:${mint}`) : null;
       return {
         mint,
         symbol:       meta?.symbol        ?? null,

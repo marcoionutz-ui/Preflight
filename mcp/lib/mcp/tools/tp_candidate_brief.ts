@@ -122,9 +122,9 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
           const hotFlow = pairState?.flow ?? hotEntry?.flow;
           lines.push(`  • Flow: ${hotFlow?.pressure ?? "?"} | buys: ${hotFlow?.buys5m ?? 0} | buyVol: ${formatVol((hotFlow as any)?.buyVol5mUsd, hotFlow?.buyVol5m ?? 0)}`);
           if ((hotEntry?.largestBuyEth ?? 0) > (hotEntry?.avgBuyEth ?? 0) * 4) {
-            lines.push(`  ⚠️ Whale pattern: largest buy ${formatEth(hotEntry?.largestBuyEth ?? 0)} vs avg ${formatEth(hotEntry?.avgBuyEth ?? 0)}`);
+            lines.push(`  ⚠️ Whale pattern: largest buy ${formatEth(hotEntry?.largestBuyEth ?? 0, displayChain)} vs avg ${formatEth(hotEntry?.avgBuyEth ?? 0, displayChain)}`);
           } else {
-            lines.push(`  • Flow looks organic: avg buy ${formatEth(hotEntry?.avgBuyEth ?? 0)}, ${hotEntry?.buySwapCount5m ?? 0} swaps`);
+            lines.push(`  • Flow looks organic: avg buy ${formatEth(hotEntry?.avgBuyEth ?? 0, displayChain)}, ${hotEntry?.buySwapCount5m ?? 0} swaps`);
           }
         } else if (pipeState === "WATCHING") {
           const ageMin = Math.round((now - (watchEntry?.addedAt ?? now)) / 60_000 * 10) / 10;
@@ -152,7 +152,7 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
             lines.push(`  ⚠️ ${pairState.poolCountSameToken} pools for same token — fragmentation/clone risk`);
           }
           if (pairState.lp?.hasData && pairState.lp.status === "REMOVED") {
-            lines.push(`  🚨 LP being removed: ${formatEth(pairState.lp.lpRemoved5m ?? 0)} in 5m`);
+            lines.push(`  🚨 LP being removed: ${formatEth(pairState.lp.lpRemoved5m ?? 0, displayChain)} in 5m`);
           }
         } else {
           lines.push(`  • No live liquidity data — using snapshot only`);

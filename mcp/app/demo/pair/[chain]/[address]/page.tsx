@@ -188,7 +188,7 @@ function LiquidityCard({ p }: { p: any }) {
       <Row label="reserve (native)" value={p.reserveNative != null ? `${p.reserveNative} ${p.nativeSymbol ?? ""}` : "—"} />
       <Row label="pools for same token" value={p.poolCountSameToken ?? "—"} />
       <Row label="current price" value={p.currentPrice ?? "—"} />
-      <Row label="price change" value={p.priceChange ?? "—"} />
+      <Row label="price change" value={formatPriceChange(p.priceChange)} />
       <Row label="vs first seen" value={p.priceVsFirstSeenPct != null ? `${p.priceVsFirstSeenPct}%` : "—"} />
     </Section>
   );
@@ -327,6 +327,16 @@ function formatTs(ts: number | null | undefined): string {
   } catch {
     return String(ts);
   }
+}
+
+// priceChange e un obiect { m5, h1, h24 }, nu un string/number — randat direct
+// în JSX (ca înainte) crăpa React ("Objects are not valid as a React child").
+// p e tipat `any`, deci tsc n-a prins asta la compile time.
+function formatPriceChange(pc: { m5?: number; h1?: number; h24?: number } | null | undefined): string {
+  if (!pc) return "—";
+  const fmt = (v: number | undefined) =>
+    typeof v === "number" && Number.isFinite(v) ? `${v > 0 ? "+" : ""}${v.toFixed(1)}%` : "—";
+  return `5m ${fmt(pc.m5)} · 1h ${fmt(pc.h1)} · 24h ${fmt(pc.h24)}`;
 }
 
 function formatUsd(v: number | null | undefined): string {

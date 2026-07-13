@@ -43,7 +43,10 @@ export default function DashboardClient({
   }
 
   async function handleRotate() {
-    if (!window.confirm("Rotate your secret? The current secret stops working immediately.")) {
+    if (!window.confirm(
+      "Rotate your secret? The current secret stops working immediately for new logins — " +
+      "but any access token already issued with it stays valid for up to 24h.",
+    )) {
       return;
     }
     setRotating(true);
@@ -86,7 +89,9 @@ export default function DashboardClient({
           <div style={styles.revealBox}>
             <div style={styles.revealTitle}>⚠ Save your client secret now</div>
             <p style={styles.revealText}>
-              This is shown once. If you lose it, rotate to get a new one — the old one stops working.
+              This is shown once. If you lose it, rotate to get a new one — the old secret stops
+              working immediately for new logins, but any access token already issued stays valid
+              for up to 24h.
             </p>
             <div style={styles.credRow}>
               <code style={styles.credValue}>{revealedSecret}</code>
