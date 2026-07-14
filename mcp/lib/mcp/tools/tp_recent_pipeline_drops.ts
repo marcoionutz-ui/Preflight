@@ -32,7 +32,7 @@ Args: limit (default 10, max 30), minutes_back (default 10, max 10)`,
           .sort((a: any, b: any) => (b.droppedAt ?? 0) - (a.droppedAt ?? 0))
           .slice(0, limit);
 
-        if (!deduped.length) return mcpResponse({ text: `No drops in the last ${minutes_back} minutes. Pipeline has been stable.`, confidence: "HIGH" });
+        if (!deduped.length) return mcpResponse({ text: `No pipeline drops were recorded in the last ${minutes_back} minutes.`, confidence: "HIGH" });
 
         const lines: string[] = [];
         lines.push(`RECENT PIPELINE DROPS — last ${minutes_back}m (${deduped.length} pairs):`);
@@ -58,15 +58,15 @@ Args: limit (default 10, max 30), minutes_back (default 10, max 10)`,
           if (r.includes("flow faded") || r.includes("flow turned") || r.includes("no buying flow")) {
             line += "\n  → Fresh WS confirmation absent; continuation evidence not currently present.";
 			} else if (r.includes("too late") || r.includes("vertical")) {
-            line += "\n  → Price extension risk elevated; late-chase conditions detected.";
-          } else if (r.includes("dump") || r.includes("-")) {
-            line += "\n  → Price dumped after signal. Continuation evidence absent until structure rebuilds.";
+            line += "\n  → Price extension was elevated when the pipeline exit occurred.";
+          } else if (r.includes("dump")) {
+            line += "\n  → Price declined after the pipeline event; continuation was not confirmed.";
           } else if (r.includes("gate") || r.includes("score") || r.includes("evidence")) {
             line += "\n  → Failed quality check. Worker's criteria not met.";
           } else if (r.includes("no ws") || r.includes("no confirmation")) {
-            line += "\n  → Never confirmed with live flow data. Signal was unverified.";
+            line += "\n  → Live-flow confirmation was not observed before this exit.";
           } else if (r.includes("expired") || r.includes("5m")) {
-            line += "\n  → Timed out without confirmation. Move may be over.";
+            line += "\n  → Timed out without confirmation inside the observation window.";
           }
 
           lines.push(line);

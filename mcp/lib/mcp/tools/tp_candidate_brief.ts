@@ -62,9 +62,9 @@ export function registerCandidateBrief(server: McpServer, exposePerformance: boo
 Returns a structured text brief covering:
 - Why this pair matters right now
 - Current pipeline state and timing
-- Flow analysis (organic vs whale, buy pressure quality)
-- Liquidity and risk signals
-- What would invalidate the setup
+- Flow analysis (buy concentration and buy pressure quality)
+- Liquidity and risk observations
+- What evidence would weaken the current context
 - Related diagnostic routes
 
 Use this after tp_situation_report identifies a HOT or ARMED candidate.
@@ -111,7 +111,7 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
 		lines.push(`Chain: ${displayChain}`);
         lines.push("");
 
-        lines.push("WHY IT MATTERS:");
+        lines.push("WHY IT WAS SURFACED:");
         if (pipeState === "ARMED") {
           const ageSec = Math.round((now - (armedEntry?.armedAt ?? now)) / 1000);
           lines.push(`  • ARMED ${ageSec}s ago — qualification criteria observed, awaiting 30s price confirmation`);
@@ -122,9 +122,9 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
           const hotFlow = pairState?.flow ?? hotEntry?.flow;
           lines.push(`  • Flow: ${hotFlow?.pressure ?? "?"} | buys: ${hotFlow?.buys5m ?? 0} | buyVol: ${formatVol((hotFlow as any)?.buyVol5mUsd, hotFlow?.buyVol5m ?? 0)}`);
           if ((hotEntry?.largestBuyEth ?? 0) > (hotEntry?.avgBuyEth ?? 0) * 4) {
-            lines.push(`  ⚠️ Whale pattern: largest buy ${formatEth(hotEntry?.largestBuyEth ?? 0, displayChain)} vs avg ${formatEth(hotEntry?.avgBuyEth ?? 0, displayChain)}`);
+            lines.push(`  ⚠️ Concentrated buy pattern: largest buy ${formatEth(hotEntry?.largestBuyEth ?? 0, displayChain)} vs avg ${formatEth(hotEntry?.avgBuyEth ?? 0, displayChain)} (exceeds 4× concentration threshold)`);
           } else {
-            lines.push(`  • Flow looks organic: avg buy ${formatEth(hotEntry?.avgBuyEth ?? 0, displayChain)}, ${hotEntry?.buySwapCount5m ?? 0} swaps`);
+            lines.push(`  • Flow distribution: avg buy ${formatEth(hotEntry?.avgBuyEth ?? 0, displayChain)} across ${hotEntry?.buySwapCount5m ?? 0} swaps; no buy exceeded the 4× concentration threshold`);
           }
         } else if (pipeState === "WATCHING") {
           const ageMin = Math.round((now - (watchEntry?.addedAt ?? now)) / 60_000 * 10) / 10;
@@ -188,7 +188,7 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
         }
 
         lines.push("");
-        lines.push("INVALIDATE IF:");
+        lines.push("EVIDENCE WOULD WEAKEN IF:");
         lines.push("  • Flow turns SELLING or netVol drops below 0.03 nativeEq");
         lines.push("  • LP removal detected (any significant burn event)");
         if ((pairState?.poolCountSameToken ?? 1) >= 2) lines.push("  • Liquidity migrating to another pool for same token");

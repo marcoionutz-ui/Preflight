@@ -6,7 +6,7 @@ Preflight is a candidate intelligence layer for AI trading agents operating acro
 chains and Solana. It monitors DEX pair activity across Base, Arbitrum, and BSC in
 real-time (Ethereum running as a shadow worker, not yet promoted to primary), plus
 Solana pool/launch discovery via a separate indexer, compresses market state into
-agent-readable signals, and exposes everything through an MCP tool interface.
+agent-readable context, and exposes everything through an MCP tool interface.
 
 **Preflight reports. The agent decides.**
 
