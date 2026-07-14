@@ -2,9 +2,11 @@
 
 **Fast, cheap DEX context for AI trading agents.**
 
-Preflight is a candidate intelligence layer for AI trading agents operating on EVM chains.
-It monitors DEX pair activity across Base, Arbitrum, and BSC in real-time, compresses
-market state into agent-readable signals, and exposes everything through an MCP tool interface.
+Preflight is a candidate intelligence layer for AI trading agents operating across EVM
+chains and Solana. It monitors DEX pair activity across Base, Arbitrum, and BSC in
+real-time (Ethereum running as a shadow worker, not yet promoted to primary), plus
+Solana pool/launch discovery via a separate indexer, compresses market state into
+agent-readable signals, and exposes everything through an MCP tool interface.
 
 **Preflight reports. The agent decides.**
 
@@ -12,7 +14,7 @@ market state into agent-readable signals, and exposes everything through an MCP 
 
 ## What it is
 
-- A real-time DEX monitoring layer (GeckoTerminal + Alchemy WebSockets)
+- A real-time DEX monitoring and indexing layer using own-source EVM/Solana indexers, GeckoTerminal, DexScreener, and Alchemy WebSockets
 - A Redis-backed state machine tracking pair pipeline: `WATCHING → HOT → ARMED`, with drops and confirmation outcomes tracked separately
 - An MCP server exposing compressed market context to AI agents
 - A data layer — not a decision layer
@@ -34,14 +36,21 @@ Preflight describes `market state`, `pipeline state`, `flow quality`, `risk flag
 ## Architecture
 
 ```
-Discovery sources  →  EVM Worker  →  Redis  →  MCP Server  →  Agent
-GeckoTerminal         ENABLED_CHAINS
-DexScreener           Base / Arbitrum / BSC
-Alchemy WS
+GeckoTerminal / DexScreener / Alchemy WS
+                    │
+                    ▼
+                EVM Worker ──────────────┐
+                                         │
+EVM RPC logs → Own-source EVM Indexer ───┼──→ Redis  →  MCP Server  →  Agent
+                                         │
+Solana logs → Solana Indexer ───────────┘
 ```
 
 One EVM worker codebase can run one or more chains depending on `ENABLED_CHAINS`.
-For production, workers can be deployed separately per chain on Railway.
+For production, workers can be deployed separately per chain on Railway. The own-source
+EVM indexer (`workers/indexer-evm/`) and the Solana indexer (`workers/solana/`) are
+separate processes that write pair/pool state directly into the same Redis namespace
+the EVM worker and MCP server read from.
 
 ---
 
@@ -102,7 +111,7 @@ geckoHealth: OK | dexscreenerHealth: OK | wsHealth: ACTIVE
 - **Auth**: OAuth Authorization Code + PKCE, client credentials
 - **MCP**: Next.js MCP server via `mcp-handler`, deployed on Railway
 - **Persistent config**: Supabase (`oauth_clients`, usage logs)
-- **Chains**: Base, Arbitrum, BSC (live) — Ethereum, Solana (planned)
+- **Chains**: Base, Arbitrum, BSC (live) — Ethereum (shadow worker, promotion gate soak) — Solana (live, sampled coverage via a separate indexer)
 
 ---
 
@@ -110,13 +119,16 @@ geckoHealth: OK | dexscreenerHealth: OK | wsHealth: ACTIVE
 
 ```
 mcp/                        Next.js MCP server
-workers/evm/                EVM worker (Base, Arbitrum, BSC)
+workers/evm/                EVM worker (Base, Arbitrum, BSC) — discovery + pipeline
   config/                   Chain config + env
   sources/                  GeckoTerminal, DexScreener
   pipeline/                 WATCHING → HOT → ARMED logic
   risk/                     Contract risk, LP tracking
   ws/                       Alchemy WebSocket subscriptions
   shadow/                   Legacy/internal simulation artifacts — not part of public Preflight product
+workers/indexer-evm/        Own-source EVM indexer (pair discovery, V2/V3/V4 pricing)
+workers/solana/             Solana worker — log-subscribe discovery, CPMM/CLMM pools,
+                             pump.fun launches, price/movers tracking
 packages/preflight-schema/  Shared TypeScript types
 packages/gecko-client/      GeckoTerminal client stub
 packages/risk-layer/        Shared risk primitives
@@ -155,9 +167,19 @@ ALCHEMY_ARB_WS
 ALCHEMY_BNB_RPC
 ALCHEMY_BNB_WS
 
-# MCP / Auth
-SUPABASE_URL
-SUPABASE_SERVICE_KEY
+# Ethereum (shadow worker — also requires ENABLED_CHAINS=...ethereum
+# and INDEXER_ENABLE_ETHEREUM=1 to activate)
+ALCHEMY_ETH_RPC
+ALCHEMY_ETH_WS
+
+# Solana (one of SOLANA_RPC_URL / HELIUS_RPC_URL / ALCHEMY_SOLANA_RPC_URL)
+SOLANA_RPC_URL
+SOLANA_WS_URL
+
+# MCP / Auth (Supabase)
+NEXT_PUBLIC_SUPABASE_URL
+NEXT_PUBLIC_SUPABASE_ANON_KEY
+SUPABASE_SERVICE_ROLE_KEY
 
 # Optional
 GOPLUS_API_KEY
@@ -165,4 +187,4 @@ GOPLUS_API_KEY
 
 ---
 
-*v5.50 — Base + Arbitrum + BSC live*
+*Base + Arbitrum + BSC live · Ethereum shadow · Solana live (sampled)*
