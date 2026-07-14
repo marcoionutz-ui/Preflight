@@ -12,7 +12,7 @@
   },
   "scripts": {
     "build": "npm run build --workspace=mcp",
-    "start": "npm run start --workspace=mcp & npm run start --workspace=@preflight/worker-evm & wait",
+    "start": "npm run start --workspace=mcp",
     "dev:mcp": "npm run dev --workspace=mcp",
     "dev:worker": "npm run dev --workspace=@preflight/worker-evm",
     "lint": "npm run lint --workspace=mcp"

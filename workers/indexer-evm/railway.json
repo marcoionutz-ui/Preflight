@@ -2,10 +2,10 @@
   "$schema": "https://railway.com/railway.schema.json",
   "build": {
     "builder": "NIXPACKS",
-    "buildCommand": "npm install --legacy-peer-deps && npm run build --workspace=mcp"
+    "buildCommand": "npm install --legacy-peer-deps"
   },
   "deploy": {
-    "startCommand": "npm run start --workspace=mcp",
+    "startCommand": "npm run start --workspace=@preflight/indexer-evm",
     "restartPolicyType": "ON_FAILURE"
   }
 }
