@@ -253,7 +253,7 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
 
         lines.push("");
         lines.push("DATA_AVAILABLE:");
-        lines.push(`  • tp_chase_risk — chase risk assessment`);
+        lines.push(`  • tp_late_move_context — late-move evidence`);
         lines.push(`  • tp_preflight_safety — contract/token safety check`);
         lines.push(`  • tp_why_not — pipeline rejection reasons`);
         lines.push(`  • tp_pair_context — raw worker context (advanced/read:all)`);

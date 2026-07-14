@@ -25,7 +25,7 @@ const TOOLS: ToolRow[] = [
   { name: "tp_situation_report", scope: "read:basic", tier: "basic" },
   { name: "tp_next_action",      scope: "read:basic", tier: "basic" },
   { name: "tp_candidate_brief",  scope: "read:basic", tier: "basic" },
-  { name: "tp_chase_risk",       scope: "read:basic", tier: "basic" },
+  { name: "tp_late_move_context", scope: "read:basic", tier: "basic" },
   { name: "tp_preflight_safety", scope: "read:basic", tier: "basic" },
   { name: "tp_watch_pair",       scope: "read:basic", tier: "basic" },
   { name: "tp_health_check",     scope: "read:market",    tier: "all" },
@@ -34,7 +34,7 @@ const TOOLS: ToolRow[] = [
   { name: "tp_worker_snapshot",  scope: "read:pipeline",  tier: "all" },
   { name: "tp_pair_context",     scope: "read:pair",      tier: "all" },
   { name: "tp_why_not",          scope: "read:reports",   tier: "all" },
-  { name: "tp_do_not_chase",     scope: "read:reports",   tier: "all" },
+  { name: "tp_recent_pipeline_drops", scope: "read:reports",   tier: "all" },
   { name: "tp_position_context", scope: "read:positions", tier: "all" },
   { name: "tp_chain_report",     scope: "read:reports",   tier: "all" },
 ];

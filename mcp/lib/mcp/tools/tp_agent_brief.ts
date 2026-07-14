@@ -18,7 +18,7 @@ export function registerNextAction(server: McpServer) {
 Call this when you're not sure where to start, or after tp_situation_report to get a focused next step.
 
 Returns:
-- priority: what deserves attention right now
+- focus: what deserves attention right now
 - diagnosticRoute: which Preflight tool provides the next relevant context
 - context: brief state summary that informed the routing
 - coverage_note: data confidence caveat if relevant
@@ -94,34 +94,34 @@ Does not advise on trades. Routes to data, not to decisions.`,
           lines.push(`NEXT_CHECK:`);
           lines.push(`  1. tp_candidate_brief(pair) — full context on armed pair`);
           lines.push(`  2. tp_preflight_safety(pair) — contract/token safety check`);
-          lines.push(`  3. tp_chase_risk(pair) — verify not a chase trap`);
+          lines.push(`  3. tp_late_move_context(pair) — check for late-move evidence`);
 
         } else if (hotCount > 0) {
           const hotList = Object.entries(hot).map(([addr, h]: any) =>
             `${h.symbol ?? addr.slice(0, 8)} [${h.chain}] pair:${addr} flow:${h.flow?.pressure} buys:${h.flow?.buys5m}`
           );
-          lines.push(`PRIORITY: HOT — confirmed buying flow`);
+          lines.push(`FOCUS: HOT — confirmed buying flow`);
           lines.push(`HOT (${hotCount}):`);
           hotList.forEach(l => lines.push(`  → ${l}`));
           lines.push("");
          lines.push(`NEXT_CHECK:`);
           lines.push(`  1. tp_candidate_brief(pair) — narrative case file`);
-          lines.push(`  2. tp_chase_risk(pair) — flap/distribution check`);
+          lines.push(`  2. tp_late_move_context(pair) — flap/distribution check`);
 
         } else if (hotDrops.length > 0) {
           const dropList = hotDrops.slice(0, 3).map((d: any) =>
             `${d.symbol} [${d.chain}] pair:${d.pairAddress} — ${d.dropReason ?? d.reason ?? "?"} ${Math.round((now - d.droppedAt) / 1000)}s ago`
           );
-          lines.push(`PRIORITY: RECENT HOT/ARMED DROPS — check if chase risk`);
+          lines.push(`FOCUS: RECENT HOT/ARMED DROPS — check for late-move evidence`);
           lines.push(`DROPPED (${hotDrops.length}):`);
           dropList.forEach((l: string) => lines.push(`  → ${l}`));
           lines.push("");
          lines.push(`NEXT_CHECK:`);
-          lines.push(`  1. tp_do_not_chase — anti-FOMO list`);
+          lines.push(`  1. tp_recent_pipeline_drops — recently dropped pairs with reasons`);
           lines.push(`  2. tp_why_not(pair) — pipeline rejection reasons`);
 
         } else if (marketDead && watchCount > 0) {
-          lines.push(`PRIORITY: COVERAGE LOW — flow signals unreliable`);
+          lines.push(`FOCUS: COVERAGE LOW — flow signals unreliable`);
           lines.push(`coverage:${coverage}% watching:${watchCount}${topChain ? ` top_chain:${topChain}` : ""}`);
           lines.push("");
          lines.push(`NEXT_CHECK:`);
@@ -129,7 +129,7 @@ Does not advise on trades. Routes to data, not to decisions.`,
           if (topChain) lines.push(`  2. tp_chain_report(${topChain}) — inspect highest activity chain`);
 
         } else if (watchCount > 0) {
-          lines.push(`PRIORITY: WATCHING — pipeline accumulating, no candidates yet`);
+          lines.push(`FOCUS: WATCHING — pipeline accumulating, no candidates yet`);
           lines.push(`watching:${watchCount}${topChain ? ` top_chain:${topChain}` : ""} coverage:${coverage}%`);
           lines.push("");
          lines.push(`NEXT_CHECK:`);
@@ -137,7 +137,7 @@ Does not advise on trades. Routes to data, not to decisions.`,
           lines.push(`  ${topChain ? "2" : "1"}. tp_situation_report — full pipeline overview`);
 
         } else {
-          lines.push(`PRIORITY: PIPELINE EMPTY — worker scanning`);
+          lines.push(`FOCUS: PIPELINE EMPTY — worker scanning`);
           lines.push("");
          lines.push(`NEXT_CHECK:`);
           lines.push(`  1. tp_health_check — verify worker is online`);

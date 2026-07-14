@@ -11,7 +11,7 @@ so the agent reasons over signal — not noise.
 ## Core agent loop
 
 ```
-tp_situation_report → tp_next_action → tp_candidate_brief → tp_chase_risk → tp_preflight_safety → tp_next_action
+tp_situation_report → tp_next_action → tp_candidate_brief → tp_late_move_context → tp_preflight_safety → tp_next_action
 ```
 
 Start every session with `tp_situation_report`. It gives you a full snapshot:
@@ -47,7 +47,7 @@ Returns:
 Agent calls: tp_next_action
 
 Returns:
-  PRIORITY: ARMED — priority candidate present
+  FOCUS: ARMED — priority candidate present
   NEXT_CHECK:
     1. tp_candidate_brief(0xabc...123) — full context
     2. tp_preflight_safety(0xabc...123) — contract check
@@ -57,10 +57,10 @@ Agent calls: tp_candidate_brief(0xabc...123)
 Returns:
   [full narrative case file — flow, risk, discovery, timing, sourceAgreement]
 
-Agent calls: tp_chase_risk(0xabc...123)
+Agent calls: tp_late_move_context(0xabc...123)
 
 Returns:
-  [late-chase risk assessment — flapping, distribution, failed confirmations]
+  [late-move evidence — flapping, distribution, failed confirmations]
 
 Agent calls: tp_preflight_safety(0xabc...123)
 
@@ -82,7 +82,7 @@ Agent calls: tp_watch_pair(pair_address="0xdef...999", chain="base", reason="use
 Returns:
   WATCH REQUEST: 0xdef...999 [base]
   STATUS: queued for monitoring
-  NEXT_CHECK: re-run tp_situation_report or tp_next_action after the next worker refresh
+  NEXT_CHECK: tp_pair_context(0xdef...999) in ~60s
   NOTE: pair must pass watch gates to enter pipeline — not guaranteed
 
 Agent rechecks with: tp_situation_report or tp_next_action
@@ -118,7 +118,7 @@ Returns:
 | `tp_situation_report` | 1 | read:basic | Global pipeline snapshot + compression metric |
 | `tp_next_action` | 1 | read:basic | Routing signal — which tool to call next |
 | `tp_candidate_brief(pair)` | 2 | read:basic | Full narrative case file for a specific pair |
-| `tp_chase_risk(pair)` | 2 | read:basic | Late-chase risk assessment |
+| `tp_late_move_context(pair)` | 2 | read:basic | Late-move evidence — flapping, distribution, failed confirmations |
 | `tp_preflight_safety(pair)` | 5 | read:basic | Contract/token safety check via GoPlus |
 | `tp_watch_pair(pair, chain)` | 3 | read:basic | Submit external pair for monitoring |
 | `tp_health_check` | 1 | read:all | Worker health + Redis key freshness |
@@ -126,7 +126,7 @@ Returns:
 | `tp_worker_pipeline` | 2 | read:all | Full pipeline JSON — ARMED + HOT + WATCHING |
 | `tp_why_not(pair)` | 2 | read:all | Why a pair is not HOT/ARMED + last outcome |
 | `tp_chain_report(chain)` | 1 | read:all | Per-chain drilldown |
-| `tp_do_not_chase` | 2 | read:all | Recent drops — anti-FOMO context |
+| `tp_recent_pipeline_drops` | 2 | read:all | Recently dropped pairs, with reasons |
 | `tp_market_overview` | 1 | read:all | Market regime + flow pressure |
 | `tp_worker_snapshot` | 2 | read:all | Pair memory with filters + pagination |
 | `tp_position_context` | 2 | read:all | Context for user-supplied positions |
@@ -144,7 +144,7 @@ You make all decisions independently based on the data Preflight provides.
 
 Start every session with tp_situation_report to get current market state.
 Use tp_next_action to navigate to the most relevant tool.
-Always verify ARMED/HOT candidates with tp_candidate_brief + tp_chase_risk + tp_preflight_safety
+Always verify ARMED/HOT candidates with tp_candidate_brief + tp_late_move_context + tp_preflight_safety
 before drawing any conclusions.
 
 Preflight reports. You decide.

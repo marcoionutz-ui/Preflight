@@ -57,7 +57,7 @@ the EVM worker and MCP server read from.
 ## Agent loop
 
 ```
-tp_situation_report → tp_next_action → tp_candidate_brief → tp_chase_risk → tp_preflight_safety → tp_next_action
+tp_situation_report → tp_next_action → tp_candidate_brief → tp_late_move_context → tp_preflight_safety → tp_next_action
 ```
 
 ### Core tools (public)
@@ -67,14 +67,14 @@ tp_situation_report → tp_next_action → tp_candidate_brief → tp_chase_risk 
 | `tp_situation_report` | Global market overview — pipeline state across all chains, ARMED first, coverage confidence |
 | `tp_next_action` | Routing signal — tells the agent which tool to call next and why |
 | `tp_candidate_brief(pair)` | Full narrative case file for a specific pair — discovery provenance, flow, risk, sourceAgreement |
-| `tp_chase_risk(pair)` | Chase risk assessment — detects HOT flapping, faded flow, distribution pressure, and FOMO-trap patterns |
+| `tp_late_move_context(pair)` | Late-move evidence — detects HOT flapping, faded flow, distribution pressure, and elevated extension risk |
 | `tp_preflight_safety(pair)` | Contract/token safety check via GoPlus |
 | `tp_watch_pair(pair, chain)` | Submit an external pair for Preflight monitoring |
 
 ### Advanced / internal tools
 
 `tp_chain_report`, `tp_pair_context`, `tp_worker_pipeline`, `tp_worker_snapshot`,
-`tp_why_not`, `tp_do_not_chase`, `tp_position_context`, `tp_health_check`, `tp_market_overview`
+`tp_why_not`, `tp_recent_pipeline_drops`, `tp_position_context`, `tp_health_check`, `tp_market_overview`
 
 ---
 

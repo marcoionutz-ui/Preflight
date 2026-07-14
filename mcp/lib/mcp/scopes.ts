@@ -13,7 +13,7 @@ export const TOOL_SCOPES: Record<string, string[]> = {
   tp_situation_report:  ["read:basic", "read:all", "read:reports"],
   tp_next_action:       ["read:basic", "read:all", "read:reports"],
   tp_candidate_brief:   ["read:basic", "read:all", "read:reports"],
-  tp_chase_risk:        ["read:basic", "read:all", "read:pipeline"],
+  tp_late_move_context: ["read:basic", "read:all", "read:pipeline"],
   tp_preflight_safety:  ["read:basic", "read:all", "read:safety"],
   tp_watch_pair:        ["read:basic", "read:all"],
 
@@ -24,7 +24,7 @@ export const TOOL_SCOPES: Record<string, string[]> = {
   tp_worker_snapshot:   ["read:all", "read:pipeline"],
   tp_pair_context:      ["read:all", "read:pair"],
   tp_why_not:           ["read:all", "read:reports"],
-  tp_do_not_chase:      ["read:all", "read:reports"],
+  tp_recent_pipeline_drops: ["read:all", "read:reports"],
   tp_position_context:  ["read:all", "read:positions"],
   tp_chain_report:      ["read:all", "read:reports", "read:market"],
 };

@@ -3,15 +3,15 @@ import { z } from "zod";
 import { readAllRedis, dedupeByPair } from "../redis-reader";
 import { mcpResponse, mcpErr, ERR } from "../errors";
 
-export function registerDoNotChase(server: McpServer) {
+export function registerRecentPipelineDrops(server: McpServer) {
   server.registerTool(
-    "tp_do_not_chase",
+    "tp_recent_pipeline_drops",
     {
-      title: "Preflight Do Not Chase",
-      description: `Anti-FOMO list: pairs that look active but the worker dropped or rejected.
+      title: "Preflight Recent Pipeline Drops",
+      description: `Pairs recently dropped from HOT/ARMED/WATCHING, with reasons.
 
-Returns pairs recently dropped from HOT/ARMED/WATCHING with reasons.
-Use this to avoid chasing tokens that already failed worker's quality check.
+Reports pipeline exits — pairs that looked active but were dropped or rejected by
+the worker's criteria. Evidence of why continuation didn't hold; not a recommendation.
 
 Args: limit (default 10, max 30), minutes_back (default 10, max 10)`,
       inputSchema: {
@@ -35,7 +35,7 @@ Args: limit (default 10, max 30), minutes_back (default 10, max 10)`,
         if (!deduped.length) return mcpResponse({ text: `No drops in the last ${minutes_back} minutes. Pipeline has been stable.`, confidence: "HIGH" });
 
         const lines: string[] = [];
-        lines.push(`DO NOT CHASE — dropped in last ${minutes_back}m (${deduped.length} pairs):`);
+        lines.push(`RECENT PIPELINE DROPS — last ${minutes_back}m (${deduped.length} pairs):`);
         lines.push("");
 
         for (const d of deduped) {
@@ -56,7 +56,7 @@ Args: limit (default 10, max 30), minutes_back (default 10, max 10)`,
 
           const r = reason.toLowerCase();
           if (r.includes("flow faded") || r.includes("flow turned") || r.includes("no buying flow")) {
-            line += "\n  → Fresh WS confirmation absent; continuation evidence not currently present.";          
+            line += "\n  → Fresh WS confirmation absent; continuation evidence not currently present.";
 			} else if (r.includes("too late") || r.includes("vertical")) {
             line += "\n  → Price extension risk elevated; late-chase conditions detected.";
           } else if (r.includes("dump") || r.includes("-")) {
