@@ -1,6 +1,6 @@
 /**
  * lib/mcp/tools/tp_late_move_context.ts
- * Reports late-move evidence for a pair — HOT but possibly not enterable.
+ * Reports late-move evidence for a HOT, WATCHING, or recently dropped pair.
  *
  * Analizează:
  * - HOT flapping (promovat/dropat repetat în ultimele minute)
@@ -15,7 +15,6 @@ import { z }              from "zod";
 import {
   readAllRedis,
   getPipelineState,
-  formatEth,
   formatVol,
   wsFlowQuality,
   combineConfidence,
@@ -23,7 +22,6 @@ import {
 import { mcpErr, mcpResponse, ERR } from "../errors";
 
 const FLAP_WINDOW_MS    = 10 * 60_000; // 10 minute
-const FLAP_THRESHOLD    = 2;           // 2+ HOT→NONE în window = flapping
 const SELL_RATIO_WARN   = 0.4;         // 40%+ sell vs buy = warning
 const SELL_RATIO_HIGH   = 0.6;         // 60%+ sell vs buy = high risk
 
@@ -49,7 +47,7 @@ Args: pair_address (0x... EVM address)`,
       inputSchema: {
         pair_address: z.string().min(10).describe("EVM pair address (0x...) or V4 pool ID"),
       },
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async ({ pair_address }: { pair_address: string }) => {
       try {
@@ -74,14 +72,13 @@ Args: pair_address (0x... EVM address)`,
 
         const hotPromotions = recentEvents.filter(e => e.to === "HOT").length;
         const hotDrops      = recentEvents.filter(e => e.from === "HOT").length;
-        const isFlapping    = hotDrops >= FLAP_THRESHOLD;
 
         // ── Analiză drop reasons ──────────────────────────────────────────────
         const recentDrops = drops.filter(d =>
           d.pairAddress === addr && now - d.droppedAt < FLAP_WINDOW_MS
         );
 
-        const dropReasons      = recentDrops.map(d => ((d as any).dropReason ?? d.reason ?? "").toLowerCase());
+        const dropReasons      = recentDrops.map(d => (d.dropReason ?? "").toLowerCase());
         const hasFlowFade      = dropReasons.some(r => r.includes("flow faded") || r.includes("neutral"));
         const hasGateFail      = dropReasons.some(r => r.includes("gate") || r.includes("bad exits") || r.includes("score"));
         const hasDistribution  = dropReasons.some(r => r.includes("distribution") || r.includes("sell"));
@@ -104,68 +101,68 @@ Args: pair_address (0x... EVM address)`,
         // ── Scoring ───────────────────────────────────────────────────────────
         const signals: string[]  = [];
         const cautions: string[] = [];
-        let riskScore = 0;
+        let evidenceScore = 0;
 
         // Flapping
         if (hotDrops >= 4) {
-          riskScore += 40;
+          evidenceScore += 40;
           signals.push(`Extreme flapping: promoted and dropped ${hotDrops}x in last 10m`);
         } else if (hotDrops >= 2) {
-          riskScore += 25;
+          evidenceScore += 25;
           signals.push(`HOT flapping: promoted and dropped ${hotDrops}x in last 10m`);
         } else if (hotDrops === 1) {
-          riskScore += 10;
+          evidenceScore += 10;
           cautions.push(`Previously dropped from HOT once in last 10m`);
         }
 
         // Sell ratio
         if (sellRatio !== null) {
           if (sellRatio >= SELL_RATIO_HIGH) {
-            riskScore += 25;
+            evidenceScore += 25;
             signals.push(`High sell ratio: ${Math.round(sellRatio * 100)}% of volume is selling`);
           } else if (sellRatio >= SELL_RATIO_WARN) {
-            riskScore += 10;
+            evidenceScore += 10;
             cautions.push(`Elevated sell ratio: ${Math.round(sellRatio * 100)}% of volume is selling`);
           }
         }
 
         if (swapSellRatio !== null && swapSellRatio >= 0.5 && (buys5m + sells5m) > 5) {
-          riskScore += 10;
+          evidenceScore += 10;
           cautions.push(`Sell-heavy swap count: ${sells5m} sells vs ${buys5m} buys in 5m`);
         }
 
         // Drop reasons
         if (hasGateFail) {
-          riskScore += 15;
+          evidenceScore += 15;
           signals.push(`Qualification criteria not met: bad exits or low score prevented HOT confirmation`);
         }
         if (hasDistribution) {
-          riskScore += 20;
+          evidenceScore += 20;
           signals.push(`Distribution pattern detected in drop reasons`);
         }
         if (hasFlowFade && hotDrops >= 2) {
-          riskScore += 10;
+          evidenceScore += 10;
           cautions.push(`Flow repeatedly fades after initial buying — not sustained`);
         }
 
         // HOT instability
         if (currentHotEntry && !hotIsStable) {
-          riskScore += 5;
+          evidenceScore += 5;
           cautions.push(`Current HOT is only ${Math.round((hotAgeMs ?? 0) / 1000)}s old — not yet stable`);
         }
 
         // Phase
         if (data?.phase === "RECOVERING" || data?.phase === "ZOMBIE") {
-          riskScore += 10;
+          evidenceScore += 10;
           cautions.push(`Phase ${data.phase} — weak historical continuation`);
         }
 
         // ── Verdict ───────────────────────────────────────────────────────────
-        type RiskLevel = "NO_ELEVATED_EVIDENCE" | "CAUTION" | "HIGH" | "EXTREME";
-        const level: RiskLevel =
-          riskScore >= 60 ? "EXTREME" :
-          riskScore >= 35 ? "HIGH"    :
-          riskScore >= 15 ? "CAUTION" : "NO_ELEVATED_EVIDENCE";
+        type EvidenceLevel = "NO_ELEVATED_EVIDENCE" | "CAUTION" | "HIGH" | "EXTREME";
+        const level: EvidenceLevel =
+          evidenceScore >= 60 ? "EXTREME" :
+          evidenceScore >= 35 ? "HIGH"    :
+          evidenceScore >= 15 ? "CAUTION" : "NO_ELEVATED_EVIDENCE";
 
         const emoji =
           level === "EXTREME" ? "🚨" :
@@ -178,11 +175,11 @@ Args: pair_address (0x... EVM address)`,
         lines.push(`Address: ${addr}`);
         lines.push(`Pipeline: ${pipeState}`);
         lines.push("");
-        lines.push(`${emoji} Evidence Level: ${level} (score: ${riskScore}/100)`);
+        lines.push(`${emoji} Evidence Level: ${level} (score: ${evidenceScore}/100)`);
         lines.push("");
 
         if (signals.length) {
-          lines.push("SIGNALS:");
+          lines.push("OBSERVATIONS:");
           signals.forEach(s => lines.push(`  🔴 ${s}`));
           lines.push("");
         }
@@ -199,7 +196,7 @@ Args: pair_address (0x... EVM address)`,
           if (recentDrops.length) {
             recentDrops.slice(0, 3).forEach(d => {
               const ageSec = Math.round((now - d.droppedAt) / 1000);
-              lines.push(`  ${ageSec}s ago: dropped — ${(d as any).dropReason ?? d.reason ?? "unknown"}`);
+              lines.push(`  ${ageSec}s ago: dropped — ${d.dropReason ?? "unknown"}`);
             });
           }
           lines.push("");
@@ -236,8 +233,8 @@ return mcpResponse({
     liquidity: pairState?.lp?.hasData ? "confirmed" : pairState ? "estimated" : "unknown",
   },
   evidence: {
-    riskLevel:     level,
-    riskScore,
+    evidenceLevel: level,
+    evidenceScore,
     pipelineState: pipeState,
     hotFlaps:      hotDrops,
     hotPromotions,

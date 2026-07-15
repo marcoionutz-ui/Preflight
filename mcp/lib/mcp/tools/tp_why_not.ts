@@ -1,6 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { readAllRedis, getPipelineState, findLastEventForPair, findLastDropForPair, formatEth, formatVol } from "../redis-reader";
+import { readAllRedis, getPipelineState, findLastEventForPair, findLastDropForPair, formatVol } from "../redis-reader";
 import type { PairState } from "../types";
 import { mcpResponse, mcpErr, ERR } from "../errors";
 
@@ -63,8 +63,8 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
         const lastDrop = findLastDropForPair(addr, drops);
         if (lastDrop) {
           const ageSec = Math.round((now - lastDrop.droppedAt) / 1000);
-          const fromState = (lastDrop as any).wasIn ?? lastDrop.previousState ?? "UNKNOWN";
-          const reason    = (lastDrop as any).dropReason ?? lastDrop.reason ?? "unknown";
+          const fromState = lastDrop.wasIn ?? "UNKNOWN";
+          const reason    = lastDrop.dropReason ?? "unknown";
           lines.push(`Recently dropped from ${fromState} (${ageSec}s ago):`);
           lines.push(`• Reason: ${reason}`);
           lines.push("");

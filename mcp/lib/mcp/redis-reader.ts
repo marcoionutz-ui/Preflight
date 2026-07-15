@@ -7,9 +7,9 @@ import { getRedis }  from "@/lib/db/redis";
 import type {
   PairState, MemoryEntry, WatchEntry, HotEntry,
   ArmedEntry, WorkerSnapshot, MarketRegime,
-  PipelineEvent, RecentDrop, RedisContext,
+  PipelineEvent, RedisContext,
 } from "./types";
-import { REDIS_KEYS } from "@preflight/schema";
+import { REDIS_KEYS, type PreflightMarketContext, type PreflightDrop } from "@preflight/schema";
 
 function safeJson<T>(raw: string | null, fallback: T, key?: string): T {
   if (!raw) return fallback;
@@ -57,9 +57,16 @@ export async function readAllRedis(): Promise<RedisContext | null> {
 
   const now = Date.now();
 
-  // preflight:* first, supreme:* fallback
-  const regimeFinal   = pfMarketRaw   ?? regimeRaw;
   const eventsFinal   = eventsRaw; // pipeline_events rămâne supreme pentru acum
+
+  // drops and pfDrops used to each JSON.parse() the same recentDrops blob
+  // into two incompatible interfaces (RecentDrop's previousState/reason vs
+  // PreflightDrop's wasIn/dropReason) — only the latter ever matched what's
+  // actually written. Parse once, share the result; pfDrops stays null when
+  // the key itself is genuinely missing (vs. drops' [] fallback), since
+  // some consumers use pfDrops' nullability to distinguish "no key" from
+  // "key present but empty".
+  const parsedDrops = safeJson<PreflightDrop[]>(dropsRaw, [], REDIS_KEYS.recentDrops);
 
   return {
     now,
@@ -68,14 +75,24 @@ export async function readAllRedis(): Promise<RedisContext | null> {
     hot:      safeJson<Record<string, HotEntry>>  (hotRaw,      {},   "hot_candidates"),
     armed:    safeJson<Record<string, ArmedEntry>>(armedRaw,    {},   "armed_entries"),
     snapshot: safeJson<WorkerSnapshot | null>     (snapshotRaw, null, "worker_snapshot"),
-    regime:   safeJson<MarketRegime | null>        (regimeFinal, null, "market_regime"),
+    // Was `pfMarketRaw ?? regimeRaw` — pfMarketRaw is preflight:market_context
+    // JSON (schemaVersion/regime/buyingPct/chainsActive/...), a completely
+    // different shape from the legacy MarketRegime interface
+    // (buyingPctAll/hotCount/wsConnectedChains/...) this field claims to be.
+    // Whenever market_context existed (i.e. almost always), `regime` here
+    // silently held a mistyped PreflightMarketContext instead of a
+    // MarketRegime — harmless in practice only because every consumer
+    // already does `pfMarket ?? regime as any` and prefers pfMarket first.
+    // Now parses only its own key, so the fallback is actually correct on
+    // the rare occasion pfMarket is missing and this path gets used.
+    regime:   safeJson<MarketRegime | null>        (regimeRaw, null, "market_regime"),
     events:   safeJson<PipelineEvent[]>            (eventsFinal, [],   "pipeline_events"),
-    drops:   safeJson<RecentDrop[]>(dropsRaw, [], REDIS_KEYS.recentDrops),
-    pfMarket:         safeJson(pfMarketRaw,        null, "pf_market"),
+    drops:   parsedDrops,
+    pfMarket:         safeJson<PreflightMarketContext | null>(pfMarketRaw, null, "pf_market"),
     pfMomentum:       safeJson(pfMomentumRaw,      null, "pf_momentum"),
     pfPipeline:       safeJson(pfPipelineRaw,      null, "pf_pipeline"),
     pfQualified:      safeJson(pfQualifiedRaw,     null, "pf_qualified"),
-    pfDrops: safeJson(dropsRaw, null, REDIS_KEYS.recentDrops),
+    pfDrops: dropsRaw !== null ? parsedDrops : null,
     pipelineCoverage: safeJson(pfCoverageRaw,      null, "pf_pipeline_coverage"),
     scannerStats:     safeJson(pfScannerStatsRaw,  null, "pf_scanner_stats"),
     pfLifecycle:      safeJson(pfLifecycleRaw,     null, "pf_lifecycle"),
@@ -167,7 +184,7 @@ export function findLastEventForPair(addr: string, events: PipelineEvent[]): Pip
   return events.find(e => e.pairAddress === addr) ?? null;
 }
 
-export function findLastDropForPair(addr: string, drops: RecentDrop[]): RecentDrop | null {
+export function findLastDropForPair(addr: string, drops: PreflightDrop[]): PreflightDrop | null {
   return drops.find(d => d.pairAddress === addr) ?? null;
 }
 

@@ -28,8 +28,8 @@ Args: limit (default 10, max 30), minutes_back (default 10, max 10)`,
         const { now, drops, states } = ctx;
         const cutoff     = now - minutes_back * 60_000;
         const rawRecent  = drops.filter(d => d.droppedAt >= cutoff);
-        const deduped    = dedupeByPair(rawRecent as any[], "droppedAt")
-          .sort((a: any, b: any) => (b.droppedAt ?? 0) - (a.droppedAt ?? 0))
+        const deduped    = dedupeByPair(rawRecent, "droppedAt")
+          .sort((a, b) => (b.droppedAt ?? 0) - (a.droppedAt ?? 0))
           .slice(0, limit);
 
         if (!deduped.length) return mcpResponse({ text: `No pipeline drops were recorded in the last ${minutes_back} minutes.`, confidence: "HIGH" });
@@ -44,8 +44,8 @@ Args: limit (default 10, max 30), minutes_back (default 10, max 10)`,
           const phase     = pairData?.phase ?? "?";
           const countNote = d._eventCount > 1 ? ` (${d._eventCount} drops in ${minutes_back}m)` : "";
 
-          const fromState = (d as any).wasIn ?? d.previousState ?? "UNKNOWN";
-          const reason    = (d as any).dropReason ?? d.reason ?? "unknown";
+          const fromState = d.wasIn ?? "UNKNOWN";
+          const reason    = d.dropReason ?? "unknown";
           const symbol    = d.symbol ?? d.pairAddress?.slice(0, 8) ?? "UNKNOWN";
           const chain     = d.chain ?? "unknown";
 

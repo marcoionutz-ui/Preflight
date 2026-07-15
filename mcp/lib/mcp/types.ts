@@ -3,6 +3,8 @@
  * Toate interfețele pentru datele din Redis — extrase din route.ts
  */
 
+import type { PreflightMarketContext, PreflightDrop } from "@preflight/schema";
+
 export type PairRiskSummary = {
   riskLevel:            string;
   confidence:           string;
@@ -173,14 +175,11 @@ export interface PipelineEvent {
   ts:          number;
 }
 
-export interface RecentDrop {
-  symbol:        string;
-  chain:         string;
-  pairAddress:   string;
-  previousState: string;
-  reason:        string;
-  droppedAt:     number;
-}
+// RecentDrop (previousState/reason) used to be a separate legacy shape
+// parsed from the same Redis key as pfDrops (wasIn/dropReason) — two
+// incompatible interfaces cast over one JSON blob that actually only ever
+// contained the PreflightDrop shape. Removed; drops below is PreflightDrop[]
+// now, parsed once in redis-reader.ts and reused for both fields.
 
 export interface RedisContext {
   now:      number;
@@ -191,12 +190,19 @@ export interface RedisContext {
   snapshot: WorkerSnapshot | null;
   regime:   MarketRegime | null;
   events:   PipelineEvent[];
-  drops:    RecentDrop[];
-  pfMarket:    any | null;
+  drops:    PreflightDrop[];
+  // Canonical shapes, from @preflight/schema — matches what workers/evm
+  // actually writes (see packages/preflight-schema, aligned with the
+  // producer in a prior batch). pfMomentum/pfPipeline/pfQualified below are
+  // NOT yet canonical — @preflight/schema's PreflightSignal doesn't
+  // actually match any of those three real shapes yet, so typing them here
+  // would just be inventing types that don't exist anywhere; that's a
+  // separate, larger follow-up.
+  pfMarket:    PreflightMarketContext | null;
   pfMomentum:  any | null;
   pfPipeline:  any | null;
   pfQualified: any | null;
-  pfDrops:          any | null;
+  pfDrops:          PreflightDrop[] | null;
   pipelineCoverage: any | null;
   scannerStats:     any | null;
   pfLifecycle:      any[] | null;
