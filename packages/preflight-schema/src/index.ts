@@ -6,10 +6,15 @@
 
 // ── Chains ────────────────────────────────────────────────────────────────────
 
+// "ethereum", not "eth" — matches the chain.id value workers/evm actually
+// writes to Redis (workers/evm/src/config/chains.ts). "eth" is only the
+// GeckoTerminal API slug for that chain, a separate concern; using it here
+// would make every real "ethereum" pair state fail to type-check against
+// this union.
 export type PreflightChain =
   | "base"
   | "arbitrum"
-  | "eth"
+  | "ethereum"
   | "bsc"
   | "solana";
 
@@ -114,6 +119,10 @@ export interface PreflightMarketContext {
   trackedPairs:          number;
   chainsActive:          PreflightChain[];
   momentumEventsLast10m: number;
+  // Always "fresh" today (workers/evm/src/lib/preflight-redis.ts never
+  // computes a different value) — kept as string rather than a narrower
+  // literal/enum since it's evidently meant to vary, just doesn't yet.
+  contextQuality:        string;
   updatedAt:             number;
 }
 

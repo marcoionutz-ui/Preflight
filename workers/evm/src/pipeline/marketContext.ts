@@ -8,10 +8,10 @@ import type { Redis } from "ioredis";
 import { CHAINS } from "../config/chains";
 import { wsClients, recentDrops, pipelineEvents, hotCandidates, armedEntries } from "../state/stores";
 import type { PairStateSnapshot } from "../state/pairStates";
-import { REDIS_KEYS } from "@preflight/schema";
+import { REDIS_KEYS, type MarketRegime } from "@preflight/schema";
 
 export interface MarketContext {
-  regime:           string;
+  regime:           MarketRegime;
   buyingPctAll:     number;
   sellingPctAll:    number;
   noWsPct:          number;
@@ -30,7 +30,7 @@ export function deriveMarketContext(states: Record<string, PairStateSnapshot>): 
   const sellingPctAll = total ? Math.round(selling / total * 100) : 0;
   const noWsPct       = total ? Math.round((total - withFlow.length) / total * 100) : 100;
   const flowCoveragePct = total ? Math.round(withFlow.length / total * 100) : 0;
-  const regime =
+  const regime: MarketRegime =
     buyingPctAll > 30    ? "RISK_ON"  :
     sellingPctAll > 20   ? "RISK_OFF" :
     flowCoveragePct < 20 ? "DEAD"     :

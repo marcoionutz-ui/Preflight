@@ -17,7 +17,7 @@ import {
   buildSignalPipelineEntry, buildQualifiedSignalEntry, writePreflightRedis,
   deriveFlowStatus, deriveLiquidityStatus, deriveRiskFlags,
 } from "../lib/preflight-redis";
-import type { PreflightDrop, PreflightPairContext } from "../lib/preflight-redis";
+import type { PreflightPairContext } from "../lib/preflight-redis";
 import { buildWorkerObservation, type ObservationContext } from "../lib/observation";
 import { tokenPools, tokenPoolKey } from "../infra/poolTracker";
 import { WORKER_VERSION } from "../config/constants";
@@ -26,7 +26,7 @@ import { CHAINS } from "../config/chains";
 import { writeCoverageSnapshot } from "./coverageSnapshot";
 import { writeTrendingSnapshots } from "../trending/trendingSnapshots";
 import { calculateMovers } from "../trending/trendingMovers";
-import { REDIS_KEYS } from "@preflight/schema";
+import { REDIS_KEYS, SCHEMA_VERSION, type PreflightDrop, type PreflightChain } from "@preflight/schema";
 
 export async function writeAllSnapshots(r: Redis): Promise<void> {
   // ── supreme:pair_states ────────────────────────────────────────────────────
@@ -53,13 +53,13 @@ export async function writeAllSnapshots(r: Redis): Promise<void> {
     await writePreflightRedis(r, {
       workerVersion:    WORKER_VERSION,
       now:              Date.now(),
-      regime:           ctx.regime as any,
+      regime:           ctx.regime,
       buyingPctAll:     ctx.buyingPctAll,
       sellingPctAll:    ctx.sellingPctAll,
       flowCoveragePct:  ctx.flowCoveragePct,
       pairContextMap,
       trackedPairs:     ctx.total,
-      chainsActive:     CHAINS.map(c => c.id) as any, 
+      chainsActive:     CHAINS.map(c => c.id),
       momentumEventsBuffer,
       signalPipeline,
       qualifiedSignals: qualifiedSignalsBuffer,
@@ -160,19 +160,22 @@ function buildSignalPipelineEntries() {
 function buildPreflightDrops(): PreflightDrop[] {
   return recentDrops
     .filter(d => Date.now() - d.droppedAt < 10 * 60_000)
-    .map(d => {
+    .map((d): PreflightDrop => {
       const dropFlow = getWsFlow(d.pairAddress);
       const wasIn =
         d.previousState === "HOT"   ? "HOT"   as const :
         d.previousState === "ARMED" ? "ARMED" as const :
         "WATCHING" as const;
       return {
-        schemaVersion: "preflight-scanner-v1",
+        schemaVersion: SCHEMA_VERSION,
         workerVersion: WORKER_VERSION,
-        symbol: d.symbol, chain: d.chain, pairAddress: d.pairAddress,
+        // d.chain is plain string internally (state/stores.ts doesn't type
+        // against PreflightChain) — cast at this one boundary rather than
+        // widening the shared contract back to string.
+        symbol: d.symbol, chain: d.chain as PreflightChain, pairAddress: d.pairAddress,
         droppedAt: d.droppedAt, wasIn, dropReason: d.reason,
         timeInPipelineMs: 0,
-		priceAtDrop: d.priceAtDrop ?? null,
+        priceAtDrop: d.priceAtDrop ?? null,
         scoreAtDrop: d.scoreAtDrop ?? null,
         flowAtDrop: {
           status:  dropFlow.hasData && dropFlow.pressure === "BUYING" ? "BUYING" as const : "WEAK" as const,
@@ -215,7 +218,7 @@ function buildPairContextMap(): Record<string, PreflightPairContext> {
     const lifecycle = getLifecycle(addr);
 
     return {
-      schemaVersion: "preflight-scanner-v1", workerVersion: WORKER_VERSION,
+      schemaVersion: SCHEMA_VERSION, workerVersion: WORKER_VERSION,
       symbol: mem3?.symbol ?? addr.slice(0, 8), chain, pairAddress: addr, pipelineState,
       phase: mem3?.phase ?? "UNKNOWN", liquidityStatus: ls3, reserveUsd: liq3.reserveUsd,
       flow: {

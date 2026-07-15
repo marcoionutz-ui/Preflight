@@ -809,7 +809,11 @@ export async function runDsBoostedRefresh(): Promise<void> {
     dexscreenerSourceHealth.lastResultCount = boosted.length;
     dexscreenerSourceHealth.status          = "OK";
 
-    const chainCfgMap = new Map(CHAINS.map(c => [c.id, c]));
+    // Keyed by plain string, not PreflightChain — item.chainId comes from
+    // DexScreener's API response, external/untrusted input that can be any
+    // string (including chains we don't support at all), not a value we
+    // can honestly assert is one of our known chain ids.
+    const chainCfgMap = new Map<string, ChainConfig>(CHAINS.map(c => [c.id, c]));
     let added = 0;
 
     for (const item of boosted.slice(0, DS_BOOSTED_MAX_PER_RUN)) {

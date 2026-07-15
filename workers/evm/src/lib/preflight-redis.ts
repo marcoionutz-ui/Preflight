@@ -26,9 +26,17 @@ import {
   type Confidence,
 } from "./observation";
 import type { MomentumEvent, MomentumVerdict } from "../risk/momentum";
-import { REDIS_KEYS } from "@preflight/schema";
+import {
+  REDIS_KEYS, SCHEMA_VERSION,
+  type PreflightDrop, type PreflightMarketContext, type PreflightChain, type MarketRegime,
+} from "@preflight/schema";
 
-const SCHEMA_VERSION = "preflight-scanner-v1";
+// Previously a local "preflight-scanner-v1" constant here, distinct from
+// the package's own SCHEMA_VERSION ("preflight-schema-v1") — every
+// schemaVersion field written to Redis was tagged with the wrong contract
+// version. Nothing downstream reads/validates this field today, so it
+// wasn't causing bugs, but it made the field meaningless. Now sourced from
+// the actual shared contract.
 const MAX_EVENTS     = 50;
 const MAX_DROPS      = 50;
 const MAX_PIPELINE   = 50;
@@ -111,22 +119,10 @@ export interface PreflightQualifiedSignal {
   workerObservation:  string;
 }
 
-export interface PreflightDrop {
-  schemaVersion:  string;
-  workerVersion:  string;
-  symbol:         string;
-  chain:          string;
-  pairAddress:    string;
-  droppedAt:      number;
-  wasIn:          PipelineState;
-  dropReason:     string;
-  timeInPipelineMs: number;
-  flowAtDrop: {
-    status:  FlowStatus;
-    buys5m:  number;
-    sells5m: number;
-  };
-}
+// PreflightDrop used to be defined locally here, drifted from the shared
+// package's version (missing priceAtDrop/scoreAtDrop, chain: string instead
+// of PreflightChain — see @preflight/schema). Now imported directly so
+// there's exactly one definition instead of two that can silently diverge.
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -230,12 +226,12 @@ export interface PreflightWriteInput {
   now:              number;
 
   // Market context
-  regime:           string;
+  regime:           MarketRegime;
   buyingPctAll:     number;
   sellingPctAll:    number;
   flowCoveragePct:  number;
   trackedPairs:     number;
-  chainsActive:     string[];
+  chainsActive:     PreflightChain[];
   momentumEventsBuffer: PreflightMomentumEvent[];
 
   // Signal pipeline (activeWatch + hotCandidates)
@@ -263,7 +259,13 @@ export async function writePreflightRedis(r: Redis, input: PreflightWriteInput):
   const pipeline = r.pipeline();
 
   // ── preflight:market_context ─────────────────────────────────────────────
-  pipeline.set(REDIS_KEYS.marketContext, JSON.stringify({
+  // Typed against the shared contract instead of an inline literal, so a
+  // field rename/removal in @preflight/schema is caught here at compile
+  // time instead of silently drifting like PreflightDrop did. No casts
+  // needed — regime/chainsActive are typed as MarketRegime/PreflightChain[]
+  // all the way back to their source (marketContext.ts's deriveMarketContext,
+  // config/chains.ts's ChainConfig.id), not just widened to fit here.
+  const marketContext: PreflightMarketContext = {
     schemaVersion:   SCHEMA_VERSION,
     workerVersion,
     regime,
@@ -275,7 +277,8 @@ export async function writePreflightRedis(r: Redis, input: PreflightWriteInput):
     momentumEventsLast10m: momentumEventsBuffer.filter(e => recent10m(e.detectedAt)).length,
     contextQuality:  "fresh",
     updatedAt:       now,
-  }), "EX", 120);
+  };
+  pipeline.set(REDIS_KEYS.marketContext, JSON.stringify(marketContext), "EX", 120);
 
   // ── preflight:momentum_events ────────────────────────────────────────────
   const recentMomentum = momentumEventsBuffer
