@@ -9,7 +9,7 @@
 
 import { AsyncLocalStorage }           from "async_hooks";
 import type { McpServer }              from "@modelcontextprotocol/sdk/server/mcp.js";
-import { logUsage, generateRequestId, isQuotaExceeded } from "./usage";
+import { logUsage, generateRequestId, reserveQuota, refundQuota } from "./usage";
 import { getToolCredits, getPlanConfig }                 from "./billing";
 import { hasScope }                                      from "./scopes";
 import { mcpErr, ERR }                                   from "./errors";
@@ -73,25 +73,29 @@ export function createInstrumentedServer(server: McpServer): McpServer {
         );
       }
 
-      // 2. Quota check
+      // 2. Quota check — reserves credits atomically up front via a Lua
+      // script (check+increment+TTL in one Redis op), refunded below if the
+      // call ends up erroring. quota.reserved/.key track whether this
+      // specific request actually touched Redis and, if so, which key —
+      // refundQuota() must use those, not recompute from ctx.clientId, or
+      // it can decrement a counter that fail-open never incremented, or hit
+      // next month's key if the request straddles a month boundary.
       const plan       = ctx.plan ?? "starter";
       const planConfig = getPlanConfig(plan);
       const credits    = getToolCredits(name);
 
-      if (planConfig.monthly_quota !== -1) {
-        const exceeded = await isQuotaExceeded(ctx.clientId, planConfig.monthly_quota, credits);
-        if (exceeded) {
-          logUsage({
-            client_id:    ctx.clientId,
-            tool_name:    name,
-            status:       "error",
-            error_code:   ERR.QUOTA_EXCEEDED,
-            latency_ms:   Date.now() - startTime,
-            request_id:   requestId,
-            credits_used: 0,
-          });
-          return mcpErr(ERR.QUOTA_EXCEEDED, `Monthly quota exceeded for plan ${plan}.`);
-        }
+      const quota = await reserveQuota(ctx.clientId, credits, planConfig.monthly_quota);
+      if (!quota.allowed) {
+        logUsage({
+          client_id:    ctx.clientId,
+          tool_name:    name,
+          status:       "error",
+          error_code:   ERR.QUOTA_EXCEEDED,
+          latency_ms:   Date.now() - startTime,
+          request_id:   requestId,
+          credits_used: 0,
+        });
+        return mcpErr(ERR.QUOTA_EXCEEDED, `Monthly quota exceeded for plan ${plan}.`);
       }
 
       // 3. Execute original handler
@@ -113,6 +117,8 @@ export function createInstrumentedServer(server: McpServer): McpServer {
           }
         } catch { /* non-JSON response = ok */ }
 
+        if (status === "error" && quota.reserved) await refundQuota(quota.key, credits);
+
         logUsage({
           client_id:    ctx.clientId,
           tool_name:    name,
@@ -126,7 +132,8 @@ export function createInstrumentedServer(server: McpServer): McpServer {
         return result;
       } catch (e) {
         const latency = Date.now() - startTime;
-       logUsage({
+        if (quota.reserved) await refundQuota(quota.key, credits);
+        logUsage({
           client_id:    ctx.clientId,
           tool_name:    name,
           status:       "error",
