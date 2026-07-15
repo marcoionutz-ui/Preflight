@@ -48,6 +48,40 @@ async function safeScan(): Promise<void> {
   }
 }
 
+let fomoRunning = false;
+
+async function safeFomoLoop(): Promise<void> {
+  if (fomoRunning) {
+    console.warn("[FOMO LOOP SKIP] previous run still active");
+    return;
+  }
+  fomoRunning = true;
+  try {
+    await fomoCandidatesLoop();
+  } catch (err) {
+    console.error("[FOMO LOOP ERROR]", err);
+  } finally {
+    fomoRunning = false;
+  }
+}
+
+let followRefreshRunning = false;
+
+async function safeFollowRefresh(): Promise<void> {
+  if (followRefreshRunning) {
+    console.warn("[FOLLOW REFRESH SKIP] previous run still active");
+    return;
+  }
+  followRefreshRunning = true;
+  try {
+    await runFollowRefresh();
+  } catch (err) {
+    console.error("[FOLLOW REFRESH ERROR]", err);
+  } finally {
+    followRefreshRunning = false;
+  }
+}
+
 (async () => {
   await refreshEthPrice();
   await loadMemoryFromRedis();
@@ -60,7 +94,7 @@ async function safeScan(): Promise<void> {
   setInterval(() => { hotCandidatesLoop().catch(err => console.error("[HOT LOOP ERROR]", err)); },     3_000);
   setInterval(() => { verticalCandidatesLoop().catch(err => console.error("[VERTICAL LOOP ERROR]", err)); }, 15_000);
   setInterval(() => { lateCandidatesLoop().catch(err => console.error("[LATE LOOP ERROR]", err)); },   30_000);
-  setInterval(() => { fomoCandidatesLoop().catch(err => console.error("[FOMO LOOP ERROR]", err)); },   30_000);
-  setInterval(() => { runFollowRefresh().catch(err => console.error("[FOLLOW REFRESH ERROR]", err)); }, BUDGET.followRefreshMs);
+  setInterval(safeFomoLoop, 30_000);
+  setInterval(safeFollowRefresh, BUDGET.followRefreshMs);
   setInterval(() => { runDsBoostedRefresh().catch(err => console.error("[DS BOOSTED ERROR]", err)); }, 60_000);
 })();
