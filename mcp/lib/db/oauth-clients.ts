@@ -20,6 +20,12 @@ export interface OAuthClient {
   last_used_at:          string | null;
   notes:                 string | null;
   user_id:               string | null;
+  // Bumped on every secret rotation. Tokens pin the secret_rotated_at value
+  // they were issued against as credential_version; authenticate() requires
+  // an exact match against this field, so rotation revokes outstanding
+  // tokens immediately (race-free — see credential_version in oauth-tokens.ts)
+  // instead of letting them coast until their 24h TTL expires.
+  secret_rotated_at:     string;
 }
 
 // ── Hashing ───────────────────────────────────────────────────────────────────
@@ -160,14 +166,23 @@ export async function rotateClientSecret(clientId: string): Promise<string | nul
   const client_secret = randomBytes(32).toString("hex");
   const secret_hash   = hashSecret(client_secret);
 
-  const { error } = await supabaseAdmin
+  // secret_rotated_at moves forward with the same write — any token stamped
+  // with an older credential_version fails authenticate()'s check on the
+  // very next request, regardless of remaining TTL. .select().maybeSingle()
+  // confirms the update actually matched a row: Supabase returns no error
+  // on a zero-row update, so without this check a call for an unknown or
+  // already-revoked client_id would silently return a "new" secret that
+  // was never persisted.
+  const { data, error } = await supabaseAdmin
     .from("oauth_clients")
-    .update({ secret_hash })
+    .update({ secret_hash, secret_rotated_at: new Date().toISOString() })
     .eq("client_id", clientId)
-    .eq("status", "active");
+    .eq("status", "active")
+    .select("client_id")
+    .maybeSingle();
 
-  if (error) {
-    console.error("[OAUTH] Failed to rotate secret:", error.message);
+  if (error || !data) {
+    console.error("[OAUTH] Failed to rotate secret:", error?.message ?? "active client not found");
     return null;
   }
   return client_secret;

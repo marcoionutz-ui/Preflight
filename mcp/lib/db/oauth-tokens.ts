@@ -11,9 +11,16 @@ const RL_MIN_TTL    = 60;            // 1 min window
 const RL_DAY_TTL    = 86_400;        // 24h window
 
 export interface TokenPayload {
-  client_id: string;
-  scopes:    string[];
-  issued_at: number;
+  client_id:          string;
+  scopes:             string[];
+  issued_at:          number;
+  // secret_rotated_at value the issuing request read from the client row —
+  // NOT compared against issued_at (that's TOCTOU-racy: a request that read
+  // the old secret can still finish issuing after a concurrent rotation
+  // bumps secret_rotated_at, since issued_at is stamped after the read).
+  // Comparing this pinned value against the client's *current*
+  // secret_rotated_at on every authenticate() call is race-free instead.
+  credential_version: string;
 }
 
 export interface RateLimitResult {

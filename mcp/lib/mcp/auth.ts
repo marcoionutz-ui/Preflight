@@ -41,6 +41,19 @@ export async function authenticate(req: NextRequest): Promise<AuthResult> {
     return { ok: false, error: "Client not found or revoked", errorCode: "UNAUTHORIZED", status: 401 };
   }
 
+  // Exact version match, not a timestamp comparison against issued_at —
+  // issued_at is stamped when the token endpoint finishes, which can be
+  // *after* a concurrent rotation even though this request read the old
+  // secret first (TOCTOU). credential_version pins the secret_rotated_at
+  // this request actually authenticated against, so a stale request always
+  // mismatches the client's current value regardless of timing.
+  if (
+    !payload.credential_version ||
+    payload.credential_version !== client.secret_rotated_at
+  ) {
+    return { ok: false, error: "Token invalidated by credential rotation", errorCode: "UNAUTHORIZED", status: 401 };
+  }
+
   const rl = await checkRateLimit(
     client.client_id,
     client.rate_limit_per_minute,

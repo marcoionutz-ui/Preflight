@@ -68,9 +68,10 @@ async function handlePost(req: NextRequest) {
     }
 
     const token = await issueToken({
-      client_id:  client.client_id,
-      scopes:     client.scopes,
-      issued_at:  Date.now(),
+      client_id:          client.client_id,
+      scopes:             client.scopes,
+      issued_at:          Date.now(),
+      credential_version: client.secret_rotated_at,
     });
 
     if (!token) return jsonError(500, "server_error", "Failed to issue token — Redis unavailable");
@@ -134,9 +135,10 @@ async function handlePost(req: NextRequest) {
     }
 
     const token = await issueToken({
-      client_id:  client.client_id,
-      scopes:     payload.scopes,
-      issued_at:  Date.now(),
+      client_id:          client.client_id,
+      scopes:             payload.scopes,
+      issued_at:          Date.now(),
+      credential_version: client.secret_rotated_at,
     });
 
     if (!token) return jsonError(500, "server_error", "Failed to issue token — Redis unavailable");
