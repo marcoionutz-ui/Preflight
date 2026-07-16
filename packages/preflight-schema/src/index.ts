@@ -40,6 +40,20 @@ export type LiquidityStatus = "THIN" | "OK" | "CONFIRMED" | "DEEP";
 export type EntryRisk       = "LOW" | "MEDIUM" | "HIGH" | "EXTREME";
 export type MomentumLevel   = "NONE" | "LOW" | "MEDIUM" | "HIGH" | "EXTREME";
 export type MoveType        = "ORGANIC" | "VERTICAL" | "LATE" | "SECOND_WAVE" | "NEW_POOL" | "UNKNOWN";
+
+// Sursă de adevăr pentru workers/evm/src/risk/momentum.ts — odată scris în
+// Redis și citit de MCP, valorile astea sunt parte din wire contract, nu
+// doar un detaliu intern de algoritm. Un typo aici (ex. "VERTCAL_WATCH")
+// trebuie prins la compilare pe producer, nu doar tolerat ca string liber.
+export type MomentumVerdict =
+  | "VERTICAL_WATCH"       // +30-100% 5m, V3/V4, reserve ok → urmărește
+  | "CONFIRMED_MOMENTUM"   // vertical + WS flow deja activ → priority watch
+  | "LATE_WATCH"           // +200-800% 24h, flow activ → urmărește
+  | "UNCONFIRMED_VERTICAL" // vertical dar fără WS / fără reserve suficient
+  | "LOW_LIQ_NOISE"        // reserve prea mică → probabil noise
+  | "EXTREME_LATE"         // +500%+ 24h → prea târziu
+  | "NO_MOMENTUM"          // sub threshold-uri → nu e momentum event
+  | "NO_CHASE";            // momentum real dar criterii Preflight neîndeplinite
 export type Confidence      = "LOW" | "MEDIUM" | "HIGH";
 export type MarketRegime    = "RISK_ON" | "RISK_OFF" | "MIXED" | "DEAD" | "LOW_COVERAGE";
 
@@ -105,6 +119,88 @@ export interface PreflightSignal {
   workerObservation:  string;
   detectedAt:         number;
   updatedAt:          number;
+}
+
+// ── Momentum / signal pipeline / qualified signal ──────────────────────────────
+// These three ship as their own real shapes — PreflightSignal above doesn't
+// match any of them, so it's left alone rather than forced to fit. Moved
+// from a local, drifted copy in workers/evm/src/lib/preflight-redis.ts
+// (chain: string there, PreflightChain here — same trust-boundary cast
+// pattern as PreflightDrop).
+
+export interface PreflightMomentumEvent {
+  schemaVersion:    string;
+  workerVersion:    string;
+  symbol:           string;
+  chain:            PreflightChain;
+  pairAddress:      string;
+  detectedAt:       number;
+  verdict:          MomentumVerdict;
+  moveType:         MoveType;
+  momentumLevel:    MomentumLevel;
+  entryRisk:        EntryRisk;
+  reason:           string;
+  m5Pct:            number;
+  h1Pct:            number;
+  h24Pct:           number;
+  reserveUsd:       number;
+  dexType:          DexType;
+  flow: {
+    hasData:  boolean;
+    status:   FlowStatus;
+    buyVol5m: number;
+    netVol5m: number;
+    buys5m:   number;
+  };
+  riskFlags:          string[];
+  pipelineState:      PipelineState;
+  workerObservation:  string;
+}
+
+export interface PreflightSignalPipelineEntry {
+  schemaVersion:     string;
+  workerVersion:     string;
+  symbol:            string;
+  chain:             PreflightChain;
+  pairAddress:       string;
+  pipelineState:     PipelineState;
+  watchKind:         string;
+  enteredWatchAt:    number;
+  watchAgeMs:        number;
+  confidence:        Confidence;
+  entryRisk:         EntryRisk;
+  flow: {
+    status:   FlowStatus;
+    buyVol5m: number;
+    netVol5m: number;
+    buys5m:   number;
+    sells5m:  number;
+  };
+  riskFlags:          string[];
+  opportunitySignals: string[];
+  priceVsEntryPct:    number | null;
+  workerObservation:  string;
+  updatedAt:          number;
+}
+
+export interface PreflightQualifiedSignal {
+  schemaVersion:     string;
+  workerVersion:     string;
+  symbol:            string;
+  chain:             PreflightChain;
+  pairAddress:       string;
+  qualifiedAt:       number;
+  confidence:        Confidence;
+  entryRisk:         EntryRisk;
+  flow: {
+    status:   FlowStatus;
+    buyVol5m: number;
+    netVol5m: number;
+    buys5m:   number;
+  };
+  riskFlags:          string[];
+  opportunitySignals: string[];
+  workerObservation:  string;
 }
 
 // ── Market context ────────────────────────────────────────────────────────────

@@ -25,10 +25,12 @@ import {
   type PipelineState,
   type Confidence,
 } from "./observation";
-import type { MomentumEvent, MomentumVerdict } from "../risk/momentum";
+import type { MomentumEvent } from "../risk/momentum";
 import {
   REDIS_KEYS, SCHEMA_VERSION,
   type PreflightDrop, type PreflightMarketContext, type PreflightChain, type MarketRegime,
+  type PreflightMomentumEvent, type PreflightSignalPipelineEntry, type PreflightQualifiedSignal,
+  type DexType,
 } from "@preflight/schema";
 
 // Previously a local "preflight-scanner-v1" constant here, distinct from
@@ -43,81 +45,10 @@ const MAX_PIPELINE   = 50;
 const MAX_QUALIFIED  = 20;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
-
-export interface PreflightMomentumEvent {
-  schemaVersion:    string;
-  workerVersion:    string;
-  symbol:           string;
-  chain:            string;
-  pairAddress:      string;
-  detectedAt:       number;
-  verdict:          MomentumVerdict;
-  moveType:         MoveType;
-  momentumLevel:    MomentumLevel;
-  entryRisk:        EntryRisk;
-  reason:           string;
-  m5Pct:            number;
-  h1Pct:            number;
-  h24Pct:           number;
-  reserveUsd:       number;
-  dexType:          string;
-  flow: {
-    hasData:  boolean;
-    status:   FlowStatus;
-    buyVol5m: number;
-    netVol5m: number;
-    buys5m:   number;
-  };
-  riskFlags:          string[];
-  pipelineState:      PipelineState;
-  workerObservation:  string;
-}
-
-export interface PreflightSignalPipelineEntry {
-  schemaVersion:     string;
-  workerVersion:     string;
-  symbol:            string;
-  chain:             string;
-  pairAddress:       string;
-  pipelineState:     PipelineState;
-  watchKind:         string;
-  enteredWatchAt:    number;
-  watchAgeMs:        number;
-  confidence:        Confidence;
-  entryRisk:         EntryRisk;
-  flow: {
-    status:   FlowStatus;
-    buyVol5m: number;
-    netVol5m: number;
-    buys5m:   number;
-    sells5m:  number;
-  };
-  riskFlags:          string[];
-  opportunitySignals: string[];
-  priceVsEntryPct:    number | null;
-  workerObservation:  string;
-  updatedAt:          number;
-}
-
-export interface PreflightQualifiedSignal {
-  schemaVersion:     string;
-  workerVersion:     string;
-  symbol:            string;
-  chain:             string;
-  pairAddress:       string;
-  qualifiedAt:       number;
-  confidence:        Confidence;
-  entryRisk:         EntryRisk;
-  flow: {
-    status:   FlowStatus;
-    buyVol5m: number;
-    netVol5m: number;
-    buys5m:   number;
-  };
-  riskFlags:          string[];
-  opportunitySignals: string[];
-  workerObservation:  string;
-}
+// PreflightMomentumEvent, PreflightSignalPipelineEntry, PreflightQualifiedSignal
+// used to be defined locally here (chain: string instead of PreflightChain,
+// verdict/dexType widened to string instead of MomentumVerdict/DexType). Now
+// imported from @preflight/schema — same reasoning as PreflightDrop below.
 
 // PreflightDrop used to be defined locally here, drifted from the shared
 // package's version (missing priceAtDrop/scoreAtDrop, chain: string instead
@@ -325,7 +256,7 @@ export function buildMomentumEventEntry(
   symbol: string,
   chain: string,
   pairAddress: string,
-  dexType: string,
+  dexType: DexType,
   flowHasData: boolean,
   flowBuyVol5m: number,
   flowNetVol5m: number,
@@ -353,7 +284,7 @@ export function buildMomentumEventEntry(
   return {
     schemaVersion:    SCHEMA_VERSION,
     workerVersion,
-    symbol, chain, pairAddress,
+    symbol, chain: chain as PreflightChain, pairAddress,
     detectedAt:       Date.now(),
     verdict:          event.verdict,
     moveType:         event.moveType,
@@ -440,7 +371,7 @@ export function buildSignalPipelineEntry(params: {
   return {
     schemaVersion:     SCHEMA_VERSION,
     workerVersion,
-    symbol, chain, pairAddress,
+    symbol, chain: chain as PreflightChain, pairAddress,
     pipelineState,
     watchKind,
     enteredWatchAt,
@@ -503,7 +434,7 @@ export function buildQualifiedSignalEntry(params: {
   return {
     schemaVersion:     SCHEMA_VERSION,
     workerVersion,
-    symbol, chain, pairAddress, qualifiedAt,
+    symbol, chain: chain as PreflightChain, pairAddress, qualifiedAt,
     confidence,
     entryRisk,
     flow: {

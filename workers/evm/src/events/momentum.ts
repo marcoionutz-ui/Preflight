@@ -4,7 +4,7 @@
  */
 
 import type { SourcePool } from "../sources/normalize";
-import type { PreflightMomentumEvent } from "../lib/preflight-redis";
+import type { PreflightMomentumEvent } from "@preflight/schema";
 import { pushMomentumEvent } from "../state/stores";
 import { supabase } from "../infra/supabase";
 import { WORKER_VERSION } from "../config/constants";

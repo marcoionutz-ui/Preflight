@@ -9,9 +9,8 @@
 
 import type { PairMemoryEntry } from "../lib/engines/pairMemory";
 import type { SourcePool } from "../sources/normalize";
-import type { PreflightMomentumEvent, PreflightQualifiedSignal } from "../lib/preflight-redis";
 import { MAX_MOMENTUM_BUFFER, MAX_QUALIFIED_BUFFER } from "../config/constants";
-import type { DiscoverySource } from "@preflight/schema";
+import type { DiscoverySource, PreflightMomentumEvent, PreflightQualifiedSignal } from "@preflight/schema";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 

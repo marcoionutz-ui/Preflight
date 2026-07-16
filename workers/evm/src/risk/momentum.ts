@@ -9,16 +9,12 @@
 
 import type { MomentumLevel, EntryRisk, MoveType } from "../lib/observation";
 import { computeAttentionScore, getMonitoringTier, getPatternTags } from "./attention";
-
-export type MomentumVerdict =
-  | "VERTICAL_WATCH"       // +30-100% 5m, V3/V4, reserve ok → urmărește
-  | "CONFIRMED_MOMENTUM"   // vertical + WS flow deja activ → priority watch
-  | "LATE_WATCH"           // +200-800% 24h, flow activ → urmărește
-  | "UNCONFIRMED_VERTICAL" // vertical dar fără WS / fără reserve suficient
-  | "LOW_LIQ_NOISE"        // reserve prea mică → probabil noise
-  | "EXTREME_LATE"         // +500%+ 24h → prea târziu
-  | "NO_MOMENTUM"          // sub threshold-uri → nu e momentum event
-  | "NO_CHASE";            // momentum real dar criterii Preflight neîndeplinite
+// MomentumVerdict moved to @preflight/schema — it's written to Redis and
+// read by MCP, so it's part of the wire contract, not just an internal
+// algorithm detail. Re-exported here so existing `from "../risk/momentum"`
+// imports keep working.
+import type { MomentumVerdict } from "@preflight/schema";
+export type { MomentumVerdict };
 
 import type { MonitoringTier } from "./attention";
 
@@ -125,7 +121,7 @@ export function classifyMomentumEvent(pool: PoolSnapshot, seenCount = 1): Moment
       return {
         verdict: "UNCONFIRMED_VERTICAL",
         moveType, momentumLevel,
-        entryRisk: getEntryRisk("UNCONFIRMED_VERTICAL" as MomentumVerdict, m5, h24, reserveUsd),
+        entryRisk: getEntryRisk("UNCONFIRMED_VERTICAL", m5, h24, reserveUsd),
         reason: `+${Math.round(m5)}% in 5m — non-standard DEX`,
         m5Pct: m5, h1Pct: h1, h24Pct: h24, reserveUsd, isV3orV4, hasWsFlow,
         riskFlags,
@@ -150,7 +146,7 @@ export function classifyMomentumEvent(pool: PoolSnapshot, seenCount = 1): Moment
       return {
         verdict: "CONFIRMED_MOMENTUM",
         moveType, momentumLevel,
-        entryRisk: getEntryRisk("CONFIRMED_MOMENTUM" as MomentumVerdict, m5, h24, reserveUsd),
+        entryRisk: getEntryRisk("CONFIRMED_MOMENTUM", m5, h24, reserveUsd),
         reason: `+${Math.round(m5)}% in 5m with active WS buying flow`,
         m5Pct: m5, h1Pct: h1, h24Pct: h24, reserveUsd, isV3orV4, hasWsFlow,
         riskFlags,
@@ -161,7 +157,7 @@ export function classifyMomentumEvent(pool: PoolSnapshot, seenCount = 1): Moment
     return {
       verdict: "VERTICAL_WATCH",
       moveType, momentumLevel,
-      entryRisk: getEntryRisk("VERTICAL_WATCH" as MomentumVerdict, m5, h24, reserveUsd),
+      entryRisk: getEntryRisk("VERTICAL_WATCH", m5, h24, reserveUsd),
       reason: `+${Math.round(m5)}% in 5m — vertical candle`,
       m5Pct: m5, h1Pct: h1, h24Pct: h24, reserveUsd, isV3orV4, hasWsFlow,
       riskFlags,
@@ -187,7 +183,7 @@ export function classifyMomentumEvent(pool: PoolSnapshot, seenCount = 1): Moment
       return {
         verdict: "NO_CHASE",
         moveType, momentumLevel,
-        entryRisk: getEntryRisk("NO_CHASE" as MomentumVerdict, m5, h24, reserveUsd),
+        entryRisk: getEntryRisk("NO_CHASE", m5, h24, reserveUsd),
         reason: `+${Math.round(h24)}% in 24h — criteria not met for watch`,
         m5Pct: m5, h1Pct: h1, h24Pct: h24, reserveUsd, isV3orV4, hasWsFlow,
         riskFlags,
@@ -198,7 +194,7 @@ export function classifyMomentumEvent(pool: PoolSnapshot, seenCount = 1): Moment
     return {
       verdict: "LATE_WATCH",
       moveType, momentumLevel,
-      entryRisk: getEntryRisk("LATE_WATCH" as MomentumVerdict, m5, h24, reserveUsd),
+      entryRisk: getEntryRisk("LATE_WATCH", m5, h24, reserveUsd),
       reason: `+${Math.round(h24)}% in 24h — late but active`,
       m5Pct: m5, h1Pct: h1, h24Pct: h24, reserveUsd, isV3orV4, hasWsFlow,
       riskFlags,
