@@ -138,9 +138,13 @@ Returns per position:
           // ── Price change ──────────────────────────────────────────────────
           const pc = pairState?.priceChange ?? null;
 
-          // ── LP status — fix ChatGPT #4: fallback lp.status → lpSignal ────
-          const lpData   = (pairState as any)?.lp ?? null;
-          const lpStatus = lpData?.status ?? (pairState as any)?.lpSignal ?? null;
+          // ── LP status ────────────────────────────────────────────────────
+          // lpSignal/lpRemovalDetected fallbacks removed — grepped the
+          // producer (workers/evm), neither field has ever existed on the
+          // wire; pairState.lp is the real, always-present shape now that
+          // PairState is sourced from @preflight/schema.
+          const lpData   = pairState?.lp ?? null;
+          const lpStatus = lpData?.status ?? null;
 
           // ── Data age ──────────────────────────────────────────────────────
           const dataAgeMs  = pairState ? now - pairState.updatedAt : null;
@@ -161,8 +165,7 @@ Returns per position:
             if (distToTp1 < 0.05) flags.push("NEAR_TP1");
           }
 
-          // fix ChatGPT #4: LP_REMOVAL din lp.status
-          if (lpData?.status === "REMOVED" || (pairState as any)?.lpRemovalDetected) {
+          if (lpData?.status === "REMOVED") {
             flags.push("LP_REMOVAL_OBSERVED");
           }
 
@@ -183,12 +186,12 @@ Returns per position:
           if (sizeUsd) lines.push(`size:$${sizeUsd}`);
 
           if (hasFlow && flow) {
-            lines.push(`flow:${flow.pressure} | buys:${flow.buys5m} sells:${flow.sells5m} | netVol:${formatVol((flow as any).netVol5mUsd, flow.netVol5m)}`);
+            lines.push(`flow:${flow.pressure} | buys:${flow.buys5m} sells:${flow.sells5m} | netVol:${formatVol(flow.netVol5mUsd, flow.netVol5m)}`);
           } else {
             lines.push(`flow:NO_WS_DATA`);
           }
 
-          if (lpStatus) lines.push(`lp:${lpStatus}(${getLpCoverage((pairState as any)?.dexType, lpData?.hasData ?? false)})`);
+          if (lpStatus) lines.push(`lp:${lpStatus}(${getLpCoverage(pairState?.dexType, lpData?.hasData ?? false)})`);
           lines.push(`pipeline:${pipeState}`);
 
           if (pc) {

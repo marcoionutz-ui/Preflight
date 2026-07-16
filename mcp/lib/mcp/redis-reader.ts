@@ -85,10 +85,10 @@ export async function readAllRedis(): Promise<RedisContext | null> {
     // (buyingPctAll/hotCount/wsConnectedChains/...) this field claims to be.
     // Whenever market_context existed (i.e. almost always), `regime` here
     // silently held a mistyped PreflightMarketContext instead of a
-    // MarketRegime — harmless in practice only because every consumer
-    // already does `pfMarket ?? regime as any` and prefers pfMarket first.
-    // Now parses only its own key, so the fallback is actually correct on
-    // the rare occasion pfMarket is missing and this path gets used.
+    // MarketRegime — harmless in practice only because every consumer used
+    // to merge `pfMarket ?? regime as any` and prefer pfMarket first. Now
+    // parses only its own key, and every consumer reads per-field fallbacks
+    // (`pfMarket?.x ?? regime?.x`) instead of merging the two shapes.
     regime:   safeJson<MarketRegime | null>        (regimeRaw, null, "market_regime"),
     events:   safeJson<PipelineEvent[]>            (eventsFinal, [],   "pipeline_events"),
     drops:   parsedDrops,

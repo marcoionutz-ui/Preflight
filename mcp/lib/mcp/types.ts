@@ -6,8 +6,16 @@
 import type {
   PreflightMarketContext, PreflightDrop,
   PreflightMomentumEvent, PreflightSignalPipelineEntry, PreflightQualifiedSignal,
+  PreflightPairState,
 } from "@preflight/schema";
 
+// Report-output shape for tp_pair_context / tp_candidate_brief's risk payload
+// — NOT the raw wire shape stored in pair_states (that's
+// PreflightRiskSnapshot, on PairState.risk below). checkedAgeSec is a
+// derived display field (now - checkedAt), computed once in
+// lib/reports/pair-context-report.ts, never present on the Redis JSON —
+// a required field here that used to silently never exist on the raw
+// blob it got merged into as `any`.
 export type PairRiskSummary = {
   riskLevel:            string;
   confidence:           string;
@@ -26,61 +34,15 @@ export type PairRiskSummary = {
   canTakeBackOwnership: boolean | null;
   missingData:          string[];
   checkedAt:            number;
-  checkedAgeSec:        number;
+  checkedAgeSec:        number | null;
 };
 
-export interface PairState {
-  symbol:             string;
-  phase:              string;
-  seenCount:          number;
-  totalEntries:       number;
-  wins24h:            number;
-  losses24h:          number;
-  badExits24h:        number;
-  consecutiveLosses:  number;
-  currentPrice:       number;
-  lastEntryTime:      number;
-  reserveUsd:         number;
-  reserveEth:         number;
-  liqStatus:          string;
-  dexType:            string;
-  poolCountSameToken: number;
-  hourUtc:            number;
-  chain?:             string;
-  priceChange?:       { m5: number; h1: number; h24: number };
-  flow: {
-    pressure:     string;
-    buys5m:       number;
-    sells5m:      number;
-    hasData:      boolean;
-    buyVol5m:     number;
-    sellVol5m:    number;
-    netVol5m:     number;
-    buyVol5mUsd:  number | null;
-    sellVol5mUsd: number | null;
-    netVol5mUsd:  number | null;
-  };
-  lp: {
-    status:           string;
-    lpNet5m:          number;
-    hasData:          boolean;
-    lpAdded5m:        number;
-    lpRemoved5m:      number;
-    removedPctOfPool: number | null;
-  };
-  updatedAt:            number;
-  lastMomentumVerdict?:  string | null;
-  lastMomentumAt?:       number | null;
-  attentionScore?:       number | null;
-  monitoringTier?:       string | null;
-  patternTags?:          string[] | null;
-  firstSeenAt?:          number | null;
-  lastSeenAt?:           number | null;
-  pipelineEnteredAt?:    number | null;
-  currentStateAgeSec?:   number | null;
-  priceVsFirstSeenPct?:  number | null;
-  risk?:                 PairRiskSummary | null;
-}
+// PairState used to be a hand-maintained, drifted copy of the real
+// preflight:pair_states shape (missing pipelineState/discovery/
+// reserveNative/nativeSymbol, wrong risk type) — every consumer worked
+// around the gaps with `as any`. Now sourced directly from
+// @preflight/schema, matching what workers/evm actually writes.
+export type PairState = PreflightPairState;
 
 export interface MemoryEntry extends PairState {
   tokenAddress:     string;

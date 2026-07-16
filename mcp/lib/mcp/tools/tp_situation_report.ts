@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { readAllRedis, formatVol, formatPct, combineConfidence, dedupeByPair } from "../redis-reader";
 import { mcpErr, mcpResponse, ERR } from "../errors";
+import type { PairState } from "../types";
 
 export function registerSituationReport(server: McpServer) {
   server.registerTool(
@@ -35,8 +36,8 @@ Observed movers section shows tokens moving on market that haven't passed pipeli
           pfMarket, pfMomentum, pfQualified, pfDrops,
         } = ctx;
 
-        const stateVals     = Object.values(states) as any[];
-        const newestStateAt = stateVals.length ? Math.max(...stateVals.map((s: any) => s.updatedAt)) : null;
+        const stateVals     = Object.values(states);
+        const newestStateAt = stateVals.length ? Math.max(...stateVals.map(s => s.updatedAt)) : null;
         const freshnessSec  = newestStateAt ? Math.round((now - newestStateAt) / 1000) : null;
         const workerOnline  = !!snapshot && !!snapshot.savedAt && (now - snapshot.savedAt) < 5 * 60_000;
 
@@ -56,8 +57,8 @@ Observed movers section shows tokens moving on market that haven't passed pipeli
           globalCoverage = pfMarket?.flowCoveragePct ?? regime?.flowCoveragePct ?? 0;
           lines.push(`MARKET: ${emoji} ${marketName} | buying:${buying}% selling:${selling}% coverage:${globalCoverage}% chains:${chains}`);
         } else {
-          const withFlow  = stateVals.filter((s: any) => s.flow?.hasData);
-          const buying    = withFlow.filter((s: any) => s.flow?.pressure === "BUYING").length;
+          const withFlow  = stateVals.filter(s => s.flow?.hasData);
+          const buying    = withFlow.filter(s => s.flow?.pressure === "BUYING").length;
           const total     = stateVals.length;
           const buyingPct = total ? Math.round(buying / total * 100) : 0;
           globalCoverage  = total ? Math.round(withFlow.length / total * 100) : 0;
@@ -134,16 +135,16 @@ Observed movers section shows tokens moving on market that haven't passed pipeli
         }
 
         // ── Observed movers — split gainers / droppers ────────────────────
-        const moverScore = (s: any) => Math.max(
+        const moverScore = (s: PairState) => Math.max(
           Math.abs(s.priceChange?.m5  ?? 0),
           Math.abs(s.priceChange?.h1  ?? 0) / 3,
           Math.abs(s.priceChange?.h24 ?? 0) / 8,
         );
 
-        const moverLine = (s: any) =>
+        const moverLine = (s: PairState) =>
           `  → ${s.symbol} [${s.chain}] pair:${s.pairAddress} m5:${formatPct(s.priceChange.m5)} h1:${formatPct(s.priceChange.h1)} h24:${formatPct(s.priceChange.h24)} liq:$${Math.round((s.reserveUsd ?? 0) / 1000)}K`;
 
-        const moverBase = stateVals.filter((s: any) =>
+        const moverBase = stateVals.filter(s =>
           s.pipelineState === "NONE" &&
           s.priceChange &&
           (
@@ -155,21 +156,21 @@ Observed movers section shows tokens moving on market that haven't passed pipeli
         );
 
         const gainers = moverBase
-          .filter((s: any) =>
+          .filter(s =>
             s.priceChange.m5  >= 5  ||
             s.priceChange.h1  >= 15 ||
             s.priceChange.h24 >= 40
           )
-          .sort((a: any, b: any) => moverScore(b) - moverScore(a))
+          .sort((a, b) => moverScore(b) - moverScore(a))
           .slice(0, 5);
 
         const droppers = moverBase
-          .filter((s: any) =>
+          .filter(s =>
             s.priceChange.m5  <= -5  ||
             s.priceChange.h1  <= -15 ||
             s.priceChange.h24 <= -40
           )
-          .sort((a: any, b: any) => moverScore(b) - moverScore(a))
+          .sort((a, b) => moverScore(b) - moverScore(a))
           .slice(0, 3);
 
         if (gainers.length > 0 || droppers.length > 0) {
@@ -177,11 +178,11 @@ Observed movers section shows tokens moving on market that haven't passed pipeli
           lines.push(`OBSERVED MOVERS (${totalMovers} total):`);
           if (gainers.length > 0) {
             lines.push(`  GAINERS (${gainers.length}):`);
-            gainers.forEach((s: any) => lines.push(moverLine(s)));
+            gainers.forEach(s => lines.push(moverLine(s)));
           }
           if (droppers.length > 0) {
             lines.push(`  DROPPERS (${droppers.length}):`);
-            droppers.forEach((s: any) => lines.push(moverLine(s)));
+            droppers.forEach(s => lines.push(moverLine(s)));
           }
         }
 

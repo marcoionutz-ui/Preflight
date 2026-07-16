@@ -14,102 +14,30 @@ import { getLiquidityContext } from "../risk/liquidity";
 import { tokenPools, tokenPoolKey } from "../infra/poolTracker";
 import { getCachedRisksBulk } from "../risk/riskChecker";
 import type { RiskResult } from "../risk/riskChecker";
+// PairStateSnapshot moved to @preflight/schema (PreflightPairState) — it's
+// written to Redis and read by MCP, so it's part of the wire contract.
+// Re-exported here so existing `from "../state/pairStates"` imports
+// (trendingSnapshots.ts, trendingMovers.ts, marketContext.ts) keep working.
+import type { PreflightPairState, PreflightRiskSnapshot, PreflightChain } from "@preflight/schema";
+// `export type { X as Y }` only re-exports for other files — it does not
+// declare Y as a usable local name in *this* file (that's what caused
+// "Cannot find name 'PairStateSnapshot'" below). A real local alias fixes
+// both the local usage and the re-export in one line.
+export type PairStateSnapshot = PreflightPairState;
 
-// slim risk — fără raw GoPlus în pair_states snapshot
-type RiskStateSnapshot = Omit<RiskResult, "raw">;
-
-function slimRisk(risk: RiskResult | null | undefined): RiskStateSnapshot | null {
+function slimRisk(risk: RiskResult | null | undefined): PreflightRiskSnapshot | null {
   if (!risk) return null;
   const safe = { ...risk } as RiskResult;
   delete safe.raw;
-  return safe as RiskStateSnapshot;
+  return safe as PreflightRiskSnapshot;
 }
 
-export interface PairStateSnapshot {
-  // Identity — necesar pentru market movers și drilldown fără call extra
-  symbol:        string;
-  chain:         string;
-  pairAddress:   string;
-  tokenAddress:  string;
-  dexType:       string;
-
-  // Price + momentum — necesar pentru observed movers în tp_situation_report
-  currentPrice:  number;
-  priceChange: {
-    m5:  number;
-    h1:  number;
-    h24: number;
-  };
-
-  // Pipeline state
-  phase:             string;
-  pipelineState:     string;
-  seenCount:         number;
-  totalEntries:      number;
-
-  // History
-  wins24h:           number;
-  losses24h:         number;
-  badExits24h:       number;
-  consecutiveLosses: number;
-  lastEntryTime:     number;
-
-  // Flow
-  flow: {
-    pressure:     string;
-    buys5m:       number;
-    sells5m:      number;
-    hasData:      boolean;
-    buyVol5m:     number;
-    sellVol5m:    number;
-    netVol5m:     number;
-    buyVol5mUsd:  number | null;
-    sellVol5mUsd: number | null;
-    netVol5mUsd:  number | null;
-  };
-
-  // LP
-  lp: {
-    status:           string;
-    lpNet5m:          number;
-    hasData:          boolean;
-    lpAdded5m:        number;
-    lpRemoved5m:      number;
-    removedPctOfPool: number | null;
-  };
-
-  // Liquidity
-  reserveUsd:         number;
-  reserveEth:         number;
-  reserveNative:      number;  
-  nativeSymbol:       string | null;
-  liqStatus:          string;
-  poolCountSameToken: number;
-
-  // Timing — necesar pentru agent reasoning (fix AVNT 8.5m → 0m confusion)
-  firstSeenAt:        number | null;
-  lastSeenAt:         number | null;
-  pipelineEnteredAt:  number | null;
-  currentStateAgeSec: number | null;
-  priceVsFirstSeenPct: number | null;
-
-  // Meta
-  hourUtc:              number;
-  updatedAt:            number;
-  lastMomentumVerdict?: string | null;
-  lastMomentumAt?:      number | null;
-  attentionScore?:      number | null;
-  monitoringTier?:      string | null;
-  patternTags?:         string[] | null;
-  risk?:                RiskStateSnapshot | null;
-  
-  // Discovery
-  discovery: {
-    primaryDiscoverySource: string | null;
-    discoverySources:       string[];
-    firstDiscoveredAt:      number | null;
-    lastDiscoveryAt:        number | null;
-  };
+// EVM subset of PreflightChain — this worker never produces "solana". A
+// real boundary check, not a cast: pair_states is the wire contract, so an
+// entry with an unrecognized/missing chain gets skipped (logged) rather
+// than silently written as the lie "unknown".
+function isEvmPreflightChain(value: string | undefined): value is PreflightChain {
+  return value === "base" || value === "arbitrum" || value === "ethereum" || value === "bsc";
 }
 
 export async function buildPairStates(): Promise<Record<string, PairStateSnapshot>> {
@@ -117,12 +45,25 @@ export async function buildPairStates(): Promise<Record<string, PairStateSnapsho
   const now = Date.now();
 
   // Bulk MGET — un singur Redis call pentru toate pairs
+  // Same chain guard as the main loop below — a mem without a valid chain
+  // would otherwise get its risk looked up under a fabricated "base" key
+  // even though it's excluded from pair_states entirely.
   const riskItems = [...memory.values()]
-    .filter(mem => !!mem.tokenAddress)
-    .map(mem => ({ tokenAddress: mem.tokenAddress!, chain: mem.chain ?? "base" }));
+    .filter(mem => !!mem.tokenAddress && isEvmPreflightChain(mem.chain))
+    // Non-null assertion, not a cast — the .filter() above already checked
+    // isEvmPreflightChain(mem.chain), but a plain boolean-returning filter
+    // callback (as opposed to a callback with an inline type-predicate
+    // signature) doesn't propagate that narrowing to .map(), so TS still
+    // sees `string | undefined` here without it.
+    .map(mem => ({ tokenAddress: mem.tokenAddress!, chain: mem.chain! }));
   const riskMap = await getCachedRisksBulk(riskItems);
 
   for (const [addr, mem] of memory.entries()) {
+    if (!isEvmPreflightChain(mem.chain)) {
+      console.warn(`[PAIR STATE SKIP] invalid/missing chain for ${addr}: ${mem.chain ?? "missing"}`);
+      continue;
+    }
+
     const flow    = getWsFlow(addr);
     const lp      = getLpSignal(addr);
     const liq     = getLiquidityContext(addr);
@@ -155,7 +96,9 @@ export async function buildPairStates(): Promise<Record<string, PairStateSnapsho
 
     states[addr] = {
       symbol:       mem.symbol,
-      chain:       mem.chain ?? "unknown",
+      // No cast needed — isEvmPreflightChain() already narrowed mem.chain
+      // above; anything that didn't validate hit `continue` before this.
+      chain:        mem.chain,
       pairAddress:  addr,
       tokenAddress: mem.tokenAddress ?? "",
       dexType:      addr.length === 66 ? "V4" : v3PoolMap.has(addr) ? "V3" : "V2",

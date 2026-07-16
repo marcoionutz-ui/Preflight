@@ -42,9 +42,9 @@ Does not advise on trades. Routes to data, not to decisions.`,
         const marketDead = coverage < 5;
 
         // Freshness din cel mai recent pair state
-        const stateVals     = Object.values(states) as any[];
+        const stateVals     = Object.values(states);
         const newestStateAt = stateVals.length
-          ? Math.max(...stateVals.map((s: any) => s.updatedAt ?? 0))
+          ? Math.max(...stateVals.map(s => s.updatedAt ?? 0))
           : null;
         const freshnessSec  = newestStateAt
           ? Math.round((now - newestStateAt) / 1000)

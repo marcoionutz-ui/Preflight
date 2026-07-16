@@ -269,7 +269,7 @@ Args: chain — one of: base, arbitrum, eth, bsc, solana`,
             let line = `  → ${s.symbol ?? addr.slice(0, 8)} pair:${addr}`;
             line += `\n     m5:${formatPct(pc.m5)} h1:${formatPct(pc.h1)} h24:${formatPct(pc.h24)} liq:$${Math.round((s.reserveUsd ?? 0) / 1000)}K`;
             // fix ChatGPT #3: ?? 0 pe formatEth
-            line += `\n     flow:${s.flow?.hasData ? `${s.flow.pressure} buys:${s.flow.buys5m} netVol:${formatVol((s.flow as any).netVol5mUsd, s.flow.netVol5m ?? 0)}` : "NO_WS_DATA"} lp:${s.lp?.status ?? "?"}(${getLpCoverage(s.dexType, s.lp?.hasData ?? false)})`;
+            line += `\n     flow:${s.flow?.hasData ? `${s.flow.pressure} buys:${s.flow.buys5m} netVol:${formatVol(s.flow.netVol5mUsd, s.flow.netVol5m ?? 0)}` : "NO_WS_DATA"} lp:${s.lp?.status ?? "?"}(${getLpCoverage(s.dexType, s.lp?.hasData ?? false)})`;
             return line;
           });
           lines.push(`OBSERVED MOVERS (${observedMovers.length}):\n${moverLines.join("\n")}`);

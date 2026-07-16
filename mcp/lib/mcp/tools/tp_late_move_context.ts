@@ -55,7 +55,7 @@ Args: pair_address (0x... EVM address)`,
         if (!ctx) return mcpErr(ERR.REDIS_DOWN, "Redis not connected");
 
         const { now, states, watch, hot, armed, snapshot, events, drops, pfMarket, regime } = ctx;
-        const coveragePct = (pfMarket ?? regime as any)?.flowCoveragePct ?? null;
+        const coveragePct = pfMarket?.flowCoveragePct ?? regime?.flowCoveragePct ?? null;
         const addr = pair_address.toLowerCase().trim();
 
         const pipeState  = getPipelineState(addr, watch, hot, armed);
@@ -204,7 +204,7 @@ Args: pair_address (0x... EVM address)`,
 
         // Flow summary
         if (flow?.hasData) {
-          lines.push(`FLOW (5m): buy ${formatVol((flow as any).buyVol5mUsd, buyVol)} (${buys5m} swaps) | sell ${formatVol((flow as any).sellVol5mUsd, sellVol)} (${sells5m} swaps) | net ${formatVol((flow as any).netVol5mUsd, flow.netVol5m)}`);
+          lines.push(`FLOW (5m): buy ${formatVol(flow.buyVol5mUsd, buyVol)} (${buys5m} swaps) | sell ${formatVol(flow.sellVol5mUsd, sellVol)} (${sells5m} swaps) | net ${formatVol(flow.netVol5mUsd, flow.netVol5m)}`);
           lines.push("");
         }
 

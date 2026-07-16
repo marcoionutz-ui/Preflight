@@ -173,7 +173,7 @@ Args:
         }
 
         if (!rawTokenAddress && ctx?.states?.[addr]) {
-          rawTokenAddress = (ctx.states[addr] as any).tokenAddress ?? null;
+          rawTokenAddress = ctx.states[addr].tokenAddress ?? null;
         }
 
         if (!resolvedChain && rawTokenAddress) resolvedChain = deriveChainFromTokenAddress(rawTokenAddress);
@@ -181,7 +181,7 @@ Args:
           resolvedChain = ctx.hot[addr]?.chain ?? ctx.watch[addr]?.chain ?? ctx.armed[addr]?.chain ?? null;
         }
         if (!resolvedChain && ctx?.states?.[addr]?.chain) {
-          resolvedChain = (ctx.states[addr] as any).chain;
+          resolvedChain = ctx.states[addr].chain;
         }
         if (resolvedChain) resolvedChain = resolvedChain.toLowerCase().trim();
 

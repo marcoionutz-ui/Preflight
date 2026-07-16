@@ -16,7 +16,7 @@ import {
   readAllRedis, freshnessLabel, getPipelineState, readPairContext,
   wsFlowQuality, combineConfidence, readSolanaPoolContext,
 } from "../mcp/redis-reader";
-import type { PairState } from "../mcp/types";
+import type { PairRiskSummary } from "../mcp/types";
 import type { McpConfidence, McpDataQuality } from "../mcp/errors";
 import type { SourceAgreement } from "@preflight/schema";
 
@@ -160,7 +160,7 @@ export async function buildPairContextReport(
     }
 
     const { now, states, watch, hot, armed, snapshot, pfMarket, regime } = ctx;
-    const coveragePct = (pfMarket ?? regime as any)?.flowCoveragePct ?? null;
+    const coveragePct = pfMarket?.flowCoveragePct ?? regime?.flowCoveragePct ?? null;
 
     // Try preflight:pair_context first — richest data
     const pfCtx = await readPairContext(addr);
@@ -226,39 +226,39 @@ export async function buildPairContextReport(
       symbol: data.symbol,
       chain:  chain ?? pairState?.chain ?? watchOut?.chain ?? hotOut?.chain ?? armedOut?.chain ?? null,
       phase: data.phase, seenCount: data.seenCount, currentPrice: data.currentPrice,
-      priceChange: (pairState as PairState)?.priceChange ?? null,
+      priceChange: pairState?.priceChange ?? null,
       timing: {
-        firstSeenAt:        (pairState as any)?.firstSeenAt  ?? (snapMem as any)?.firstSeen  ?? null,
-        lastSeenAt:         (pairState as any)?.lastSeenAt   ?? (snapMem as any)?.lastSeen   ?? null,
-        pipelineEnteredAt:  (pairState as any)?.pipelineEnteredAt  ?? null,
-        currentStateAgeSec: (pairState as any)?.currentStateAgeSec ?? null,
+        firstSeenAt:        pairState?.firstSeenAt  ?? (snapMem as any)?.firstSeen  ?? null,
+        lastSeenAt:         pairState?.lastSeenAt   ?? (snapMem as any)?.lastSeen   ?? null,
+        pipelineEnteredAt:  pairState?.pipelineEnteredAt  ?? null,
+        currentStateAgeSec: pairState?.currentStateAgeSec ?? null,
         seenCount:          data.seenCount,
       },
-      risk: (pairState as any)?.risk ? {
-        riskLevel:            (pairState as any).risk.riskLevel,
-        confidence:           (pairState as any).risk.confidence,
-        flags:                (pairState as any).risk.flags,
-        summary:              (pairState as any).risk.summary,
-        isHoneypot:           (pairState as any).risk.isHoneypot,
-        cannotSell:           (pairState as any).risk.cannotSell,
-        buyTaxPct:            (pairState as any).risk.buyTaxPct,
-        sellTaxPct:           (pairState as any).risk.sellTaxPct,
-        ownerRenounced:       (pairState as any).risk.ownerRenounced,
-        canMint:              (pairState as any).risk.canMint,
-        canBlacklist:         (pairState as any).risk.canBlacklist,
-        canPauseTrading:      (pairState as any).risk.canPauseTrading,
-        canChangeTax:         (pairState as any).risk.canChangeTax,
-        canChangeBalance:     (pairState as any).risk.canChangeBalance,
-        canTakeBackOwnership: (pairState as any).risk.canTakeBackOwnership,
-        missingData:          (pairState as any).risk.missingData,
-        checkedAt:            (pairState as any).risk.checkedAt,
+      risk: pairState?.risk ? {
+        riskLevel:            pairState.risk.riskLevel,
+        confidence:           pairState.risk.confidence,
+        flags:                pairState.risk.flags,
+        summary:              pairState.risk.summary,
+        isHoneypot:           pairState.risk.isHoneypot,
+        cannotSell:           pairState.risk.cannotSell,
+        buyTaxPct:            pairState.risk.buyTaxPct,
+        sellTaxPct:           pairState.risk.sellTaxPct,
+        ownerRenounced:       pairState.risk.ownerRenounced,
+        canMint:              pairState.risk.canMint,
+        canBlacklist:         pairState.risk.canBlacklist,
+        canPauseTrading:      pairState.risk.canPauseTrading,
+        canChangeTax:         pairState.risk.canChangeTax,
+        canChangeBalance:     pairState.risk.canChangeBalance,
+        canTakeBackOwnership: pairState.risk.canTakeBackOwnership,
+        missingData:          pairState.risk.missingData,
+        checkedAt:            pairState.risk.checkedAt,
         checkedAgeSec:        (() => {
-          const checkedAtNum = Number((pairState as any).risk.checkedAt ?? 0);
+          const checkedAtNum = Number(pairState.risk?.checkedAt ?? 0);
           return checkedAtNum > 0 ? Math.round((Date.now() - checkedAtNum) / 1000) : null;
         })(),
-      } : null,
+      } satisfies PairRiskSummary : null,
       riskCacheStatus: (() => {
-        const r = (pairState as any)?.risk;
+        const r = pairState?.risk;
         if (!pairState) return "unavailable";
         if (!r) return "missing";
         const checkedAt = Number(r.checkedAt ?? 0);
@@ -276,7 +276,7 @@ export async function buildPairContextReport(
       } : undefined,
       discovery: (() => {
         const allSources: string[] =
-          (pairState as any)?.discovery?.discoverySources ??
+          pairState?.discovery?.discoverySources ??
           (snapMem as any)?.discoverySources ?? [];
         const RETENTION_SOURCES = new Set(["MARKET_FOLLOW_LIST"]);
         const LOOKUP_SOURCES    = new Set(["DEXSCREENER_PAIR_FALLBACK"]);
@@ -284,27 +284,27 @@ export async function buildPairContextReport(
         const retainedVia       = allSources.filter(s => RETENTION_SOURCES.has(s));
         const resolvedVia       = allSources.filter(s => LOOKUP_SOURCES.has(s));
         const rawPrimary =
-          (pairState as any)?.discovery?.primaryDiscoverySource ??
+          pairState?.discovery?.primaryDiscoverySource ??
           (snapMem as any)?.primaryDiscoverySource ?? null;
         const primaryDiscoverySource =
           rawPrimary && discoverySources.includes(rawPrimary) ? rawPrimary : discoverySources[0] ?? null;
         const firstDiscoveredAt =
-          (pairState as any)?.discovery?.firstDiscoveredAt ?? (snapMem as any)?.firstDiscoveredAt ?? null;
+          pairState?.discovery?.firstDiscoveredAt ?? (snapMem as any)?.firstDiscoveredAt ?? null;
         const lastDiscoveryAt =
-          (pairState as any)?.discovery?.lastDiscoveryAt ?? (snapMem as any)?.lastDiscoveryAt ?? null;
+          pairState?.discovery?.lastDiscoveryAt ?? (snapMem as any)?.lastDiscoveryAt ?? null;
         return {
           primaryDiscoverySource, discoverySources, retainedVia, resolvedVia,
           agreement: getSourceAgreement(allSources, lastDiscoveryAt, now),
           firstDiscoveredAt, lastDiscoveryAt,
         };
       })(),
-      priceVsFirstSeenPct: (pairState as any)?.priceVsFirstSeenPct ?? null,
-      dexType:            (pairState as PairState)?.dexType            ?? null,
-      reserveUsd:         (pairState as PairState)?.reserveUsd         ?? null,
-      liqStatus:          (pairState as PairState)?.liqStatus          ?? null,
-      poolCountSameToken: (pairState as PairState)?.poolCountSameToken ?? null,
-      reserveNative:      (pairState as any)?.reserveNative            ?? reserveEth,
-      nativeSymbol:       (pairState as any)?.nativeSymbol             ?? null,
+      priceVsFirstSeenPct: pairState?.priceVsFirstSeenPct ?? null,
+      dexType:            pairState?.dexType            ?? null,
+      reserveUsd:         pairState?.reserveUsd         ?? null,
+      liqStatus:          pairState?.liqStatus          ?? null,
+      poolCountSameToken: pairState?.poolCountSameToken ?? null,
+      reserveNative:      pairState?.reserveNative      ?? reserveEth,
+      nativeSymbol:       pairState?.nativeSymbol       ?? null,
       flow: pairState?.flow ?? null,
       lp:   pairState?.lp  ?? null,
       dataAvailability: (() => {
@@ -315,15 +315,15 @@ export async function buildPairContextReport(
           marketData: pairState ? "available" : "not_available",
           wsFlow:    hasWsFlow  ? "available" : liveMonitored ? "not_available_no_ws_events_yet" : "not_available_market_only",
           lpSignal:  hasLpData  ? "available" : liveMonitored ? "not_available_no_lp_events_yet" : "not_available_market_only",
-          lpCoverage: getLpCoverage((pairState as PairState)?.dexType, hasLpData),
+          lpCoverage: getLpCoverage(pairState?.dexType, hasLpData),
         };
       })(),
       marketPattern: {
-        lastMomentumVerdict: (pairState as any)?.lastMomentumVerdict ?? null,
-        lastMomentumAt:      (pairState as any)?.lastMomentumAt      ?? null,
-        attentionScore:      (pairState as any)?.attentionScore      ?? null,
-        monitoringTier:      (pairState as any)?.monitoringTier      ?? null,
-        patternTags:         (pairState as any)?.patternTags         ?? null,
+        lastMomentumVerdict: pairState?.lastMomentumVerdict ?? null,
+        lastMomentumAt:      pairState?.lastMomentumAt      ?? null,
+        attentionScore:      pairState?.attentionScore      ?? null,
+        monitoringTier:      pairState?.monitoringTier      ?? null,
+        patternTags:         pairState?.patternTags         ?? null,
       },
       pipeline: { state: pipelineState, watch: watchOut, hot: hotOut, armed: armedOut },
       reserveEth,
@@ -334,10 +334,10 @@ export async function buildPairContextReport(
         const missingCritical: string[] = [];
         const missingNonCritical: string[] = [];
         if (!pairState?.flow?.hasData) missingCritical.push("wsFlow");
-        if (!(pairState as any)?.risk) missingCritical.push("riskCache");
+        if (!pairState?.risk) missingCritical.push("riskCache");
         if (freshnessSec === null || freshnessSec > 90) missingCritical.push("dataStale");
         if (!pairState?.lp?.hasData) missingNonCritical.push("lpHistory");
-        if (!(pairState as any)?.pipelineEnteredAt) missingNonCritical.push("pipelineTiming");
+        if (!pairState?.pipelineEnteredAt) missingNonCritical.push("pipelineTiming");
         const ready = missingCritical.length === 0;
         return { ready, missingCritical, missingNonCritical };
       })(),
@@ -357,7 +357,7 @@ export async function buildPairContextReport(
     };
 
     // rawRisk accesat direct din pairState — mainPayload.risk nu expune source
-    const rawRisk    = (pairState as any)?.risk;
+    const rawRisk    = pairState?.risk;
     const riskQuality =
       rawRisk?.source === "unavailable"             ? "missing" :
       mainPayload.riskCacheStatus === "available"   ? "cached"  :

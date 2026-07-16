@@ -100,8 +100,7 @@ Returns current status if pair is already being monitored.`,
         lines.push(`STATUS: queued for monitoring`);
         lines.push(`  chain: ${normalizedChain}${reason ? ` | reason: ${reason}` : ""}`);
         if (hasContext) {
-          const ps = pairState as any;
-          lines.push(`  known pair — ${ps.symbol ?? "?"} liq:$${Math.round((ps.reserveUsd ?? 0) / 1000)}K`);
+          lines.push(`  known pair — ${pairState?.symbol ?? "?"} liq:$${Math.round((pairState?.reserveUsd ?? 0) / 1000)}K`);
         } else {
           lines.push(`  unknown pair — will fetch pool data on next refresh cycle`);
         }

@@ -1,7 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { readAllRedis, getPipelineState, findLastEventForPair, findLastDropForPair, formatVol } from "../redis-reader";
-import type { PairState } from "../types";
 import { mcpResponse, mcpErr, ERR } from "../errors";
 
 export function registerWhyNot(server: McpServer, exposePerformance: boolean) {
@@ -87,7 +86,7 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
 
           const flow = states[addr]?.flow;
           if (flow) {
-            lines.push(`• Current flow: ${flow.hasData ? `${flow.pressure} (buys:${flow.buys5m} buyVol:${formatVol((flow as any).buyVol5mUsd, flow.buyVol5m ?? 0)})` : "no WS data"}`);
+            lines.push(`• Current flow: ${flow.hasData ? `${flow.pressure} (buys:${flow.buys5m} buyVol:${formatVol(flow.buyVol5mUsd, flow.buyVol5m ?? 0)})` : "no WS data"}`);
           }
 
           const pc = states[addr]?.priceChange;
@@ -101,7 +100,7 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
           if (exposePerformance && data.consecutiveLosses >= 3) reasons.push(`${data.consecutiveLosses} consecutive losses — score heavily penalised`);
           if (exposePerformance && data.badExits24h >= 2 && data.wins24h === 0) reasons.push("bad exits only, zero wins — qualification criteria not met");
           if (exposePerformance && data.seenCount > 40 && data.totalEntries === 0) reasons.push("seen 40+ times with no entry — marked as stale loser");
-          const pCount = (states[addr] as PairState)?.poolCountSameToken ?? 1;
+          const pCount = states[addr]?.poolCountSameToken ?? 1;
           if (pCount >= 5) reasons.push(`${pCount} pools for same token — clone/fragmentation block`);
 
           if (reasons.length) {

@@ -4,6 +4,13 @@
  * Tipuri, constante Redis keys, și nimic altceva.
  */
 
+import type { RiskResult } from "@preflight/risk-layer";
+
+// Slim risk snapshot as actually embedded in pair_states — no raw GoPlus
+// payload. Mirrors workers/evm/src/state/pairStates.ts's local
+// RiskStateSnapshot (now sourced from here instead of duplicated).
+export type PreflightRiskSnapshot = Omit<RiskResult, "raw">;
+
 // ── Chains ────────────────────────────────────────────────────────────────────
 
 // "ethereum", not "eth" — matches the chain.id value workers/evm actually
@@ -58,43 +65,109 @@ export type Confidence      = "LOW" | "MEDIUM" | "HIGH";
 export type MarketRegime    = "RISK_ON" | "RISK_OFF" | "MIXED" | "DEAD" | "LOW_COVERAGE";
 
 // ── Core pair state ───────────────────────────────────────────────────────────
+// Real shape of preflight:pair_states entries, moved from a local interface
+// in workers/evm/src/state/pairStates.ts (buildPairStates()). Unlike
+// PreflightMarketContext/PreflightDrop/etc., these entries carry no
+// schemaVersion/workerVersion fields — the producer never writes them here,
+// so they're deliberately absent rather than assumed.
+//
+// The previous PreflightPairState draft in this file (schemaVersion,
+// priceUsd, liquidity.status, risk:{entryRisk,riskFlags}, etc.) didn't match
+// the real wire JSON at all and had zero importers anywhere in the repo —
+// replaced outright rather than reshaped.
 
 export interface PreflightPairState {
-  schemaVersion:  string;
-  workerVersion:  string;
-  chain:          PreflightChain;
-  pairAddress:    string;
-  tokenAddress:   string | null;
-  symbol:         string;
-  dexType:        DexType;
-  reserveUsd:     number;
-  priceUsd:       number;
+  symbol:        string;
+  chain:         PreflightChain;
+  pairAddress:   string;
+  tokenAddress:  string;
+  // Only ever "V4"|"V3"|"V2" from buildPairStates()'s own ternary — DexType
+  // (which also allows "UNKNOWN") is a safe superset, not a guess.
+  dexType:       DexType;
+
+  currentPrice:  number;
   priceChange: {
     m5:  number;
     h1:  number;
     h24: number;
   };
-  pipelineState:  PipelineState;
+
+  phase:             string;
+  // Only ever "ARMED"|"HOT"|"WATCHING"|"NONE" from buildPairStates()'s own
+  // ternary — PipelineState (used elsewhere in this file for the same
+  // concept) is a safe superset.
+  pipelineState:     PipelineState;
+  seenCount:         number;
+  totalEntries:      number;
+
+  wins24h:           number;
+  losses24h:         number;
+  badExits24h:       number;
+  consecutiveLosses: number;
+  lastEntryTime:     number;
+
   flow: {
-    status:    FlowStatus;
-    pressure:  string;
-    hasData:   boolean;
-    buyVol5m:  number;
-    sellVol5m: number;
-    netVol5m:  number;
-    buys5m:    number;
-    sells5m:   number;
+    // Verified against workers/evm/src/lib/engines/flowTypes.ts's
+    // FlowPressure — a different concept from this file's own FlowStatus
+    // (which happens to share the "BUYING" literal but isn't the same
+    // union), so inlined rather than reusing that name.
+    pressure:     "BUYING" | "SELLING" | "NEUTRAL";
+    buys5m:       number;
+    sells5m:      number;
+    hasData:      boolean;
+    buyVol5m:     number;
+    sellVol5m:    number;
+    netVol5m:     number;
+    buyVol5mUsd:  number | null;
+    sellVol5mUsd: number | null;
+    netVol5mUsd:  number | null;
   };
-  liquidity: {
-    status:     LiquidityStatus;
-    reserveUsd: number;
+
+  lp: {
+    // Verified against workers/evm/src/lib/engines/flowTypes.ts's own
+    // LiquidityStatus ("ADDED"|"REMOVED"|"STABLE") — NOT the same as this
+    // file's LiquidityStatus ("THIN"|"OK"|"CONFIRMED"|"DEEP", a different
+    // concept despite the identical name), so inlined to avoid colliding
+    // with that existing export.
+    status:           "ADDED" | "REMOVED" | "STABLE";
+    lpNet5m:          number;
+    hasData:          boolean;
+    lpAdded5m:        number;
+    lpRemoved5m:      number;
+    removedPctOfPool: number | null;
   };
-  risk: {
-    entryRisk:  EntryRisk;
-    riskFlags:  string[];
+
+  reserveUsd:         number;
+  reserveEth:         number;
+  reserveNative:      number;
+  // Verified against workers/evm/src/risk/liquidity.ts's
+  // getLiquidityContext() return type — both fields below are its exact
+  // literal signature, not a guess.
+  nativeSymbol:       "ETH" | "BNB" | null;
+  liqStatus:          "CONFIRMED" | "WEAK" | "MISSING";
+  poolCountSameToken: number;
+
+  firstSeenAt:         number | null;
+  lastSeenAt:          number | null;
+  pipelineEnteredAt:   number | null;
+  currentStateAgeSec:  number | null;
+  priceVsFirstSeenPct: number | null;
+
+  hourUtc:              number;
+  updatedAt:            number;
+  lastMomentumVerdict?: string | null;
+  lastMomentumAt?:      number | null;
+  attentionScore?:      number | null;
+  monitoringTier?:      string | null;
+  patternTags?:         string[] | null;
+  risk?:                PreflightRiskSnapshot | null;
+
+  discovery: {
+    primaryDiscoverySource: string | null;
+    discoverySources:       string[];
+    firstDiscoveredAt:      number | null;
+    lastDiscoveryAt:        number | null;
   };
-  seenCount:    number;
-  updatedAt:    number;
 }
 
 // ── Signal types ──────────────────────────────────────────────────────────────

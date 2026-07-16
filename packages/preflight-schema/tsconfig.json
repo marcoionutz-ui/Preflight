@@ -2,7 +2,10 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "noEmit": true,
-    "outDir": "dist"
+    "outDir": "dist",
+    "paths": {
+      "@preflight/risk-layer": ["../risk-layer/src/index.ts"]
+    }
   },
   "include": ["src"]
 }

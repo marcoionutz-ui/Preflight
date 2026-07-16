@@ -40,7 +40,7 @@ Args: limit (default 10, max 30), minutes_back (default 10, max 10)`,
 
         for (const d of deduped) {
           const ageSec    = Math.round((now - d.droppedAt) / 1000);
-          const pairData  = states[d.pairAddress ?? ""];
+          const pairData  = states[(d.pairAddress ?? "").toLowerCase()];
           const phase     = pairData?.phase ?? "?";
           const countNote = d._eventCount > 1 ? ` (${d._eventCount} drops in ${minutes_back}m)` : "";
 

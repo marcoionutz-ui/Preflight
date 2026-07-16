@@ -45,7 +45,13 @@ Args:
         if (phase)              pairs = pairs.filter(p => p.data.phase === phase.toUpperCase());
         if (flow_pressure)      pairs = pairs.filter(p => states[p.addr]?.flow?.pressure === flow_pressure.toUpperCase());
         if (min_seen_count > 0) pairs = pairs.filter(p => p.data.seenCount >= min_seen_count);
-        if (chain)              pairs = pairs.filter(p => (snapshot?.memory?.[p.addr] as MemoryEntry)?.tokenAddress?.startsWith(chain) ?? false);
+        // Bug: this used to filter on tokenAddress?.startsWith(chain) — token
+        // addresses start with "0x", never with a chain name, so the filter
+        // silently dropped almost everything whenever `chain` was passed.
+        if (chain) {
+          const wantedChain = chain === "eth" ? "ethereum" : chain.toLowerCase();
+          pairs = pairs.filter(p => p.data.chain?.toLowerCase() === wantedChain);
+        }
 
         const total     = pairs.length;
         const paginated = pairs.slice(offset, offset + limit);
@@ -59,9 +65,9 @@ Args:
             pairs: paginated.map(({ addr, data }) => ({
               pairAddress: addr, symbol: data.symbol, phase: data.phase,
               seenCount: data.seenCount, currentPrice: data.currentPrice,
-              dexType:    (states[addr] as PairState)?.dexType    ?? null,
-              reserveUsd: (states[addr] as PairState)?.reserveUsd ?? null,
-              liqStatus:  (states[addr] as PairState)?.liqStatus  ?? null,
+              dexType:    states[addr]?.dexType    ?? null,
+              reserveUsd: states[addr]?.reserveUsd ?? null,
+              liqStatus:  states[addr]?.liqStatus  ?? null,
               flow:       states[addr]?.flow ?? null,
               history: exposePerformance ? {
                 totalEntries:      data.totalEntries,

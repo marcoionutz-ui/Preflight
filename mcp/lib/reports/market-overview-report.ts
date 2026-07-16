@@ -116,14 +116,14 @@ export async function buildMarketOverviewReport(topN = 5): Promise<MarketOvervie
       const chainHot   = Object.values(hot).filter((h: any) => h.chain?.toLowerCase() === chainId).length;
       const chainArmed = Object.values(armed).filter((a: any) => (a.chain ?? "").toLowerCase() === chainId).length;
 
-      const newestStateAt = stateVals.length ? Math.max(...stateVals.map((s: any) => s.updatedAt)) : null;
+      const newestStateAt = stateVals.length ? Math.max(...stateVals.map(s => s.updatedAt)) : null;
       const freshnessSec  = newestStateAt ? Math.round((now - newestStateAt) / 1000) : null;
 
       let regime: ChainRegime | null = null;
       if (stateVals.length > 0) {
-        const withFlow  = stateVals.filter((s: any) => s.flow?.hasData);
-        const buying    = withFlow.filter((s: any) => s.flow?.pressure === "BUYING").length;
-        const selling   = withFlow.filter((s: any) => s.flow?.pressure === "SELLING").length;
+        const withFlow  = stateVals.filter(s => s.flow?.hasData);
+        const buying    = withFlow.filter(s => s.flow?.pressure === "BUYING").length;
+        const selling   = withFlow.filter(s => s.flow?.pressure === "SELLING").length;
         const total     = stateVals.length;
         const buyingPct     = total ? Math.round((buying / total) * 100) : 0;
         const sellingPct    = total ? Math.round((selling / total) * 100) : 0;

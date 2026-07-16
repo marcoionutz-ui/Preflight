@@ -81,7 +81,7 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
         if (!ctx) return mcpErr(ERR.REDIS_DOWN, "Redis not connected");
 
         const { now, states, watch, hot, armed, snapshot, events, pfMarket, regime } = ctx;
-        const coveragePct = (pfMarket ?? regime as any)?.flowCoveragePct ?? null;
+        const coveragePct = pfMarket?.flowCoveragePct ?? regime?.flowCoveragePct ?? null;
         const addr = pair_address.toLowerCase().trim();
 
         const pairState  = states[addr]             ?? null;
@@ -206,7 +206,7 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
         const LOOKUP_SOURCES    = new Set(["DEXSCREENER_PAIR_FALLBACK"]);
 
         const allSources: string[] =
-          (pairState as any)?.discovery?.discoverySources ??
+          pairState?.discovery?.discoverySources ??
           (snapMem as any)?.discoverySources ??
           [];
 
@@ -215,7 +215,7 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
         const resolvedVia      = allSources.filter(s => LOOKUP_SOURCES.has(s));
 
         const rawPrimary =
-          (pairState as any)?.discovery?.primaryDiscoverySource ??
+          pairState?.discovery?.primaryDiscoverySource ??
           (snapMem as any)?.primaryDiscoverySource ??
           null;
 
@@ -225,11 +225,11 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
             : discoverySources[0] ?? null;
 
         const firstDiscoveredAt =
-          (pairState as any)?.discovery?.firstDiscoveredAt ??
+          pairState?.discovery?.firstDiscoveredAt ??
           (snapMem as any)?.firstDiscoveredAt ?? null;
 
         const lastDiscoveryAt =
-          (pairState as any)?.discovery?.lastDiscoveryAt ??
+          pairState?.discovery?.lastDiscoveryAt ??
           (snapMem as any)?.lastDiscoveryAt ?? null;
 
         if (allSources.length > 0 || primaryDiscoverySource) {
