@@ -38,8 +38,7 @@ Does not advise on trades. Routes to data, not to decisions.`,
         const hotCount   = Object.keys(hot).length;
         const watchCount = Object.keys(watch).length;
 
-        const r          = pfMarket ?? regime as any;
-        const coverage   = r?.flowCoveragePct ?? 0;
+        const coverage   = pfMarket?.flowCoveragePct ?? regime?.flowCoveragePct ?? 0;
         const marketDead = coverage < 5;
 
         // Freshness din cel mai recent pair state
@@ -52,14 +51,13 @@ Does not advise on trades. Routes to data, not to decisions.`,
           : null;
 
         // Recent drops in last 5m — deduped
-        const dropsSource = (pfDrops && pfDrops.length > 0 ? pfDrops : drops) ?? [];
+        const dropsSource = pfDrops && pfDrops.length > 0 ? pfDrops : drops;
         const recentDrops = dedupeByPair(
-          (dropsSource as any[]).filter((d: any) => now - d.droppedAt < 5 * 60_000),
+          dropsSource.filter(d => now - d.droppedAt < 5 * 60_000),
           "droppedAt",
         );
-        const hotDrops = recentDrops.filter((d: any) =>
-          (d.wasIn ?? d.previousState) === "HOT" ||
-          (d.wasIn ?? d.previousState) === "ARMED"
+        const hotDrops = recentDrops.filter(d =>
+          d.wasIn === "HOT" || d.wasIn === "ARMED"
         );
 
         // Coverage note — LOW sub 20%, nu "moderate"
@@ -109,8 +107,8 @@ Does not advise on trades. Routes to data, not to decisions.`,
           lines.push(`  2. tp_late_move_context(pair) — flap/distribution check`);
 
         } else if (hotDrops.length > 0) {
-          const dropList = hotDrops.slice(0, 3).map((d: any) =>
-            `${d.symbol} [${d.chain}] pair:${d.pairAddress} — ${d.dropReason ?? d.reason ?? "?"} ${Math.round((now - d.droppedAt) / 1000)}s ago`
+          const dropList = hotDrops.slice(0, 3).map(d =>
+            `${d.symbol} [${d.chain}] pair:${d.pairAddress} — ${d.dropReason ?? "?"} ${Math.round((now - d.droppedAt) / 1000)}s ago`
           );
           lines.push(`FOCUS: RECENT HOT/ARMED DROPS — check for late-move evidence`);
           lines.push(`DROPPED (${hotDrops.length}):`);
@@ -146,11 +144,11 @@ Does not advise on trades. Routes to data, not to decisions.`,
 
         // ── Momentum events sidebar ────────────────────────────────────────
         if (pfMomentum && pfMomentum.length > 0) {
-          const recent = pfMomentum.filter((m: any) => now - m.detectedAt < 5 * 60_000);
+          const recent = pfMomentum.filter(m => now - m.detectedAt < 5 * 60_000);
           if (recent.length > 0) {
             lines.push("");
             lines.push(`MOMENTUM SIDEBAR (${recent.length} events <5m):`);
-            recent.slice(0, 3).forEach((m: any) => {
+            recent.slice(0, 3).forEach(m => {
               lines.push(`  ${m.symbol} [${m.chain}] ${m.verdict} m5:${formatPct(m.m5Pct)} pair:${m.pairAddress}`);
             });
           }

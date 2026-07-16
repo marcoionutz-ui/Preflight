@@ -1,5 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { readAllRedis, formatEth, formatVol, formatPct, combineConfidence, dedupeByPair } from "../redis-reader";
+import { readAllRedis, formatVol, formatPct, combineConfidence, dedupeByPair } from "../redis-reader";
 import { mcpErr, mcpResponse, ERR } from "../errors";
 
 export function registerSituationReport(server: McpServer) {
@@ -32,7 +32,7 @@ Observed movers section shows tokens moving on market that haven't passed pipeli
         const {
           now, states, watch, hot, armed,
           snapshot, regime, events, drops,
-          pfMarket, pfPipeline, pfMomentum, pfQualified, pfDrops,
+          pfMarket, pfMomentum, pfQualified, pfDrops,
         } = ctx;
 
         const stateVals     = Object.values(states) as any[];
@@ -46,15 +46,15 @@ Observed movers section shows tokens moving on market that haven't passed pipeli
         lines.push(`WORKER: ${workerOnline ? `✅ ${snapshot?.version ?? "?"} | data:${freshnessSec !== null ? `${freshnessSec}s` : "?"}` : "⚠️ offline or stale"}`);
 
         // ── Market regime ──────────────────────────────────────────────────
-        const r      = pfMarket ?? regime as any;
-        const emoji  = !r ? "❓" : r.regime === "RISK_ON" ? "🟢" : r.regime === "RISK_OFF" ? "🔴" : r.regime === "DEAD" ? "⚫" : "🟡";
+        const marketName = pfMarket?.regime ?? regime?.regime ?? null;
+        const emoji  = !marketName ? "❓" : marketName === "RISK_ON" ? "🟢" : marketName === "RISK_OFF" ? "🔴" : marketName === "DEAD" ? "⚫" : "🟡";
         let globalCoverage = 0;
-        if (r) {
-          const chains  = (r.wsConnectedChains ?? r.chainsActive ?? []).join("+") || "none";
-          const buying  = r.buyingPct ?? r.buyingPctAll ?? 0;
-          const selling = r.sellingPct ?? r.sellingPctAll ?? 0;
-          globalCoverage = r.flowCoveragePct ?? 0;
-          lines.push(`MARKET: ${emoji} ${r.regime} | buying:${buying}% selling:${selling}% coverage:${globalCoverage}% chains:${chains}`);
+        if (marketName) {
+          const chains  = (pfMarket?.chainsActive ?? regime?.wsConnectedChains ?? []).join("+") || "none";
+          const buying  = pfMarket?.buyingPct ?? regime?.buyingPctAll ?? 0;
+          const selling = pfMarket?.sellingPct ?? regime?.sellingPctAll ?? 0;
+          globalCoverage = pfMarket?.flowCoveragePct ?? regime?.flowCoveragePct ?? 0;
+          lines.push(`MARKET: ${emoji} ${marketName} | buying:${buying}% selling:${selling}% coverage:${globalCoverage}% chains:${chains}`);
         } else {
           const withFlow  = stateVals.filter((s: any) => s.flow?.hasData);
           const buying    = withFlow.filter((s: any) => s.flow?.pressure === "BUYING").length;
@@ -81,11 +81,11 @@ Observed movers section shows tokens moving on market that haven't passed pipeli
         const armedCount  = Object.keys(armed).length;
 
         // Filter stale gate-passed setups — only show fresh + still active + not dropped after
-        const activeQualified = (pfQualified ?? []).filter((q: any) => {
+        const activeQualified = (pfQualified ?? []).filter(q => {
           const addr = q.pairAddress?.toLowerCase();
           if (!addr) return false;
           const stillActive  = watch[addr] || hot[addr] || armed[addr];
-          const droppedAfter = (pfDrops ?? drops ?? []).some((d: any) =>
+          const droppedAfter = (pfDrops ?? drops ?? []).some(d =>
             d.pairAddress?.toLowerCase() === addr &&
             d.droppedAt > (q.qualifiedAt ?? 0)
           );
@@ -97,7 +97,7 @@ Observed movers section shows tokens moving on market that haven't passed pipeli
 
         // ── Active gate-passed setups — top 5 con adrese ───────────────────
         if (activeQualified.length > 0) {
-		  const qLines = activeQualified.slice(0, 5).map((q: any) =>
+		  const qLines = activeQualified.slice(0, 5).map(q =>
 			`  → ${q.symbol} [${q.chain}] pair:${q.pairAddress ?? "?"} risk:${q.entryRisk} flow:${q.flow?.status} buys:${q.flow?.buys5m}`
 		  );
 		  lines.push(`QUALIFIED (active):\n${qLines.join("\n")}`);
@@ -187,24 +187,24 @@ Observed movers section shows tokens moving on market that haven't passed pipeli
 
         // ── Momentum events recente ────────────────────────────────────────
         if (pfMomentum && pfMomentum.length > 0) {
-          const deduped = dedupeByPair(pfMomentum as any[], "detectedAt")
-            .sort((a: any, b: any) => (b.detectedAt ?? 0) - (a.detectedAt ?? 0));
-          const mLines  = deduped.slice(0, 5).map((m: any) => {
+          const deduped = dedupeByPair(pfMomentum, "detectedAt")
+            .sort((a, b) => (b.detectedAt ?? 0) - (a.detectedAt ?? 0));
+          const mLines  = deduped.slice(0, 5).map(m => {
             const ageSec    = Math.round((now - m.detectedAt) / 1000);
             const countNote = m._eventCount > 1 ? ` (${m._eventCount}x)` : "";
             return `  ${ageSec}s: ${m.symbol} [${m.chain}] pair:${m.pairAddress} ${m.verdict} m5:${formatPct(m.m5Pct)}${countNote}`;
           });
           lines.push(`MOMENTUM EVENTS (last 10m, ${deduped.length} pairs):\n${mLines.join("\n")}`);
         }
-        		
+
         // ── Recent drops ───────────────────────────────────────────────────
-        const dropsSource = (pfDrops && pfDrops.length > 0 ? pfDrops : drops) as any[];
-        const recentDropsList = dropsSource.filter((d: any) => now - d.droppedAt < 5 * 60_000).slice(0, 3);
+        const dropsSource = pfDrops && pfDrops.length > 0 ? pfDrops : drops;
+        const recentDropsList = dropsSource.filter(d => now - d.droppedAt < 5 * 60_000).slice(0, 3);
         if (recentDropsList.length) {
-          const dropLines = recentDropsList.map((d: any) => {
+          const dropLines = recentDropsList.map(d => {
             const ageSec    = Math.round((now - d.droppedAt) / 1000);
-            const fromState = d.wasIn ?? d.previousState ?? "?";
-            return `  ${ageSec}s: ${d.symbol} pair:${d.pairAddress} dropped from ${fromState} — ${d.dropReason ?? d.reason ?? "?"}`;
+            const fromState = d.wasIn ?? "?";
+            return `  ${ageSec}s: ${d.symbol} pair:${d.pairAddress} dropped from ${fromState} — ${d.dropReason ?? "?"}`;
           });
           lines.push(`DROPPED:\n${dropLines.join("\n")}`);
         }

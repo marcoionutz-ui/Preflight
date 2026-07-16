@@ -83,8 +83,8 @@ Args: chain (filter: 'base', 'arbitrum', or 'bsc')`,
 		  // Preflight pipeline entries (richer context)
         const pfEntries = pfPipeline && pfPipeline.length > 0
           ? pfPipeline
-              .filter((e: any) => filterChain(e.chain))
-              .map((e: any) => ({
+              .filter(e => filterChain(e.chain))
+              .map(e => ({
               symbol:            e.symbol,
               chain:             e.chain,
               pairAddress:       e.pairAddress,
@@ -139,8 +139,8 @@ Args: chain (filter: 'base', 'arbitrum', or 'bsc')`,
 
         const pipelineEntries = pfEntries
           ? [
-              ...armedPipelineEntries.filter((a: any) =>
-                !pfEntries.some((e: any) =>
+              ...armedPipelineEntries.filter(a =>
+                !pfEntries.some(e =>
                   e.pairAddress?.toLowerCase() === a.pairAddress?.toLowerCase()
                 )
               ),
@@ -161,7 +161,7 @@ Args: chain (filter: 'base', 'arbitrum', or 'bsc')`,
                   hot:        pipelineEntries.filter((e: any) => e.pipelineState === "HOT").length,
                   armed:      pipelineEntries.filter((e: any) => e.pipelineState === "ARMED").length,
                   confirming: pipelineEntries.filter((e: any) => e.pipelineState === "HOT").length,
-                  qualified:  pfQualified?.filter((q: any) => filterChain(q.chain)).length ?? 0,
+                  qualified:  pfQualified?.filter(q => filterChain(q.chain)).length ?? 0,
                 }
               : { watching: activeWatch.length, hot: hotCandidates.length, armed: armedEntries.length },
             freshnessSec,

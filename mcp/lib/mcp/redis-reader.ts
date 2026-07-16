@@ -9,7 +9,11 @@ import type {
   ArmedEntry, WorkerSnapshot, MarketRegime,
   PipelineEvent, RedisContext,
 } from "./types";
-import { REDIS_KEYS, type PreflightMarketContext, type PreflightDrop } from "@preflight/schema";
+import {
+  REDIS_KEYS,
+  type PreflightMarketContext, type PreflightDrop,
+  type PreflightMomentumEvent, type PreflightSignalPipelineEntry, type PreflightQualifiedSignal,
+} from "@preflight/schema";
 
 function safeJson<T>(raw: string | null, fallback: T, key?: string): T {
   if (!raw) return fallback;
@@ -89,9 +93,9 @@ export async function readAllRedis(): Promise<RedisContext | null> {
     events:   safeJson<PipelineEvent[]>            (eventsFinal, [],   "pipeline_events"),
     drops:   parsedDrops,
     pfMarket:         safeJson<PreflightMarketContext | null>(pfMarketRaw, null, "pf_market"),
-    pfMomentum:       safeJson(pfMomentumRaw,      null, "pf_momentum"),
-    pfPipeline:       safeJson(pfPipelineRaw,      null, "pf_pipeline"),
-    pfQualified:      safeJson(pfQualifiedRaw,     null, "pf_qualified"),
+    pfMomentum:       safeJson<PreflightMomentumEvent[] | null>(pfMomentumRaw, null, "pf_momentum"),
+    pfPipeline:       safeJson<PreflightSignalPipelineEntry[] | null>(pfPipelineRaw, null, "pf_pipeline"),
+    pfQualified:      safeJson<PreflightQualifiedSignal[] | null>(pfQualifiedRaw, null, "pf_qualified"),
     pfDrops: dropsRaw !== null ? parsedDrops : null,
     pipelineCoverage: safeJson(pfCoverageRaw,      null, "pf_pipeline_coverage"),
     scannerStats:     safeJson(pfScannerStatsRaw,  null, "pf_scanner_stats"),

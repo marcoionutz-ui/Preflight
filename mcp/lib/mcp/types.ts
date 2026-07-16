@@ -3,7 +3,10 @@
  * Toate interfețele pentru datele din Redis — extrase din route.ts
  */
 
-import type { PreflightMarketContext, PreflightDrop } from "@preflight/schema";
+import type {
+  PreflightMarketContext, PreflightDrop,
+  PreflightMomentumEvent, PreflightSignalPipelineEntry, PreflightQualifiedSignal,
+} from "@preflight/schema";
 
 export type PairRiskSummary = {
   riskLevel:            string;
@@ -192,16 +195,12 @@ export interface RedisContext {
   events:   PipelineEvent[];
   drops:    PreflightDrop[];
   // Canonical shapes, from @preflight/schema — matches what workers/evm
-  // actually writes (see packages/preflight-schema, aligned with the
-  // producer in a prior batch). pfMomentum/pfPipeline/pfQualified below are
-  // NOT yet canonical — @preflight/schema's PreflightSignal doesn't
-  // actually match any of those three real shapes yet, so typing them here
-  // would just be inventing types that don't exist anywhere; that's a
-  // separate, larger follow-up.
+  // actually writes (packages/preflight-schema, aligned producer-side in
+  // prior batches).
   pfMarket:    PreflightMarketContext | null;
-  pfMomentum:  any | null;
-  pfPipeline:  any | null;
-  pfQualified: any | null;
+  pfMomentum:  PreflightMomentumEvent[]      | null;
+  pfPipeline:  PreflightSignalPipelineEntry[] | null;
+  pfQualified: PreflightQualifiedSignal[]    | null;
   pfDrops:          PreflightDrop[] | null;
   pipelineCoverage: any | null;
   scannerStats:     any | null;

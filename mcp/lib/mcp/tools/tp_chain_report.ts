@@ -138,8 +138,8 @@ Args: chain — one of: base, arbitrum, eth, bsc, solana`,
         const chainHot   = Object.entries(hot).filter(([, h])   => h.chain?.toLowerCase() === chainKey);
         const chainArmed = Object.entries(armed).filter(([, a]) => (a.chain ?? "").toLowerCase() === chainKey);
 
-        const dropsSource = (pfDrops && pfDrops.length > 0 ? pfDrops : drops) as any[];
-        const chainDrops  = dropsSource.filter((d: any) =>
+        const dropsSource = pfDrops && pfDrops.length > 0 ? pfDrops : drops;
+        const chainDrops  = dropsSource.filter(d =>
           d.chain?.toLowerCase() === chainKey && now - d.droppedAt < 10 * 60_000
         );
         // fix ChatGPT #1: timestamp fallback
@@ -299,10 +299,10 @@ Args: chain — one of: base, arbitrum, eth, bsc, solana`,
 
         // ── Recent drops ───────────────────────────────────────────────────
         if (chainDrops.length > 0) {
-          const dropLines = chainDrops.slice(0, 5).map((d: any) => {
+          const dropLines = chainDrops.slice(0, 5).map(d => {
             const ageSec    = Math.round((now - d.droppedAt) / 1000);
-            const fromState = d.wasIn ?? d.previousState ?? "?";
-            return `  ${ageSec}s: ${d.symbol} pair:${d.pairAddress} dropped from ${fromState} — ${d.dropReason ?? d.reason ?? "?"}`;
+            const fromState = d.wasIn ?? "?";
+            return `  ${ageSec}s: ${d.symbol} pair:${d.pairAddress} dropped from ${fromState} — ${d.dropReason ?? "?"}`;
           });
           lines.push(`DROPPED (last 10m):\n${dropLines.join("\n")}`);
           lines.push("");
