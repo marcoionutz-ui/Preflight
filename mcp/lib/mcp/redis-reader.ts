@@ -7,7 +7,7 @@ import { getRedis }  from "@/lib/db/redis";
 import type {
   PairState, MemoryEntry, WatchEntry, HotEntry,
   ArmedEntry, WorkerSnapshot, MarketRegime,
-  PipelineEvent, RedisContext, LifecycleEntry,
+  PipelineEvent, RedisContext, LifecycleEntry, PipelineCoverage,
 } from "./types";
 import {
   REDIS_KEYS,
@@ -97,7 +97,7 @@ export async function readAllRedis(): Promise<RedisContext | null> {
     pfPipeline:       safeJson<PreflightSignalPipelineEntry[] | null>(pfPipelineRaw, null, "pf_pipeline"),
     pfQualified:      safeJson<PreflightQualifiedSignal[] | null>(pfQualifiedRaw, null, "pf_qualified"),
     pfDrops: dropsRaw !== null ? parsedDrops : null,
-    pipelineCoverage: safeJson(pfCoverageRaw,      null, "pf_pipeline_coverage"),
+    pipelineCoverage: safeJson<PipelineCoverage | null>(pfCoverageRaw, null, "pf_pipeline_coverage"),
     scannerStats:     safeJson(pfScannerStatsRaw,  null, "pf_scanner_stats"),
     pfLifecycle:      safeJson<LifecycleEntry[] | null>(pfLifecycleRaw, null, "pf_lifecycle"),
     keyExists: {

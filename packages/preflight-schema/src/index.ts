@@ -438,6 +438,59 @@ export interface PreflightLifecycleEntry {
   fromState:     "WATCHING" | "HOT" | "ARMED";
 }
 
+// ── Pipeline coverage ─────────────────────────────────────────────────────────
+// Sursă de adevăr: workers/evm/src/pipeline/coverageSnapshot.ts's
+// writeCoverageSnapshot() — observability only (nu schimbă logică de
+// watch/pipeline). `states` param acolo e de fapt Record<string,
+// PreflightPairState> (buildPairStates()'s own return type, doar netipat
+// la call site) — de-a lungul cast-urilor `any` din acest fișier nu era
+// nicio formă reală de shape necunoscut, doar lene de tipare.
+export interface PreflightChainCoverage {
+  trackedPairs:   number;
+  observedMovers: number;
+  pipeline: {
+    watching:  number;
+    hot:       number;
+    armed:     number;
+    // Was `gatePassed` — misleading, this counts qualifiedSignalsBuffer
+    // entries (a distinct downstream stage), not "passed the gate" as a
+    // generic pipeline concept.
+    qualified: number;
+  };
+  ws: {
+    // Estimare, NU un set real de WS subscriptions active — numele vechi
+    // (înainte de fix-ul producer-side) sugera greșit contrariul.
+    expectedWsSubscriptions: number;
+    watchingWithFlow:        number;
+    hotWithFlow:              number;
+    armedWithFlow:            number;
+    coverageOnWatchPct:       number;
+    coverageOnPipelinePct:    number;
+  };
+  observedMoverCoverage: {
+    total:         number;
+    inPipeline:    number;
+    withFlow:      number;
+    notInPipeline: number;
+  };
+  topMoversNotWatched: {
+    symbol:      string;
+    pairAddress: string;
+    m5:          number;
+    h1:          number;
+    h24:         number;
+    reserveUsd:  number;
+    phase:       Phase;
+    reason:      "not_in_pipeline";
+  }[];
+}
+
+export interface PreflightPipelineCoverage {
+  workerVersion: string;
+  savedAt:       number;
+  chains:        Record<string, PreflightChainCoverage>;
+}
+
 // ── Redis key constants ───────────────────────────────────────────────────────
 // Un singur loc unde trăiesc key names.
 // Workers scriu, MCP citește — nimeni nu scrie strings hardcodate.

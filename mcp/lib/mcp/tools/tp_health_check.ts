@@ -124,7 +124,7 @@ Use this first to verify the worker is running before calling other tools.`,
 		  pipelineCoverage: pipelineCoverage ? {
 			savedAgeSec: Math.round((now - pipelineCoverage.savedAt) / 1000),
 			chains: Object.fromEntries(
-			  Object.entries(pipelineCoverage.chains ?? {}).map(([chainId, c]: [string, any]) => [
+			  Object.entries(pipelineCoverage.chains).map(([chainId, c]) => [
 				chainId,
 				{
 				  trackedPairs:   c.trackedPairs,
@@ -132,7 +132,7 @@ Use this first to verify the worker is running before calling other tools.`,
 				  pipeline:       c.pipeline,
 				  ws:             c.ws,
 				  moverCoverage:  c.observedMoverCoverage,
-				  topNotWatched:  (c.topMoversNotWatched ?? []).slice(0, 3),
+				  topNotWatched:  c.topMoversNotWatched.slice(0, 3),
 				},
 			  ])
 			),

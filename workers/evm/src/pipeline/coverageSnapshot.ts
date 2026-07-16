@@ -12,7 +12,8 @@ import {
 } from "../state/stores";
 import { getWsFlow } from "../risk/flow";
 import { WORKER_VERSION } from "../config/constants";
-import { REDIS_KEYS } from "@preflight/schema";
+import { REDIS_KEYS, type PreflightPipelineCoverage, type PreflightChainCoverage } from "@preflight/schema";
+import type { PairStateSnapshot } from "../state/pairStates";
 
 const MOVER_M5_THRESHOLD  = 5;
 const MOVER_H1_THRESHOLD  = 15;
@@ -20,15 +21,19 @@ const MOVER_H24_THRESHOLD = 40;
 const MOVER_LIQ_MIN_USD   = 5_000;
 const TOP_UNSUBSCRIBED_N  = 10;
 
-const moverScore = (pc: any) => Math.max(
-  Math.abs(pc?.m5  ?? 0),
-  Math.abs(pc?.h1  ?? 0) / 3,
-  Math.abs(pc?.h24 ?? 0) / 8,
+const moverScore = (pc: { m5: number; h1: number; h24: number }) => Math.max(
+  Math.abs(pc.m5),
+  Math.abs(pc.h1) / 3,
+  Math.abs(pc.h24) / 8,
 );
 
-export async function writeCoverageSnapshot(r: Redis, states: Record<string, any>): Promise<void> {
+// `states` was `Record<string, any>` before — buildPairStates() (the only
+// real caller, via snapshots.ts) already returns Record<string,
+// PairStateSnapshot>, so this was type laziness, not a genuine
+// unknown-shape need.
+export async function writeCoverageSnapshot(r: Redis, states: Record<string, PairStateSnapshot>): Promise<void> {
   const now    = Date.now();
-  const chains: Record<string, any> = {};
+  const chains: Record<string, PreflightChainCoverage> = {};
 
   for (const chain of CHAINS) {
     const chainId = chain.id;
@@ -57,15 +62,24 @@ export async function writeCoverageSnapshot(r: Redis, states: Record<string, any
     const mem = memory.get(addr);
     return (info.chain ?? mem?.chain ?? "") === chainId;
   });
-    const gatePassed = qualifiedSignalsBuffer.filter(q => q.chain === chainId);
+    const qualified = qualifiedSignalsBuffer.filter(q => q.chain === chainId);
 
     // ── WS flow stats ─────────────────────────────────────────────────────
     const watchingWithFlow = watching.filter(([addr]) => getWsFlow(addr).hasData);
     const hotWithFlow      = hot.filter(([addr]) => getWsFlow(addr).hasData);
-    // fix #3: coverageOnPipelinePct
     const armedWithFlow    = armed.filter(([addr]) => getWsFlow(addr).hasData);
-    const pipelineTotal    = watching.length + hot.length + armed.length;
-    const pipelineWithFlow = watchingWithFlow.length + hotWithFlow.length + armedWithFlow.length;
+
+    // fix #4: watching/hot/armed pot conține aceeași adresă (ex: HOT rămâne
+    // și în activeWatch până la cleanup) — watching.length+hot.length+
+    // armed.length număra acea pereche de 2-3 ori, umflând artificial
+    // coverageOnPipelinePct. Deduplicat pe adresă.
+    const pipelineAddresses = new Set<string>([
+      ...watching.map(([addr]) => addr),
+      ...hot.map(([addr]) => addr),
+      ...armed.map(([addr]) => addr),
+    ]);
+    const pipelineTotal    = pipelineAddresses.size;
+    const pipelineWithFlow = [...pipelineAddresses].filter(addr => getWsFlow(addr).hasData).length;
 
     // fix #2: redenumit expectedWsSubscriptions — nu e set real de WS subs
     const expectedWsSubscriptions =
@@ -82,23 +96,19 @@ export async function writeCoverageSnapshot(r: Redis, states: Record<string, any
 
     // ── Top movers NOT in pipeline ─────────────────────────────────────────
     const topMoversNotWatched = moversNotInPipeline
-      .sort(([, a], [, b]) => {
-        const pcA = (a as any).priceChange;
-        const pcB = (b as any).priceChange;
-        return moverScore(pcB) - moverScore(pcA);
-      })
+      .sort(([, a], [, b]) => moverScore(b.priceChange) - moverScore(a.priceChange))
       .slice(0, TOP_UNSUBSCRIBED_N)
       .map(([addr, s]) => {
         const pc = s.priceChange;
         return {
           symbol:      s.symbol,
           pairAddress: addr,
-          m5:          pc?.m5  ?? 0,
-          h1:          pc?.h1  ?? 0,
-          h24:         pc?.h24 ?? 0,
+          m5:          pc.m5,
+          h1:          pc.h1,
+          h24:         pc.h24,
           reserveUsd:  s.reserveUsd ?? 0,
           phase:       s.phase,
-          reason:      "not_in_pipeline",
+          reason:      "not_in_pipeline" as const,
         };
       });
 
@@ -106,10 +116,10 @@ export async function writeCoverageSnapshot(r: Redis, states: Record<string, any
       trackedPairs:    allPairs.length,
       observedMovers:  observedMovers.length,
       pipeline: {
-        watching:   watching.length,
-        hot:        hot.length,
-        armed:      armed.length,
-        gatePassed: gatePassed.length,
+        watching:  watching.length,
+        hot:       hot.length,
+        armed:     armed.length,
+        qualified: qualified.length,
       },
       ws: {
         // fix #2: chiar e estimare, nu set real
@@ -135,9 +145,10 @@ export async function writeCoverageSnapshot(r: Redis, states: Record<string, any
     };
   }
 
-  await r.set(REDIS_KEYS.pipelineCoverage, JSON.stringify({
+  const snapshot: PreflightPipelineCoverage = {
     workerVersion: WORKER_VERSION,
     savedAt:       now,
     chains,
-  }), "EX", 120);
+  };
+  await r.set(REDIS_KEYS.pipelineCoverage, JSON.stringify(snapshot), "EX", 120);
 }

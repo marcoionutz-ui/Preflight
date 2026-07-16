@@ -7,11 +7,14 @@ import type {
   PreflightMarketContext, PreflightDrop,
   PreflightMomentumEvent, PreflightSignalPipelineEntry, PreflightQualifiedSignal,
   PreflightPairState, PreflightMemoryEntry, PreflightWorkerSnapshot,
-  PreflightLifecycleEntry,
+  PreflightLifecycleEntry, PreflightPipelineCoverage,
 } from "@preflight/schema";
 
 // item 5a: preflight:lifecycle is a plain array of these, most recent first.
 export type LifecycleEntry = PreflightLifecycleEntry;
+
+// item 5b: preflight:pipeline_coverage — was `any`.
+export type PipelineCoverage = PreflightPipelineCoverage;
 
 // Report-output shape for tp_pair_context / tp_candidate_brief's risk payload
 // — NOT the raw wire shape stored in pair_states (that's
@@ -160,7 +163,7 @@ export interface RedisContext {
   pfPipeline:  PreflightSignalPipelineEntry[] | null;
   pfQualified: PreflightQualifiedSignal[]    | null;
   pfDrops:          PreflightDrop[] | null;
-  pipelineCoverage: any | null;
+  pipelineCoverage: PipelineCoverage | null;
   scannerStats:     any | null;
   pfLifecycle:      LifecycleEntry[] | null;
   keyExists: {
