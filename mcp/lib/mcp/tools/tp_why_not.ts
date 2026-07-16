@@ -31,7 +31,7 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
         const addr = pair_address.toLowerCase().trim();
 
         const lifecycle =
-          (pfLifecycle ?? []).find((l: any) => l.pairAddress?.toLowerCase() === addr) ?? null;
+          (pfLifecycle ?? []).find(l => l.pairAddress?.toLowerCase() === addr) ?? null;
 
         const pipeState = getPipelineState(addr, watch, hot, armed);
         const data      = states[addr] ?? snapshot?.memory?.[addr] ?? null;
@@ -77,6 +77,17 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
           lines.push("");
         }
 
+        // Fallback when neither drops nor pipeline_events cover this pair —
+        // lifecycle is the worker's own outcome record, so it's the last
+        // resort for "what actually happened to this pair" before falling
+        // through to plain worker-context reasons below.
+        if (lifecycle && !lastDrop && !lastEvent) {
+          const ageSec = Math.round((now - lifecycle.lastOutcomeAt) / 1000);
+          lines.push(`Last lifecycle outcome (${ageSec}s ago): ${lifecycle.lastOutcome} from ${lifecycle.fromState}`);
+          lines.push(`• Reason: ${lifecycle.reason}`);
+          lines.push("");
+        }
+
         if (data) {
           lines.push(`Worker context:`);
           lines.push(`• Phase: ${data.phase} | seen: ${data.seenCount}x`);
@@ -107,7 +118,7 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
             lines.push("");
             lines.push("Likely gate blockers:");
             reasons.forEach(r => lines.push(`  • ${r}`));
-          } else if (!lastDrop && !lastEvent) {
+          } else if (!lastDrop && !lastEvent && !lifecycle) {
             lines.push("");
             lines.push("Worker tracks it but hasn't promoted it yet.");
             lines.push("May need more scan cycles or stronger buying flow.");

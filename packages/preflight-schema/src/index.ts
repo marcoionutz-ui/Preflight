@@ -418,6 +418,26 @@ export interface PreflightDrop {
   };
 }
 
+// ── Lifecycle ─────────────────────────────────────────────────────────────────
+// Sursă de adevăr: workers/evm/src/state/lifecycle.ts's PairLifecycle — already
+// a clean, real interface there (not a drifted/any-typed copy), just never
+// shared with mcp. preflight:lifecycle stores JSON.stringify(getRecentLifecycles()),
+// a plain array of these, most recent first.
+
+export type LifecycleOutcome =
+  | "QUALIFIED_EMITTED"
+  | "DROPPED"
+  | "EXPIRED"
+  | "FAILED_CONFIRMATION";
+
+export interface PreflightLifecycleEntry {
+  pairAddress:   string;
+  lastOutcome:   LifecycleOutcome;
+  lastOutcomeAt: number;
+  reason:        string;
+  fromState:     "WATCHING" | "HOT" | "ARMED";
+}
+
 // ── Redis key constants ───────────────────────────────────────────────────────
 // Un singur loc unde trăiesc key names.
 // Workers scriu, MCP citește — nimeni nu scrie strings hardcodate.

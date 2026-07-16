@@ -3,19 +3,13 @@
  * Tracks lastOutcome per pair — written to Redis so MCP can read it.
  */
 
-export type LifecycleOutcome =
-  | "QUALIFIED_EMITTED"
-  | "DROPPED"
-  | "EXPIRED"
-  | "FAILED_CONFIRMATION";
-
-export interface PairLifecycle {
-  pairAddress:   string;
-  lastOutcome:   LifecycleOutcome;
-  lastOutcomeAt: number;
-  reason:        string;
-  fromState:     "WATCHING" | "HOT" | "ARMED";
-}
+// LifecycleOutcome + the entry shape moved to @preflight/schema (item 5a) —
+// preflight:lifecycle is real wire contract, read by mcp's tp_why_not and
+// pair-context-report. Re-exported here so existing `from "./lifecycle"`
+// imports keep working (same pattern as Phase/MonitoringTier).
+import type { LifecycleOutcome, PreflightLifecycleEntry } from "@preflight/schema";
+export type { LifecycleOutcome };
+export type PairLifecycle = PreflightLifecycleEntry;
 
 const lifecycleStore = new Map<string, PairLifecycle>();
 
@@ -25,8 +19,12 @@ export function recordLifecycleOutcome(
   fromState:   "WATCHING" | "HOT" | "ARMED",
   reason:      string,
 ): void {
-  lifecycleStore.set(pairAddress.toLowerCase(), {
-    pairAddress,
+  // Normalized before both the Map key AND the stored pairAddress — keeps
+  // the wire JSON deterministic. Not a current bug (consumers already
+  // .toLowerCase() on lookup), just consistency.
+  const normalizedAddress = pairAddress.toLowerCase();
+  lifecycleStore.set(normalizedAddress, {
+    pairAddress:   normalizedAddress,
     lastOutcome:   outcome,
     lastOutcomeAt: Date.now(),
     reason,

@@ -7,7 +7,11 @@ import type {
   PreflightMarketContext, PreflightDrop,
   PreflightMomentumEvent, PreflightSignalPipelineEntry, PreflightQualifiedSignal,
   PreflightPairState, PreflightMemoryEntry, PreflightWorkerSnapshot,
+  PreflightLifecycleEntry,
 } from "@preflight/schema";
+
+// item 5a: preflight:lifecycle is a plain array of these, most recent first.
+export type LifecycleEntry = PreflightLifecycleEntry;
 
 // Report-output shape for tp_pair_context / tp_candidate_brief's risk payload
 // — NOT the raw wire shape stored in pair_states (that's
@@ -158,7 +162,7 @@ export interface RedisContext {
   pfDrops:          PreflightDrop[] | null;
   pipelineCoverage: any | null;
   scannerStats:     any | null;
-  pfLifecycle:      any[] | null;
+  pfLifecycle:      LifecycleEntry[] | null;
   keyExists: {
     pair_states:     boolean;
     active_watch:    boolean;

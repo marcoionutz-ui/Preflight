@@ -343,7 +343,7 @@ export async function buildPairContextReport(
       })(),
       freshnessSec,
       lifecycle: (() => {
-        const lc = (ctx.pfLifecycle ?? []).find((l: any) => l.pairAddress?.toLowerCase() === addr) ?? null;
+        const lc = (ctx.pfLifecycle ?? []).find(l => l.pairAddress?.toLowerCase() === addr) ?? null;
         if (!lc) return null;
         return {
           lastOutcome:   lc.lastOutcome,
@@ -351,7 +351,10 @@ export async function buildPairContextReport(
           ageSec:        Math.round((now - lc.lastOutcomeAt) / 1000),
           fromState:     lc.fromState,
           reason:        lc.reason,
-          candidateActive: false,
+          // Was hardcoded `false` — a pair can have a past lifecycle outcome
+          // and be back in the live pipeline (re-watched/re-armed since),
+          // in which case this claimed "not active" incorrectly.
+          candidateActive: pipelineState === "WATCHING" || pipelineState === "HOT" || pipelineState === "ARMED",
         };
       })(),
     };
