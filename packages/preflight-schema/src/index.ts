@@ -27,6 +27,19 @@ export type PreflightChain =
 
 export type DexType = "V2" | "V3" | "V4" | "UNKNOWN";
 
+// Sursă de adevăr pentru workers/evm/src/lib/engines/phaseDetector.ts —
+// written into both pair_states (PreflightPairState.phase) and
+// worker_snapshot (PreflightMemoryEntry.phase), so it's wire contract too.
+export type Phase =
+  | "NEW"
+  | "TRENDING"
+  | "PUMPING"
+  | "DUMPING"
+  | "RECOVERING"
+  | "SECOND_WAVE"
+  | "ZOMBIE"
+  | "DEAD";
+
 // ── Pipeline states ───────────────────────────────────────────────────────────
 
 export type PipelineState =
@@ -64,6 +77,16 @@ export type MomentumVerdict =
 export type Confidence      = "LOW" | "MEDIUM" | "HIGH";
 export type MarketRegime    = "RISK_ON" | "RISK_OFF" | "MIXED" | "DEAD" | "LOW_COVERAGE";
 
+// Sursă de adevăr pentru workers/evm/src/risk/attention.ts — written into
+// mem.attentionScore/monitoringTier/patternTags (pipeline/scan.ts) and from
+// there into both pair_states and worker_snapshot, so wire contract too.
+export type MonitoringTier =
+  | "EVENT_WATCH"        // major market event: liq mare + move extrem
+  | "FRESH_WATCH"        // mișcare activă recentă, prima apariție
+  | "CONTINUATION_WATCH" // mișcare susținută, repeated sightings
+  | "SHORT_WATCH"        // mișcare violentă low-liq, TTL scurt
+  | "MARKET_ONLY";       // facts only, fără WS
+
 // ── Core pair state ───────────────────────────────────────────────────────────
 // Real shape of preflight:pair_states entries, moved from a local interface
 // in workers/evm/src/state/pairStates.ts (buildPairStates()). Unlike
@@ -92,7 +115,10 @@ export interface PreflightPairState {
     h24: number;
   };
 
-  phase:             string;
+  // mem.phase on the producer side is workers/evm's own Phase type — real,
+  // not a guess (verified when adding PreflightMemoryEntry below, which
+  // shares this exact field from the same PairMemoryEntry source).
+  phase:             Phase;
   // Only ever "ARMED"|"HOT"|"WATCHING"|"NONE" from buildPairStates()'s own
   // ternary — PipelineState (used elsewhere in this file for the same
   // concept) is a safe superset.
@@ -155,19 +181,95 @@ export interface PreflightPairState {
 
   hourUtc:              number;
   updatedAt:            number;
-  lastMomentumVerdict?: string | null;
-  lastMomentumAt?:      number | null;
-  attentionScore?:      number | null;
-  monitoringTier?:      string | null;
-  patternTags?:         string[] | null;
-  risk?:                PreflightRiskSnapshot | null;
+  // Not optional keys — buildPairStates() always writes all six of these
+  // (each `?? null` on the producer side), never omits them. "Optional"
+  // was describing the wrong axis: the VALUE can be null, but the KEY is
+  // always present.
+  lastMomentumVerdict: MomentumVerdict | null;
+  lastMomentumAt:      number | null;
+  attentionScore:      number | null;
+  monitoringTier:      MonitoringTier | null;
+  patternTags:         string[] | null;
+  risk:                PreflightRiskSnapshot | null;
 
   discovery: {
-    primaryDiscoverySource: string | null;
-    discoverySources:       string[];
+    // mem.primaryDiscoverySource/discoverySources are typed DiscoverySource
+    // on the producer's PairMemoryEntry (workers/evm/src/lib/engines/
+    // pairMemory.ts) — narrowed here to match, not widened to string.
+    primaryDiscoverySource: DiscoverySource | null;
+    discoverySources:       DiscoverySource[];
     firstDiscoveredAt:      number | null;
     lastDiscoveryAt:        number | null;
   };
+}
+
+// ── Worker memory / snapshot ────────────────────────────────────────────────
+// Real shape of preflight:worker_snapshot:latest, moved from a local
+// interface in workers/evm/src/lib/engines/pairMemory.ts (PairMemoryEntry)
+// and workers/evm/src/state/memory.ts (saveMemoryToRedis()). This is a
+// DIFFERENT, smaller contract than PreflightPairState above — worker_snapshot
+// is accounting/history memory (win/loss counters, price extremes, discovery
+// provenance), not live pair state. It carries no flow/lp/reserve/risk/
+// pipelineState fields; a pair can legitimately exist only in worker_snapshot
+// and not in pair_states (or vice versa). mcp's MemoryEntry used to
+// `extends PairState`, silently promising flow/lp/reserveUsd/risk/etc. that
+// never actually exist on this shape — a real bug, not just a style choice.
+export interface PreflightMemoryEntry {
+  pairAddress:       string;
+  symbol:            string;
+  tokenAddress:      string;
+  firstSeen:         number;
+  lastSeen:          number;
+  seenCount:         number;
+  priceAtFirstSeen:  number;
+  highPrice:         number;
+  lowPrice:          number;
+  currentPrice:      number;
+  totalEntries:      number;
+  lastEntryTime:     number;
+  lastEntryPrice:    number;
+  wins24h:           number;
+  losses24h:         number;
+  badExits24h:       number;
+  consecutiveLosses: number;
+  lastExitReason:    string | null;
+  lastExitTime:      number | null;
+  phase:             Phase;
+  // All of the below are optional on the producer's PairMemoryEntry too —
+  // legitimately absent for pairs that never had the corresponding event
+  // (e.g. never got a momentum verdict), and JSON.stringify drops undefined
+  // fields rather than writing null. Keep them optional here to match —
+  // making any of these required would make a strict parse reject real,
+  // valid snapshot data on restore.
+  // Loose string, not PreflightChain — sourced from workers/evm's own
+  // SourcePool.chain, which is itself untyped at that layer (flagged
+  // elsewhere as deferred future work, not tackled here). Tightening this
+  // would require a trust-boundary cast for a field that's optional and
+  // not currently validated anywhere upstream — different risk profile
+  // than PreflightPairState.chain (required, already guarded).
+  chain?:                  string;
+  priceChange?:            { m5: number; h1: number; h24: number };
+  lastMomentumVerdict?:    MomentumVerdict | null;
+  lastMomentumAt?:         number | null;
+  primaryDiscoverySource?: DiscoverySource;
+  discoverySources?:       DiscoverySource[];
+  firstDiscoveredAt?:      number;
+  lastDiscoveryAt?:        number;
+  // Real fields, not dead — set in workers/evm/src/pipeline/scan.ts on
+  // every scanned pool ("attentionScore salvat pe TOATE pool-urile —
+  // inclusiv NO_MOMENTUM"), read back a few lines later in the same file.
+  // Absent only for pairs that haven't been through a scan pass yet
+  // (e.g. just loaded from Supabase via loadPairStats()).
+  attentionScore?:         number;
+  monitoringTier?:         MonitoringTier;
+  patternTags?:            string[];
+}
+
+export interface PreflightWorkerSnapshot {
+  version:        string;
+  savedAt:        number;
+  memory:         Record<string, PreflightMemoryEntry>;
+  poolReserveEth: Record<string, number>;
 }
 
 // ── Signal types ──────────────────────────────────────────────────────────────

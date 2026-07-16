@@ -78,7 +78,7 @@ export async function buildPairStates(): Promise<Record<string, PairStateSnapsho
 	  "NONE";
 
     // priceChange vine din PairMemoryEntry — workerul îl updatează la fiecare scan
-    const mc = (mem as any).priceChange ?? { m5: 0, h1: 0, h24: 0 };
+    const mc = mem.priceChange ?? { m5: 0, h1: 0, h24: 0 };
 
     // Timing — pipelineEnteredAt = cel mai recent moment de intrare în pipeline
     const pipelineEnteredAt =
@@ -88,7 +88,7 @@ export async function buildPairStates(): Promise<Record<string, PairStateSnapsho
       null;
 
     // priceVsFirstSeenPct — cât a mișcat față de prima apariție în worker
-    const priceAtFirstSeen = (mem as any).priceAtFirstSeen ?? 0;
+    const priceAtFirstSeen = mem.priceAtFirstSeen ?? 0;
     const priceVsFirstSeenPct =
       priceAtFirstSeen > 0 && mem.currentPrice > 0
         ? Number(((mem.currentPrice - priceAtFirstSeen) / priceAtFirstSeen * 100).toFixed(2))
@@ -119,11 +119,17 @@ export async function buildPairStates(): Promise<Record<string, PairStateSnapsho
 
       phase:         mem.phase,
       pipelineState,
-      lastMomentumVerdict: (mem as any).lastMomentumVerdict ?? null,
-      lastMomentumAt:      (mem as any).lastMomentumAt      ?? null,
-      attentionScore:      (mem as any).attentionScore      ?? null,
-      monitoringTier:      (mem as any).monitoringTier      ?? null,
-      patternTags:         (mem as any).patternTags         ?? null,
+      lastMomentumVerdict: mem.lastMomentumVerdict ?? null,
+      lastMomentumAt:      mem.lastMomentumAt      ?? null,
+      // Correction: these ARE real fields, set in pipeline/scan.ts on every
+      // scanned pool (`mem.attentionScore = momentumEvent.attentionScore`
+      // etc.) — an earlier pass here mistakenly flagged them as dead via a
+      // grep that missed the `(mem as any).attentionScore =` assignment
+      // pattern. Now real declared fields on PairMemoryEntry, no cast
+      // needed.
+      attentionScore:      mem.attentionScore ?? null,
+      monitoringTier:      mem.monitoringTier ?? null,
+      patternTags:         mem.patternTags    ?? null,
       seenCount:     mem.seenCount,
       totalEntries:  mem.totalEntries,
 

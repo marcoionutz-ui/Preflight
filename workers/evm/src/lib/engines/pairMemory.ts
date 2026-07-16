@@ -1,40 +1,13 @@
 // Shared pair memory types + gate function
 
-import type { Phase }       from "./phaseDetector";
 import type { FlowSignal }  from "./flowTypes";
-import type { DiscoverySource } from "@preflight/schema";
-
-export interface PairMemoryEntry {
-  pairAddress:       string;
-  symbol:            string;
-  tokenAddress:      string;
-  firstSeen:         number;
-  lastSeen:          number;
-  seenCount:         number;
-  priceAtFirstSeen:  number;
-  highPrice:         number;
-  lowPrice:          number;
-  currentPrice:      number;
-  totalEntries:      number;
-  lastEntryTime:     number;
-  lastEntryPrice:    number;
-  wins24h:           number;
-  losses24h:         number;
-  badExits24h:       number;  // MAX HOLD + SELL PRESSURE + LP REMOVED
-  consecutiveLosses: number;
-  lastExitReason:    string | null;
-  lastExitTime:      number | null;
-  chain?:             string;
-  priceChange?:         { m5: number; h1: number; h24: number };
-  lastMomentumVerdict?: string | null;
-  lastMomentumAt?:      number | null;
-  phase:             Phase;
-  // Discovery provenance
-  primaryDiscoverySource?: DiscoverySource;
-  discoverySources?:       DiscoverySource[];
-  firstDiscoveredAt?:      number;
-  lastDiscoveryAt?:        number;
-}
+// PairMemoryEntry moved to @preflight/schema (PreflightMemoryEntry) — it's
+// the shape written into worker_snapshot.memory and read by MCP, so it's
+// part of the wire contract. Re-exported here so existing
+// `from "./pairMemory"` imports keep working (same pattern as
+// PairStateSnapshot in state/pairStates.ts).
+import type { PreflightMemoryEntry } from "@preflight/schema";
+export type PairMemoryEntry = PreflightMemoryEntry;
 
 export function emptyPairMemory(pairAddress: string, symbol: string): PairMemoryEntry {
   const now = Date.now();

@@ -427,9 +427,9 @@ async function processPool(
 
   // attentionScore salvat pe TOATE pool-urile — inclusiv NO_MOMENTUM
   // AttentionScore descrie importanța de piață, nu verdictul de trading
-  (mem as any).attentionScore = momentumEvent.attentionScore;
-  (mem as any).monitoringTier = momentumEvent.monitoringTier;
-  (mem as any).patternTags    = momentumEvent.patternTags;
+  mem.attentionScore = momentumEvent.attentionScore;
+  mem.monitoringTier = momentumEvent.monitoringTier;
+  mem.patternTags    = momentumEvent.patternTags;
 
   // Populare marketFollowList pentru high-attention pairs
   const att = momentumEvent.attentionScore;
@@ -585,8 +585,8 @@ async function processPool(
   }
 
  // Attention-based watch selection — cap global + immediate subscribe
-  const attScore = (mem as any).attentionScore ?? 0;
-  const attTier  = (mem as any).monitoringTier ?? "MARKET_ONLY";
+  const attScore = mem.attentionScore ?? 0;
+  const attTier  = mem.monitoringTier ?? "MARKET_ONLY";
 
     if (!activeWatch.has(pairAddr) && hasWatchSlot(pool.chain)) {
     if (attTier === "CONTINUATION_WATCH") {
@@ -750,7 +750,7 @@ function seedFollowListFromMemory(): void {
 
   for (const [addr, mem] of memory.entries()) {
    if (marketFollowList.has(addr)) continue;
-    const pc = (mem as any).priceChange;
+    const pc = mem.priceChange;
     if (!pc) continue;
     
     // Defensive key lookup — poate fi addr sau chain:addr

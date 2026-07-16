@@ -6,7 +6,7 @@
 import type {
   PreflightMarketContext, PreflightDrop,
   PreflightMomentumEvent, PreflightSignalPipelineEntry, PreflightQualifiedSignal,
-  PreflightPairState,
+  PreflightPairState, PreflightMemoryEntry, PreflightWorkerSnapshot,
 } from "@preflight/schema";
 
 // Report-output shape for tp_pair_context / tp_candidate_brief's risk payload
@@ -44,19 +44,16 @@ export type PairRiskSummary = {
 // @preflight/schema, matching what workers/evm actually writes.
 export type PairState = PreflightPairState;
 
-export interface MemoryEntry extends PairState {
-  tokenAddress:     string;
-  pairAddress:      string;
-  firstSeen:        number;
-  lastSeen:         number;
-  lastExitReason:   string | null;
-  lastExitTime:     number | null;
-  lastEntryTime:    number;
-  lastEntryPrice:   number;
-  priceAtFirstSeen: number;
-  highPrice:        number;
-  lowPrice:         number;
-}
+// MemoryEntry used to `extends PairState`, which meant TypeScript believed
+// every worker_snapshot.memory[addr] entry had flow/lp/reserveUsd/
+// reserveNative/liqStatus/dexType/discovery/risk/pipelineState/updatedAt —
+// none of which the worker actually writes into that map (those live in
+// pair_states / PairState, a genuinely different, richer contract). A pair
+// can exist in worker_snapshot without existing in pair_states at all, so
+// any code trusting the inheritance would type-check fine and crash at
+// runtime. Now sourced directly from @preflight/schema, matching the real
+// PairMemoryEntry shape workers/evm writes.
+export type MemoryEntry = PreflightMemoryEntry;
 
 export interface WatchEntry {
   chain:           string;
@@ -107,12 +104,7 @@ export interface ArmedEntry {
   chain:        string | null;
 }
 
-export interface WorkerSnapshot {
-  version:        string;
-  savedAt:        number;
-  memory:         Record<string, MemoryEntry>;
-  poolReserveEth: Record<string, number>;
-}
+export type WorkerSnapshot = PreflightWorkerSnapshot;
 
 export interface MarketRegime {
   regime:            string;

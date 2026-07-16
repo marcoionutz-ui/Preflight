@@ -15,6 +15,7 @@ import { supabase } from "../infra/supabase";
 import { getNativePrice, getNativeSymbolForChain } from "../infra/nativePrice";
 import { WORKER_VERSION } from "../config/constants";
 import { REDIS_KEYS } from "@preflight/schema";
+import type { PreflightWorkerSnapshot } from "@preflight/schema";
 
 export function updatePoolLiquidity(addr: string, pool: SourcePool): void {
   const reserveUsd = pool.reserveUsd;
@@ -168,14 +169,15 @@ export async function saveMemoryToRedis(): Promise<void> {
     const reserveObj: Record<string, number> = {};
     for (const [addr, liqCtx] of poolLiquidity.entries()) reserveObj[addr] = liqCtx.reserveEth;
 
+     const snapshot: PreflightWorkerSnapshot = {
+      version:        WORKER_VERSION,
+      savedAt:        Date.now(),
+      memory:         memoryObj,
+      poolReserveEth: reserveObj,
+    };
      await r.set(
       REDIS_KEYS.workerSnapshot,
-      JSON.stringify({
-        version:        WORKER_VERSION,
-        savedAt:        Date.now(),
-        memory:         memoryObj,
-        poolReserveEth: reserveObj,
-      }),
+      JSON.stringify(snapshot),
       "EX", 24 * 60 * 60,
     );
     console.log(`[REDIS] Worker snapshot saved: ${memory.size} pairs, ${poolLiquidity.size} reserves`);
@@ -193,12 +195,12 @@ export async function loadMemoryFromRedis(): Promise<void> {
       const raw = await r.get(REDIS_KEYS.workerSnapshot);
       if (!raw) return;
 
-      const snap = JSON.parse(raw) as {
-        version?:        string;
-        savedAt?:        number;
-        memory?:         Record<string, PairMemoryEntry>;
-        poolReserveEth?: Record<string, number>;
-      };
+      // Blind cast, not runtime validation — matches the risk tolerance
+      // already established elsewhere in this codebase (no Zod parsing
+      // introduced here). Partial<> because every field is optional at this
+      // point: the two guards below (version/savedAt) handle a snapshot
+      // that fails to parse as expected.
+      const snap = JSON.parse(raw) as Partial<PreflightWorkerSnapshot>;
 
       if (snap.version && snap.version !== WORKER_VERSION) {
         console.log(`[REDIS] Snapshot from ${snap.version} ignored — current is ${WORKER_VERSION}`);

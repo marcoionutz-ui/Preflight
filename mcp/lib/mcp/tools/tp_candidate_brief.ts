@@ -207,7 +207,7 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
 
         const allSources: string[] =
           pairState?.discovery?.discoverySources ??
-          (snapMem as any)?.discoverySources ??
+          snapMem?.discoverySources ??
           [];
 
         const discoverySources = allSources.filter(s => !RETENTION_SOURCES.has(s) && !LOOKUP_SOURCES.has(s));
@@ -216,7 +216,7 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
 
         const rawPrimary =
           pairState?.discovery?.primaryDiscoverySource ??
-          (snapMem as any)?.primaryDiscoverySource ??
+          snapMem?.primaryDiscoverySource ??
           null;
 
         const primaryDiscoverySource =
@@ -226,11 +226,11 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
 
         const firstDiscoveredAt =
           pairState?.discovery?.firstDiscoveredAt ??
-          (snapMem as any)?.firstDiscoveredAt ?? null;
+          snapMem?.firstDiscoveredAt ?? null;
 
         const lastDiscoveryAt =
           pairState?.discovery?.lastDiscoveryAt ??
-          (snapMem as any)?.lastDiscoveryAt ?? null;
+          snapMem?.lastDiscoveryAt ?? null;
 
         if (allSources.length > 0 || primaryDiscoverySource) {
           lines.push("");

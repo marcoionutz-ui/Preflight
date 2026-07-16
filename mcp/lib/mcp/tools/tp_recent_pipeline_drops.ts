@@ -41,7 +41,11 @@ Args: limit (default 10, max 30), minutes_back (default 10, max 10)`,
         for (const d of deduped) {
           const ageSec    = Math.round((now - d.droppedAt) / 1000);
           const pairData  = states[(d.pairAddress ?? "").toLowerCase()];
-          const phase     = pairData?.phase ?? "?";
+          // pairData.phase is now a real Phase union (item 4b), which can
+          // never equal the "?" sentinel — swapped for an undefined check,
+          // which also covers the (TS-invisible-here) case where the
+          // address just isn't a key in `states` at all.
+          const phase     = pairData?.phase;
           const countNote = d._eventCount > 1 ? ` (${d._eventCount} drops in ${minutes_back}m)` : "";
 
           const fromState = d.wasIn ?? "UNKNOWN";
@@ -51,7 +55,7 @@ Args: limit (default 10, max 30), minutes_back (default 10, max 10)`,
 
           let line = `${symbol} [${chain}] — dropped from ${fromState} ${ageSec}s ago${countNote}`;
           line += `\n  Reason: ${reason}`;
-          if (phase !== "?") line += ` | phase: ${phase}`;
+          if (phase) line += ` | phase: ${phase}`;
           if (pairData?.flow?.hasData) line += ` | flow now: ${pairData.flow.pressure}`;
 
           const r = reason.toLowerCase();

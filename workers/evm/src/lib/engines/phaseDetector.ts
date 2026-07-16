@@ -1,14 +1,12 @@
 // Shared phase detection — folosit de worker și app
 
-export type Phase =
-  | "NEW"
-  | "TRENDING"
-  | "PUMPING"
-  | "DUMPING"
-  | "RECOVERING"
-  | "SECOND_WAVE"
-  | "ZOMBIE"
-  | "DEAD";
+// Phase moved to @preflight/schema — it's written to Redis (pair_states,
+// worker_snapshot) and read by MCP, so it's part of the wire contract, not
+// just an internal detail. Re-exported here so existing
+// `from "./phaseDetector"` imports keep working (same pattern as
+// MomentumVerdict in risk/momentum.ts).
+import type { Phase } from "@preflight/schema";
+export type { Phase };
 
 export interface PhaseInput {
   seenCount:         number;

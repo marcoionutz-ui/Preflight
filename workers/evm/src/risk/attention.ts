@@ -6,12 +6,13 @@
  * Workerul raportează. Agentul decide.
  */
 
-export type MonitoringTier =
-  | "EVENT_WATCH"        // major market event: liq mare + move extrem
-  | "FRESH_WATCH"        // mișcare activă recentă, prima apariție
-  | "CONTINUATION_WATCH" // mișcare susținută, repeated sightings
-  | "SHORT_WATCH"        // mișcare violentă low-liq, TTL scurt
-  | "MARKET_ONLY";       // facts only, fără WS
+// MonitoringTier moved to @preflight/schema — it's written to Redis (via
+// PairMemoryEntry.monitoringTier / PreflightPairState.monitoringTier) and
+// read by MCP, so it's part of the wire contract. Re-exported here so
+// existing `from "./attention"` imports keep working (same pattern as
+// MomentumVerdict in risk/momentum.ts).
+import type { MonitoringTier } from "@preflight/schema";
+export type { MonitoringTier };
 
 export function computeAttentionScore(
   m5: number,
@@ -65,11 +66,9 @@ export function computeAttentionScore(
 
 /**
  * Returnează monitoring tier-ul pentru un pair.
- * 
- * EVENT_WATCH / SHORT_WATCH: active în scan.ts pentru hard rejects cu attention mare.
- * FRESH_WATCH / CONTINUATION_WATCH: calculate și expuse în pair_states, dar watch
- * selection pentru ele rămâne momentan pe logica existentă (vertical/late/normal).
- * Migrarea completă a watch selection vine în pasul următor.
+ *
+ * Toate 4 tier-urile active (EVENT_WATCH, SHORT_WATCH, FRESH_WATCH,
+ * CONTINUATION_WATCH) au watch selection dedicată în scan.ts.
  */
 export function getMonitoringTier(
   score: number,

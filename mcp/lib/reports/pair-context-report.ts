@@ -228,8 +228,8 @@ export async function buildPairContextReport(
       phase: data.phase, seenCount: data.seenCount, currentPrice: data.currentPrice,
       priceChange: pairState?.priceChange ?? null,
       timing: {
-        firstSeenAt:        pairState?.firstSeenAt  ?? (snapMem as any)?.firstSeen  ?? null,
-        lastSeenAt:         pairState?.lastSeenAt   ?? (snapMem as any)?.lastSeen   ?? null,
+        firstSeenAt:        pairState?.firstSeenAt  ?? snapMem?.firstSeen  ?? null,
+        lastSeenAt:         pairState?.lastSeenAt   ?? snapMem?.lastSeen   ?? null,
         pipelineEnteredAt:  pairState?.pipelineEnteredAt  ?? null,
         currentStateAgeSec: pairState?.currentStateAgeSec ?? null,
         seenCount:          data.seenCount,
@@ -277,7 +277,7 @@ export async function buildPairContextReport(
       discovery: (() => {
         const allSources: string[] =
           pairState?.discovery?.discoverySources ??
-          (snapMem as any)?.discoverySources ?? [];
+          snapMem?.discoverySources ?? [];
         const RETENTION_SOURCES = new Set(["MARKET_FOLLOW_LIST"]);
         const LOOKUP_SOURCES    = new Set(["DEXSCREENER_PAIR_FALLBACK"]);
         const discoverySources  = allSources.filter(s => !RETENTION_SOURCES.has(s) && !LOOKUP_SOURCES.has(s));
@@ -285,13 +285,13 @@ export async function buildPairContextReport(
         const resolvedVia       = allSources.filter(s => LOOKUP_SOURCES.has(s));
         const rawPrimary =
           pairState?.discovery?.primaryDiscoverySource ??
-          (snapMem as any)?.primaryDiscoverySource ?? null;
+          snapMem?.primaryDiscoverySource ?? null;
         const primaryDiscoverySource =
           rawPrimary && discoverySources.includes(rawPrimary) ? rawPrimary : discoverySources[0] ?? null;
         const firstDiscoveredAt =
-          pairState?.discovery?.firstDiscoveredAt ?? (snapMem as any)?.firstDiscoveredAt ?? null;
+          pairState?.discovery?.firstDiscoveredAt ?? snapMem?.firstDiscoveredAt ?? null;
         const lastDiscoveryAt =
-          pairState?.discovery?.lastDiscoveryAt ?? (snapMem as any)?.lastDiscoveryAt ?? null;
+          pairState?.discovery?.lastDiscoveryAt ?? snapMem?.lastDiscoveryAt ?? null;
         return {
           primaryDiscoverySource, discoverySources, retainedVia, resolvedVia,
           agreement: getSourceAgreement(allSources, lastDiscoveryAt, now),

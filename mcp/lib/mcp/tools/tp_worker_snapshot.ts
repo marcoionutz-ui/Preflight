@@ -37,10 +37,18 @@ Args:
         const { now, states, snapshot } = ctx;
         const allAddrs = new Set([...Object.keys(states), ...Object.keys(snapshot?.memory ?? {})]);
 
-        let pairs = [...allAddrs].map(addr => {
-          const data = states[addr] ?? snapshot?.memory?.[addr];
-          return data ? { addr, data } : null;
-        }).filter((x): x is { addr: string; data: PairState | MemoryEntry } => x !== null);
+        // Built via an explicit loop (not map+filter+type-predicate) — with
+        // states[addr] typed as always-defined (no noUncheckedIndexedAccess
+        // in this tsconfig), TS's inference through a map/filter chain kept
+        // collapsing the union down to PairState alone regardless of
+        // annotations, which broke the type-predicate at compile time. A
+        // plain loop into an explicitly-typed array sidesteps that entirely.
+        const pairsAll: { addr: string; data: PairState | MemoryEntry }[] = [];
+        for (const addr of allAddrs) {
+          const data: PairState | MemoryEntry | undefined = states[addr] ?? snapshot?.memory?.[addr];
+          if (data) pairsAll.push({ addr, data });
+        }
+        let pairs = pairsAll;
 
         if (phase)              pairs = pairs.filter(p => p.data.phase === phase.toUpperCase());
         if (flow_pressure)      pairs = pairs.filter(p => states[p.addr]?.flow?.pressure === flow_pressure.toUpperCase());
