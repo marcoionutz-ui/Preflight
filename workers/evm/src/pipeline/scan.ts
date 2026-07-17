@@ -44,7 +44,11 @@ import { triggerRiskCheck } from "../risk/riskChecker";
 import { requestImmediateScopedSubscribe } from "../ws/subscriptions";
 import { writeAllSnapshots } from "./snapshots";
 import { subscribeV3Scoped, subscribeV4Scoped, subscribeV2Scoped, cleanupActiveWatch } from "../ws/subscriptions";
-import { REDIS_KEYS } from "@preflight/schema";
+import type { Redis } from "ioredis";
+import {
+  REDIS_KEYS,
+  type PreflightScannerStats, type PreflightSourceByChainEntry, type PreflightGeckoChainHealth,
+} from "@preflight/schema";
 
 function hasWatchSlot(chain: string): boolean {
   const maxForChain = maxWatchForChain(chain);
@@ -105,18 +109,18 @@ function rebuildPoolMaps(pools: SourcePool[]): void {
 }
 
 async function writeScannerStats(
-  r: any,
+  r: Redis,
   scanStart: number,
   totalFetched: number,
   processedPools: number,
-  sourceByChain: Record<string, any> = {},
+  sourceByChain: Record<string, PreflightSourceByChainEntry> = {},
   discoverySource: string = "auto",
 ): Promise<void> {
-  const chainsHealth: Record<string, any> = {};
+  const chainsHealth: Record<string, PreflightGeckoChainHealth> = {};
   for (const [chainId, health] of geckoSourceHealth.entries()) {
     chainsHealth[chainId] = health;
   }
-  await r.set(REDIS_KEYS.scannerStats, JSON.stringify({
+  const stats: PreflightScannerStats = {
     savedAt: Date.now(),
     discoverySource,
     scan: { durationMs: Date.now() - scanStart, totalFetched, processedPools },
@@ -132,7 +136,8 @@ async function writeScannerStats(
         : null,
       status:           dexscreenerSourceHealth.status,
     },
-  }), "EX", 300);
+  };
+  await r.set(REDIS_KEYS.scannerStats, JSON.stringify(stats), "EX", 300);
 }
 
 // ── Source dispatch ───────────────────────────────────────────────────────────
@@ -232,7 +237,7 @@ export async function scan(): Promise<void> {
   const allPoolsPerChain = fetchResults.map(r => r.pools);
 
   // ── sourceByChain (Faza 6.6) ──────────────────────────────────────────────
-  const sourceByChain: Record<string, any> = {};
+  const sourceByChain: Record<string, PreflightSourceByChainEntry> = {};
   fetchResults.forEach((result, i) => {
     const chainId = CHAINS[i].id;
     if (result.source === "INDEXER_PRIMARY" || result.source === "INDEXER_FORCED") {

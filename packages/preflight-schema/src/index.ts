@@ -491,6 +491,58 @@ export interface PreflightPipelineCoverage {
   chains:        Record<string, PreflightChainCoverage>;
 }
 
+// ── Scanner stats ─────────────────────────────────────────────────────────────
+// Sursă de adevăr: workers/evm/src/pipeline/scan.ts's writeScannerStats() +
+// state/stores.ts's geckoSourceHealth (Map) / dexscreenerSourceHealth
+// (plain object). GeckoHealthStatus moved here from state/stores.ts — same
+// re-export pattern as Phase/MonitoringTier — it's written into
+// scannerStats.chains[x].status, wire contract too.
+export type GeckoHealthStatus = "OK" | "DEGRADED" | "RATE_LIMITED" | "STANDBY_INDEXER_PRIMARY";
+
+export interface PreflightGeckoChainHealth {
+  lastResultCount:  number;
+  emptyStreak:      number;
+  lastFetchAt:      number;
+  last429At:        number | null;
+  consecutiveEmpty: number;
+  status:           GeckoHealthStatus;
+}
+
+export interface PreflightDexscreenerHealth {
+  lastFetchAgeSec: number | null;
+  lastResultCount: number;
+  last429AgeSec:   number | null;
+  // "STARTING" — worker just booted, no DexScreener request has happened
+  // yet. Was defaulting to "OK", which falsely claimed health before any
+  // evidence existed.
+  status:          "STARTING" | "OK" | "DEGRADED" | "RATE_LIMITED";
+}
+
+// Verified against workers/evm/src/pipeline/scan.ts's own FetchResult —
+// reason/indexedCount/geckoCount/indexedHealth are optional there too (not
+// every field is set on every source branch); fallbackUsed is always set.
+export interface PreflightSourceByChainEntry {
+  source:         "INDEXER_PRIMARY" | "INDEXER_FORCED" | "GECKO_FALLBACK";
+  reason?:        string;
+  indexedCount?:  number;
+  geckoCount?:    number;
+  indexedHealth?: { status: string; blocksBehind: number | null };
+  fallbackUsed:   boolean;
+}
+
+export interface PreflightScannerStats {
+  savedAt:         number;
+  discoverySource: string;
+  scan: {
+    durationMs:     number;
+    totalFetched:   number;
+    processedPools: number;
+  };
+  chains:        Record<string, PreflightGeckoChainHealth>;
+  sourceByChain: Record<string, PreflightSourceByChainEntry>;
+  dexscreener:   PreflightDexscreenerHealth;
+}
+
 // ── Redis key constants ───────────────────────────────────────────────────────
 // Un singur loc unde trăiesc key names.
 // Workers scriu, MCP citește — nimeni nu scrie strings hardcodate.

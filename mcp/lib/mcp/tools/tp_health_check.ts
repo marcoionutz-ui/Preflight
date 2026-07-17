@@ -27,6 +27,14 @@ Use this first to verify the worker is running before calling other tools.`,
 
         const { now, states, watch, hot, armed, snapshot, pipelineCoverage, scannerStats } = ctx;
         const snapshotAge   = snapshot?.savedAt ? now - snapshot.savedAt : null;
+        // dexscreener.lastFetchAgeSec/last429AgeSec are baked in at scan
+        // time (age-at-write), then cached in Redis for up to 5min — read
+        // as-is they under-report age by however stale the snapshot is.
+        // scannerAgeSec is added back on below so the reported age reflects
+        // "now", not "when scan.ts wrote this".
+        const scannerAgeSec = scannerStats
+          ? Math.max(0, Math.round((now - scannerStats.savedAt) / 1000))
+          : 0;
         const stateVals     = Object.values(states);
         const newestStateAt = stateVals.length ? Math.max(...stateVals.map(s => s.updatedAt)) : null;
         const statesAge     = newestStateAt ? now - newestStateAt : null;
@@ -72,7 +80,7 @@ Use this first to verify the worker is running before calling other tools.`,
 			  processedPools: scannerStats.scan?.processedPools ?? null,
 			},
 			sourceByChain: Object.fromEntries(
-			  Object.entries(scannerStats.sourceByChain ?? {}).map(([chainId, s]: [string, any]) => [
+			  Object.entries(scannerStats.sourceByChain).map(([chainId, s]) => [
 				chainId,
 				s.source === "INDEXER_PRIMARY" || s.source === "INDEXER_FORCED"
 				  ? {
@@ -91,7 +99,7 @@ Use this first to verify the worker is running before calling other tools.`,
 			  ])
 			),
 			geckoHealth: Object.fromEntries(
-			  Object.entries(scannerStats.chains ?? {}).map(([chainId, c]: [string, any]) => [
+			  Object.entries(scannerStats.chains).map(([chainId, c]) => [
 				chainId,
 				c.status === "STANDBY_INDEXER_PRIMARY"
 				  ? {
@@ -116,7 +124,15 @@ Use this first to verify the worker is running before calling other tools.`,
 					},
 			  ])
 			),
-			dexscreenerHealth: scannerStats.dexscreener ?? null,
+			dexscreenerHealth: scannerStats.dexscreener ? {
+			  ...scannerStats.dexscreener,
+			  lastFetchAgeSec: scannerStats.dexscreener.lastFetchAgeSec === null
+				? null
+				: scannerStats.dexscreener.lastFetchAgeSec + scannerAgeSec,
+			  last429AgeSec: scannerStats.dexscreener.last429AgeSec === null
+				? null
+				: scannerStats.dexscreener.last429AgeSec + scannerAgeSec,
+			} : null,
 		  } : null,
 		  quoteOracleHealth: Object.keys(quoteOracleHealth).length ? quoteOracleHealth : null,
 		  quotePriceHealth:  Object.keys(quotePriceHealth).length  ? quotePriceHealth  : null,

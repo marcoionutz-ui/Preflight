@@ -171,23 +171,24 @@ export const marketFollowList = new Map<string, {
 }>();
 
 // ── Gecko source health ───────────────────────────────────────────────────────
-export type GeckoHealthStatus = "OK" | "DEGRADED" | "RATE_LIMITED" | "STANDBY_INDEXER_PRIMARY";
+// GeckoHealthStatus + the entry shape moved to @preflight/schema (item 5c) —
+// preflight:scanner_stats is real wire contract, read by mcp's
+// tp_health_check. Re-exported here so existing `from "./stores"` imports
+// keep working (same pattern as Phase/MonitoringTier/LifecycleOutcome).
+import type { GeckoHealthStatus, PreflightGeckoChainHealth, PreflightDexscreenerHealth } from "@preflight/schema";
+export type { GeckoHealthStatus };
 
-export const geckoSourceHealth = new Map<string, {
-  lastResultCount:  number;
-  emptyStreak:      number;
-  lastFetchAt:      number;
-  last429At:        number | null;
-  consecutiveEmpty: number;
-  status:           GeckoHealthStatus;
-}>();
+export const geckoSourceHealth = new Map<string, PreflightGeckoChainHealth>();
 
 // ── DexScreener source health ───────────────────────────────────────────────────────
+// status starts "STARTING" — no DexScreener request has happened yet, so
+// "OK" would falsely claim health before any evidence existed. scan.ts sets
+// it to RATE_LIMITED/DEGRADED/OK explicitly on/after the first request.
 export const dexscreenerSourceHealth = {
   lastFetchAt:      null as number | null,
   lastResultCount:  0,
   last429At:        null as number | null,
-  status:           "OK" as "OK" | "DEGRADED" | "RATE_LIMITED",
+  status:           "STARTING" as PreflightDexscreenerHealth["status"],
 };
 
 export let lastDsBoostedFetchAt = 0;
