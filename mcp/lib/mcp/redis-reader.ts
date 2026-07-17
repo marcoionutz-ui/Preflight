@@ -15,6 +15,9 @@ import {
   type PreflightMomentumEvent, type PreflightSignalPipelineEntry, type PreflightQualifiedSignal,
   type PreflightSolanaPool, type PreflightObservedCandidate, type PreflightSolanaQuoteType,
   type PreflightSolanaLaunch,
+  type PreflightSolanaPriceSnapshot, type PreflightSolanaPricePoint,
+  type PreflightSolanaProgram, type PreflightSolanaHistoryStatus,
+  type PreflightSolanaMover, type PreflightSolanaMoversSnapshot,
 } from "@preflight/schema";
 
 function safeJson<T>(raw: string | null, fallback: T, key?: string): T {
@@ -469,7 +472,10 @@ export interface SolanaIndexerStats {
 
 export interface SolanaMoverItem {
   poolAddress:      string;
-  program:          string;
+  // "unknown"/"UNKNOWN" sunt fallback-uri defensive de coercion (Redis poate
+  // avea date malformate dintr-o versiune veche de worker) — nu valori reale
+  // scrise vreodată de moversTracker.ts.
+  program:          PreflightSolanaProgram | "unknown";
   baseSymbol:       string;
   quoteSymbol:      string;
   priceInQuote:     number;
@@ -477,7 +483,7 @@ export interface SolanaMoverItem {
   priceChange5mPct: number | null;
   priceChange1hPct: number | null;
   sampleCount:      number;
-  historyStatus:    string;
+  historyStatus:    PreflightSolanaHistoryStatus | "UNKNOWN";
   knownPool:        boolean;
   currentAgeSec:    number;
 }
@@ -612,8 +618,11 @@ export async function readSolanaMovers(now: number, topN = 5): Promise<SolanaMov
   try {
     const raw = await r.get("preflight:trending:movers:solana");
     if (!raw) return null;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const snap = safeJson<any>(raw, null, "preflight:trending:movers:solana");
+    // Partial<> — nominal shape e PreflightSolanaMoversSnapshot, dar tratăm
+    // fiecare câmp ca posibil lipsă/malformat (Redis poate avea date scrise
+    // de o versiune veche de worker) — de-a asta coercion-ul manual de mai
+    // jos rămâne, chiar tipat; safeJson validează doar sintaxa JSON, nu shape-ul.
+    const snap = safeJson<Partial<PreflightSolanaMoversSnapshot> | null>(raw, null, "preflight:trending:movers:solana");
     if (!snap) return null;
     // computedAt lipsă/invalid → NaN s-ar fi scurs mai departe fără să
     // treacă de verificarea de staleness de mai jos (NaN > 600 e false).
@@ -627,10 +636,9 @@ export async function readSolanaMovers(now: number, topN = 5): Promise<SolanaMov
       totalTracked: snap.totalTracked ?? 0,
       coverage:     "SAMPLED",
       source:       "SWAP_VAULT_DELTA",
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      items: (snap.movers ?? []).slice(0, topN).map((m: any) => ({
+      items: (snap.movers ?? []).slice(0, topN).map((m: Partial<PreflightSolanaMover>) => ({
         poolAddress:      String(m.poolAddress ?? ""),
-        program:          String(m.program     ?? "unknown"),
+        program:          m.program ?? "unknown",
         baseSymbol:       String(m.baseSymbol  ?? "?"),
         quoteSymbol:      String(m.quoteSymbol ?? "?"),
         priceInQuote:     Number(m.priceInQuote ?? 0),
@@ -638,7 +646,7 @@ export async function readSolanaMovers(now: number, topN = 5): Promise<SolanaMov
         priceChange5mPct: typeof m.priceChange5mPct === "number" ? m.priceChange5mPct : null,
         priceChange1hPct: typeof m.priceChange1hPct === "number" ? m.priceChange1hPct : null,
         sampleCount:      Number(m.sampleCount   ?? 0),
-        historyStatus:    String(m.historyStatus ?? "UNKNOWN"),
+        historyStatus:    m.historyStatus ?? "UNKNOWN",
         knownPool:        Boolean(m.knownPool),
         currentAgeSec:    Number(m.currentAgeSec ?? 0),
       })),
@@ -708,13 +716,13 @@ export async function readSolanaRecentActivity(topN = 5): Promise<{
 
 export interface SolanaPoolContext {
   poolAddress:       string;
-  // registry/observedCandidate typed against @preflight/schema (item 6a).
-  // priceSnapshot/activity still Record<string,unknown> — real types land in
-  // items 6c/6d.
+  // registry/observedCandidate typed against @preflight/schema (item 6a);
+  // priceSnapshot/recentHistory typed (item 6c). activity rămâne
+  // Record<string,unknown> — tip real vine în item 6d.
   registry:          PreflightSolanaPool | null;
-  priceSnapshot:     Record<string, unknown> | null;
+  priceSnapshot:     PreflightSolanaPriceSnapshot | null;
   activity:          Record<string, unknown> | null;
-  recentHistory:     Array<{ p: number; ts: number }>;
+  recentHistory:     PreflightSolanaPricePoint[];
   observedCandidate: PreflightObservedCandidate | null;
   dataAgeSec:        number | null;
 }
@@ -744,18 +752,23 @@ export async function readSolanaPoolContext(
   ]);
 
   const registry      = regRaw  ? safeJson<PreflightSolanaPool | null>(regRaw,  null) : null;
-  const priceSnapshot = snapRaw ? safeJson<Record<string, unknown> | null>(snapRaw, null) : null;
+  const priceSnapshot = snapRaw ? safeJson<PreflightSolanaPriceSnapshot | null>(snapRaw, null) : null;
   const activity      = actRaw  ? safeJson<Record<string, unknown> | null>(actRaw,  null) : null;
   const recentHistory = histRaws
-    .map(h => safeJson<{ p: number; ts: number } | null>(h, null))
-    .filter((h): h is { p: number; ts: number } => h !== null);
+    .map(h => safeJson<PreflightSolanaPricePoint | null>(h, null))
+    .filter((h): h is PreflightSolanaPricePoint => h !== null);
   const observedCandidate = candRaw ? safeJson<PreflightObservedCandidate | null>(candRaw, null) : null;
 
-  const lastUpdatedAt = typeof priceSnapshot?.lastUpdatedAt === "number"
-    ? priceSnapshot.lastUpdatedAt
-    : null;
+  const lastUpdatedAt =
+    typeof priceSnapshot?.lastUpdatedAt === "number" &&
+    Number.isFinite(priceSnapshot.lastUpdatedAt)
+      ? priceSnapshot.lastUpdatedAt
+      : null;
+  // clamp la 0 — un timestamp accidental în viitor (clock skew, bug de
+  // scriere) nu trebuie să producă vârstă negativă, care ar trece drept
+  // "HIGH" confidence în pair-context-report.ts (`dataAgeSec < 45`).
   const dataAgeSec = lastUpdatedAt !== null
-    ? Math.round((now - lastUpdatedAt) / 1000)
+    ? Math.max(0, Math.round((now - lastUpdatedAt) / 1000))
     : null;
 
   return { poolAddress, registry, priceSnapshot, activity, recentHistory, observedCandidate, dataAgeSec };

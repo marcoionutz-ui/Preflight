@@ -26,26 +26,13 @@ import { USDC_MINT, USDT_MINT, WSOL_MINT } from "../config/programs";
 import { maybeCalculateMovers }         from "./moversTracker";
 import { readSolPrice }                 from "../infra/solPriceOracle";
 import { maybeRecordObservedCandidate } from "./observedPool";
+import type {
+  PreflightSolanaPriceSnapshot, PreflightSolanaPricePoint, PreflightSolanaProgram,
+} from "@preflight/schema";
 
 // ── Tipuri ────────────────────────────────────────────────────────────────────
 
-export interface PriceSnapshot {
-  poolAddress:   string;
-  program:       "raydium_cpmm" | "raydium_clmm";
-  baseMint:      string;
-  quoteMint:     string;
-  baseSymbol:    string;
-  quoteSymbol:   string;
-  priceInQuote:  number;        // preț base in unitati quote (ex: 0.000012 SOL per token)
-  priceUsd:      number | null; // USDC/USDT direct; WSOL via cached SOL/USD oracle; null dacă oracle indisponibil
-  usdSource:     "STABLE_QUOTE" | "SOL_USD_ORACLE" | null;
-  solUsdPrice?:  number;        // prețul SOL/USD folosit (doar dacă usdSource = SOL_USD_ORACLE)
-  lastUpdatedAt: number;
-  lastSignature: string;
-  source:        "SWAP_VAULT_DELTA";
-  coverage:      "SAMPLED";     // din TX sample (nu firehose) — nu pretinde precizie TWAP
-  knownPool:     boolean;       // true = pool indexat in preflight, false = sampled unknown
-}
+export type PriceSnapshot = PreflightSolanaPriceSnapshot;
 
 // ── Constante ─────────────────────────────────────────────────────────────────
 
@@ -60,7 +47,7 @@ const KNOWN_DECIMALS: Record<string, number> = {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function programLabel(prog: SwapParseResult["program"]): "raydium_cpmm" | "raydium_clmm" {
+function programLabel(prog: SwapParseResult["program"]): PreflightSolanaProgram {
   return prog === "cpmm" ? "raydium_cpmm" : "raydium_clmm";
 }
 
@@ -162,7 +149,8 @@ export async function recordPriceSnapshot(
   );
 
   // b5: ring buffer history (max 60 intrări, TTL 2h) + ZSET index
-  const historyEntry = JSON.stringify({ p: priceInQuote, ts: snapshot.lastUpdatedAt });
+  const historyPoint: PreflightSolanaPricePoint = { p: priceInQuote, ts: snapshot.lastUpdatedAt };
+  const historyEntry = JSON.stringify(historyPoint);
   const pipeline = redis.pipeline();
   pipeline.lpush(KEY_PRICE_HISTORY(result.pool), historyEntry);
   pipeline.ltrim(KEY_PRICE_HISTORY(result.pool), 0, 59);

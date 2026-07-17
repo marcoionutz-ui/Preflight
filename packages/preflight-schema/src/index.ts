@@ -740,6 +740,73 @@ export type PreflightSolanaLaunch =
   | PreflightPumpfunLaunch
   | PreflightGraduatedSolanaLaunch;
 
+// Sursă de adevăr: workers/solana/src/discovery/priceTracker.ts's PriceSnapshot.
+// Preț aproximativ per pool din vault deltas (SWAP_VAULT_DELTA sampling, nu
+// firehose) — scris pentru ORICE pool cu flow cunoscut, indiferent dacă e
+// deja în registry (`knownPool` distinge cele două cazuri; observedPool.ts
+// citește exact acest semnal ca să decidă promovarea).
+export interface PreflightSolanaPriceSnapshot {
+  poolAddress:   string;
+  program:       PreflightSolanaProgram;
+  baseMint:      string;
+  quoteMint:     string;
+  baseSymbol:    string;
+  quoteSymbol:   string;
+  priceInQuote:  number;
+  priceUsd:      number | null;
+  usdSource:     "STABLE_QUOTE" | "SOL_USD_ORACLE" | null;
+  solUsdPrice?:  number;
+  lastUpdatedAt: number;
+  lastSignature: string;
+  source:        "SWAP_VAULT_DELTA";
+  coverage:      "SAMPLED";
+  knownPool:     boolean;
+}
+
+// Ring buffer entry — preflight:solana:price:history:{pool}, max 60, TTL 2h.
+export interface PreflightSolanaPricePoint {
+  p:  number; // priceInQuote la momentul ts
+  ts: number; // Unix ms
+}
+
+// Sursă de adevăr: workers/solana/src/discovery/moversTracker.ts.
+// NOTĂ: acest `historyStatus` NU are legătură cu `historyStatus` EVM
+// ("WARMING_UP"|"PARTIAL"|"READY", din trending movers EVM — alt fișier,
+// alt shape) — nume similar, concepte diferite, la fel ca
+// LiquidityStatus/FlowStatus (item 5c). Nu unifica.
+export type PreflightSolanaHistoryStatus = "READY" | "PARTIAL" | "INSUFFICIENT" | "STALE";
+
+export interface PreflightSolanaMover {
+  chain:               "solana";
+  poolAddress:         string;
+  program:             PreflightSolanaProgram;
+  baseMint:            string;
+  quoteMint:           string;
+  baseSymbol:          string;
+  quoteSymbol:         string;
+  priceInQuote:        number;
+  priceUsd:            number | null;
+  priceChange5mPct:    number | null;
+  priceChange1hPct:    number | null;
+  sampleCount:         number;
+  currentAgeSec:       number;
+  oldestSampleAgeSec:  number;
+  historyStatus:       PreflightSolanaHistoryStatus;
+  coverage:            "SAMPLED";
+  source:              "SWAP_VAULT_DELTA";
+  knownPool:           boolean;
+  lastUpdatedAt:       number;
+  computedAt:          number;
+}
+
+export interface PreflightSolanaMoversSnapshot {
+  chain:        "solana";
+  computedAt:   number;
+  windowMs:     number;
+  totalTracked: number;
+  movers:       PreflightSolanaMover[];
+}
+
 // ── Redis key constants ───────────────────────────────────────────────────────
 // Un singur loc unde trăiesc key names.
 // Workers scriu, MCP citește — nimeni nu scrie strings hardcodate.

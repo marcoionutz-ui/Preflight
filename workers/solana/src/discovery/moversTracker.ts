@@ -29,44 +29,18 @@ import {
   KEY_TRENDING_MOVERS,
 }                          from "../config/constants";
 import type { PriceSnapshot } from "./priceTracker";
+import type {
+  PreflightSolanaMover, PreflightSolanaMoversSnapshot, PreflightSolanaPricePoint,
+  PreflightSolanaHistoryStatus,
+} from "@preflight/schema";
 
 // ── Tipuri ────────────────────────────────────────────────────────────────────
 
-interface HistoryEntry {
-  p:  number; // priceInQuote
-  ts: number; // Unix ms
-}
+type HistoryEntry = PreflightSolanaPricePoint;
 
-export interface PriceMover {
-  chain:               "solana";
-  poolAddress:         string;
-  program:             "raydium_cpmm" | "raydium_clmm";
-  baseMint:            string;
-  quoteMint:           string;
-  baseSymbol:          string;
-  quoteSymbol:         string;
-  priceInQuote:        number;
-  priceUsd:            number | null;
-  priceChange5mPct:    number | null;
-  priceChange1hPct:    number | null;
-  sampleCount:         number;
-  currentAgeSec:       number;
-  oldestSampleAgeSec:  number;
-  historyStatus:       "READY" | "PARTIAL" | "INSUFFICIENT" | "STALE";
-  coverage:            "SAMPLED";
-  source:              "SWAP_VAULT_DELTA";
-  knownPool:           boolean;
-  lastUpdatedAt:       number;
-  computedAt:          number;
-}
+export type PriceMover = PreflightSolanaMover;
 
-export interface MoversSnapshot {
-  chain:        "solana";
-  computedAt:   number;
-  windowMs:     number;
-  totalTracked: number;
-  movers:       PriceMover[];
-}
+export type MoversSnapshot = PreflightSolanaMoversSnapshot;
 
 // ── Constante ─────────────────────────────────────────────────────────────────
 
@@ -108,7 +82,7 @@ function getHistoryStatus(
   sampleCount:        number,
   oldestSampleAgeSec: number,
   currentAgeSec:      number,
-): "READY" | "PARTIAL" | "INSUFFICIENT" | "STALE" {
+): PreflightSolanaHistoryStatus {
   if (currentAgeSec > 10 * 60)        return "STALE";
   if (sampleCount < 2)                return "INSUFFICIENT";
   if (oldestSampleAgeSec < 55 * 60)   return "PARTIAL";
