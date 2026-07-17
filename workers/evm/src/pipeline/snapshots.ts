@@ -26,7 +26,7 @@ import { CHAINS } from "../config/chains";
 import { writeCoverageSnapshot } from "./coverageSnapshot";
 import { writeTrendingSnapshots } from "../trending/trendingSnapshots";
 import { calculateMovers } from "../trending/trendingMovers";
-import { REDIS_KEYS, SCHEMA_VERSION, type PreflightDrop, type PreflightChain } from "@preflight/schema";
+import { REDIS_KEYS, SCHEMA_VERSION, type PreflightDrop, type PreflightEvmChain } from "@preflight/schema";
 
 export async function writeAllSnapshots(r: Redis): Promise<void> {
   // ── supreme:pair_states ────────────────────────────────────────────────────
@@ -157,22 +157,33 @@ function buildSignalPipelineEntries() {
   ];
 }
 
+// d.chain is plain string internally (state/stores.ts doesn't type against
+// PreflightEvmChain, and transitions.ts's dropHotCandidate()/
+// dropWatchCandidate() really do fall back to the literal "unknown" when
+// info?.chain is missing) — a real, reachable value, not a hypothetical.
+// `as PreflightEvmChain` used to just lie past that. Real guard instead.
+function isEvmChain(value: string): value is PreflightEvmChain {
+  return value === "base" || value === "arbitrum" || value === "ethereum" || value === "bsc";
+}
+
 function buildPreflightDrops(): PreflightDrop[] {
   return recentDrops
     .filter(d => Date.now() - d.droppedAt < 10 * 60_000)
-    .map((d): PreflightDrop => {
+    .flatMap((d): PreflightDrop[] => {
+      if (!isEvmChain(d.chain)) {
+        console.warn(`[DROP SKIP] invalid/missing EVM chain for ${d.pairAddress}: ${d.chain}`);
+        return [];
+      }
+
       const dropFlow = getWsFlow(d.pairAddress);
       const wasIn =
         d.previousState === "HOT"   ? "HOT"   as const :
         d.previousState === "ARMED" ? "ARMED" as const :
         "WATCHING" as const;
-      return {
+      return [{
         schemaVersion: SCHEMA_VERSION,
         workerVersion: WORKER_VERSION,
-        // d.chain is plain string internally (state/stores.ts doesn't type
-        // against PreflightChain) — cast at this one boundary rather than
-        // widening the shared contract back to string.
-        symbol: d.symbol, chain: d.chain as PreflightChain, pairAddress: d.pairAddress,
+        symbol: d.symbol, chain: d.chain, pairAddress: d.pairAddress,
         droppedAt: d.droppedAt, wasIn, dropReason: d.reason,
         timeInPipelineMs: 0,
         priceAtDrop: d.priceAtDrop ?? null,
@@ -182,7 +193,7 @@ function buildPreflightDrops(): PreflightDrop[] {
           buys5m:  dropFlow.buys5m ?? 0,
           sells5m: dropFlow.sells5m ?? 0,
         },
-      };
+      }];
     });
 }
 

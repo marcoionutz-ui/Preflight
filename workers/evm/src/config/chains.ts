@@ -4,10 +4,10 @@
  * ENABLED_CHAINS env var controlează ce chainuri pornesc în acest runtime.
  */
 
-import type { PreflightChain } from "@preflight/schema";
+import type { PreflightEvmChain } from "@preflight/schema";
 
 export interface ChainConfig {
-  id:          	 PreflightChain;
+  id:          	 PreflightEvmChain;
   gecko:       	 string;
   weth:        	 string;
   usdc:        	 string;

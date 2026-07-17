@@ -18,12 +18,19 @@ export type PreflightRiskSnapshot = Omit<RiskResult, "raw">;
 // GeckoTerminal API slug for that chain, a separate concern; using it here
 // would make every real "ethereum" pair state fail to type-check against
 // this union.
-export type PreflightChain =
+export type PreflightEvmChain =
   | "base"
   | "arbitrum"
   | "ethereum"
-  | "bsc"
-  | "solana";
+  | "bsc";
+
+// Global multichain union. EVM-only wire contracts (PreflightPairState,
+// PreflightDrop, momentum/pipeline/qualified signals, ChainConfig.id, etc.)
+// use PreflightEvmChain instead of this — narrower, so "solana" can never
+// slip into a payload that only the EVM worker ever produces. This wider
+// union exists for genuinely multichain fields (e.g.
+// PreflightMarketContext.chainsActive once Solana is represented there).
+export type PreflightChain = PreflightEvmChain | "solana";
 
 export type DexType = "V2" | "V3" | "V4" | "UNKNOWN";
 
@@ -101,7 +108,7 @@ export type MonitoringTier =
 
 export interface PreflightPairState {
   symbol:        string;
-  chain:         PreflightChain;
+  chain:         PreflightEvmChain;
   pairAddress:   string;
   tokenAddress:  string;
   // Only ever "V4"|"V3"|"V2" from buildPairStates()'s own ternary — DexType
@@ -277,7 +284,7 @@ export interface PreflightWorkerSnapshot {
 export interface PreflightSignal {
   schemaVersion:      string;
   workerVersion:      string;
-  chain:              PreflightChain;
+  chain:              PreflightEvmChain;
   pairAddress:        string;
   symbol:             string;
   pipelineState:      PipelineState;
@@ -307,7 +314,7 @@ export interface PreflightMomentumEvent {
   schemaVersion:    string;
   workerVersion:    string;
   symbol:           string;
-  chain:            PreflightChain;
+  chain:            PreflightEvmChain;
   pairAddress:      string;
   detectedAt:       number;
   verdict:          MomentumVerdict;
@@ -336,7 +343,7 @@ export interface PreflightSignalPipelineEntry {
   schemaVersion:     string;
   workerVersion:     string;
   symbol:            string;
-  chain:             PreflightChain;
+  chain:             PreflightEvmChain;
   pairAddress:       string;
   pipelineState:     PipelineState;
   watchKind:         string;
@@ -362,7 +369,7 @@ export interface PreflightQualifiedSignal {
   schemaVersion:     string;
   workerVersion:     string;
   symbol:            string;
-  chain:             PreflightChain;
+  chain:             PreflightEvmChain;
   pairAddress:       string;
   qualifiedAt:       number;
   confidence:        Confidence;
@@ -388,7 +395,11 @@ export interface PreflightMarketContext {
   sellingPct:            number;
   flowCoveragePct:       number;
   trackedPairs:          number;
-  chainsActive:          PreflightChain[];
+  // EVM-only today (workers/evm/src/lib/preflight-redis.ts writes this from
+  // its own CHAINS config) — narrow like the other EVM producer fields. If
+  // Solana ever merges into a genuinely multichain market context, widen
+  // deliberately then.
+  chainsActive:          PreflightEvmChain[];
   momentumEventsLast10m: number;
   // Always "fresh" today (workers/evm/src/lib/preflight-redis.ts never
   // computes a different value) — kept as string rather than a narrower
@@ -402,7 +413,7 @@ export interface PreflightMarketContext {
 export interface PreflightDrop {
   schemaVersion:    string;
   workerVersion:    string;
-  chain:            PreflightChain;
+  chain:            PreflightEvmChain;
   pairAddress:      string;
   symbol:           string;
   droppedAt:        number;
@@ -541,6 +552,114 @@ export interface PreflightScannerStats {
   chains:        Record<string, PreflightGeckoChainHealth>;
   sourceByChain: Record<string, PreflightSourceByChainEntry>;
   dexscreener:   PreflightDexscreenerHealth;
+}
+
+// ── Solana ────────────────────────────────────────────────────────────────────
+// workers/solana e un worker complet separat de workers/evm (nu portăm EVM pe
+// Solana — arhitectură diferită: pool discovery via logsSubscribe, nu
+// trending/new_pools scan). Solana are propriul namespace de Redis keys
+// (workers/solana/src/config/constants.ts, KEY_* locale, nu REDIS_KEYS de
+// aici) — item 6 mută doar shape-urile wire, NU unifică key naming, ca să nu
+// atingă zeci de call site-uri neconexe cu riscul acestui batch.
+//
+// "solana" e reprezentat prin PreflightChain (= PreflightEvmChain | "solana",
+// vezi secțiunea Chains) — dar niciunul dintre contractele EVM-only de mai
+// sus (PreflightPairState, momentum/pipeline/qualified, PreflightDrop,
+// chainsActive) nu-l acceptă, fiindcă sunt toate narrowed la
+// PreflightEvmChain. Tipurile de mai jos folosesc literalul "solana" direct.
+
+// Sursă de adevăr: workers/solana/src/discovery/quoteNormalizer.ts.
+// NOTĂ: observedPool.ts avea o redefinire LOCALĂ, neexportată, a acestui tip
+// cu doar 3 din 4 membri ("WSOL"|"STABLE"|"UNKNOWN", lipsea "AMBIGUOUS") —
+// drift real, consolidat aici pe forma completă din quoteNormalizer.ts.
+export type PreflightSolanaQuoteType = "WSOL" | "STABLE" | "AMBIGUOUS" | "UNKNOWN";
+
+// Ambele programe Raydium suportate azi — verificat identic în
+// priceTracker.ts/swapActivity.ts/observedPool.ts (toate produc doar aceste
+// 2 valori, niciodată un string liber).
+export type PreflightSolanaProgram = "raydium_cpmm" | "raydium_clmm";
+
+// Sursă de adevăr: workers/solana/src/discovery/pairWriter.ts's SolanaPool —
+// DAR wire-ul real e o uniune DISCRIMINATĂ a două write path-uri pe aceeași
+// cheie (preflight:indexed:pair:solana:{poolAddress}), nu un singur shape cu
+// câmpuri opționale (asta ar fi permis stări imposibile în runtime, ex. un
+// record fără `source` ȘI fără `discoveryReason`):
+//   1. PreflightIndexedSolanaPool — pairWriter.ts's writeSolanaPool(), calea
+//      normală de discovery (LIVE/BACKFILL), `source` mereu prezent.
+//   2. PreflightObservedSolanaPool — observedPool.ts's
+//      maybeRecordObservedCandidate(), scrie DIRECT un obiect inline
+//      (JSON.stringify, fără interfață, fără buildSolanaPool()) pe aceeași
+//      cheie când un pool neindexat e promovat din swap samples — `slot`
+//      mereu 0 (nu are slot real la promovare), `discoveryReason`/
+//      `registrySource`/`registryConfidence`/`sampleCount` mereu prezente.
+// Nedocumentat nicăieri altundeva — găsit prin citirea ambelor fișiere, nu
+// asumat.
+interface PreflightSolanaPoolBase {
+  chain:          "solana";
+  poolAddress:    string;
+  mint0:          string;
+  mint1:          string;
+  baseMint:       string;
+  quoteMint:      string;
+  quoteType:      PreflightSolanaQuoteType;
+  program:        PreflightSolanaProgram;
+  signature:      string;
+  discoveredAt:   string;
+  indexerVersion: string;
+  // Metadata token — populată async după insert, pe ambele write path-uri.
+  baseSymbol?:    string;
+  quoteSymbol?:   string;
+  baseDecimals?:  number | null;
+  quoteDecimals?: number | null;
+  metaSource?:    string;
+}
+
+// `never` fields on each variant exclude the other variant's fields — without
+// them this is a plain union of two optional-bag shapes, and TS would accept
+// hybrid objects with both `source` AND `discoveryReason` set (impossible in
+// real wire JSON: `slot: 0` alone can't discriminate, BACKFILL also uses it).
+export interface PreflightIndexedSolanaPool extends PreflightSolanaPoolBase {
+  slot:   number;
+  source: "BACKFILL" | "LIVE";
+
+  discoveryReason?:    never;
+  registrySource?:     never;
+  registryConfidence?: never;
+  sampleCount?:        never;
+}
+
+export interface PreflightObservedSolanaPool extends PreflightSolanaPoolBase {
+  slot: 0;
+
+  source?: never;
+
+  discoveryReason:    "OBSERVED_SWAP";
+  registrySource:     "SWAP_SAMPLED";
+  registryConfidence: "OBSERVED";
+  sampleCount:        number;
+}
+
+export type PreflightSolanaPool =
+  | PreflightIndexedSolanaPool
+  | PreflightObservedSolanaPool;
+
+// Sursă de adevăr: workers/solana/src/discovery/observedPool.ts's
+// ObservedCandidate — record intermediar (preflight:solana:observed_candidate:
+// {pool}, TTL 2h) înainte de promovare în pool registry de mai sus.
+export interface PreflightObservedCandidate {
+  poolAddress:      string;
+  program:          PreflightSolanaProgram;
+  baseMint:         string;
+  quoteMint:        string;
+  baseSymbol:       string;
+  quoteSymbol:      string;
+  firstSeenAt:      number;
+  lastSeenAt:       number;
+  sampleCount:      number;
+  signatures:       string[];
+  lastPriceInQuote: number;
+  lastPriceUsd:     number | null;
+  promoted:         boolean;
 }
 
 // ── Redis key constants ───────────────────────────────────────────────────────

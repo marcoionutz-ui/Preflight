@@ -14,9 +14,10 @@ import { getRedis } from "../infra/redis";
 import {
   CHAIN, KEY_PAIR, KEY_PAIRS, KEY_PAIRS_TS, KEY_PRICE_SNAPSHOT, INDEXER_VERSION,
 } from "../config/constants";
-import { normalizeQuote, SolanaQuoteType, WSOL_MINT, USDC_MINT, USDT_MINT } from "./quoteNormalizer";
+import { normalizeQuote, WSOL_MINT, USDC_MINT, USDT_MINT } from "./quoteNormalizer";
 import { TokenMeta } from "../infra/tokenMetadata";
 import { linkLaunchToPool } from "./launchWriter";
+import type { PreflightIndexedSolanaPool, PreflightSolanaProgram } from "@preflight/schema";
 
 // Mints care sunt quote assets — nu sunt niciodata launch-uri pump.fun
 const KNOWN_QUOTE_MINTS = new Set([WSOL_MINT, USDC_MINT, USDT_MINT]);
@@ -44,27 +45,11 @@ async function markPriceSnapshotKnown(poolAddress: string): Promise<void> {
   console.log("[SOLANA][WRITER] knownPool patched pool=" + poolAddress.slice(0, 8) + "...");
 }
 
-export interface SolanaPool {
-  chain:          typeof CHAIN;
-  poolAddress:    string;
-  mint0:          string;
-  mint1:          string;
-  baseMint:       string;
-  quoteMint:      string;
-  quoteType:      SolanaQuoteType;
-  program:        string;
-  slot:           number;
-  signature:      string;
-  source:         "BACKFILL" | "LIVE";
-  discoveredAt:   string;
-  indexerVersion: string;
-  // 8.0f — token metadata (opțional; populat async după insert)
-  baseSymbol?:    string;
-  quoteSymbol?:   string;
-  baseDecimals?:  number | null;
-  quoteDecimals?: number | null;
-  metaSource?:    string;
-}
+// PreflightSolanaPool (schema) is now a discriminated union of this file's
+// write path (PreflightIndexedSolanaPool) and observedPool.ts's inline
+// promotion write (PreflightObservedSolanaPool) — see schema comment. This
+// file only ever produces the indexed variant.
+export type SolanaPool = PreflightIndexedSolanaPool;
 
 export type WriteResult = "inserted" | "exists" | "error";
 
@@ -120,7 +105,7 @@ export function buildSolanaPool(
   mint1:       string,
   slot:        number,
   signature:   string,
-  program:     string,
+  program:     PreflightSolanaProgram,
   source:      "BACKFILL" | "LIVE",
 ): SolanaPool {
   const { baseMint, quoteMint, quoteType } = normalizeQuote(mint0, mint1);

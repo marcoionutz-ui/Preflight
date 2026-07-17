@@ -18,7 +18,7 @@ import type { RiskResult } from "../risk/riskChecker";
 // written to Redis and read by MCP, so it's part of the wire contract.
 // Re-exported here so existing `from "../state/pairStates"` imports
 // (trendingSnapshots.ts, trendingMovers.ts, marketContext.ts) keep working.
-import type { PreflightPairState, PreflightRiskSnapshot, PreflightChain } from "@preflight/schema";
+import type { PreflightPairState, PreflightRiskSnapshot, PreflightEvmChain } from "@preflight/schema";
 // `export type { X as Y }` only re-exports for other files — it does not
 // declare Y as a usable local name in *this* file (that's what caused
 // "Cannot find name 'PairStateSnapshot'" below). A real local alias fixes
@@ -32,11 +32,13 @@ function slimRisk(risk: RiskResult | null | undefined): PreflightRiskSnapshot | 
   return safe as PreflightRiskSnapshot;
 }
 
-// EVM subset of PreflightChain — this worker never produces "solana". A
-// real boundary check, not a cast: pair_states is the wire contract, so an
-// entry with an unrecognized/missing chain gets skipped (logged) rather
-// than silently written as the lie "unknown".
-function isEvmPreflightChain(value: string | undefined): value is PreflightChain {
+// Was `value is PreflightChain` — PreflightChain now includes "solana"
+// (item 6a's PreflightEvmChain/PreflightChain split), but this predicate
+// only ever checks the 4 EVM literals below. The old wide predicate type
+// happened to still "work" only because PreflightPairState.chain was itself
+// PreflightChain at the time; now that it's narrowed to PreflightEvmChain
+// too, the predicate has to match for real, not just by accident.
+function isEvmPreflightChain(value: string | undefined): value is PreflightEvmChain {
   return value === "base" || value === "arbitrum" || value === "ethereum" || value === "bsc";
 }
 

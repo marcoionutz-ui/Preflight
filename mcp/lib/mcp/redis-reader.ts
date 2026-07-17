@@ -13,6 +13,7 @@ import {
   REDIS_KEYS,
   type PreflightMarketContext, type PreflightDrop,
   type PreflightMomentumEvent, type PreflightSignalPipelineEntry, type PreflightQualifiedSignal,
+  type PreflightSolanaPool, type PreflightObservedCandidate, type PreflightSolanaQuoteType,
 } from "@preflight/schema";
 
 function safeJson<T>(raw: string | null, fallback: T, key?: string): T {
@@ -493,7 +494,7 @@ export interface SolanaRecentPool {
   program:     string;
   baseSymbol:  string | null;
   quoteSymbol: string | null;
-  quoteType:   string | null;
+  quoteType:   PreflightSolanaQuoteType | null;
   discoveredAt: number;
 }
 
@@ -673,8 +674,7 @@ export async function readSolanaRecentActivity(topN = 5): Promise<{
     ]);
 
     const recentPools: SolanaRecentPool[] = poolPairs.map(([addr, ts], i) => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const meta = poolRaws[i] ? safeJson<any>(poolRaws[i], null, `preflight:indexed:pair:solana:${addr}`) : null;
+      const meta = poolRaws[i] ? safeJson<PreflightSolanaPool | null>(poolRaws[i], null, `preflight:indexed:pair:solana:${addr}`) : null;
       return {
         poolAddress:  addr,
         program:      meta?.program     ?? "unknown",
@@ -704,11 +704,14 @@ export async function readSolanaRecentActivity(topN = 5): Promise<{
 
 export interface SolanaPoolContext {
   poolAddress:       string;
-  registry:          Record<string, unknown> | null;
+  // registry/observedCandidate typed against @preflight/schema (item 6a).
+  // priceSnapshot/activity still Record<string,unknown> — real types land in
+  // items 6c/6d.
+  registry:          PreflightSolanaPool | null;
   priceSnapshot:     Record<string, unknown> | null;
   activity:          Record<string, unknown> | null;
   recentHistory:     Array<{ p: number; ts: number }>;
-  observedCandidate: Record<string, unknown> | null;
+  observedCandidate: PreflightObservedCandidate | null;
   dataAgeSec:        number | null;
 }
 
@@ -736,13 +739,13 @@ export async function readSolanaPoolContext(
     r.get(`preflight:solana:observed_candidate:${poolAddress}`),
   ]);
 
-  const registry      = regRaw  ? safeJson<Record<string, unknown> | null>(regRaw,  null) : null;
+  const registry      = regRaw  ? safeJson<PreflightSolanaPool | null>(regRaw,  null) : null;
   const priceSnapshot = snapRaw ? safeJson<Record<string, unknown> | null>(snapRaw, null) : null;
   const activity      = actRaw  ? safeJson<Record<string, unknown> | null>(actRaw,  null) : null;
   const recentHistory = histRaws
     .map(h => safeJson<{ p: number; ts: number } | null>(h, null))
     .filter((h): h is { p: number; ts: number } => h !== null);
-  const observedCandidate = candRaw ? safeJson<Record<string, unknown> | null>(candRaw, null) : null;
+  const observedCandidate = candRaw ? safeJson<PreflightObservedCandidate | null>(candRaw, null) : null;
 
   const lastUpdatedAt = typeof priceSnapshot?.lastUpdatedAt === "number"
     ? priceSnapshot.lastUpdatedAt

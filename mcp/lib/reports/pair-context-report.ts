@@ -124,7 +124,9 @@ export async function buildPairContextReport(
       const poolCtx = await readSolanaPoolContext(poolAddress, now);
       const { registry, priceSnapshot, activity, recentHistory, observedCandidate, dataAgeSec } = poolCtx;
       const found  = Boolean(registry || priceSnapshot || observedCandidate);
-      const symbol = (priceSnapshot as any)?.baseSymbol ?? (registry as any)?.baseSymbol ?? null;
+      // priceSnapshot still untyped (Record<string,unknown>) — real type
+      // lands in item 6c. registry is now PreflightSolanaPool (item 6a).
+      const symbol = (priceSnapshot as any)?.baseSymbol ?? registry?.baseSymbol ?? null;
       const confidence: "HIGH" | "MEDIUM" | "LOW" =
         dataAgeSec !== null && dataAgeSec < 45 ? "HIGH" :
         dataAgeSec !== null && dataAgeSec < 90 ? "MEDIUM" : "LOW";

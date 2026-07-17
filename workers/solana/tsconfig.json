@@ -4,7 +4,10 @@
     "noEmit": true,
     "moduleResolution": "node",
     "typeRoots": ["../../node_modules/@types"],
-    "types": ["node"]
+    "types": ["node"],
+    "paths": {
+      "@preflight/schema": ["../../packages/preflight-schema/src/index.ts"]
+    }
   },
   "include": ["src"],
   "exclude": ["node_modules"]

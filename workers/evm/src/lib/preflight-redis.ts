@@ -28,7 +28,7 @@ import {
 import type { MomentumEvent } from "../risk/momentum";
 import {
   REDIS_KEYS, SCHEMA_VERSION,
-  type PreflightDrop, type PreflightMarketContext, type PreflightChain, type MarketRegime,
+  type PreflightDrop, type PreflightMarketContext, type PreflightEvmChain, type MarketRegime,
   type PreflightMomentumEvent, type PreflightSignalPipelineEntry, type PreflightQualifiedSignal,
   type DexType,
 } from "@preflight/schema";
@@ -162,7 +162,7 @@ export interface PreflightWriteInput {
   sellingPctAll:    number;
   flowCoveragePct:  number;
   trackedPairs:     number;
-  chainsActive:     PreflightChain[];
+  chainsActive:     PreflightEvmChain[];
   momentumEventsBuffer: PreflightMomentumEvent[];
 
   // Signal pipeline (activeWatch + hotCandidates)
@@ -193,7 +193,7 @@ export async function writePreflightRedis(r: Redis, input: PreflightWriteInput):
   // Typed against the shared contract instead of an inline literal, so a
   // field rename/removal in @preflight/schema is caught here at compile
   // time instead of silently drifting like PreflightDrop did. No casts
-  // needed — regime/chainsActive are typed as MarketRegime/PreflightChain[]
+  // needed — regime/chainsActive are typed as MarketRegime/PreflightEvmChain[]
   // all the way back to their source (marketContext.ts's deriveMarketContext,
   // config/chains.ts's ChainConfig.id), not just widened to fit here.
   const marketContext: PreflightMarketContext = {
@@ -284,7 +284,7 @@ export function buildMomentumEventEntry(
   return {
     schemaVersion:    SCHEMA_VERSION,
     workerVersion,
-    symbol, chain: chain as PreflightChain, pairAddress,
+    symbol, chain: chain as PreflightEvmChain, pairAddress,
     detectedAt:       Date.now(),
     verdict:          event.verdict,
     moveType:         event.moveType,
@@ -371,7 +371,7 @@ export function buildSignalPipelineEntry(params: {
   return {
     schemaVersion:     SCHEMA_VERSION,
     workerVersion,
-    symbol, chain: chain as PreflightChain, pairAddress,
+    symbol, chain: chain as PreflightEvmChain, pairAddress,
     pipelineState,
     watchKind,
     enteredWatchAt,
@@ -434,7 +434,7 @@ export function buildQualifiedSignalEntry(params: {
   return {
     schemaVersion:     SCHEMA_VERSION,
     workerVersion,
-    symbol, chain: chain as PreflightChain, pairAddress, qualifiedAt,
+    symbol, chain: chain as PreflightEvmChain, pairAddress, qualifiedAt,
     confidence,
     entryRisk,
     flow: {

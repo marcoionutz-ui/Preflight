@@ -34,6 +34,7 @@ import {
 } from "../config/constants";
 import { USDC_MINT, USDT_MINT, WSOL_MINT } from "../config/programs";
 import type { PriceSnapshot } from "./priceTracker";
+import type { PreflightSolanaQuoteType, PreflightObservedSolanaPool, PreflightObservedCandidate } from "@preflight/schema";
 
 // ── Constante ─────────────────────────────────────────────────────────────────
 
@@ -47,27 +48,18 @@ const VALID_QUOTE_MINTS = new Set([WSOL_MINT, USDC_MINT, USDT_MINT]);
 
 // ── Tipuri ────────────────────────────────────────────────────────────────────
 
-export interface ObservedCandidate {
-  poolAddress:      string;
-  program:          "raydium_cpmm" | "raydium_clmm";
-  baseMint:         string;
-  quoteMint:        string;
-  baseSymbol:       string;
-  quoteSymbol:      string;
-  firstSeenAt:      number;
-  lastSeenAt:       number;
-  sampleCount:      number;
-  signatures:       string[];
-  lastPriceInQuote: number;
-  lastPriceUsd:     number | null;
-  promoted:         boolean;
-}
+// ObservedCandidate moved to @preflight/schema (item 6a) — was already a
+// clean interface here, just not shared with mcp.
+export type ObservedCandidate = PreflightObservedCandidate;
 
 // ── Quote type helper ─────────────────────────────────────────────────────────
+// Was a local `"WSOL"|"STABLE"|"UNKNOWN"` (3 members) — real drift found
+// against quoteNormalizer.ts's SolanaQuoteType (4 members, has "AMBIGUOUS"
+// too). inferQuoteType() itself never returns "AMBIGUOUS" (no behavior
+// change), but the type it was declared to return was already wrong/narrower
+// than the canonical one — widened to the real type.
 
-type SolanaQuoteType = "WSOL" | "STABLE" | "UNKNOWN";
-
-function inferQuoteType(quoteMint: string): SolanaQuoteType {
+function inferQuoteType(quoteMint: string): PreflightSolanaQuoteType {
   if (quoteMint === WSOL_MINT) return "WSOL";
   if (quoteMint === USDC_MINT || quoteMint === USDT_MINT) return "STABLE";
   return "UNKNOWN";
@@ -180,7 +172,11 @@ export async function maybeRecordObservedCandidate(
     idle <  PROMOTE_MAX_IDLE_MS;
 
   if (canPromote) {
-    const registryRecord = JSON.stringify({
+    // Was an untyped inline JSON.stringify({...}) — typed against the real
+    // canonical shape (PreflightObservedSolanaPool, the discriminated-union
+    // member for this write path) so a future field rename/typo here would
+    // surface as a compile error instead of silently drifting.
+    const registryEntry: PreflightObservedSolanaPool = {
       chain:              CHAIN,
       poolAddress:        candidate.poolAddress,
       mint0:              candidate.baseMint,
@@ -199,7 +195,8 @@ export async function maybeRecordObservedCandidate(
       registrySource:     "SWAP_SAMPLED",
       registryConfidence: "OBSERVED",
       sampleCount:        candidate.sampleCount,
-    });
+    };
+    const registryRecord = JSON.stringify(registryEntry);
 
     // SET NX — nu overwrite dacă pool-ul a fost indexat între timp
     const inserted = await redis.set(pairKey, registryRecord, "NX"); // permanent — fara TTL (registry)
