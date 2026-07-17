@@ -662,6 +662,84 @@ export interface PreflightObservedCandidate {
   promoted:         boolean;
 }
 
+// Sursă de adevăr: workers/solana/src/discovery/launchWriter.ts — link către
+// un pool Raydium găsit ulterior pentru un launch pump.fun (graduation).
+// `program` era `string` local; narrowed aici la fel ca peste tot altundeva —
+// linkLaunchToPool() primește mereu `pool.program` din buildSolanaPool(),
+// deja tipat PreflightSolanaProgram (item 6a), niciodată un string liber.
+export interface PreflightRaydiumPoolLink {
+  poolAddress: string;
+  program:     PreflightSolanaProgram;
+  slot:        number;
+  signature:   string;
+  linkedAt:    string;
+}
+
+// Sursă de adevăr: workers/solana/src/discovery/launchWriter.ts's SolanaLaunch.
+// Namespace separat de pool registry de mai sus — launch-urile pump.fun nu
+// sunt pool-uri (preflight:indexed:launch:solana:{mint}, fără TTL). Pot
+// "graduate" ulterior într-un pool Raydium via linkLaunchToPool(), apelat
+// non-blocking din pairWriter.ts's writeSolanaPool() ȘI din
+// observedPool.ts's maybeRecordObservedCandidate() (al doilea write path pe
+// pool registry — nu apela linkLaunchToPool() deloc înainte de item 6b,
+// deci un launch promovat prin OBSERVED_SWAP putea rămâne veșnic
+// PUMPFUN_LAUNCHED chiar dacă pool-ul lui era deja în registry).
+//
+// lifecycleStage/graduated/raydiumPools erau opționale (un "optional bag") —
+// dar buildLaunchRecord() nu scria niciodată explicit PUMPFUN_LAUNCHED/
+// graduated:false, doar graduation path-ul scria RAYDIUM_POOL_FOUND/true.
+// Union discriminată (același pattern ca PreflightSolanaPool, item 6a)
+// pentru a exclude combinații imposibile (ex. lifecycleStage:
+// PUMPFUN_LAUNCHED + graduated: true simultan).
+interface PreflightSolanaLaunchBase {
+  chain:                  "solana";
+  recordType:             "TOKEN_LAUNCH";
+  launchSource:           "PUMPFUN";
+  mint:                   string;
+  bondingCurveAddress:    string;
+  associatedBondingCurve: string;
+  creatorAddress:         string;
+  slot:                   number;
+  signature:              string;
+  discoveredAt:           string;
+  indexerVersion:         string;
+  metadataStatus:         "PENDING" | "ENRICHED" | "FAILED";
+  // Metadata token — populată async (enrichLaunchRecord, Jupiter, delay
+  // 30s/2m/10m înainte de fiecare încercare).
+  symbol?:                string;
+  name?:                  string;
+  decimals?:              number | null;
+  metaSource?:            string;
+}
+
+export interface PreflightPumpfunLaunch extends PreflightSolanaLaunchBase {
+  lifecycleStage: "PUMPFUN_LAUNCHED";
+  graduated:      false;
+  graduatedAt?:   never;
+  // Tuple gol — un launch nu poate fi PUMPFUN_LAUNCHED și avea deja
+  // raydiumPools populat (graduation e ce schimbă ambele simultan).
+  raydiumPools:   [];
+}
+
+export interface PreflightGraduatedSolanaLaunch extends PreflightSolanaLaunchBase {
+  lifecycleStage: "RAYDIUM_POOL_FOUND";
+  graduated:      true;
+  graduatedAt:    string;
+  // NU un tuple non-gol ([X, ...X[]]) — deși graduation garantează runtime
+  // cel puțin un pool, `linkLaunchToPool()` construiește array-ul din
+  // `[...existing, link]` unde `existing` e deja lărgit la `X[]` simplu (de
+  // la `launch.raydiumPools ?? []` peste o uniune) — TS nu poate demonstra
+  // static lungimea ≥1 din acel spread, deci ar forța fie reordonarea
+  // array-ului (prepend în loc de append, schimbă semantica cronologică),
+  // fie un cast care anulează exact ce vrem să garantăm. Non-empty rămâne
+  // garantat doar de logica de business (linkLaunchToPool), nu de tip.
+  raydiumPools:   PreflightRaydiumPoolLink[];
+}
+
+export type PreflightSolanaLaunch =
+  | PreflightPumpfunLaunch
+  | PreflightGraduatedSolanaLaunch;
+
 // ── Redis key constants ───────────────────────────────────────────────────────
 // Un singur loc unde trăiesc key names.
 // Workers scriu, MCP citește — nimeni nu scrie strings hardcodate.

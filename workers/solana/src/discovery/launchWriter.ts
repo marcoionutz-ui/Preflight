@@ -19,17 +19,14 @@ import {
   KEY_LAUNCH, KEY_LAUNCHES, KEY_LAUNCHES_TS,
 } from "../config/constants";
 import type { PumpfunCreateResult } from "./pumpfunFetcher";
+import type {
+  PreflightRaydiumPoolLink, PreflightSolanaLaunch, PreflightSolanaProgram,
+} from "@preflight/schema";
 
 // ── Tipuri ────────────────────────────────────────────────────────────────────
 
 /** Un pool Raydium legat de acest mint (pump.fun → Raydium graduation). */
-export interface RaydiumPoolLink {
-  poolAddress: string;
-  program:     string;
-  slot:        number;
-  signature:   string;
-  linkedAt:    string;
-}
+export type RaydiumPoolLink = PreflightRaydiumPoolLink;
 
 /**
  * Subset minim din SolanaPool — evita import circular pairWriter ↔ launchWriter.
@@ -37,35 +34,12 @@ export interface RaydiumPoolLink {
  */
 export interface PoolLinkInfo {
   poolAddress: string;
-  program:     string;
+  program:     PreflightSolanaProgram;
   slot:        number;
   signature:   string;
 }
 
-export interface SolanaLaunch {
-  chain:                    typeof CHAIN;
-  recordType:               "TOKEN_LAUNCH";
-  launchSource:             "PUMPFUN";
-  mint:                     string;
-  bondingCurveAddress:      string;
-  associatedBondingCurve:   string;
-  creatorAddress:           string;
-  slot:                     number;
-  signature:                string;
-  discoveredAt:             string;
-  indexerVersion:           string;
-  metadataStatus:           "PENDING" | "ENRICHED" | "FAILED";
-  // metadata — populat async dupa insert
-  symbol?:                  string;
-  name?:                    string;
-  decimals?:                number | null;
-  metaSource?:              string;
-  // 8.0h-a — lifecycle: pump.fun launch → Raydium graduation
-  lifecycleStage?:          "PUMPFUN_LAUNCHED" | "RAYDIUM_POOL_FOUND";
-  graduated?:               boolean;
-  graduatedAt?:             string;
-  raydiumPools?:            RaydiumPoolLink[];
-}
+export type SolanaLaunch = PreflightSolanaLaunch;
 
 // ── Build ─────────────────────────────────────────────────────────────────────
 
@@ -87,6 +61,12 @@ export function buildLaunchRecord(
     discoveredAt:           new Date().toISOString(),
     indexerVersion:         INDEXER_VERSION,
     metadataStatus:         "PENDING",
+    // Stare inițială explicită — înainte, aceste câmpuri lipseau complet
+    // pana la graduation (schema le declara opționale, dar niciun write
+    // path nu scria vreodata PUMPFUN_LAUNCHED/false/[] la creare).
+    lifecycleStage:         "PUMPFUN_LAUNCHED",
+    graduated:              false,
+    raydiumPools:           [],
   };
 }
 
@@ -190,6 +170,16 @@ const ENRICH_DELAYS_MS = [30_000, 120_000, 600_000];
  * Folosit de enrichLaunchRecord inainte de fiecare write pentru a nu suprascrie
  * graduation fields setate intre timp de linkLaunchToPool.
  * Daca Redis nu are recordul (unlikely) sau JSON corupt, fallback la obiectul initial.
+ *
+ * NOTĂ (item 6b): asta MICȘOREAZĂ fereastra de race, nu o elimină — GET aici
+ * și SET-ul din enrichLaunchRecord/linkLaunchToPool rămân operații separate,
+ * neatomice. Un enrich și o graduation care nimeresc exact în același
+ * interval GET→SET tot se pot suprascrie reciproc (rar — enrich rulează la
+ * 30s/2m/10m fix, graduation doar când vine un pool matching). Fix real =
+ * update atomic (Lua EVAL, pattern deja folosit în infra/cursor.ts's
+ * advanceCursor) — scos deliberat din scope-ul 6b (schema consolidation) și
+ * mutat ca task separat de concurrency hardening, cu teste automate
+ * dedicate, nu QA manual pe Redis-ul de producție.
  */
 async function readCurrentLaunch(
   mint:     string,

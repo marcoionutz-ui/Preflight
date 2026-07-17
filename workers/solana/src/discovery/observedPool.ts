@@ -35,6 +35,7 @@ import {
 import { USDC_MINT, USDT_MINT, WSOL_MINT } from "../config/programs";
 import type { PriceSnapshot } from "./priceTracker";
 import type { PreflightSolanaQuoteType, PreflightObservedSolanaPool, PreflightObservedCandidate } from "@preflight/schema";
+import { linkLaunchToPool } from "./launchWriter";
 
 // ── Constante ─────────────────────────────────────────────────────────────────
 
@@ -207,6 +208,26 @@ export async function maybeRecordObservedCandidate(
       pipeline.zadd(KEY_PAIRS,    0,   candidate.poolAddress);
       pipeline.zadd(KEY_PAIRS_TS, now, candidate.poolAddress);
       await pipeline.exec();
+
+      // 8.0k-b + item 6b — al doilea write path pe pool registry (alături de
+      // pairWriter.ts's writeSolanaPool()) trebuia să cheme și el
+      // linkLaunchToPool(), altfel un launch pump.fun al cărui pool e
+      // promovat doar prin OBSERVED_SWAP rămânea veșnic PUMPFUN_LAUNCHED
+      // chiar dacă pool-ul lui era deja indexat. baseMint e mint-ul corect
+      // aici — quoteMint a trecut deja guard-ul WSOL/USDC/USDT mai sus, deci
+      // nu poate fi el mint-ul unui launch pump.fun. Fire-and-forget, ca la
+      // pairWriter.ts.
+      linkLaunchToPool(candidate.baseMint, {
+        poolAddress: candidate.poolAddress,
+        program:     candidate.program,
+        slot:        0,
+        signature:   registryEntry.signature,
+      }).catch((err: Error) => {
+        console.error(
+          "[SOLANA][OBSERVED] linkLaunchToPool error mint=" + candidate.baseMint.slice(0, 8) + ":",
+          err.message,
+        );
+      });
 
       // Patch price snapshot imediat — nu așteptăm moversTracker (60s lag)
       const snapKey = KEY_PRICE_SNAPSHOT(candidate.poolAddress);

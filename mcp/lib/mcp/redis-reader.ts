@@ -14,6 +14,7 @@ import {
   type PreflightMarketContext, type PreflightDrop,
   type PreflightMomentumEvent, type PreflightSignalPipelineEntry, type PreflightQualifiedSignal,
   type PreflightSolanaPool, type PreflightObservedCandidate, type PreflightSolanaQuoteType,
+  type PreflightSolanaLaunch,
 } from "@preflight/schema";
 
 function safeJson<T>(raw: string | null, fallback: T, key?: string): T {
@@ -686,12 +687,15 @@ export async function readSolanaRecentActivity(topN = 5): Promise<{
     });
 
     const recentLaunches: SolanaRecentLaunch[] = launchPairs.map(([mint, ts], i) => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const meta = launchRaws[i] ? safeJson<any>(launchRaws[i], null, `preflight:indexed:launch:solana:${mint}`) : null;
+      const meta = launchRaws[i] ? safeJson<PreflightSolanaLaunch | null>(launchRaws[i], null, `preflight:indexed:launch:solana:${mint}`) : null;
       return {
         mint,
-        symbol:       meta?.symbol        ?? null,
-        bondingCurve: meta?.bondingCurveAddress ?? meta?.bondingCurve ?? null,
+        symbol:       meta?.symbol ?? null,
+        // `bondingCurve` (fără sufix) nu a fost niciodată scris de launchWriter.ts —
+        // doar `bondingCurveAddress`. Fallback-ul vechi (`?? meta?.bondingCurve`)
+        // era cod mort; eliminat. Cu meta acum tipat, un `bondingCurve` inexistent
+        // ar da eroare tsc, nu o valoare `undefined` tăcută.
+        bondingCurve: meta?.bondingCurveAddress ?? null,
         discoveredAt: ts,
       };
     });
