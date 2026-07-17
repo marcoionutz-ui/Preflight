@@ -807,6 +807,42 @@ export interface PreflightSolanaMoversSnapshot {
   movers:       PreflightSolanaMover[];
 }
 
+// Sursă de adevăr: workers/solana/src/discovery/swapActivity.ts's PoolActivity.
+// Doar pentru pool-uri knownPool:true (guard strict, zero writes altfel) —
+// fereastră rolling 5min, resetată pe boundary. `sampledQuoteIn5m`/
+// `sampledQuoteOut5m` sunt BigInt serializate ca string (JSON.stringify nu
+// suportă BigInt nativ).
+export interface PreflightSolanaPoolActivity {
+  poolAddress:       string;
+  program:           PreflightSolanaProgram;
+  sampledSwaps5m:    number;
+  sampledQuoteIn5m:  string;
+  sampledQuoteOut5m: string;
+  coverage:          "SAMPLED";
+  windowStart:       number;
+  lastSwapAt:        number;
+  lastFlow:          "QUOTE_IN" | "QUOTE_OUT" | "UNKNOWN";
+  lastSignature:     string;
+}
+
+// Sursă de adevăr: workers/solana/src/infra/health.ts. NOTĂ: mcp's
+// `SolanaHealthData` (redis-reader.ts) adaugă un al 5-lea status,
+// `"OFFLINE"`, ca stare derivată read-model (health lipsă/stale/corupt) —
+// nu există niciodată pe wire-ul scris de worker, deci nu e parte din
+// `PreflightSolanaSlotStatus`.
+export type PreflightSolanaSlotStatus = "OK" | "DEGRADED" | "BEHIND" | "STARTING";
+
+export interface PreflightSolanaHealth {
+  chain:          "solana";
+  version:        string;
+  latestSlot:     number;
+  cursorSlot:     number | null;
+  behindSlots:    number;
+  status:         PreflightSolanaSlotStatus;
+  updatedAt:      string;
+  indexerVersion: string;
+}
+
 // ── Redis key constants ───────────────────────────────────────────────────────
 // Un singur loc unde trăiesc key names.
 // Workers scriu, MCP citește — nimeni nu scrie strings hardcodate.

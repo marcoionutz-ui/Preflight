@@ -13,21 +13,11 @@
 import { getRedis }          from "../infra/redis";
 import { KEY_POOL_ACTIVITY } from "../config/constants";
 import { SwapParseResult }   from "./swapParser";
+import type { PreflightSolanaPoolActivity, PreflightSolanaProgram } from "@preflight/schema";
 
 // ── Tipuri ────────────────────────────────────────────────────────────────────
 
-export interface PoolActivity {
-  poolAddress:       string;
-  program:           "raydium_cpmm" | "raydium_clmm";
-  sampledSwaps5m:    number;
-  sampledQuoteIn5m:  string;   // BigInt ca string — quote intrat din TX-uri samplate
-  sampledQuoteOut5m: string;   // BigInt ca string — quote iesit din TX-uri samplate
-  coverage:          "SAMPLED"; // nu e total real — reflecta 2 sample TX/instruction/60s
-  windowStart:       number;   // ms timestamp — start fereastra curenta
-  lastSwapAt:        number;   // ms timestamp — ultimul swap observat
-  lastFlow:          "QUOTE_IN" | "QUOTE_OUT" | "UNKNOWN";
-  lastSignature:     string;
-}
+export type PoolActivity = PreflightSolanaPoolActivity;
 
 // ── Constante ─────────────────────────────────────────────────────────────────
 
@@ -36,7 +26,7 @@ const TTL_SEC   = 10 * 60;           // TTL 10 minute (refresh la fiecare write)
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function programLabel(prog: SwapParseResult["program"]): "raydium_cpmm" | "raydium_clmm" {
+function programLabel(prog: SwapParseResult["program"]): PreflightSolanaProgram {
   return prog === "cpmm" ? "raydium_cpmm" : "raydium_clmm";
 }
 

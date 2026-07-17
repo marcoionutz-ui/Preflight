@@ -13,19 +13,11 @@ import {
   INDEXER_VERSION,
   CHAIN,
 } from "../config/constants";
+import type { PreflightSolanaHealth, PreflightSolanaSlotStatus } from "@preflight/schema";
 
-export type SlotStatus = "OK" | "DEGRADED" | "BEHIND" | "STARTING";
+export type SlotStatus = PreflightSolanaSlotStatus;
 
-export interface SolanaHealth {
-  chain:         typeof CHAIN;
-  version:       string;
-  latestSlot:    number;
-  cursorSlot:    number | null;
-  behindSlots:   number;
-  status:        SlotStatus;
-  updatedAt:     string;
-  indexerVersion: string;
-}
+export type SolanaHealth = PreflightSolanaHealth;
 
 export function resolveStatus(behindSlots: number): SlotStatus {
   if (behindSlots <= BEHIND_OK_SLOTS)       return "OK";

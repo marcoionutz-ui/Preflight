@@ -18,6 +18,7 @@ import {
   type PreflightSolanaPriceSnapshot, type PreflightSolanaPricePoint,
   type PreflightSolanaProgram, type PreflightSolanaHistoryStatus,
   type PreflightSolanaMover, type PreflightSolanaMoversSnapshot,
+  type PreflightSolanaHealth, type PreflightSolanaPoolActivity,
 } from "@preflight/schema";
 
 function safeJson<T>(raw: string | null, fallback: T, key?: string): T {
@@ -541,7 +542,9 @@ export async function readSolanaIndexerStats(now: number): Promise<SolanaIndexer
   } else {
     // fallback null => tratat identic cu !healthRaw mai jos (un blob corupt
     // nu trebuie să crape tot chain report-ul, doar să arate Solana OFFLINE).
-    const h = safeJson<Record<string, unknown> | null>(healthRaw, null, "preflight:indexer:health:solana");
+    // Partial<> — nominal shape e PreflightSolanaHealth, dar tratăm fiecare
+    // câmp ca posibil lipsă/malformat (safeJson validează doar sintaxa JSON).
+    const h = safeJson<Partial<PreflightSolanaHealth> | null>(healthRaw, null, "preflight:indexer:health:solana");
     if (!h) {
       health = { workerOnline: false, slot: null, cursor: null, blocksBehind: null, status: "OFFLINE", indexerVersion: null, ageSec: null };
     } else {
@@ -570,11 +573,11 @@ export async function readSolanaIndexerStats(now: number): Promise<SolanaIndexer
 
       health = {
         workerOnline:   ageSec !== null && ageSec < 5 * 60,
-        slot:           (h.latestSlot   as number | null) ?? null,
-        cursor:         (h.cursorSlot   as number | null) ?? null,
-        blocksBehind:   (h.behindSlots  as number | null) ?? null,
+        slot:           h.latestSlot  ?? null,
+        cursor:         h.cursorSlot  ?? null,
+        blocksBehind:   h.behindSlots ?? null,
         status:         ageSec === null || ageSec >= 5 * 60 ? "OFFLINE" : parsedStatus,
-        indexerVersion: (h.indexerVersion as string | null) ?? null,
+        indexerVersion: h.indexerVersion ?? null,
         ageSec,
       };
     }
@@ -716,12 +719,11 @@ export async function readSolanaRecentActivity(topN = 5): Promise<{
 
 export interface SolanaPoolContext {
   poolAddress:       string;
-  // registry/observedCandidate typed against @preflight/schema (item 6a);
-  // priceSnapshot/recentHistory typed (item 6c). activity rămâne
-  // Record<string,unknown> — tip real vine în item 6d.
+  // Toate câmpurile tipate acum contra @preflight/schema — registry/
+  // observedCandidate (6a), priceSnapshot/recentHistory (6c), activity (6d).
   registry:          PreflightSolanaPool | null;
   priceSnapshot:     PreflightSolanaPriceSnapshot | null;
-  activity:          Record<string, unknown> | null;
+  activity:          PreflightSolanaPoolActivity | null;
   recentHistory:     PreflightSolanaPricePoint[];
   observedCandidate: PreflightObservedCandidate | null;
   dataAgeSec:        number | null;
@@ -753,7 +755,7 @@ export async function readSolanaPoolContext(
 
   const registry      = regRaw  ? safeJson<PreflightSolanaPool | null>(regRaw,  null) : null;
   const priceSnapshot = snapRaw ? safeJson<PreflightSolanaPriceSnapshot | null>(snapRaw, null) : null;
-  const activity      = actRaw  ? safeJson<Record<string, unknown> | null>(actRaw,  null) : null;
+  const activity       = actRaw ? safeJson<PreflightSolanaPoolActivity | null>(actRaw, null) : null;
   const recentHistory = histRaws
     .map(h => safeJson<PreflightSolanaPricePoint | null>(h, null))
     .filter((h): h is PreflightSolanaPricePoint => h !== null);
