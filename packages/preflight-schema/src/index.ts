@@ -881,6 +881,31 @@ export function normalizeChainId(chain: string): string {
   return c === "eth" ? "ethereum" : c;
 }
 
+/**
+ * Cheia canonică de identitate a unei perechi: `${chain}:${address}` (chain
+ * normalizat, adresă normalizată per-chain — EVM lowercase, Solana case-sensitiv).
+ * Aceeași adresă pe chainuri diferite → chei DIFERITE — elimină coliziunea (P0-1)
+ * din map-urile in-process și lookup-urile MCP. De folosit peste tot în locul
+ * cheilor doar-adresă (Faza B).
+ */
+export type PairKey = `${string}:${string}`;
+
+/**
+ * Normalizează adresa în funcție de chain: EVM → lowercase (hex e
+ * case-insensitive), Solana → case-PĂSTRAT (base58 e case-sensitive,
+ * lowercasing corupe adresa). Mereu trim. Fără asta, pairKey("solana", "AeGB…")
+ * ar produce o cheie care nu mai corespunde adresei reale on-chain.
+ */
+export function normalizePairAddress(chain: string, address: string): string {
+  const trimmed = address.trim();
+  return normalizeChainId(chain) === "solana" ? trimmed : trimmed.toLowerCase();
+}
+
+export function pairKey(chain: string, address: string): PairKey {
+  const chainId = normalizeChainId(chain);
+  return `${chainId}:${normalizePairAddress(chainId, address)}` as PairKey;
+}
+
 export const REDIS_KEYS = {
     
   // Pipeline state
@@ -903,13 +928,14 @@ export const REDIS_KEYS = {
   agentWatchRequests: "preflight:agent_watch_requests",
   lifecycle:          "preflight:lifecycle",
 
-  // Per-pair
+  // Per-pair. NOTĂ: încă doar-adresă → coliziune cross-chain (P0-1). Migrare la
+  // pairKey(chain, addr) în Faza B2 (necesită chain în readPairContext + callers).
   pairContext:       (addr: string) => `preflight:pair_context:${addr.toLowerCase()}`,
   risk:              (chain: string, token: string) => `preflight:risk:${normalizeChainId(chain)}:${token.toLowerCase()}`,
 
-  // 6.10 — Own trending
-  trendingSnapshot:  (chain: string, addr: string) => `preflight:trending:snapshot:${chain}:${addr.toLowerCase()}`,
-  trendingMovers:    (chain: string) => `preflight:trending:movers:${chain}`,
+  // 6.10 — Own trending (chain normalizat + Solana case-safe via pairKey)
+  trendingSnapshot:  (chain: string, addr: string) => `preflight:trending:snapshot:${pairKey(chain, addr)}`,
+  trendingMovers:    (chain: string) => `preflight:trending:movers:${normalizeChainId(chain)}`,
 } as const;
 
 export const SCHEMA_VERSION = "preflight-schema-v1";
