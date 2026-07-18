@@ -5,6 +5,7 @@
  */
 
 import Link from "next/link";
+import { getClientById, isAllowedRedirectUri } from "@/lib/db/oauth-clients";
 
 export const dynamic = "force-dynamic";
 
@@ -27,9 +28,20 @@ export default async function AuthorizePage({ searchParams }: Props) {
     client_id             = "",
     redirect_uri          = "",
     state                 = "",
-    scope                 = "read:all",
+    // Fără default "read:all" — era un bug real: câmpul ăsta se duce direct
+    // în hidden input-ul POST-at, deci API-ul (/api/oauth/authorize) nu mai
+    // vedea NICIODATĂ scope gol, iar fallback-ul lui corect
+    // (`requestedScopes.length > 0 ? requestedScopes : client.scopes`) nu se
+    // declanșa vreodată. Orice client read:basic (free_trial/basic) pica cu
+    // "scope not allowed" la fiecare conectare interactivă, fiindcă cerea
+    // implicit read:all fără să aibă acest scope. Default gol → API-ul
+    // aplică natural client.scopes.
+    scope                 = "",
     code_challenge        = "",
     code_challenge_method = "S256",
+    // Fără default "code" — obligatoriu prin RFC 6749, un request care nu-l
+    // trimite deloc trebuie respins, nu tratat tacit ca valid.
+    response_type         = "",
   } = params;
 
   // Validare minimă
@@ -39,6 +51,37 @@ export default async function AuthorizePage({ searchParams }: Props) {
         <div style={styles.card}>
           <h1 style={styles.title}>⚠️ Invalid Request</h1>
           <p style={styles.subtitle}>Missing client_id or redirect_uri.</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (response_type !== "code") {
+    return (
+      <div style={styles.container}>
+        <div style={styles.card}>
+          <h1 style={styles.title}>⚠️ Unsupported response_type</h1>
+          <p style={styles.subtitle}>Only response_type=code is supported.</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Item e) — verificare fail-fast pe redirect_uri: fără asta, userul tastează
+  // client_secret degeaba, doar ca să vadă eroarea DUPĂ submit la POST (care
+  // face aceeași verificare, dar acolo e obligatorie oricum — asta e doar UX,
+  // nu security boundary; nu are secretul, deci getClientById (nu
+  // verifyClientCredentials) e suficient aici).
+  const client = await getClientById(client_id);
+  if (client && (client.redirect_uris.length === 0 || !isAllowedRedirectUri(client, redirect_uri))) {
+    return (
+      <div style={styles.container}>
+        <div style={styles.card}>
+          <h1 style={styles.title}>⚠️ redirect_uri not allowed</h1>
+          <p style={styles.subtitle}>
+            This redirect_uri isn&apos;t in the allowlist for this client. Add it in your{" "}
+            <Link href="/dashboard" style={styles.link}>dashboard</Link> first.
+          </p>
         </div>
       </div>
     );
@@ -65,7 +108,7 @@ export default async function AuthorizePage({ searchParams }: Props) {
 
         <div style={styles.scopeInfo}>
           <span style={styles.scopeLabel}>Scope</span>
-          <span style={styles.scopeBadge}>{scope}</span>
+          <span style={styles.scopeBadge}>{scope || "(client default)"}</span>
         </div>
 
         {/* Form — POST la /api/oauth/authorize */}
@@ -76,6 +119,7 @@ export default async function AuthorizePage({ searchParams }: Props) {
           <input type="hidden" name="scope"                 value={scope} />
           <input type="hidden" name="code_challenge"        value={code_challenge} />
           <input type="hidden" name="code_challenge_method" value={code_challenge_method} />
+          <input type="hidden" name="response_type"         value={response_type} />
 
           <label style={styles.label} htmlFor="client_secret">
             Client Secret

@@ -10,7 +10,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { rotateSecretAction, signOutAction } from "./actions";
+import { rotateSecretAction, signOutAction, addRedirectUriAction, removeRedirectUriAction } from "./actions";
 
 interface Props {
   email:              string;
@@ -21,16 +21,41 @@ interface Props {
   monthlyQuota:       number;
   rateLimitPerMinute: number;
   mcpUrl:             string;
+  redirectUris:       string[];
 }
 
 export default function DashboardClient({
   email, clientId, freshSecret, planName, scopes,
-  monthlyQuota, rateLimitPerMinute, mcpUrl,
+  monthlyQuota, rateLimitPerMinute, mcpUrl, redirectUris,
 }: Props) {
   const [revealedSecret, setRevealedSecret] = useState<string | null>(freshSecret);
   const [rotating, setRotating]             = useState(false);
   const [rotateError, setRotateError]       = useState("");
   const [copiedField, setCopiedField]       = useState<string | null>(null);
+  const [uris, setUris]                     = useState<string[]>(redirectUris);
+  const [newUri, setNewUri]                 = useState("");
+  const [uriError, setUriError]             = useState("");
+  const [uriBusy, setUriBusy]               = useState(false);
+
+  async function handleAddUri() {
+    if (!newUri.trim()) return;
+    setUriBusy(true);
+    setUriError("");
+    const result = await addRedirectUriAction(newUri.trim());
+    setUriBusy(false);
+    if (!result.ok) { setUriError(result.error); return; }
+    setUris(result.redirectUris);
+    setNewUri("");
+  }
+
+  async function handleRemoveUri(uri: string) {
+    setUriBusy(true);
+    setUriError("");
+    const result = await removeRedirectUriAction(uri);
+    setUriBusy(false);
+    if (!result.ok) { setUriError(result.error); return; }
+    setUris(result.redirectUris);
+  }
 
   async function copy(value: string, field: string) {
     try {
@@ -120,6 +145,41 @@ export default function DashboardClient({
           </div>
           <div style={styles.scopeRow}>
             {scopes.map(s => <span key={s} style={styles.scopeBadge}>{s}</span>)}
+          </div>
+        </Section>
+
+        <Section title="Redirect URIs">
+          <p style={styles.bodyText}>
+            The interactive /authorize screen only redirects back to a URI listed here — exact
+            match, no wildcards. Your MCP client (Claude Desktop, Cursor, a custom agent) shows
+            its own callback URL during first connect; add it here before authorizing.
+          </p>
+          {uris.length === 0 && (
+            <p style={{ ...styles.bodyText, color: "#ffb020" }}>
+              No redirect URIs configured yet — /authorize will refuse every request until you add one.
+            </p>
+          )}
+          {uris.map(u => (
+            <div key={u} style={styles.credRow}>
+              <div style={styles.credLabelWrap}>
+                <code style={styles.credValue}>{u}</code>
+              </div>
+              <button onClick={() => handleRemoveUri(u)} disabled={uriBusy} style={styles.copyBtn}>
+                remove
+              </button>
+            </div>
+          ))}
+          {uriError && <div style={styles.errorBox}>{uriError}</div>}
+          <div style={styles.credRow}>
+            <input
+              value={newUri}
+              onChange={e => setNewUri(e.target.value)}
+              placeholder="https://... or myapp://callback"
+              style={styles.uriInput}
+            />
+            <button onClick={handleAddUri} disabled={uriBusy || !newUri.trim()} style={styles.copyBtn}>
+              add
+            </button>
           </div>
         </Section>
 
@@ -298,6 +358,16 @@ const styles: Record<string, React.CSSProperties> = {
     padding:      "6px 10px",
     cursor:       "pointer",
     fontFamily:   "'Courier New', Courier, monospace",
+  },
+  uriInput: {
+    flex:         1,
+    minWidth:     0,
+    background:   "transparent",
+    border:       "none",
+    color:        "#ddd",
+    fontSize:     "12px",
+    fontFamily:   "'Courier New', Courier, monospace",
+    outline:      "none",
   },
   rotateBtn: {
     background:   "transparent",

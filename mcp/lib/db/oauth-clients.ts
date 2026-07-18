@@ -26,6 +26,12 @@ export interface OAuthClient {
   // tokens immediately (race-free — see credential_version in oauth-tokens.ts)
   // instead of letting them coast until their 24h TTL expires.
   secret_rotated_at:     string;
+  // Item e) OAuth hardening — exact-match allowlist for /authorize's
+  // redirect_uri, self-declared by the owner via the dashboard (session-
+  // gated, see addRedirectUri()). Empty by default: /authorize refuses to
+  // issue a code until at least one URI is configured — safe-by-default,
+  // no client works "by accident" with an unvalidated redirect target.
+  redirect_uris:         string[];
 }
 
 // ── Hashing ───────────────────────────────────────────────────────────────────
@@ -36,6 +42,18 @@ export function hashSecret(secret: string): string {
 
 export function verifySecret(secret: string, hash: string): boolean {
   return hashSecret(secret) === hash;
+}
+
+// ── Redirect URI allowlist (item e) ─────────────────────────────────────────
+
+/**
+ * Exact string match — nu wildcard, nu startsWith, nu host-only. RFC 9700
+ * (OAuth 2.0 Security BCP) cere comparare exactă pentru redirect_uri
+ * preînregistrate; orice relaxare aici redeschide exact vectorul pe care
+ * allowlist-ul îl închide.
+ */
+export function isAllowedRedirectUri(client: OAuthClient, redirectUri: string): boolean {
+  return client.redirect_uris.includes(redirectUri);
 }
 
 // ── Lookup ────────────────────────────────────────────────────────────────────
@@ -146,6 +164,74 @@ export async function createOAuthClient({
 
   // Returnează secret plain o singură dată — nu mai e recuperabil
   return { client: data as OAuthClient, client_secret };
+}
+
+/**
+ * Adaugă un redirect_uri la allowlist-ul clientului. Caller-ul (Server
+ * Action din dashboard) e responsabil de verificarea sesiunii Supabase și de
+ * derivarea client_id-ului din user.id — funcția asta nu are cum să știe
+ * cine o cheamă, deci nu revalidează autorizarea, doar persistă. Dedup +
+ * validare URL de bază (trebuie să fie un URL absolut parsabil) — restul
+ * (exact-match la /authorize) se face la citire, nu la scriere.
+ */
+// new URL() acceptă și javascript:/data:/file:/vbscript: ca "URL absolut
+// valid" — trebuie blocate explicit chiar dacă permitem scheme custom
+// pentru clienți native (myapp://...). Altfel un owner ar putea (sau ar
+// putea fi păcălit să) adauge un redirect_uri care execută cod la redirect.
+const BLOCKED_PROTOCOLS = new Set(["javascript:", "data:", "file:", "vbscript:"]);
+
+export async function addRedirectUri(clientId: string, redirectUri: string): Promise<OAuthClient | null> {
+  let parsed: URL;
+  try {
+    parsed = new URL(redirectUri); // aruncă dacă nu e un URL absolut valid
+  } catch {
+    return null;
+  }
+  if (BLOCKED_PROTOCOLS.has(parsed.protocol.toLowerCase())) {
+    return null;
+  }
+
+  const client = await getClientById(clientId);
+  if (!client) return null;
+
+  if (client.redirect_uris.includes(redirectUri)) return client; // deja prezent, no-op
+
+  const updated = [...client.redirect_uris, redirectUri];
+
+  const { data, error } = await supabaseAdmin
+    .from("oauth_clients")
+    .update({ redirect_uris: updated })
+    .eq("client_id", clientId)
+    .eq("status", "active")
+    .select("*")
+    .single();
+
+  if (error || !data) {
+    console.error("[OAUTH] Failed to add redirect_uri:", error?.message);
+    return null;
+  }
+  return data as OAuthClient;
+}
+
+export async function removeRedirectUri(clientId: string, redirectUri: string): Promise<OAuthClient | null> {
+  const client = await getClientById(clientId);
+  if (!client) return null;
+
+  const updated = client.redirect_uris.filter(u => u !== redirectUri);
+
+  const { data, error } = await supabaseAdmin
+    .from("oauth_clients")
+    .update({ redirect_uris: updated })
+    .eq("client_id", clientId)
+    .eq("status", "active")
+    .select("*")
+    .single();
+
+  if (error || !data) {
+    console.error("[OAUTH] Failed to remove redirect_uri:", error?.message);
+    return null;
+  }
+  return data as OAuthClient;
 }
 
 export async function revokeOAuthClient(clientId: string): Promise<void> {

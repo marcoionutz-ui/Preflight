@@ -71,6 +71,7 @@ export default async function DashboardPage() {
       monthlyQuota={planConfig.monthly_quota}
       rateLimitPerMinute={client.rate_limit_per_minute}
       mcpUrl={mcpUrl}
+      redirectUris={client.redirect_uris ?? []}
     />
   );
 }
