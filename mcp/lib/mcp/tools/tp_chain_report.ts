@@ -9,15 +9,11 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { readAllRedis, formatEth, formatVol, formatPct, combineConfidence, getPipelineState, readSolanaIndexerStats, readSolanaMovers, readSolanaRecentActivity } from "../redis-reader";
+import { normalizeChainId } from "@preflight/schema";
 import { mcpResponse, mcpErr, ERR } from "../errors";
 
 // Timestamp fallback — events pot folosi ts, detectedAt, sau timestamp
 const eventTs = (e: any): number => e.ts ?? e.detectedAt ?? e.timestamp ?? 0;
-
-// Normalizeaza alias ETH → ethereum (worker stocheaza "ethereum", enum accepta "eth")
-function normalizeChain(c: string): string {
-  return c === "eth" ? "ethereum" : c;
-}
 
 function getLpCoverage(dexType: string | null | undefined, hasData: boolean): string {
   const d = (dexType ?? "").toUpperCase();
@@ -130,7 +126,7 @@ Args: chain — one of: base, arbitrum, eth, bsc, solana`,
         const { now, states, watch, hot, armed, events, drops, pfDrops } = ctx;
 
         // ── Filter everything to this chain ───────────────────────────────
-        const chainKey    = normalizeChain(chain); // "eth" → "ethereum"
+        const chainKey    = normalizeChainId(chain); // "eth" → "ethereum"
         const chainStates = Object.entries(states).filter(
           ([, s]) => (s.chain ?? "").toLowerCase() === chainKey
         );

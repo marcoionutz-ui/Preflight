@@ -58,11 +58,15 @@ export interface RiskResult {
   raw?: unknown;
 }
 
-// Chain ID map pentru GoPlus API
+// Chain ID map pentru GoPlus API.
+// Both "eth" (external short code) and "ethereum" (worker canonical id) map to
+// GoPlus mainnet id "1" — callers may pass either. risk-layer nu importă
+// @preflight/schema (ar crea ciclu), deci alias-ul e listat explicit aici.
 export const GOPLUS_CHAIN_IDS: Record<string, string> = {
   base:     "8453",
   arbitrum: "42161",
   bsc:      "56",
   eth:      "1",
+  ethereum: "1",
   polygon:  "137",
 };

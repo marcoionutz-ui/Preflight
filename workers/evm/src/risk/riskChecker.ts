@@ -7,6 +7,7 @@
 
 import { checkTokenRisk } from "@preflight/risk-layer";
 import type { RiskResult } from "@preflight/risk-layer";
+import { normalizeChainId, REDIS_KEYS } from "@preflight/schema";
 import { getRedis } from "../infra/redis";
 
 export type { RiskResult };
@@ -17,17 +18,17 @@ const RISK_UNAVAILABLE_TTL_SEC = 10 * 60;
 // fix ChatGPT: Map<Promise> — call #2 primește același promise, nu null
 const inFlight = new Map<string, Promise<RiskResult | null>>();
 
-function riskCacheKey(chain: string, tokenAddress: string): string {
-  return `preflight:risk:${chain.toLowerCase()}:${tokenAddress.toLowerCase()}`;
-}
+// A1: cheia de risc vine din REDIS_KEYS.risk() (schema) — sursă unică a
+// formatului, normalizează "eth"→"ethereum" intern. Worker și MCP nu mai pot
+// devia la format sau namespace.
 
 export async function getTokenRisk(
   tokenAddress: string,
   chain:        string,
 ): Promise<RiskResult | null> {
-  const chainKey = chain.toLowerCase();
+  const chainKey = normalizeChainId(chain);
   const token    = tokenAddress.toLowerCase();
-  const key      = riskCacheKey(chainKey, token);
+  const key      = REDIS_KEYS.risk(chainKey, token);
   const r        = getRedis();
 
   // Cache check
@@ -78,9 +79,9 @@ export async function getCachedRisk(
   const r = getRedis();
   if (!r) return null;
   try {
-    const chainKey = chain.toLowerCase();
+    const chainKey = normalizeChainId(chain);
     const token    = tokenAddress.toLowerCase();
-    const cached = await r.get(riskCacheKey(chainKey, token));
+    const cached = await r.get(REDIS_KEYS.risk(chainKey, token));
     return cached ? JSON.parse(cached) as RiskResult : null;
   } catch {
     return null;
@@ -113,9 +114,9 @@ export async function getCachedRisksBulk(
   // fix ChatGPT: deduplicare pe token — același token în N pool-uri = un singur MGET key
   const byKey = new Map<string, { chain: string; token: string; key: string }>();
   for (const item of items) {
-    const chain = item.chain.toLowerCase();
+    const chain = normalizeChainId(item.chain);
     const token = item.tokenAddress.toLowerCase();
-    const key   = riskCacheKey(chain, token);
+    const key   = REDIS_KEYS.risk(chain, token);
     byKey.set(key, { chain, token, key });
   }
 

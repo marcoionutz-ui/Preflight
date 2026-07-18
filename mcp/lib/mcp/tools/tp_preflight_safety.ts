@@ -4,18 +4,18 @@ import { readAllRedis } from "../redis-reader";
 import { getRedis } from "@/lib/db/redis";
 import { checkTokenRisk } from "@preflight/risk-layer";
 import type { RiskResult } from "@preflight/risk-layer";
+import { normalizeChainId, REDIS_KEYS } from "@preflight/schema";
 import { mcpResponse, mcpErr, ERR } from "../errors";
 
 /** V4 poolId = bytes32 (0x + 64 hex) — not an EVM contract address */
 const BYTES32_RE = /^0x[a-f0-9]{64}$/i;
 
-// fix ChatGPT: cache comun cu workerul — același key ca riskChecker.ts
+// A1: cheia de risc vine din REDIS_KEYS.risk() (schema) — aceeași sursă de
+// format ca workerul (riskChecker.ts). Normalizează "eth"→"ethereum" intern,
+// deci resolvedChain "eth" (arg user / prefix Gecko) și "ethereum" (context
+// worker) lovesc același cache; niciun risc de drift de format/namespace.
 const RISK_CACHE_TTL_SEC       = 6 * 60 * 60;
 const RISK_UNAVAILABLE_TTL_SEC = 10 * 60;
-
-function riskCacheKey(chain: string, tokenAddress: string): string {
-  return `preflight:risk:${chain.toLowerCase()}:${tokenAddress.toLowerCase()}`;
-}
 
 // fix ChatGPT: checkedAt poate lipsi/fi invalid — nu vrem NaN în output
 function safeAgeSec(checkedAt: unknown): number | null {
@@ -28,9 +28,9 @@ async function getTokenRiskForSafety(
   chain:        string,
 ): Promise<RiskResult> {
   const r        = getRedis();
-  const chainKey = chain.toLowerCase();
+  const chainKey = normalizeChainId(chain);
   const token    = tokenAddress.toLowerCase();
-  const key      = riskCacheKey(chainKey, token);
+  const key      = REDIS_KEYS.risk(chainKey, token);
 
   if (r) {
     try {

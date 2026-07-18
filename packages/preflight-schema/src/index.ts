@@ -866,7 +866,20 @@ export type SourceAgreement =
   | "RETAINED_BY_FOLLOW_LIST"
   | "SINGLE_DISCOVERY_SOURCE"
   | "STALE_DISCOVERY"
-  | "NO_DISCOVERY_DATA";  
+  | "NO_DISCOVERY_DATA";
+
+/**
+ * Canonical chain id for Redis keys + worker state.
+ * Workers store Ethereum mainnet as "ethereum"; external enums / URLs / Gecko
+ * network ids use the short code "eth". Normalize so risk caches, lookups and
+ * chain filters never split across the two spellings. Loose string in/out —
+ * inputs cross a trust boundary (user args, Gecko token-id prefixes). Every
+ * other chain passes through unchanged (lowercased + trimmed).
+ */
+export function normalizeChainId(chain: string): string {
+  const c = chain.toLowerCase().trim();
+  return c === "eth" ? "ethereum" : c;
+}
 
 export const REDIS_KEYS = {
     
@@ -892,7 +905,7 @@ export const REDIS_KEYS = {
 
   // Per-pair
   pairContext:       (addr: string) => `preflight:pair_context:${addr.toLowerCase()}`,
-  risk:              (chain: string, token: string) => `preflight:risk:${chain}:${token.toLowerCase()}`,
+  risk:              (chain: string, token: string) => `preflight:risk:${normalizeChainId(chain)}:${token.toLowerCase()}`,
 
   // 6.10 — Own trending
   trendingSnapshot:  (chain: string, addr: string) => `preflight:trending:snapshot:${chain}:${addr.toLowerCase()}`,

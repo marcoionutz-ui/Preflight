@@ -46,7 +46,7 @@ function int256FromWord(hex64: string): bigint {
  * INDEXER pools au _raw.baseToken / _raw.quoteToken direct (IndexedPair format).
  * Gecko pools au _raw.relationships.{base,quote}_token.data.id cu prefix chain.
  */
-function extractBaseQuote(pool: { discoverySource?: string; _raw?: unknown; tokenAddress?: string }, chainId: string): { baseToken: string; quoteToken: string } {
+function extractBaseQuote(pool: { discoverySource?: string; _raw?: unknown; tokenAddress?: string }): { baseToken: string; quoteToken: string } {
   const raw = pool._raw as Record<string, unknown> | undefined;
   if (!raw) return { baseToken: pool.tokenAddress?.toLowerCase() ?? "", quoteToken: "" };
 
@@ -60,10 +60,16 @@ function extractBaseQuote(pool: { discoverySource?: string; _raw?: unknown; toke
     };
   }
 
-  // Gecko format: relationships.{base,quote}_token.data.id cu prefix chain_
+  // Gecko format: relationships.{base,quote}_token.data.id are prefixul rețelei
+  // Gecko ("{gecko}_0x...", ex. "eth_0x..." / "base_0x...").
+  // A1: strip generic al prefixului "{alnum}_" — înainte se folosea chain.id
+  // ("ethereum"), dar prefixul Gecko e chain.gecko ("eth"), deci pe Ethereum
+  // adresa nu era curățată → quoteMetaFor nu potrivea → flow WS tăcut zero.
+  const stripGeckoPrefix = (id: string | undefined): string =>
+    id?.replace(/^[a-z0-9-]+_/i, "").toLowerCase() ?? "";
   const rel = raw.relationships as Record<string, unknown> | undefined;
-  const base  = (((rel?.base_token  as Record<string, unknown>)?.data as Record<string, unknown>)?.id  as string | undefined)?.replace(`${chainId}_`, "").toLowerCase() ?? "";
-  const quote = (((rel?.quote_token as Record<string, unknown>)?.data as Record<string, unknown>)?.id as string | undefined)?.replace(`${chainId}_`, "").toLowerCase() ?? "";
+  const base  = stripGeckoPrefix(((rel?.base_token  as Record<string, unknown>)?.data as Record<string, unknown>)?.id  as string | undefined);
+  const quote = stripGeckoPrefix(((rel?.quote_token as Record<string, unknown>)?.data as Record<string, unknown>)?.id as string | undefined);
   return { baseToken: base, quoteToken: quote };
 }
 
@@ -207,7 +213,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
         const amount0 = int256FromWord(raw4.slice(0,  64));
         const amount1 = int256FromWord(raw4.slice(64, 128));
 
-        const { baseToken, quoteToken } = extractBaseQuote(pool, chain.id);
+        const { baseToken, quoteToken } = extractBaseQuote(pool);
         if (!quoteToken) {
           console.log(`[V4 SKIP] ${memV4.symbol} missing quote token for poolId=${poolId}`);
           return;
@@ -264,7 +270,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
 
         const amount0 = int256FromWord(raw3.slice(0,  64));
         const amount1 = int256FromWord(raw3.slice(64, 128));
-        const { baseToken: base3, quoteToken: quote3 } = extractBaseQuote(pool3, chain.id);
+        const { baseToken: base3, quoteToken: quote3 } = extractBaseQuote(pool3);
 
         const qflow3 = getQuoteFlowAsEth(chain, base3, quote3, amount0, amount1);
         if (!qflow3.ok) return;
@@ -294,7 +300,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
         // V3 Mint data: sender(32) amount(32) amount0(32) amount1(32)
         const amount0 = BigInt("0x" + raw3.slice(128, 192));
         const amount1 = BigInt("0x" + raw3.slice(192, 256));
-        const { baseToken: base3, quoteToken: quote3 } = extractBaseQuote(pool3, chain.id);
+        const { baseToken: base3, quoteToken: quote3 } = extractBaseQuote(pool3);
         const qflow3 = getQuoteFlowAsEth(chain, base3, quote3, amount0, amount1);
         if (qflow3.ok && qflow3.ethAmount > 0) {
           recordLp(addr3, true, qflow3.ethAmount);
@@ -315,7 +321,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
         // V3 Burn data: amount(32) amount0(32) amount1(32)
         const amount0 = BigInt("0x" + raw3.slice(64, 128));
         const amount1 = BigInt("0x" + raw3.slice(128, 192));
-        const { baseToken: base3, quoteToken: quote3 } = extractBaseQuote(pool3, chain.id);
+        const { baseToken: base3, quoteToken: quote3 } = extractBaseQuote(pool3);
         const qflow3 = getQuoteFlowAsEth(chain, base3, quote3, amount0, amount1);
         if (qflow3.ok && qflow3.ethAmount > 0) {
           recordLp(addr3, false, qflow3.ethAmount);
@@ -350,7 +356,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
         const pool2 = watchedPoolCache.get(pairAddress);
 
         const { baseToken: base2, quoteToken: quote2 } = pool2
-          ? extractBaseQuote(pool2, chain.id)
+          ? extractBaseQuote(pool2)
           : { baseToken: "", quoteToken: "" };
 
         if (!base2 || !quote2) return;

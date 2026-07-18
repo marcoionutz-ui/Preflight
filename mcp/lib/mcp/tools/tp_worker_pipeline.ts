@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { readAllRedis } from "../redis-reader";
+import { normalizeChainId } from "@preflight/schema";
 import { mcpResponse, mcpErr, ERR } from "../errors";
 
 export function registerWorkerPipeline(server: McpServer) {
@@ -15,9 +16,12 @@ Shows all pairs moving through the worker's decision flow:
 - HOT: promoted candidates with confirmed buying flow
 - ARMED: qualification criteria observed, awaiting 30s price confirmation
 
-Args: chain (filter: 'base', 'arbitrum', or 'bsc')`,
+Args: chain (filter: 'base', 'arbitrum', 'bsc', or 'eth')`,
       inputSchema: {
-        chain: z.string().optional().describe("Filter by chain: 'base' or 'arbitrum'"),
+        // A1 (obs ChatGPT): enum, nu string liber — un chain necunoscut ("banana")
+        // era acceptat și întorcea pipeline gol, ceea ce părea un rezultat valid.
+        // Codurile publice; normalizeChainId mapează "eth"→"ethereum" intern la filtrare.
+        chain: z.enum(["base", "arbitrum", "bsc", "eth"]).optional().describe("Filter by chain: 'base', 'arbitrum', 'bsc', or 'eth'"),
       },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
@@ -27,7 +31,11 @@ Args: chain (filter: 'base', 'arbitrum', or 'bsc')`,
         if (!ctx) return mcpErr(ERR.REDIS_DOWN, "Redis not connected");
 
         const { now, watch, hot, armed, states, pfPipeline, pfQualified } = ctx;
-        const filterChain  = (c: string | null | undefined) => !chain || c === chain;
+        // A1: normalize both sides — producer stores "ethereum", user may pass
+        // "eth" (or any casing). Without this, chain:"eth" returns an empty pipeline.
+        const wantChain    = chain ? normalizeChainId(chain) : null;
+        const filterChain  = (c: string | null | undefined) =>
+          !wantChain || (c != null && normalizeChainId(c) === wantChain);
         const firstState   = Object.values(states)[0];
         const freshnessSec = firstState ? Math.round((now - firstState.updatedAt) / 1000) : null;
 
