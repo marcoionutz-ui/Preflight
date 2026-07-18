@@ -5,6 +5,7 @@
 
 import WebSocket from "ws";
 import type { ChainConfig } from "../config/chains";
+import { getQuoteFlowAsEth, toPoolConventionAmounts } from "./quoteFlow";
 import {
   wsClients, v3PoolMap, v4PoolMap,
   swapSubIds, swapSubSnapshot, pendingSwapSubs,
@@ -28,7 +29,6 @@ import {
 } from "./subscriptions";
 import { supabase } from "../infra/supabase";
 import { sendTelegram } from "../infra/telegram";
-import { getNativePrice } from "../infra/nativePrice";
 import { isBlockedSymbol } from "../sources/normalize";
 import {
   SWAP_V4_TOPIC, MODIFY_LIQUIDITY_V4_TOPIC,
@@ -71,64 +71,6 @@ function extractBaseQuote(pool: { discoverySource?: string; _raw?: unknown; toke
   const base  = stripGeckoPrefix(((rel?.base_token  as Record<string, unknown>)?.data as Record<string, unknown>)?.id  as string | undefined);
   const quote = stripGeckoPrefix(((rel?.quote_token as Record<string, unknown>)?.data as Record<string, unknown>)?.id as string | undefined);
   return { baseToken: base, quoteToken: quote };
-}
-
-function getQuoteFlowAsEth(
-  chain:      ChainConfig,
-  baseToken:  string,
-  quoteToken: string,
-  amount0:    bigint,
-  amount1:    bigint,
-): { ok: boolean; ethAmount: number; usdAmount: number; isBuy: boolean; quote: string | null } {
-  const base   = baseToken.toLowerCase();
-  const quoteT = quoteToken.toLowerCase();
-  const token0 = base < quoteT ? base : quoteT;
-  const amountFor = (t: string) => t === token0 ? amount0 : amount1;
-
-  const stableAddrs = [
-    chain.usdc?.toLowerCase(),
-    chain.usdcLegacy?.toLowerCase(),
-    ...(chain.stableQuotes ?? []).map(a => a.toLowerCase()),
-  ].filter(Boolean) as string[];
-
-  const quoteMetaFor = (addr: string): { symbol: string; decimals: number; kind: "native" | "stable" } | null => {
-    const a = addr.toLowerCase();
-    if (a === chain.weth.toLowerCase()) {
-      return { symbol: chain.id === "bsc" ? "WBNB" : "WETH", decimals: 18, kind: "native" };
-    }
-    if (stableAddrs.includes(a)) {
-      let symbol = "STABLE";
-      if (chain.id === "bsc") {
-        if (a === "0x55d398326f99059ff775485246999027b3197955") symbol = "USDT";
-        else if (a === "0xe9e7cea3dedca5984780bafc599bd69add087d56") symbol = "BUSD";
-        else if (a === "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d") symbol = "USDC";
-      } else {
-        symbol = a === chain.usdcLegacy?.toLowerCase() ? "USDC.e" : "USDC";
-      }
-      return { symbol, decimals: chain.id === "bsc" ? 18 : 6, kind: "stable" };
-    }
-    return null;
-  };
-
-  const baseMeta   = quoteMetaFor(base);
-  const quoteMetaT = quoteMetaFor(quoteT);
-  const quoteMeta  = baseMeta ?? quoteMetaT;
-
-  if (!quoteMeta) return { ok: false, ethAmount: 0, usdAmount: 0, isBuy: false, quote: null };
-
-  const quoteAddr   = baseMeta ? base : quoteT;
-  const amt         = amountFor(quoteAddr);
-  const abs         = amt < 0n ? -amt : amt;
-  const quoteAmount = Number(abs) / (10 ** quoteMeta.decimals);
-  // legacy name: ethAmount is native-equivalent (ETH or BNB depending on chain/quote).
-  // usdAmount is the canonical cross-chain volume field.
-  const nativeSymbol = chain.id === "bsc" ? "BNB" : "ETH";
-  const ethAmount    = quoteMeta.kind === "native" ? quoteAmount : quoteAmount / getNativePrice(nativeSymbol);
-  const usdAmount    = quoteMeta.kind === "stable"
-    ? quoteAmount
-    : quoteAmount * getNativePrice(nativeSymbol);
-
-  return { ok: true, ethAmount, usdAmount, isBuy: amt > 0n, quote: quoteMeta.symbol };
 }
 
 export function connectChainWebSocket(chain: ChainConfig): void {
@@ -219,7 +161,10 @@ export function connectChainWebSocket(chain: ChainConfig): void {
           return;
         }
 
-        const qflow4 = getQuoteFlowAsEth(chain, baseToken, quoteToken, amount0, amount1);
+        // A5: V4 Swap event = perspectiva swapper-ului (negativ = plătit în pool),
+        // OPUS lui V3. Aducem la convenția pool, altfel buy/sell inversat.
+        const [v4a0, v4a1] = toPoolConventionAmounts(amount0, amount1, true);
+        const qflow4 = getQuoteFlowAsEth(chain, baseToken, quoteToken, v4a0, v4a1);
         if (!qflow4.ok) {
           console.log(`[V4 SKIP] ${memV4.symbol} no WETH/USDC side base=${baseToken} quote=${quoteToken}`);
           return;

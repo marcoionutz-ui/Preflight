@@ -5,7 +5,9 @@
   "scripts": {
     "dev": "tsx --env-file=../../.env.local src/index.ts",
     "start": "tsx src/index.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:a5": "tsx scripts/quoteFlow.test.ts",
+    "test": "npm run test:a5"
   },
   "dependencies": {
     "@preflight/schema": "*",
