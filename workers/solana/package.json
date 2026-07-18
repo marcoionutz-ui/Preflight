@@ -6,7 +6,9 @@
     "dev": "tsx --env-file=../../.env.local src/index.ts",
     "start": "tsx src/index.ts",
     "typecheck": "tsc --noEmit",
-    "test:a2": "tsx scripts/txFetcher.test.ts"
+    "test:a2": "tsx scripts/txFetcher.test.ts",
+    "test:a3": "tsx scripts/mintDecimals.test.ts",
+    "test": "npm run test:a2 && npm run test:a3"
   },
   "dependencies": {
     "@preflight/schema": "*",

@@ -3,6 +3,7 @@
  * 8.0h-b4: Price snapshots — preț aproximativ per pool din vault deltas.
  * 8.0h-b5: Ring buffer history + ZSET index per pool (fara KEYS scan in movers job).
  * 8.0j:    WSOL-quoted pools get priceUsd via cached SOL/USD oracle (Jupiter Price API v2).
+ * A3:      decimale AUTORITATIVE (mint account), fără fallback la 9 — vezi mai jos.
  *
  * Formula: priceInQuote = quoteAmount_normalized / baseAmount_normalized
  *   QUOTE_IN:  quoteAmt = inputAmount,  baseAmt = outputAmount
@@ -21,6 +22,7 @@ import {
   KEY_PRICE_POOLS,
 }                               from "../config/constants";
 import { resolveTokenMeta }     from "../infra/tokenMetadata";
+import { resolveMintDecimals }  from "../infra/mintDecimals";
 import { SwapParseResult }      from "./swapParser";
 import { USDC_MINT, USDT_MINT, WSOL_MINT } from "../config/programs";
 import { maybeCalculateMovers }         from "./moversTracker";
@@ -37,13 +39,6 @@ export type PriceSnapshot = PreflightSolanaPriceSnapshot;
 // ── Constante ─────────────────────────────────────────────────────────────────
 
 const TTL_SEC = 10 * 60;
-
-// Decimale hardcodate pentru quote mints cunoscute — evita resolveTokenMeta call extra
-const KNOWN_DECIMALS: Record<string, number> = {
-  [WSOL_MINT]: 9,
-  [USDC_MINT]: 6,
-  [USDT_MINT]: 6,
-};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -81,14 +76,28 @@ export async function recordPriceSnapshot(
 
   if (baseAmt === 0n || quoteAmt === 0n) return;
 
-  // Meta pentru ambele mints — din cache Redis (aprox. intotdeauna disponibil)
-  const [quoteMeta, baseMeta] = await Promise.all([
+  // A3: metadata (symbol/name) și decimalele autoritative, rezolvate în paralel.
+  // resolveTokenMeta e DOAR pentru symbol/name — Jupiter poate avea decimals greșite,
+  // deci nu-l folosim la math. resolveMintDecimals (mint account on-chain, imutabil)
+  // e singura sursă pentru normalizarea sumelor. NU mai asumăm 9 — pump.fun folosește
+  // 6, iar un fallback la 9 producea preț 1000× umflat + movers fabricați.
+  const [quoteMeta, baseMeta, quoteDecimals, baseDecimals] = await Promise.all([
     resolveTokenMeta(result.quoteMint),
     resolveTokenMeta(result.baseMint),
+    resolveMintDecimals(result.quoteMint),
+    resolveMintDecimals(result.baseMint),
   ]);
 
-  const quoteDecimals = KNOWN_DECIMALS[result.quoteMint] ?? quoteMeta.decimals ?? 9;
-  const baseDecimals  = KNOWN_DECIMALS[result.baseMint]  ?? baseMeta.decimals  ?? 9;
+  // Fără decimale sigure nu putem calcula un preț corect — SĂRIM (mai bine lipsă decât 1000× greșit).
+  if (quoteDecimals === null || baseDecimals === null) {
+    console.warn(
+      "[SOLANA][PRICE] skip — decimale nerezolvate"
+      + " pool=" + result.pool.slice(0, 8)
+      + " base=" + result.baseMint.slice(0, 8) + "(" + baseDecimals + ")"
+      + " quote=" + result.quoteMint.slice(0, 8) + "(" + quoteDecimals + ")",
+    );
+    return;
+  }
 
   // Normalizare la unitati reale — Number() suficient pentru aproximare b4
   const quoteNorm = Number(quoteAmt) / Math.pow(10, quoteDecimals);

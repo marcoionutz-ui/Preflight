@@ -27,6 +27,9 @@ export const KEY_HEALTH   = `preflight:indexer:health:${CHAIN}`;
 /** Token metadata cache per mint: preflight:solana:token:{mint} */
 export const KEY_TOKEN_META = (mint: string) => `preflight:solana:token:${mint}`;
 
+/** Mint decimals cache per mint (imutabile on-chain → TTL lung): preflight:solana:decimals:{mint} */
+export const KEY_MINT_DECIMALS = (mint: string) => `preflight:solana:decimals:${mint}`;
+
 // ── Discovery params ──────────────────────────────────────────────────────────
 
 /** Câte slot-uri procesăm per batch */
@@ -41,6 +44,9 @@ export const HEALTH_TTL_SEC   = 5 * 60;
 
 /** TTL pentru token metadata cache (24h) */
 export const TOKEN_META_TTL_SEC = 24 * 60 * 60;
+
+/** TTL pentru mint decimals cache (30 zile — decimalele sunt imutabile on-chain) */
+export const MINT_DECIMALS_TTL_SEC = 30 * 24 * 60 * 60;
 
 // ── Health thresholds ─────────────────────────────────────────────────────────
 
