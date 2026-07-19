@@ -43,7 +43,7 @@ export function recordDrop(
 ): void {
   recentDrops.unshift({ symbol, chain, pairAddress: pairAddr, previousState, reason, droppedAt: Date.now(), priceAtDrop, scoreAtDrop });
   if (recentDrops.length > 50) recentDrops.splice(50);
-  clearQualifiedForPair(pairAddr);
+  clearQualifiedForPair(chain, pairAddr);
 
   const lifecycleOutcome =
     reason.toLowerCase().includes("confirmation window expired") ? "EXPIRED" as const :
@@ -54,19 +54,18 @@ export function recordDrop(
   recordPipelineEvent("DROPPED", symbol, chain, pairAddr, previousState, "NONE", reason);
 }
 
-export function dropHotCandidate(pairAddr: string, reason: string, chain?: string): void {
-  const info   = hotCandidates.get(pairAddr);
-  const sym    = memory.get(pairAddr)?.symbol ?? pairAddr.slice(0, 8);
-  const c      = chain ?? info?.chain ?? "unknown";
-  hotCandidates.delete(pairAddr);
-  recordDrop(pairAddr, sym, c, "HOT", reason);
+export function dropHotCandidate(pairAddr: string, chain: string, reason: string): void {
+  // chain e acum OBLIGATORIU (toți callerii îl au) — cheia hotCandidates e
+  // chain-scoped, deci nu mai putem face lookup fără el.
+  const sym = memory.get(pairAddr)?.symbol ?? pairAddr.slice(0, 8);
+  hotCandidates.delete(chain, pairAddr);
+  recordDrop(pairAddr, sym, chain, "HOT", reason);
 }
 
-export function dropWatchCandidate(pairAddr: string, reason: string): void {
-  const info = activeWatch.get(pairAddr);
-  const sym  = memory.get(pairAddr)?.symbol ?? pairAddr.slice(0, 8);
-  activeWatch.delete(pairAddr);
-  recordDrop(pairAddr, sym, info?.chain ?? "unknown", "WATCHING", reason);
+export function dropWatchCandidate(pairAddr: string, chain: string, reason: string): void {
+  const sym = memory.get(pairAddr)?.symbol ?? pairAddr.slice(0, 8);
+  activeWatch.delete(chain, pairAddr);
+  recordDrop(pairAddr, sym, chain, "WATCHING", reason);
 }
 
 export function promoteHotCandidate(
@@ -74,11 +73,11 @@ export function promoteHotCandidate(
   chain:    string,
   source?:  EntrySource,
 ): void {
-  const watchKind = activeWatch.get(pairAddr)?.kind;
+  const watchKind = activeWatch.get(chain, pairAddr)?.kind;
   if (watchKind && CONTEXT_ONLY_WATCH_KINDS.has(watchKind)) return;
   const sym = memory.get(pairAddr)?.symbol ?? pairAddr.slice(0, 8);
-  hotCandidates.set(pairAddr, { chain, promotedAt: Date.now(), source });
-  activeWatch.delete(pairAddr);
+  hotCandidates.set(chain, pairAddr, { chain, promotedAt: Date.now(), source });
+  activeWatch.delete(chain, pairAddr);
   recordPipelineEvent("PROMOTED_HOT", sym, chain, pairAddr, "WATCHING", "HOT");
 }
 
@@ -93,19 +92,19 @@ export function addWatchCandidate(
   },
   pool?: SourcePool,
 ): void {
-  const alreadyWatching = activeWatch.has(pairAddr);
+  const alreadyWatching = activeWatch.has(info.chain, pairAddr);
 
   if (!alreadyWatching) {
     if (activeWatch.size >= BUDGET.maxActiveWatch) return;
 	const maxForChain = maxWatchForChain(info.chain);
     let chainCount = 0;
-    for (const w of activeWatch.values()) {
-      if (w.chain === info.chain) chainCount++;
+    for (const [{ chain }] of activeWatch.entries()) {
+      if (chain === info.chain) chainCount++;
     }
     if (chainCount >= maxForChain) return;
   }
 
-  activeWatch.set(pairAddr, info);
+  activeWatch.set(info.chain, pairAddr, info);
   if (pool) watchedPoolCache.set(info.chain, pairAddr, pool);
   const sym = memory.get(pairAddr)?.symbol ?? pairAddr.slice(0, 8);
   if (!alreadyWatching) {
@@ -121,10 +120,10 @@ export function armCandidate(
   flowPressure: string,
 ): void {
   const sym = memory.get(pairAddr)?.symbol ?? pairAddr.slice(0, 8);
-  armedEntries.set(pairAddr, { chain, armedAt: Date.now(), price, score, flowPressure });
+  armedEntries.set(chain, pairAddr, { chain, armedAt: Date.now(), price, score, flowPressure });
   recordPipelineEvent("ARMED", sym, chain, pairAddr, "HOT", "ARMED");
 }
 
-export function deleteHotCandidate(pairAddr: string): void {
-  hotCandidates.delete(pairAddr);
+export function deleteHotCandidate(pairAddr: string, chain: string): void {
+  hotCandidates.delete(chain, pairAddr);
 }

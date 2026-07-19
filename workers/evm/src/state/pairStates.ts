@@ -19,6 +19,7 @@ import type { RiskResult } from "../risk/riskChecker";
 // Re-exported here so existing `from "../state/pairStates"` imports
 // (trendingSnapshots.ts, trendingMovers.ts, marketContext.ts) keep working.
 import type { PreflightPairState, PreflightRiskSnapshot, PreflightEvmChain } from "@preflight/schema";
+import { pairKey } from "@preflight/schema";
 // `export type { X as Y }` only re-exports for other files — it does not
 // declare Y as a usable local name in *this* file (that's what caused
 // "Cannot find name 'PairStateSnapshot'" below). A real local alias fixes
@@ -74,9 +75,9 @@ export async function buildPairStates(): Promise<Record<string, PairStateSnapsho
 
     // Pipeline state derivat din stores
     const pipelineState =
-	  armedEntries.has(addr)   ? "ARMED"      :
-	  hotCandidates.has(addr)  ? "HOT" :
-	  activeWatch.has(addr)    ? "WATCHING"   :
+	  armedEntries.has(mem.chain, addr)   ? "ARMED"      :
+	  hotCandidates.has(mem.chain, addr)  ? "HOT" :
+	  activeWatch.has(mem.chain, addr)    ? "WATCHING"   :
 	  "NONE";
 
     // priceChange vine din PairMemoryEntry — workerul îl updatează la fiecare scan
@@ -84,9 +85,9 @@ export async function buildPairStates(): Promise<Record<string, PairStateSnapsho
 
     // Timing — pipelineEnteredAt = cel mai recent moment de intrare în pipeline
     const pipelineEnteredAt =
-      armedEntries.get(addr)?.armedAt ??
-      hotCandidates.get(addr)?.promotedAt ??
-      activeWatch.get(addr)?.addedAt ??
+      armedEntries.get(mem.chain, addr)?.armedAt ??
+      hotCandidates.get(mem.chain, addr)?.promotedAt ??
+      activeWatch.get(mem.chain, addr)?.addedAt ??
       null;
 
     // priceVsFirstSeenPct — cât a mișcat față de prima apariție în worker
@@ -196,13 +197,13 @@ export async function buildPairStates(): Promise<Record<string, PairStateSnapsho
 
 export function buildWatchSnapshot(): Record<string, object> {
   const watchObj: Record<string, object> = {};
-  for (const [addr, info] of activeWatch.entries()) {
+  for (const [{ chain, address: addr }, info] of activeWatch.entries()) {
     const mem         = memory.get(addr);
     const watchEvents = wsFlow.get(addr) ?? [];
     const watchBuys   = watchEvents.filter(e => e.isBuy);
     const watchSells  = watchEvents.filter(e => !e.isBuy);
-    watchObj[addr] = {
-      chain: info.chain, addedAt: info.addedAt, ageMs: Date.now() - info.addedAt,
+    watchObj[pairKey(chain, addr)] = {
+      chain, addedAt: info.addedAt, ageMs: Date.now() - info.addedAt,
       kind: info.kind ?? "NORMAL", entryPrice: info.entryPrice ?? null, reason: info.reason ?? null,
       symbol: mem?.symbol ?? null, phase: mem?.phase ?? null,
       pairAddress: addr,
@@ -221,14 +222,14 @@ export function buildWatchSnapshot(): Record<string, object> {
 
 export function buildHotSnapshot(): Record<string, object> {
   const hotObj: Record<string, object> = {};
-  for (const [addr, info] of hotCandidates.entries()) {
+  for (const [{ chain, address: addr }, info] of hotCandidates.entries()) {
     const mem       = memory.get(addr);
     const flow      = getWsFlow(addr);
     const hotEvents = wsFlow.get(addr) ?? [];
     const hotBuys   = hotEvents.filter(e => e.isBuy);
     const hotSells  = hotEvents.filter(e => !e.isBuy);
-    hotObj[addr] = {
-      chain: info.chain, promotedAt: info.promotedAt, ageMs: Date.now() - info.promotedAt,
+    hotObj[pairKey(chain, addr)] = {
+      chain, promotedAt: info.promotedAt, ageMs: Date.now() - info.promotedAt,
       source: info.source ?? null, symbol: mem?.symbol ?? null, phase: mem?.phase ?? null,
       pairAddress: addr,
       flow: {
@@ -248,14 +249,14 @@ export function buildHotSnapshot(): Record<string, object> {
 
 export function buildArmedSnapshot(): Record<string, object> {
   const armedObj: Record<string, object> = {};
-  for (const [addr, info] of armedEntries.entries()) {
+  for (const [{ chain, address: addr }, info] of armedEntries.entries()) {
     const mem = memory.get(addr);
-    armedObj[addr] = {
+    armedObj[pairKey(chain, addr)] = {
       armedAt: info.armedAt, ageMs: Date.now() - info.armedAt,
       price: info.price, score: info.score, flowPressure: info.flowPressure,
       symbol: mem?.symbol ?? null, phase: mem?.phase ?? null,
       pairAddress: addr,
-      chain: info.chain ?? mem?.chain ?? null,
+      chain,
     };
   }
   return armedObj;

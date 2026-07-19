@@ -56,42 +56,39 @@ export async function writeCoverageSnapshot(r: Redis, states: Record<string, Pai
     });
 
     // ── Pipeline counts per chain ─────────────────────────────────────────
-    const watching   = [...activeWatch.entries()].filter(([, w]) => w.chain === chainId);
-    const hot        = [...hotCandidates.entries()].filter(([, h]) => h.chain === chainId);
-    const armed = [...armedEntries.entries()].filter(([addr, info]) => {
-    const mem = memory.get(addr);
-    return (info.chain ?? mem?.chain ?? "") === chainId;
-  });
+    const watching   = [...activeWatch.entries()].filter(([{ chain }]) => chain === chainId);
+    const hot        = [...hotCandidates.entries()].filter(([{ chain }]) => chain === chainId);
+    const armed = [...armedEntries.entries()].filter(([{ chain }]) => chain === chainId);
     const qualified = qualifiedSignalsBuffer.filter(q => q.chain === chainId);
 
     // ── WS flow stats ─────────────────────────────────────────────────────
-    const watchingWithFlow = watching.filter(([addr]) => getWsFlow(addr).hasData);
-    const hotWithFlow      = hot.filter(([addr]) => getWsFlow(addr).hasData);
-    const armedWithFlow    = armed.filter(([addr]) => getWsFlow(addr).hasData);
+    const watchingWithFlow = watching.filter(([{ address: addr }]) => getWsFlow(addr).hasData);
+    const hotWithFlow      = hot.filter(([{ address: addr }]) => getWsFlow(addr).hasData);
+    const armedWithFlow    = armed.filter(([{ address: addr }]) => getWsFlow(addr).hasData);
 
     // fix #4: watching/hot/armed pot conține aceeași adresă (ex: HOT rămâne
     // și în activeWatch până la cleanup) — watching.length+hot.length+
     // armed.length număra acea pereche de 2-3 ori, umflând artificial
     // coverageOnPipelinePct. Deduplicat pe adresă.
     const pipelineAddresses = new Set<string>([
-      ...watching.map(([addr]) => addr),
-      ...hot.map(([addr]) => addr),
-      ...armed.map(([addr]) => addr),
+      ...watching.map(([{ address }]) => address),
+      ...hot.map(([{ address }]) => address),
+      ...armed.map(([{ address }]) => address),
     ]);
     const pipelineTotal    = pipelineAddresses.size;
     const pipelineWithFlow = [...pipelineAddresses].filter(addr => getWsFlow(addr).hasData).length;
 
     // fix #2: redenumit expectedWsSubscriptions — nu e set real de WS subs
     const expectedWsSubscriptions =
-      watching.length + hot.filter(([addr]) => !activeWatch.has(addr)).length;
+      watching.length + hot.filter(([{ chain, address: addr }]) => !activeWatch.has(chain, addr)).length;
 
     // ── Movers breakdown ──────────────────────────────────────────────────
     const moversInPipeline = observedMovers.filter(([addr]) =>
-      activeWatch.has(addr) || hotCandidates.has(addr) || armedEntries.has(addr)
+      activeWatch.has(chainId, addr) || hotCandidates.has(chainId, addr) || armedEntries.has(chainId, addr)
     );
     const moversWithFlow      = observedMovers.filter(([addr]) => getWsFlow(addr).hasData);
     const moversNotInPipeline = observedMovers.filter(([addr]) =>
-      !activeWatch.has(addr) && !hotCandidates.has(addr) && !armedEntries.has(addr)
+      !activeWatch.has(chainId, addr) && !hotCandidates.has(chainId, addr) && !armedEntries.has(chainId, addr)
     );
 
     // ── Top movers NOT in pipeline ─────────────────────────────────────────

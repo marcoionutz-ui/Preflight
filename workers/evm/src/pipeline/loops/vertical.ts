@@ -21,7 +21,7 @@ export async function verticalCandidatesLoop(): Promise<void> {
   try {
     const now = Date.now();
 
-    for (const [pairAddr, info] of activeWatch.entries()) {
+    for (const [{ chain, address: pairAddr }, info] of activeWatch.entries()) {
       if (info.kind !== "VERTICAL" && info.kind !== "CONFIRMED_MOMENTUM") continue;
 
       const ageMs = now - info.addedAt;
@@ -29,7 +29,7 @@ export async function verticalCandidatesLoop(): Promise<void> {
 
       if (ageMs > 3 * 60_000) {
         console.log(`[VERTICAL EXPIRE] ${memory.get(pairAddr)?.symbol ?? pairAddr} — no confirmation in 3m`);
-        dropWatchCandidate(pairAddr, "no confirmation in 3m");
+        dropWatchCandidate(pairAddr, chain, "no confirmation in 3m");
         continue;
       }
 
@@ -39,23 +39,23 @@ export async function verticalCandidatesLoop(): Promise<void> {
 
       if (flow.hasData && flow.pressure === "SELLING") {
         console.log(`[VERTICAL DROP] ${mem.symbol} — flow turned SELLING`);
-        dropWatchCandidate(pairAddr, "flow turned SELLING");
+        dropWatchCandidate(pairAddr, chain, "flow turned SELLING");
         continue;
       }
 
       if (!flow.hasData && ageMs > 90_000) {
         console.log(`[VERTICAL DROP] ${mem.symbol} — no WS flow after ${Math.round(ageMs / 1000)}s`);
-        dropWatchCandidate(pairAddr, `no WS flow after ${Math.round(ageMs / 1000)}s`);
+        dropWatchCandidate(pairAddr, chain, `no WS flow after ${Math.round(ageMs / 1000)}s`);
         continue;
       }
 
       if (!flow.hasData) continue;
 
-      const chainCfg  = CHAINS.find(c => c.id === info.chain);
+      const chainCfg  = CHAINS.find(c => c.id === chain);
       const freshPool = chainCfg ? await fetchPoolByAddress(chainCfg, pairAddr) : null;
       if (!freshPool) continue;
 
-      watchedPoolCache.set(info.chain, pairAddr, freshPool);
+      watchedPoolCache.set(chain, pairAddr, freshPool);
       updateMemory(freshPool, freshPool.priceUsd);
 
       const currentPrice = freshPool.priceUsd;
@@ -63,7 +63,7 @@ export async function verticalCandidatesLoop(): Promise<void> {
 
       if (!Number.isFinite(currentPrice) || currentPrice <= 0 || !Number.isFinite(blockPrice) || blockPrice <= 0) {
         console.log(`[VERTICAL DROP] ${mem.symbol} — invalid price current:${currentPrice} block:${blockPrice}`);
-        dropWatchCandidate(pairAddr, "invalid price");
+        dropWatchCandidate(pairAddr, chain, "invalid price");
         continue;
       }
 
@@ -71,13 +71,13 @@ export async function verticalCandidatesLoop(): Promise<void> {
 
       if (currentVsBlock > 1.40) {
         console.log(`[VERTICAL LATE] ${mem.symbol} — +${((currentVsBlock - 1) * 100).toFixed(0)}% from block, too late`);
-        dropWatchCandidate(pairAddr, `too late +${((currentVsBlock - 1) * 100).toFixed(0)}% from block`);
+        dropWatchCandidate(pairAddr, chain, `too late +${((currentVsBlock - 1) * 100).toFixed(0)}% from block`);
         continue;
       }
 
       if (currentVsBlock < 0.75) {
         console.log(`[VERTICAL DUMP] ${mem.symbol} — -${((1 - currentVsBlock) * 100).toFixed(0)}% from block, evict`);
-        dropWatchCandidate(pairAddr, `dumped -${((1 - currentVsBlock) * 100).toFixed(0)}% from block`);
+        dropWatchCandidate(pairAddr, chain, `dumped -${((1 - currentVsBlock) * 100).toFixed(0)}% from block`);
         continue;
       }
 
@@ -120,16 +120,16 @@ export async function verticalCandidatesLoop(): Promise<void> {
       }
 
       console.log(
-        `[VERTICAL CONFIRMED] ${mem.symbol} (${info.chain})`
+        `[VERTICAL CONFIRMED] ${mem.symbol} (${chain})`
         + ` age:${Math.round(ageMs / 1000)}s`
         + ` priceVsBlock:+${((currentVsBlock - 1) * 100).toFixed(1)}%`
         + ` buyVol:${buyVolF.toFixed(3)} netVol:${netVolF.toFixed(3)} buys:${flow.buys5m}`,
       );
 
-      promoteHotCandidate(pairAddr, info.chain, "VERTICAL");
-      activeWatch.delete(pairAddr);
+      promoteHotCandidate(pairAddr, chain, "VERTICAL");
+      activeWatch.delete(chain, pairAddr);
 
-      const chainCfgV = CHAINS.find(c => c.id === info.chain);
+      const chainCfgV = CHAINS.find(c => c.id === chain);
       if (chainCfgV) requestImmediateScopedSubscribe(chainCfgV);
     }
   } finally {

@@ -56,13 +56,13 @@ export function watchPriority(kind?: string): number {
 export function cleanupActiveWatch(): void {
   const now = Date.now();
 
-  for (const [addr, info] of activeWatch.entries()) {
+  for (const [{ chain, address: addr }, info] of activeWatch.entries()) {
     const ageMs = now - info.addedAt;
 
     if (info.kind === "CONFIRMED_MOMENTUM") {
       if (ageMs > 3 * 60_000) {
         console.log(`[WATCH EVICT] ${memory.get(addr)?.symbol ?? addr} — kind:CONFIRMED_MOMENTUM age:${Math.round(ageMs / 1000)}s`);
-        dropWatchCandidate(addr, `evict CONFIRMED_MOMENTUM age:${Math.round(ageMs / 1000)}s`);
+        dropWatchCandidate(addr, chain, `evict CONFIRMED_MOMENTUM age:${Math.round(ageMs / 1000)}s`);
       }
       continue;
     }
@@ -70,7 +70,7 @@ export function cleanupActiveWatch(): void {
     if (info.kind === "VERTICAL") {
       if (ageMs > 3 * 60_000) {
         console.log(`[WATCH EVICT] ${memory.get(addr)?.symbol ?? addr} — kind:VERTICAL age:${Math.round(ageMs / 1000)}s`);
-        dropWatchCandidate(addr, `evict VERTICAL age:${Math.round(ageMs / 1000)}s`);
+        dropWatchCandidate(addr, chain, `evict VERTICAL age:${Math.round(ageMs / 1000)}s`);
       }
       continue;
     }
@@ -78,7 +78,7 @@ export function cleanupActiveWatch(): void {
     if (info.kind === "EVENT_WATCH") {
       if (ageMs > 5 * 60_000) {
         console.log(`[WATCH EVICT] ${memory.get(addr)?.symbol ?? addr} — kind:EVENT_WATCH age:${Math.round(ageMs / 60_000)}m`);
-        dropWatchCandidate(addr, `evict EVENT_WATCH age:${Math.round(ageMs / 60_000)}m`);
+        dropWatchCandidate(addr, chain, `evict EVENT_WATCH age:${Math.round(ageMs / 60_000)}m`);
       }
       continue;
     }
@@ -86,7 +86,7 @@ export function cleanupActiveWatch(): void {
     if (info.kind === "SHORT_WATCH") {
       if (ageMs > SHORT_WATCH_TTL_MS) {
         console.log(`[WATCH EVICT] ${memory.get(addr)?.symbol ?? addr} — kind:SHORT_WATCH age:${Math.round(ageMs / 1000)}s`);
-        dropWatchCandidate(addr, `evict SHORT_WATCH age:${Math.round(ageMs / 1000)}s`);
+        dropWatchCandidate(addr, chain, `evict SHORT_WATCH age:${Math.round(ageMs / 1000)}s`);
       }
       continue;
     }
@@ -94,7 +94,7 @@ export function cleanupActiveWatch(): void {
     if (info.kind === "FOMO") {
       if (ageMs > FOMO_WATCH_TTL_MS) {
         console.log(`[WATCH EVICT] ${memory.get(addr)?.symbol ?? addr} — kind:FOMO age:${Math.round(ageMs / 1000)}s`);
-        dropWatchCandidate(addr, `evict FOMO age:${Math.round(ageMs / 1000)}s`);
+        dropWatchCandidate(addr, chain, `evict FOMO age:${Math.round(ageMs / 1000)}s`);
       }
       continue;
     }
@@ -111,7 +111,7 @@ export function cleanupActiveWatch(): void {
         + ` — kind:NORMAL age:${Math.round(ageMs / 60_000)}m`
         + ` flow:${flow.hasData ? flow.pressure : "NO_WS"}`,
       );
-      dropWatchCandidate(addr, `evict NORMAL age:${Math.round(ageMs / 60_000)}m flow:${flow.hasData ? flow.pressure : "NO_WS"}`);
+      dropWatchCandidate(addr, chain, `evict NORMAL age:${Math.round(ageMs / 60_000)}m flow:${flow.hasData ? flow.pressure : "NO_WS"}`);
     }
   }
 }
@@ -121,20 +121,20 @@ export function subscribeV3Scoped(chain: ChainConfig): void {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
 
   const hotV3Addrs = [...hotCandidates.entries()]
-    .filter(([addr, info]) => info.chain === chain.id && v3PoolMap.has(chain.id, addr))
-    .map(([addr]) => addr);
+    .filter(([{ chain: entryChain, address: addr }]) => entryChain === chain.id && v3PoolMap.has(chain.id, addr))
+    .map(([{ address: addr }]) => addr);
 
   const addrs = [...new Set([
     ...hotV3Addrs,
     ...[...activeWatch.entries()]
-      .filter(([addr, info]) => info.chain === chain.id && v3PoolMap.has(chain.id, addr))
+      .filter(([{ chain: entryChain, address: addr }]) => entryChain === chain.id && v3PoolMap.has(chain.id, addr))
       .sort((a, b) => {
         const pa = watchPriority(a[1].kind);
         const pb = watchPriority(b[1].kind);
         if (pa !== pb) return pa - pb;
         return b[1].addedAt - a[1].addedAt;
       })
-      .map(([addr]) => addr),
+      .map(([{ address: addr }]) => addr),
   ])].slice(0, MAX_V3_WATCH);
 
   if (!addrs.length) {
@@ -169,20 +169,20 @@ export function subscribeV4Scoped(chain: ChainConfig): void {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
 
   const hotV4Ids = [...hotCandidates.entries()]
-    .filter(([addr, info]) => info.chain === chain.id && v4PoolMap.has(chain.id, addr))
-    .map(([addr]) => addr);
+    .filter(([{ chain: entryChain, address: addr }]) => entryChain === chain.id && v4PoolMap.has(chain.id, addr))
+    .map(([{ address: addr }]) => addr);
 
   const poolIds = [...new Set([
     ...hotV4Ids,
     ...[...activeWatch.entries()]
-      .filter(([addr, info]) => info.chain === chain.id && v4PoolMap.has(chain.id, addr))
+      .filter(([{ chain: entryChain, address: addr }]) => entryChain === chain.id && v4PoolMap.has(chain.id, addr))
       .sort((a, b) => {
         const pa = watchPriority(a[1].kind);
         const pb = watchPriority(b[1].kind);
         if (pa !== pb) return pa - pb;
         return b[1].addedAt - a[1].addedAt;
       })
-      .map(([addr]) => addr),
+      .map(([{ address: addr }]) => addr),
   ])].slice(0, MAX_V4_WATCH);
 
   if (!poolIds.length) {
@@ -237,12 +237,12 @@ export function subscribeV2Scoped(chain: ChainConfig): void {
 
   const rawAddrs = [
     ...[...hotCandidates.entries()]
-      .filter(([addr, info]) => info.chain === chain.id && !v3PoolMap.has(chain.id, addr) && !v4PoolMap.has(chain.id, addr))
-      .map(([addr]) => addr),
+      .filter(([{ chain: entryChain, address: addr }]) => entryChain === chain.id && !v3PoolMap.has(chain.id, addr) && !v4PoolMap.has(chain.id, addr))
+      .map(([{ address: addr }]) => addr),
     ...[...activeWatch.entries()]
-      .filter(([addr, info]) => info.chain === chain.id && !v3PoolMap.has(chain.id, addr) && !v4PoolMap.has(chain.id, addr))
+      .filter(([{ chain: entryChain, address: addr }]) => entryChain === chain.id && !v3PoolMap.has(chain.id, addr) && !v4PoolMap.has(chain.id, addr))
       .sort((a, b) => watchPriority(a[1].kind) - watchPriority(b[1].kind))
-      .map(([addr]) => addr),
+      .map(([{ address: addr }]) => addr),
   ];
 
   const addrs = [...new Set(

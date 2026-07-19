@@ -29,17 +29,17 @@ export async function hotCandidatesLoop(): Promise<void> {
   processingHot = true;
 
   try {
-    for (const [pairAddress, { chain: chainId, promotedAt, source }] of hotCandidates.entries()) {
+    for (const [{ chain: chainId, address: pairAddress }, { promotedAt, source }] of hotCandidates.entries()) {
       if (Date.now() - promotedAt > 5 * 60_000) {
-        dropHotCandidate(pairAddress, "hot expired after 5m", chainId); continue;
+        dropHotCandidate(pairAddress, chainId, "hot expired after 5m"); continue;
       }
 
       const chainCfg = CHAINS.find(c => c.id === chainId);
-      if (!chainCfg) { dropHotCandidate(pairAddress, "chain config missing", chainId); continue; }
+      if (!chainCfg) { dropHotCandidate(pairAddress, chainId, "chain config missing"); continue; }
 
       const mem = memory.get(pairAddress);
-      if (!mem)                  { dropHotCandidate(pairAddress, "memory missing", chainId); continue; }
-      if (isBlockedSymbol(mem.symbol)) { dropHotCandidate(pairAddress, "blocked asset", chainId); continue; }
+      if (!mem)                  { dropHotCandidate(pairAddress, chainId, "memory missing"); continue; }
+      if (isBlockedSymbol(mem.symbol)) { dropHotCandidate(pairAddress, chainId, "blocked asset"); continue; }
 
       const flow = getWsFlow(pairAddress);
       const lp   = getLpSignal(pairAddress);
@@ -59,7 +59,7 @@ export async function hotCandidatesLoop(): Promise<void> {
 
       if (!flow.hasData || hotFlowPressure !== "BUYING" || flow.buys5m < minHotBuys) {
         console.log(`[HOT SKIP] ${mem.symbol} — no buying flow...`);
-        dropHotCandidate(pairAddress, `flow faded: ${hotFlowPressure} buys:${flow.buys5m}/${minHotBuys}`, chainId);
+        dropHotCandidate(pairAddress, chainId, `flow faded: ${hotFlowPressure} buys:${flow.buys5m}/${minHotBuys}`);
         continue;
       }
 
@@ -73,7 +73,7 @@ export async function hotCandidatesLoop(): Promise<void> {
       // saveShadowTrade() still dedupes persistence after the signal is emitted.
 
       const pool = v4PoolMap.get(chainId, pairAddress) ?? v3PoolMap.get(chainId, pairAddress) ?? await fetchPoolByAddress(chainCfg, pairAddress);
-      if (!pool) { dropHotCandidate(pairAddress, "pool unavailable", chainId); continue; }
+      if (!pool) { dropHotCandidate(pairAddress, chainId, "pool unavailable"); continue; }
 
       const score = quickEdgeScore(pool, mem, effectiveFlow, lp);
       const minHotScore =
@@ -82,14 +82,14 @@ export async function hotCandidatesLoop(): Promise<void> {
 
       if (score < minHotScore) {
         console.log(`[HOT LOW SCORE] ${mem.symbol} — score:${score}/${minHotScore}...`);
-        dropHotCandidate(pairAddress, `low score: ${score}/${minHotScore}`, chainId);
+        dropHotCandidate(pairAddress, chainId, `low score: ${score}/${minHotScore}`);
         continue;
       }
 
       const gate = getEntryGate(mem, effectiveFlow, lp, score, source ?? "WS");
       if (!gate.allowed) {
         console.log(`[HOT GATE] ${mem.symbol} — ${gate.reason}...`);
-        dropHotCandidate(pairAddress, `gate: ${gate.reason}`, chainId);
+        dropHotCandidate(pairAddress, chainId, `gate: ${gate.reason}`);
         continue;
       }
 
@@ -120,7 +120,7 @@ export async function hotCandidatesLoop(): Promise<void> {
       qualifiedSignalsBuffer.unshift(qsHot);
       if (qualifiedSignalsBuffer.length > MAX_QUALIFIED_BUFFER) qualifiedSignalsBuffer.pop();
 
-      deleteHotCandidate(pairAddress);
+      deleteHotCandidate(pairAddress, chainId);
     }
   } finally {
     processingHot = false;

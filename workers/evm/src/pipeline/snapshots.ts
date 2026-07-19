@@ -26,7 +26,7 @@ import { CHAINS } from "../config/chains";
 import { writeCoverageSnapshot } from "./coverageSnapshot";
 import { writeTrendingSnapshots } from "../trending/trendingSnapshots";
 import { calculateMovers } from "../trending/trendingMovers";
-import { REDIS_KEYS, SCHEMA_VERSION, type PreflightDrop, type PreflightEvmChain } from "@preflight/schema";
+import { REDIS_KEYS, SCHEMA_VERSION, pairKey, type PreflightDrop, type PreflightEvmChain } from "@preflight/schema";
 
 export async function writeAllSnapshots(r: Redis): Promise<void> {
   // ── supreme:pair_states ────────────────────────────────────────────────────
@@ -146,22 +146,22 @@ function buildSignalPipelineEntries() {
   };
 
   return [
-    ...[...activeWatch.entries()].map(([addr, info]) =>
-      makeEntry(addr, info.chain, hotCandidates.has(addr) ? "HOT" : "WATCHING", info.kind ?? "NORMAL", info.addedAt, info.entryPrice)
+    ...[...activeWatch.entries()].map(([{ chain, address: addr }, info]) =>
+      makeEntry(addr, chain, hotCandidates.has(chain, addr) ? "HOT" : "WATCHING", info.kind ?? "NORMAL", info.addedAt, info.entryPrice)
     ),
     ...[...hotCandidates.entries()]
-      .filter(([addr]) => !activeWatch.has(addr))
-      .map(([addr, info]) =>
-        makeEntry(addr, info.chain, "HOT", info.source ?? "NORMAL", info.promotedAt)
+      .filter(([{ chain, address: addr }]) => !activeWatch.has(chain, addr))
+      .map(([{ chain, address: addr }, info]) =>
+        makeEntry(addr, chain, "HOT", info.source ?? "NORMAL", info.promotedAt)
       ),
   ];
 }
 
-// d.chain is plain string internally (state/stores.ts doesn't type against
-// PreflightEvmChain, and transitions.ts's dropHotCandidate()/
-// dropWatchCandidate() really do fall back to the literal "unknown" when
-// info?.chain is missing) — a real, reachable value, not a hypothetical.
-// `as PreflightEvmChain` used to just lie past that. Real guard instead.
+// d.chain is plain string internally (state/stores.ts value types use
+// `chain: string`, not PreflightEvmChain). De la B3c, dropHotCandidate()/
+// dropWatchCandidate() cer chain OBLIGATORIU, deci nu mai produc literalul
+// "unknown" — PreflightDrop.chain e mereu un chain real. Guardul rămâne ca
+// plasă defensivă pură (narrowing string → PreflightEvmChain), nu ca `as`-lie.
 function isEvmChain(value: string): value is PreflightEvmChain {
   return value === "base" || value === "arbitrum" || value === "ethereum" || value === "bsc";
 }
@@ -257,14 +257,16 @@ function buildPairContextMap(): Record<string, PreflightPairContext> {
   // La runtime chain-ul de aici e mereu un chain EVM real (fallback-ul "unknown"
   // e doar pe căile de drop → PreflightDrop, nu pe watch/hot); guardul e puntea
   // de tip + o plasă defensivă (skip contexte fără chain valid).
-  for (const [addr, info] of activeWatch.entries()) {
-    if (!isEvmChain(info.chain)) continue;
-    pairContextMap[addr] = buildCtx(addr, info.chain, hotCandidates.has(addr) ? "HOT" : "WATCHING", info.entryPrice);
+  for (const [{ chain, address: addr }, info] of activeWatch.entries()) {
+    if (!isEvmChain(chain)) continue;
+    const key = pairKey(chain, addr);
+    pairContextMap[key] = buildCtx(addr, chain, hotCandidates.has(chain, addr) ? "HOT" : "WATCHING", info.entryPrice);
   }
-  for (const [addr, info] of hotCandidates.entries()) {
-    if (!pairContextMap[addr]) {
-      if (!isEvmChain(info.chain)) continue;
-      pairContextMap[addr] = buildCtx(addr, info.chain, "HOT");
+  for (const [{ chain, address: addr }] of hotCandidates.entries()) {
+    if (!isEvmChain(chain)) continue;
+    const key = pairKey(chain, addr);
+    if (!pairContextMap[key]) {
+      pairContextMap[key] = buildCtx(addr, chain, "HOT");
     }
   }
 

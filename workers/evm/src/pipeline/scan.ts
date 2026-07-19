@@ -53,8 +53,8 @@ import {
 function hasWatchSlot(chain: string): boolean {
   const maxForChain = maxWatchForChain(chain);
   let chainCount = 0;
-  for (const w of activeWatch.values()) {
-    if (w.chain === chain) chainCount++;
+  for (const [{ chain: watchChain }] of activeWatch.entries()) {
+    if (watchChain === chain) chainCount++;
   }
   return activeWatch.size < BUDGET.maxActiveWatch && chainCount < maxForChain;
 }
@@ -67,11 +67,11 @@ function triggerPoolRisk(pool: SourcePool): void {
 function clearExpiredArmedEntries(): void {
   const now = Date.now();
   const ARM_TTL_MS = 2 * 60_000;
-  for (const [addr, armed] of armedEntries.entries()) {
+  for (const [{ chain, address: addr }, armed] of armedEntries.entries()) {
     if (now - armed.armedAt > ARM_TTL_MS) {
       console.log(`[ARM EXPIRE] ${addr} — confirmation window expired`);
-      recordDrop(addr, memory.get(addr)?.symbol ?? addr.slice(0, 8), armed.chain ?? memory.get(addr)?.chain ?? "unknown", "ARMED", "confirmation window expired");
-      armedEntries.delete(addr);
+      recordDrop(addr, memory.get(addr)?.symbol ?? addr.slice(0, 8), chain, "ARMED", "confirmation window expired");
+      armedEntries.delete(chain, addr);
     }
   }
 }
@@ -80,7 +80,8 @@ function pruneMemory(): void {
   const now    = Date.now();
   let   pruned = 0;
   for (const [addr, mem] of memory.entries()) {
-    if (activeWatch.has(addr) || hotCandidates.has(addr) || armedEntries.has(addr)) continue;
+    const c = mem.chain;
+    if (c && (activeWatch.has(c, addr) || hotCandidates.has(c, addr) || armedEntries.has(c, addr))) continue;
     const ageMs         = now - mem.lastSeen;
     const noRecentTrade = !mem.lastEntryTime || now - mem.lastEntryTime > 48 * 60 * 60_000;
     if (ageMs > 48 * 60 * 60_000 && noRecentTrade) {
@@ -489,8 +490,8 @@ async function processPool(
     if (isHardReject(momentumEvent.verdict)) {
       // EVENT_WATCH pentru hard rejects cu attention mare
       const { attentionScore, monitoringTier } = momentumEvent;
-      if (monitoringTier === "EVENT_WATCH" && !activeWatch.has(pairAddr)) {
-        const currentEvent = [...activeWatch.values()].filter(w => w.chain === pool.chain && w.kind === "EVENT_WATCH").length;
+      if (monitoringTier === "EVENT_WATCH" && !activeWatch.has(pool.chain, pairAddr)) {
+        const currentEvent = [...activeWatch.entries()].filter(([{ chain }, watch]) => chain === pool.chain && watch.kind === "EVENT_WATCH").length;
         if (currentEvent < MAX_EVENT_WATCH) {
           addWatchCandidate(pairAddr, {
             chain: pool.chain, addedAt: Date.now(),
@@ -502,8 +503,8 @@ async function processPool(
           if (chainCfg) requestImmediateScopedSubscribe(chainCfg);
           triggerPoolRisk(pool);
         }
-      } else if (monitoringTier === "SHORT_WATCH" && !activeWatch.has(pairAddr)) {
-        const currentShort = [...activeWatch.values()].filter(w => w.chain === pool.chain && w.kind === "SHORT_WATCH").length;
+      } else if (monitoringTier === "SHORT_WATCH" && !activeWatch.has(pool.chain, pairAddr)) {
+        const currentShort = [...activeWatch.entries()].filter(([{ chain }, watch]) => chain === pool.chain && watch.kind === "SHORT_WATCH").length;
         if (currentShort < MAX_SHORT_WATCH) {
           addWatchCandidate(pairAddr, {
             chain: pool.chain, addedAt: Date.now(),
@@ -518,7 +519,7 @@ async function processPool(
       }
 
       // Context watch — colectare dosar, nu pipeline candidate
-      if (!activeWatch.has(pairAddr) && hasWatchSlot(pool.chain)) {
+      if (!activeWatch.has(pool.chain, pairAddr) && hasWatchSlot(pool.chain)) {
         const shouldContextWatch =
           pool.reserveUsd >= 500_000 ||
           Math.abs(pool.priceChange?.m5  ?? 0) >= 5  ||
@@ -545,7 +546,7 @@ async function processPool(
 
     if (isVerticalWatch(momentumEvent.verdict)) {
       const currentVertical = [...activeWatch.values()].filter(w => w.kind === "VERTICAL").length;
-      if (activeWatch.has(pairAddr)) {
+      if (activeWatch.has(pool.chain, pairAddr)) {
         counters.fomoAlready++;
       } else if (currentVertical >= MAX_VERTICAL_WATCH) {
         counters.vertNoSlot++;
@@ -569,7 +570,7 @@ async function processPool(
 
     if (isLateWatch(momentumEvent.verdict)) {
       const currentLate = [...activeWatch.values()].filter(w => w.kind === "LATE").length;
-      if (activeWatch.has(pairAddr)) {
+      if (activeWatch.has(pool.chain, pairAddr)) {
         counters.fomoAlready++;
       } else if (currentLate >= MAX_LATE_WATCH) {
         counters.lateNoSlot++;
@@ -593,9 +594,9 @@ async function processPool(
   const attScore = mem.attentionScore ?? 0;
   const attTier  = mem.monitoringTier ?? "MARKET_ONLY";
 
-    if (!activeWatch.has(pairAddr) && hasWatchSlot(pool.chain)) {
+    if (!activeWatch.has(pool.chain, pairAddr) && hasWatchSlot(pool.chain)) {
     if (attTier === "CONTINUATION_WATCH") {
-      const currentCont = [...activeWatch.values()].filter(w => w.chain === pool.chain && w.kind === "CONTINUATION_WATCH").length;
+      const currentCont = [...activeWatch.entries()].filter(([{ chain }, watch]) => chain === pool.chain && watch.kind === "CONTINUATION_WATCH").length;
       if (currentCont < MAX_CONTINUATION_WATCH) {
         addWatchCandidate(pairAddr, {
           chain: pool.chain, addedAt: Date.now(),
@@ -608,7 +609,7 @@ async function processPool(
         triggerPoolRisk(pool);
       }
     } else if (attTier === "FRESH_WATCH") {
-      const currentFresh = [...activeWatch.values()].filter(w => w.chain === pool.chain && w.kind === "FRESH_WATCH").length;
+      const currentFresh = [...activeWatch.entries()].filter(([{ chain }, watch]) => chain === pool.chain && watch.kind === "FRESH_WATCH").length;
       if (currentFresh < MAX_FRESH_WATCH_ATT) {
         addWatchCandidate(pairAddr, {
           chain: pool.chain, addedAt: Date.now(),
@@ -648,7 +649,7 @@ async function processPool(
   }
 
   if (!wsFlowReal.hasData) {
-    if (activeWatch.has(pairAddr)) {
+    if (activeWatch.has(pool.chain, pairAddr)) {
       counters.noWs++;
       console.log(`[WATCH WAIT] ${mem.symbol} (${pool.chain}) — subscribed, waiting for WS flow`);
     }
@@ -675,14 +676,14 @@ async function processPool(
   if (!gate.allowed) {
     counters.gateCount++;
     console.log(`[SKIP] ${mem.symbol} (${pool.chain}) — ${gate.reason}`);
-    if (armedEntries.has(pairAddr)) {
+    if (armedEntries.has(pool.chain, pairAddr)) {
       recordDrop(pairAddr, mem.symbol, pool.chain, "ARMED", `gate failed: ${gate.reason}`, price, score);
     }
-    armedEntries.delete(pairAddr);
+    armedEntries.delete(pool.chain, pairAddr);
     return "CONTINUE";
   }
 
-  const armed = armedEntries.get(pairAddr);
+  const armed = armedEntries.get(pool.chain, pairAddr);
 
   if (!armed) {
     armCandidate(pairAddr, pool.chain, price, score, wsFlowReal.pressure);
@@ -699,14 +700,14 @@ async function processPool(
   if (price < armed.price * ARM_MIN_PRICE_CONFIRM) {
     console.log(`[ARM SKIP] ${mem.symbol} (${pool.chain}) — price failed confirmation`);
     recordDrop(pairAddr, mem.symbol, pool.chain, "ARMED", `price failed confirmation ${price.toExponential(4)} < ${armed.price.toExponential(4)}`, price, armed.score);
-    armedEntries.delete(pairAddr); counters.armFail++;
+    armedEntries.delete(pool.chain, pairAddr); counters.armFail++;
     return "CONTINUE";
   }
 
   if (!wsFlowReal.hasData || wsFlowReal.pressure !== "BUYING") {
     console.log(`[ARM SKIP] ${mem.symbol} (${pool.chain}) — flow faded (${wsFlowReal.pressure})`);
     recordDrop(pairAddr, mem.symbol, pool.chain, "ARMED", `flow faded: ${wsFlowReal.pressure}`, price, armed.score);
-    armedEntries.delete(pairAddr); counters.armFail++;
+    armedEntries.delete(pool.chain, pairAddr); counters.armFail++;
     return "CONTINUE";
   }
 
@@ -714,12 +715,12 @@ async function processPool(
   if (currentNetVol < 0.05) {
     console.log(`[ARM SKIP] ${mem.symbol} (${pool.chain}) — netVol faded ${currentNetVol.toFixed(3)}ETH`);
     recordDrop(pairAddr, mem.symbol, pool.chain, "ARMED", `netVol faded ${currentNetVol.toFixed(3)}ETH`, price, armed.score);
-    armedEntries.delete(pairAddr); counters.armFail++;
+    armedEntries.delete(pool.chain, pairAddr); counters.armFail++;
     return "CONTINUE";
   }
 
   console.log(`[ARM CONFIRMED] ${mem.symbol} (${pool.chain}) — entering armed:${armed.price.toExponential(4)} now:${price.toExponential(4)} net:${currentNetVol.toFixed(3)}ETH`);
-  armedEntries.delete(pairAddr);
+  armedEntries.delete(pool.chain, pairAddr);
 
   recordPipelineEvent("ARM_CONFIRMED", mem.symbol, pool.chain, pairAddr, "ARMED", "CONFIRMED");
   recordLifecycleOutcome(pairAddr, "QUALIFIED_EMITTED", "ARMED", "ARM_CONFIRMED: price + flow held");

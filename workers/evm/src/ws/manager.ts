@@ -182,7 +182,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
           if (qflow4.isBuy && qflow4.ethAmount >= 0.005) {
             const flow = getWsFlow(poolId);
             if (flow.hasData && flow.pressure === "BUYING" && flow.buys5m >= 5) {
-              if (!hotCandidates.has(poolId)) {
+              if (!hotCandidates.has(chain.id, poolId)) {
                 promoteHotCandidate(poolId, chain.id, undefined);
               }
             }
@@ -227,7 +227,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
           if (qflow3.isBuy && qflow3.ethAmount >= 0.005) {
             const flow3 = getWsFlow(pairAddr3);
             if (flow3.hasData && flow3.pressure === "BUYING" && flow3.buys5m >= 5) {
-              if (!hotCandidates.has(pairAddr3)) promoteHotCandidate(pairAddr3, chain.id, undefined);
+              if (!hotCandidates.has(chain.id, pairAddr3)) promoteHotCandidate(pairAddr3, chain.id, undefined);
             }
           }
         }
@@ -320,7 +320,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
         if (qflow2.isBuy) {
           const flow = getWsFlow(pairAddress);
           if (flow.hasData && flow.pressure === "BUYING" && flow.buys5m >= 5) {
-            if (!hotCandidates.has(pairAddress)) {
+            if (!hotCandidates.has(chain.id, pairAddress)) {
               promoteHotCandidate(pairAddress, chain.id, undefined);
             }
           }

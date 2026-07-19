@@ -11,7 +11,7 @@ import type { PairMemoryEntry } from "../lib/engines/pairMemory";
 import type { SourcePool } from "../sources/normalize";
 import { PairMap } from "./PairMap";
 import { MAX_MOMENTUM_BUFFER, MAX_QUALIFIED_BUFFER } from "../config/constants";
-import type { DiscoverySource, PreflightMomentumEvent, PreflightQualifiedSignal } from "@preflight/schema";
+import { pairKey, type DiscoverySource, type PreflightMomentumEvent, type PreflightQualifiedSignal } from "@preflight/schema";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -57,7 +57,7 @@ export const lpEvents = new Map<string, LpEvent[]>();
 
 // ── Pipeline state ────────────────────────────────────────────────────────────
 
-export const activeWatch = new Map<string, {
+export const activeWatch = new PairMap<{
   chain:       string;
   addedAt:     number;
   kind?:       WatchKind;
@@ -65,13 +65,13 @@ export const activeWatch = new Map<string, {
   reason?:     string;
 }>();
 
-export const hotCandidates = new Map<string, {
+export const hotCandidates = new PairMap<{
   chain:      string;
   promotedAt: number;
   source?:    EntrySource;
 }>();
 
-export const armedEntries = new Map<string, {
+export const armedEntries = new PairMap<{
   chain:         string;
   armedAt:       number;
   price:         number;
@@ -142,10 +142,11 @@ export const pipelineEvents: Array<{
 export const momentumEventsBuffer: PreflightMomentumEvent[] = [];
 export const qualifiedSignalsBuffer: PreflightQualifiedSignal[] = [];
 
-export function clearQualifiedForPair(pairAddress: string): void {
-  const addr = pairAddress.toLowerCase();
+export function clearQualifiedForPair(chain: string, pairAddress: string): void {
+  const key = pairKey(chain, pairAddress);
   for (let i = qualifiedSignalsBuffer.length - 1; i >= 0; i--) {
-    if (qualifiedSignalsBuffer[i]?.pairAddress?.toLowerCase() === addr) {
+    const q = qualifiedSignalsBuffer[i];
+    if (q && pairKey(q.chain, q.pairAddress) === key) {
       qualifiedSignalsBuffer.splice(i, 1);
     }
   }

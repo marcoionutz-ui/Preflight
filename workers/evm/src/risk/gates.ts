@@ -110,7 +110,7 @@ export function getEntryGate(
   
   const evidence = computeEvidenceScore(mem, flow, lp);
 
-  if (hotCandidates.has(mem.pairAddress.toLowerCase())) {
+  if (hotCandidates.has(chain, mem.pairAddress)) {
     const requiredHotEvidence =
       entrySource === "VERTICAL" ? 4 :
       entrySource === "FOMO" || entrySource === "LATE" ? 5 :

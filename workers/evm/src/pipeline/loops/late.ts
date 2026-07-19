@@ -20,7 +20,7 @@ export async function lateCandidatesLoop(): Promise<void> {
   try {
     const now = Date.now();
 
-    for (const [pairAddr, info] of activeWatch.entries()) {
+    for (const [{ chain, address: pairAddr }, info] of activeWatch.entries()) {
       if (info.kind !== "LATE") continue;
 
       const ageMs = now - info.addedAt;
@@ -28,7 +28,7 @@ export async function lateCandidatesLoop(): Promise<void> {
 
       if (ageMs > 8 * 60_000) {
         console.log(`[LATE EXPIRE] ${memory.get(pairAddr)?.symbol ?? pairAddr} — no confirmation in 8m`);
-        dropWatchCandidate(pairAddr, "no confirmation in 8m");
+        dropWatchCandidate(pairAddr, chain, "no confirmation in 8m");
         continue;
       }
 
@@ -38,23 +38,23 @@ export async function lateCandidatesLoop(): Promise<void> {
 
       if (flow.hasData && flow.pressure === "SELLING") {
         console.log(`[LATE DROP] ${mem.symbol} — flow turned SELLING`);
-        dropWatchCandidate(pairAddr, "flow turned SELLING");
+        dropWatchCandidate(pairAddr, chain, "flow turned SELLING");
         continue;
       }
 
       if (!flow.hasData && ageMs > 4 * 60_000) {
         console.log(`[LATE DROP] ${mem.symbol} — no WS flow after ${Math.round(ageMs / 60_000)}m`);
-        dropWatchCandidate(pairAddr, `no WS flow after ${Math.round(ageMs / 60_000)}m`);
+        dropWatchCandidate(pairAddr, chain, `no WS flow after ${Math.round(ageMs / 60_000)}m`);
         continue;
       }
 
       if (!flow.hasData) continue;
 
-      const chainCfg  = CHAINS.find(c => c.id === info.chain);
+      const chainCfg  = CHAINS.find(c => c.id === chain);
       const freshPool = chainCfg ? await fetchPoolByAddress(chainCfg, pairAddr) : null;
       if (!freshPool) continue;
 
-      watchedPoolCache.set(info.chain, pairAddr, freshPool);
+      watchedPoolCache.set(chain, pairAddr, freshPool);
       updateMemory(freshPool, freshPool.priceUsd);
 
       const currentPrice = freshPool.priceUsd;
@@ -62,7 +62,7 @@ export async function lateCandidatesLoop(): Promise<void> {
 
       if (!Number.isFinite(currentPrice) || currentPrice <= 0 || !Number.isFinite(blockPrice) || blockPrice <= 0) {
         console.log(`[LATE DROP] ${mem.symbol} — invalid price`);
-        dropWatchCandidate(pairAddr, "invalid price");
+        dropWatchCandidate(pairAddr, chain, "invalid price");
         continue;
       }
 
@@ -70,13 +70,13 @@ export async function lateCandidatesLoop(): Promise<void> {
 
       if (currentVsBlock > 1.30) {
         console.log(`[LATE SKIP] ${mem.symbol} — +${((currentVsBlock - 1) * 100).toFixed(0)}% from block, too late`);
-        dropWatchCandidate(pairAddr, `too late +${((currentVsBlock - 1) * 100).toFixed(0)}% from block`);
+        dropWatchCandidate(pairAddr, chain, `too late +${((currentVsBlock - 1) * 100).toFixed(0)}% from block`);
         continue;
       }
 
       if (currentVsBlock < 0.85) {
         console.log(`[LATE DUMP] ${mem.symbol} — -${((1 - currentVsBlock) * 100).toFixed(0)}% from block, evict`);
-        dropWatchCandidate(pairAddr, `dumped -${((1 - currentVsBlock) * 100).toFixed(0)}% from block`);
+        dropWatchCandidate(pairAddr, chain, `dumped -${((1 - currentVsBlock) * 100).toFixed(0)}% from block`);
         continue;
       }
 
@@ -111,17 +111,17 @@ export async function lateCandidatesLoop(): Promise<void> {
       }
 
       console.log(
-        `[LATE CONFIRMED] ${mem.symbol} (${info.chain})`
+        `[LATE CONFIRMED] ${mem.symbol} (${chain})`
         + ` age:${Math.round(ageMs / 1000)}s`
         + ` priceVsBlock:+${((currentVsBlock - 1) * 100).toFixed(1)}%`
         + ` buyVol:${buyVolF.toFixed(3)} netVol:${netVolF.toFixed(3)} buys:${flow.buys5m}`
         + ` h24:${h24f.toFixed(0)}% m5:${m5f.toFixed(1)}% h1:${h1f.toFixed(1)}%`,
       );
 
-      promoteHotCandidate(pairAddr, info.chain, "LATE");
-      activeWatch.delete(pairAddr);
+      promoteHotCandidate(pairAddr, chain, "LATE");
+      activeWatch.delete(chain, pairAddr);
 
-      const chainCfgL = CHAINS.find(c => c.id === info.chain);
+      const chainCfgL = CHAINS.find(c => c.id === chain);
       if (chainCfgL) requestImmediateScopedSubscribe(chainCfgL);
     }
   } finally {
