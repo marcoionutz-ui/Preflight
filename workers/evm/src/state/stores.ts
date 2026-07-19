@@ -52,8 +52,8 @@ export const memory = new Map<string, PairMemoryEntry>();
 
 // ── WS flow data ──────────────────────────────────────────────────────────────
 
-export const wsFlow   = new Map<string, SwapEvent[]>();
-export const lpEvents = new Map<string, LpEvent[]>();
+export const wsFlow   = new PairMap<SwapEvent[]>();
+export const lpEvents = new PairMap<LpEvent[]>();
 
 // ── Pipeline state ────────────────────────────────────────────────────────────
 

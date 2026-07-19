@@ -41,8 +41,8 @@ export async function hotCandidatesLoop(): Promise<void> {
       if (!mem)                  { dropHotCandidate(pairAddress, chainId, "memory missing"); continue; }
       if (isBlockedSymbol(mem.symbol)) { dropHotCandidate(pairAddress, chainId, "blocked asset"); continue; }
 
-      const flow = getWsFlow(pairAddress);
-      const lp   = getLpSignal(pairAddress);
+      const flow = getWsFlow(chainId, pairAddress);
+      const lp   = getLpSignal(chainId, pairAddress);
 
       const minHotBuys =
         source === "VERTICAL" ? 2 :

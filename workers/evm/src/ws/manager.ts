@@ -171,7 +171,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
         }
 
         if (qflow4.ethAmount > 0) {
-          recordSwap(poolId, qflow4.isBuy, qflow4.ethAmount, qflow4.usdAmount);
+          recordSwap(chain.id, poolId, qflow4.isBuy, qflow4.ethAmount, qflow4.usdAmount);
           console.log(
             `[V4 SWAP ${chain.id}] ${memV4.symbol} ${qflow4.isBuy ? "BUY" : "SELL"} `
             + `quote=${qflow4.quote} nativeEq=${qflow4.ethAmount.toFixed(4)} usd=$${qflow4.usdAmount.toFixed(0)} `
@@ -180,7 +180,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
           );
 
           if (qflow4.isBuy && qflow4.ethAmount >= 0.005) {
-            const flow = getWsFlow(poolId);
+            const flow = getWsFlow(chain.id, poolId);
             if (flow.hasData && flow.pressure === "BUYING" && flow.buys5m >= 5) {
               if (!hotCandidates.has(chain.id, poolId)) {
                 promoteHotCandidate(poolId, chain.id, undefined);
@@ -222,10 +222,10 @@ export function connectChainWebSocket(chain: ChainConfig): void {
         if (!qflow3.ok) return;
 
         if (qflow3.ethAmount > 0) {
-          recordSwap(pairAddr3, qflow3.isBuy, qflow3.ethAmount, qflow3.usdAmount);
+          recordSwap(chain.id, pairAddr3, qflow3.isBuy, qflow3.ethAmount, qflow3.usdAmount);
           console.log(`[V3 SWAP ${chain.id}] ${mem3.symbol} ${qflow3.isBuy ? "BUY" : "SELL"} quote=${qflow3.quote} nativeEq=${qflow3.ethAmount.toFixed(4)} usd=$${qflow3.usdAmount.toFixed(0)} tx=${log3.transactionHash}`);
           if (qflow3.isBuy && qflow3.ethAmount >= 0.005) {
-            const flow3 = getWsFlow(pairAddr3);
+            const flow3 = getWsFlow(chain.id, pairAddr3);
             if (flow3.hasData && flow3.pressure === "BUYING" && flow3.buys5m >= 5) {
               if (!hotCandidates.has(chain.id, pairAddr3)) promoteHotCandidate(pairAddr3, chain.id, undefined);
             }
@@ -250,7 +250,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
         const { baseToken: base3, quoteToken: quote3 } = extractBaseQuote(pool3);
         const qflow3 = getQuoteFlowAsEth(chain, base3, quote3, amount0, amount1);
         if (qflow3.ok && qflow3.ethAmount > 0) {
-          recordLp(addr3, true, qflow3.ethAmount);
+          recordLp(chain.id, addr3, true, qflow3.ethAmount);
           console.log(`[V3 LP ADD ${chain.id}] ${mem3.symbol} +${qflow3.ethAmount.toFixed(3)} ETH quote=${qflow3.quote}`);
         }
         return;
@@ -272,7 +272,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
         const { baseToken: base3, quoteToken: quote3 } = extractBaseQuote(pool3);
         const qflow3 = getQuoteFlowAsEth(chain, base3, quote3, amount0, amount1);
         if (qflow3.ok && qflow3.ethAmount > 0) {
-          recordLp(addr3, false, qflow3.ethAmount);
+          recordLp(chain.id, addr3, false, qflow3.ethAmount);
           const poolEth    = poolLiquidity.get(chain.id, addr3)?.reserveEth ?? 0;
           const removedPct = poolEth > 0 ? qflow3.ethAmount / poolEth : 0;
           console.log(`[V3 LP REMOVE ${chain.id}] ${mem3.symbol} -${qflow3.ethAmount.toFixed(3)} ETH (${(removedPct * 100).toFixed(1)}%) quote=${qflow3.quote}`);
@@ -315,10 +315,10 @@ export function connectChainWebSocket(chain: ChainConfig): void {
         const qflow2 = getQuoteFlowAsEth(chain, base2, quote2, amount0, amount1);
         if (!qflow2.ok || qflow2.ethAmount <= 0) return;
 
-        recordSwap(pairAddress, qflow2.isBuy, qflow2.ethAmount, qflow2.usdAmount);
+        recordSwap(chain.id, pairAddress, qflow2.isBuy, qflow2.ethAmount, qflow2.usdAmount);
         console.log(`[V2 SWAP ${chain.id}] ${mem.symbol} ${qflow2.isBuy ? "BUY" : "SELL"} quote=${qflow2.quote} nativeEq:${qflow2.ethAmount.toFixed(4)} usd:$${qflow2.usdAmount.toFixed(0)}`);
         if (qflow2.isBuy) {
-          const flow = getWsFlow(pairAddress);
+          const flow = getWsFlow(chain.id, pairAddress);
           if (flow.hasData && flow.pressure === "BUYING" && flow.buys5m >= 5) {
             if (!hotCandidates.has(chain.id, pairAddress)) {
               promoteHotCandidate(pairAddress, chain.id, undefined);
@@ -335,7 +335,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
         const tokenAddrLp = memLp?.tokenAddress.replace(`${chain.id}_`, "").toLowerCase() ?? "";
         const wethIsT0  = chain.weth.toLowerCase() < tokenAddrLp.replace(/^[a-z]+_/, "");
         const ethAmount = Number(wethIsT0 ? amount0 : amount1) / 1e18;
-        recordLp(pairAddress, true, ethAmount);
+        recordLp(chain.id, pairAddress, true, ethAmount);
         console.log(`[LP ADD] ${memLp?.symbol} +${ethAmount.toFixed(3)} ETH`);
       }
 
@@ -347,7 +347,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
         const tokenAddrLp = memLp?.tokenAddress.replace(`${chain.id}_`, "").toLowerCase() ?? "";
         const wethIsT0    = chain.weth.toLowerCase() < tokenAddrLp.replace(/^[a-z]+_/, "");
         const ethAmount   = Number(wethIsT0 ? amount0 : amount1) / 1e18;
-        recordLp(pairAddress, false, ethAmount);
+        recordLp(chain.id, pairAddress, false, ethAmount);
 
         const poolEth    = poolLiquidity.get(chain.id, pairAddress)?.reserveEth ?? 0;
         const removedPct = poolEth > 0 ? ethAmount / poolEth : 0;

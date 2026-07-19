@@ -62,9 +62,9 @@ export async function writeCoverageSnapshot(r: Redis, states: Record<string, Pai
     const qualified = qualifiedSignalsBuffer.filter(q => q.chain === chainId);
 
     // ── WS flow stats ─────────────────────────────────────────────────────
-    const watchingWithFlow = watching.filter(([{ address: addr }]) => getWsFlow(addr).hasData);
-    const hotWithFlow      = hot.filter(([{ address: addr }]) => getWsFlow(addr).hasData);
-    const armedWithFlow    = armed.filter(([{ address: addr }]) => getWsFlow(addr).hasData);
+    const watchingWithFlow = watching.filter(([{ chain, address: addr }]) => getWsFlow(chain, addr).hasData);
+    const hotWithFlow      = hot.filter(([{ chain, address: addr }]) => getWsFlow(chain, addr).hasData);
+    const armedWithFlow    = armed.filter(([{ chain, address: addr }]) => getWsFlow(chain, addr).hasData);
 
     // fix #4: watching/hot/armed pot conține aceeași adresă (ex: HOT rămâne
     // și în activeWatch până la cleanup) — watching.length+hot.length+
@@ -76,7 +76,7 @@ export async function writeCoverageSnapshot(r: Redis, states: Record<string, Pai
       ...armed.map(([{ address }]) => address),
     ]);
     const pipelineTotal    = pipelineAddresses.size;
-    const pipelineWithFlow = [...pipelineAddresses].filter(addr => getWsFlow(addr).hasData).length;
+    const pipelineWithFlow = [...pipelineAddresses].filter(addr => getWsFlow(chainId, addr).hasData).length;
 
     // fix #2: redenumit expectedWsSubscriptions — nu e set real de WS subs
     const expectedWsSubscriptions =
@@ -86,7 +86,7 @@ export async function writeCoverageSnapshot(r: Redis, states: Record<string, Pai
     const moversInPipeline = observedMovers.filter(([addr]) =>
       activeWatch.has(chainId, addr) || hotCandidates.has(chainId, addr) || armedEntries.has(chainId, addr)
     );
-    const moversWithFlow      = observedMovers.filter(([addr]) => getWsFlow(addr).hasData);
+    const moversWithFlow      = observedMovers.filter(([addr]) => getWsFlow(chainId, addr).hasData);
     const moversNotInPipeline = observedMovers.filter(([addr]) =>
       !activeWatch.has(chainId, addr) && !hotCandidates.has(chainId, addr) && !armedEntries.has(chainId, addr)
     );

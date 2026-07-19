@@ -8,35 +8,34 @@ import { MIN_FLOW_ETH, MIN_TOTAL_FLOW_ETH, FLOW_IMBALANCE } from "../config/cons
 import { wsFlow, lpEvents, type SwapEvent, type LpEvent } from "../state/stores";
 import { NEUTRAL_FLOW, STABLE_LIQUIDITY, computeFlowFromTxns } from "../lib/engines/flowTypes";
 import type { FlowSignal, LiquiditySignal } from "../lib/engines/flowTypes";
-import { cleanEvmAddress } from "../sources/normalize";
 import type { SourcePool } from "../sources/normalize";
 
-export function recordSwap(pairAddress: string, isBuy: boolean, ethAmount: number, usdAmount?: number): void {
-  const addr   = pairAddress.toLowerCase();
+export function recordSwap(chain: string, pairAddress: string, isBuy: boolean, ethAmount: number, usdAmount?: number): void {
   const now    = Date.now();
-  const events = (wsFlow.get(addr) ?? []).filter(e => now - e.ts < 5 * 60_000);
+  const events = (wsFlow.get(chain, pairAddress) ?? []).filter(e => now - e.ts < 5 * 60_000);
   events.push({ ts: now, isBuy, ethAmount, usdAmount });
-  wsFlow.set(addr, events);
+  wsFlow.set(chain, pairAddress, events);
 }
 
-export function recordLp(pairAddress: string, isAdd: boolean, ethAmount: number): void {
-  const addr   = pairAddress.toLowerCase();
+export function recordLp(chain: string, pairAddress: string, isAdd: boolean, ethAmount: number): void {
   const now    = Date.now();
-  const events = (lpEvents.get(addr) ?? []).filter(e => now - e.ts < 5 * 60_000);
+  const events = (lpEvents.get(chain, pairAddress) ?? []).filter(e => now - e.ts < 5 * 60_000);
   events.push({ ts: now, isAdd, ethAmount });
-  lpEvents.set(addr, events);
+  lpEvents.set(chain, pairAddress, events);
 }
 
-export function getWsFlow(pairAddress: string): FlowSignal {
-  const addr   = pairAddress.toLowerCase();
+export function getWsFlow(chain: string | undefined, pairAddress: string): FlowSignal {
+  // chain opțional (unii calleri au `mem.chain?`/`trade.chain?`): fără chain nu
+  // putem forma cheia → NEUTRAL (fără date), nu fabricăm.
+  if (!chain) return NEUTRAL_FLOW;
   const now    = Date.now();
-  const events = (wsFlow.get(addr) ?? []).filter(e => now - e.ts < 5 * 60_000);
+  const events = (wsFlow.get(chain, pairAddress) ?? []).filter(e => now - e.ts < 5 * 60_000);
 
   if (!events.length) {
-    wsFlow.delete(addr);
+    wsFlow.delete(chain, pairAddress);
     return NEUTRAL_FLOW;
   }
-  wsFlow.set(addr, events);
+  wsFlow.set(chain, pairAddress, events);
 
   const e1m = events.filter(e => now - e.ts < 60_000);
   const m5  = events.filter(e => e.ethAmount >= MIN_FLOW_ETH);
@@ -93,15 +92,15 @@ export function getWsFlow(pairAddress: string): FlowSignal {
   };
 }
 
-export function getLpSignal(pairAddress: string): LiquiditySignal {
-  const addr   = pairAddress.toLowerCase();
-  const events = lpEvents.get(addr) ?? [];
+export function getLpSignal(chain: string | undefined, pairAddress: string): LiquiditySignal {
+  if (!chain) return STABLE_LIQUIDITY;
+  const events = lpEvents.get(chain, pairAddress) ?? [];
   if (!events.length) return STABLE_LIQUIDITY;
 
   const now = Date.now();
   const e5m = events.filter(e => now - e.ts < 5 * 60_000);
   if (!e5m.length) {
-    lpEvents.delete(addr);
+    lpEvents.delete(chain, pairAddress);
     return STABLE_LIQUIDITY;
   }
 
@@ -114,8 +113,7 @@ export function getLpSignal(pairAddress: string): LiquiditySignal {
 }
 
 export function getFlow(pool: SourcePool): FlowSignal {
-  const pairAddr = pool.pairAddress;
-  const ws = getWsFlow(pairAddr);
+  const ws = getWsFlow(pool.chain, pool.pairAddress);
   if (ws.hasData) return ws;
 
   const buys5m  = pool.transactions.buys5m;

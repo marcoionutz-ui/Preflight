@@ -67,8 +67,8 @@ export async function buildPairStates(): Promise<Record<string, PairStateSnapsho
       continue;
     }
 
-    const flow    = getWsFlow(addr);
-    const lp      = getLpSignal(addr);
+    const flow    = getWsFlow(mem.chain, addr);
+    const lp      = getLpSignal(mem.chain, addr);
     const liq     = getLiquidityContext(mem.chain, addr);
     const poolEth = poolLiquidity.get(mem.chain, addr)?.reserveEth ?? 0;
     const removed = lp.lpRemoved5m ?? 0;
@@ -199,7 +199,7 @@ export function buildWatchSnapshot(): Record<string, object> {
   const watchObj: Record<string, object> = {};
   for (const [{ chain, address: addr }, info] of activeWatch.entries()) {
     const mem         = memory.get(addr);
-    const watchEvents = wsFlow.get(addr) ?? [];
+    const watchEvents = wsFlow.get(chain, addr) ?? [];
     const watchBuys   = watchEvents.filter(e => e.isBuy);
     const watchSells  = watchEvents.filter(e => !e.isBuy);
     watchObj[pairKey(chain, addr)] = {
@@ -224,8 +224,8 @@ export function buildHotSnapshot(): Record<string, object> {
   const hotObj: Record<string, object> = {};
   for (const [{ chain, address: addr }, info] of hotCandidates.entries()) {
     const mem       = memory.get(addr);
-    const flow      = getWsFlow(addr);
-    const hotEvents = wsFlow.get(addr) ?? [];
+    const flow      = getWsFlow(chain, addr);
+    const hotEvents = wsFlow.get(chain, addr) ?? [];
     const hotBuys   = hotEvents.filter(e => e.isBuy);
     const hotSells  = hotEvents.filter(e => !e.isBuy);
     hotObj[pairKey(chain, addr)] = {

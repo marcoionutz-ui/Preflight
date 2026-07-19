@@ -86,8 +86,7 @@ function pruneMemory(): void {
     const noRecentTrade = !mem.lastEntryTime || now - mem.lastEntryTime > 48 * 60 * 60_000;
     if (ageMs > 48 * 60 * 60_000 && noRecentTrade) {
       memory.delete(addr);
-      if (c) poolLiquidity.delete(c, addr);
-      wsFlow.delete(addr);
+      if (c) { poolLiquidity.delete(c, addr); wsFlow.delete(c, addr); }
       pruned++;
     }
   }
@@ -416,9 +415,9 @@ async function processPool(
     }
   }
 
-  const wsFlowReal = getWsFlow(pairAddr);
+  const wsFlowReal = getWsFlow(pool.chain, pairAddr);
   const flow       = getFlow(pool);
-  const lp         = getLpSignal(pairAddr);
+  const lp         = getLpSignal(pool.chain, pairAddr);
   const isV3pool   = v3PoolMap.has(pool.chain, pairAddr);
   const isV4pool   = v4PoolMap.has(pool.chain, pairAddr);
   if (isV3pool) counters.v3Seen++;

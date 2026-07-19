@@ -106,8 +106,8 @@ export async function writeAllSnapshots(r: Redis): Promise<void> {
 function buildSignalPipelineEntries() {
   const makeEntry = (addr: string, chain: string, pipelineState: string, watchKind: string, enteredAt: number, entryPrice?: number) => {
     const mem2       = memory.get(addr);
-    const flow2      = getWsFlow(addr);
-    const events2    = wsFlow.get(addr) ?? [];
+    const flow2      = getWsFlow(chain, addr);
+    const events2    = wsFlow.get(chain, addr) ?? [];
     const buys2      = events2.filter(e => e.isBuy);
     const sells2     = events2.filter(e => !e.isBuy);
     const liq2       = getLiquidityContext(chain, addr);
@@ -175,7 +175,7 @@ function buildPreflightDrops(): PreflightDrop[] {
         return [];
       }
 
-      const dropFlow = getWsFlow(d.pairAddress);
+      const dropFlow = getWsFlow(d.chain, d.pairAddress);
       const wasIn =
         d.previousState === "HOT"   ? "HOT"   as const :
         d.previousState === "ARMED" ? "ARMED" as const :
@@ -202,9 +202,9 @@ function buildPairContextMap(): Record<string, PreflightPairContext> {
 
   const buildCtx = (addr: string, chain: PreflightEvmChain, pipelineState: "WATCHING" | "HOT", entryPrice?: number): PreflightPairContext => {
     const mem3    = memory.get(addr);
-    const flow3   = getWsFlow(addr);
+    const flow3   = getWsFlow(chain, addr);
     const liq3    = getLiquidityContext(chain, addr);
-    const events3 = wsFlow.get(addr) ?? [];
+    const events3 = wsFlow.get(chain, addr) ?? [];
     const buys3   = events3.filter(e => e.isBuy);
     const sells3  = events3.filter(e => !e.isBuy);
     const fs3     = deriveFlowStatus(flow3.pressure, flow3.hasData, buys3.length, sells3.length);

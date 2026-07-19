@@ -31,7 +31,7 @@ export async function fomoCandidatesLoop(): Promise<void> {
 
     const cachedPool = watchedPoolCache.get(chain, pairAddr);
     const mem        = memory.get(pairAddr);
-    const flow       = getWsFlow(pairAddr);
+    const flow       = getWsFlow(chain, pairAddr);
 
     if (!cachedPool || !mem) continue;
 

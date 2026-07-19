@@ -99,7 +99,7 @@ export function cleanupActiveWatch(): void {
       continue;
     }
 
-    const flow = getWsFlow(addr);
+    const flow = getWsFlow(chain, addr);
     const shouldEvict =
       (!flow.hasData && ageMs > WATCH_NO_FLOW_MAX_AGE_MS) ||
       (flow.hasData && flow.pressure === "SELLING" && ageMs > WATCH_SELLING_MAX_AGE_MS) ||

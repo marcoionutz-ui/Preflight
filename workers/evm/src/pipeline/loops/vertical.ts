@@ -34,7 +34,7 @@ export async function verticalCandidatesLoop(): Promise<void> {
       }
 
       const mem  = memory.get(pairAddr);
-      const flow = getWsFlow(pairAddr);
+      const flow = getWsFlow(chain, pairAddr);
       if (!mem) continue;
 
       if (flow.hasData && flow.pressure === "SELLING") {

@@ -163,8 +163,8 @@ export async function updateOutcomes(pools: SourcePool[]): Promise<void> {
     if (!price) continue;
 
     const ageMs  = Date.now() - trade.timestamp;
-    const flow   = getWsFlow(trade.pair_address);
-    const lp     = getLpSignal(trade.pair_address);
+    const flow   = getWsFlow(trade.chain, trade.pair_address);
+    const lp     = getLpSignal(trade.chain, trade.pair_address);
     const update: Record<string, unknown> = { current_price: price };
     const mem    = memory.get(trade.pair_address?.toLowerCase());
     const entry  = Number(trade.entry_price);
