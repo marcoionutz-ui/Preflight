@@ -9,6 +9,7 @@
 
 import type { PairMemoryEntry } from "../lib/engines/pairMemory";
 import type { SourcePool } from "../sources/normalize";
+import { PairMap } from "./PairMap";
 import { MAX_MOMENTUM_BUFFER, MAX_QUALIFIED_BUFFER } from "../config/constants";
 import type { DiscoverySource, PreflightMomentumEvent, PreflightQualifiedSignal } from "@preflight/schema";
 
@@ -160,7 +161,7 @@ export function pushMomentumEvent(event: PreflightMomentumEvent): void {
 // ── Market follow list ────────────────────────────────────────────────────────
 // Pair-uri cu attention mare care se refreshează direct chiar dacă nu mai apar în trending
 
-export const marketFollowList = new Map<string, {
+export const marketFollowList = new PairMap<{
   chain:            string;
   addedAt:          number;
   lastRefreshedAt:  number;

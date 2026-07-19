@@ -913,6 +913,22 @@ export function pairKey(chain: string, address: string): PairKey {
   return `${chainId}:${normalizePairAddress(chainId, address)}` as PairKey;
 }
 
+/** Referință decodată a unei perechi (rezultatul lui splitPairKey). */
+export interface PairRef { chain: string; address: string; }
+
+/**
+ * Inversul lui pairKey: sparge `${chain}:${address}` în componente. Split pe
+ * PRIMUL `:` — chain-ul e mereu un cuvânt fără `:`, iar adresele (hex EVM /
+ * base58 Solana) nu conțin `:`, deci despărțirea e neambiguă. Folosit de
+ * PairMap ca să itereze cu cheia decodată.
+ */
+export function splitPairKey(key: PairKey): PairRef {
+  const i = (key as string).indexOf(":");
+  return i < 0
+    ? { chain: "", address: key as string }
+    : { chain: (key as string).slice(0, i), address: (key as string).slice(i + 1) };
+}
+
 export const REDIS_KEYS = {
     
   // Pipeline state

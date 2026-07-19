@@ -444,8 +444,8 @@ async function processPool(
     (pool.reserveUsd >= 250_000 && (Math.abs(pool.priceChange.h1) >= 500 || Math.abs(pool.priceChange.h24) >= 1000));
 
  if (shouldFollow) {
-    const existing = marketFollowList.get(pairAddr);
-    marketFollowList.set(pairAddr, {
+    const existing = marketFollowList.get(pool.chain, pairAddr);
+    marketFollowList.set(pool.chain, pairAddr, {
       chain:           pool.chain,
       addedAt:         existing?.addedAt ?? Date.now(),
       lastRefreshedAt: Date.now(),
@@ -454,13 +454,13 @@ async function processPool(
       missCount:       existing?.missCount ?? 0,
       source:          existing?.source,
     });
-  } else if (marketFollowList.has(pairAddr) && att < FOLLOW_REMOVE_SCORE) {
-    const existingFollow = marketFollowList.get(pairAddr);
+  } else if (marketFollowList.has(pool.chain, pairAddr) && att < FOLLOW_REMOVE_SCORE) {
+    const existingFollow = marketFollowList.get(pool.chain, pairAddr);
 
     // Agent-supplied watches stay until FOLLOW_TTL_MS / miss eviction.
     // Preflight still reports context; it does not decide that the agent should stop watching.
     if (existingFollow?.source !== "AGENT_SUPPLIED") {
-      marketFollowList.delete(pairAddr);
+      marketFollowList.delete(pool.chain, pairAddr);
     }
   }
 
@@ -754,7 +754,8 @@ function seedFollowListFromMemory(): void {
   let seeded = 0;
 
   for (const [addr, mem] of memory.entries()) {
-   if (marketFollowList.has(addr)) continue;
+   const followChain = mem.chain ?? "base";
+   if (marketFollowList.has(followChain, addr)) continue;
     const pc = mem.priceChange;
     if (!pc) continue;
     
@@ -769,8 +770,8 @@ function seedFollowListFromMemory(): void {
       (reserveUsd >= 50_000  && (Math.abs(pc.h1) >= 200 || Math.abs(pc.h24) >= 500));
     if (!shouldSeed) continue;
 
-    marketFollowList.set(addr, {
-      chain:           mem.chain ?? "base",
+    marketFollowList.set(followChain, addr, {
+      chain:           followChain,
       addedAt:         Date.now(),
       lastRefreshedAt: 0,
       attentionScore:  100,
@@ -840,9 +841,9 @@ export async function runDsBoostedRefresh(): Promise<void> {
       if (isBlockedSymbol(pool.symbol)) continue;
 
       const addr     = pool.pairAddress;
-      const existing = marketFollowList.get(addr);
+      const existing = marketFollowList.get(pool.chain, addr);
 
-      marketFollowList.set(addr, {
+      marketFollowList.set(pool.chain, addr, {
         chain:           pool.chain,
         addedAt:         existing?.addedAt ?? now,
         attentionScore:  Math.max(existing?.attentionScore ?? 0, 75),
@@ -893,8 +894,8 @@ export async function runFollowRefresh(): Promise<void> {
           const reqReason     = String(req.reason ?? "AGENT_SUPPLIED").slice(0, 160);
           const reqAt         = Number(req.requestedAt ?? now);
           const requestedAt   = Number.isFinite(reqAt) ? reqAt : now;
-          const existingEntry = marketFollowList.get(reqAddr);
-          marketFollowList.set(reqAddr, {
+          const existingEntry = marketFollowList.get(reqChain, reqAddr);
+          marketFollowList.set(reqChain, reqAddr, {
             chain:           reqChain,
             addedAt:         existingEntry?.addedAt ?? requestedAt,
             attentionScore:  Math.max(existingEntry?.attentionScore ?? 0, 80),
@@ -914,9 +915,9 @@ export async function runFollowRefresh(): Promise<void> {
   }
 
   // Curăță entries expirate
-  for (const [addr, entry] of marketFollowList.entries()) {
+  for (const [{ chain, address: addr }, entry] of marketFollowList.entries()) {
     if (now - entry.addedAt > FOLLOW_TTL_MS) {
-      marketFollowList.delete(addr);
+      marketFollowList.delete(chain, addr);
     }
   }
 
@@ -938,8 +939,8 @@ export async function runFollowRefresh(): Promise<void> {
   const chainCounts: Record<string, number> = {};
   let refreshed = 0;
 
-  for (const [addr, entry] of toRefresh) {
-    const chainCfg = CHAINS.find(c => c.id === entry.chain);
+  for (const [{ chain, address: addr }, entry] of toRefresh) {
+    const chainCfg = CHAINS.find(c => c.id === chain);
     if (!chainCfg) continue;
 
     try {
@@ -949,17 +950,17 @@ export async function runFollowRefresh(): Promise<void> {
       if (!pool) {
         pool = await fetchDsPairByAddress(chainCfg, addr);
         if (pool) {
-          console.log(`[FOLLOW DS FALLBACK] ${entry.chain}:${addr.slice(0, 12)}... — Gecko miss, DexScreener hit`);
+          console.log(`[FOLLOW DS FALLBACK] ${chain}:${addr.slice(0, 12)}... — Gecko miss, DexScreener hit`);
         }
       }
 
       if (!pool) {
         const missCount = (entry.missCount ?? 0) + 1;
         if (missCount >= FOLLOW_MAX_MISSES) {
-          marketFollowList.delete(addr);
-          console.log(`[FOLLOW EVICT] ${entry.chain}:${addr.slice(0, 12)}... — ${missCount} consecutive misses`);
+          marketFollowList.delete(chain, addr);
+          console.log(`[FOLLOW EVICT] ${chain}:${addr.slice(0, 12)}... — ${missCount} consecutive misses`);
         } else {
-          marketFollowList.set(addr, { ...entry, lastRefreshedAt: now, missCount });
+          marketFollowList.set(chain, addr, { ...entry, lastRefreshedAt: now, missCount });
         }
         continue;
       }
@@ -974,9 +975,9 @@ export async function runFollowRefresh(): Promise<void> {
       );
 
       // nu suprascrie attentionScore nou cu entry vechi
-      const updated = marketFollowList.get(addr);
+      const updated = marketFollowList.get(chain, addr);
       if (updated) {
-        marketFollowList.set(addr, { ...updated, lastRefreshedAt: now, missCount: 0 });
+        marketFollowList.set(chain, addr, { ...updated, lastRefreshedAt: now, missCount: 0 });
       }
 
       refreshed++;
