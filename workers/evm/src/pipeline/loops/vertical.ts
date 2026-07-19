@@ -89,7 +89,7 @@ export async function verticalCandidatesLoop(): Promise<void> {
       const netVolV  = (flow as any).netVol1m  ?? netVolF;
       const sellVolV = (flow as any).sellVol1m ?? sellVolF;
 
-      const liqF = getLiquidityContext(pairAddr);
+      const liqF = getLiquidityContext(chain, pairAddr);
       const minVerticalBuys   = liqF.reserveUsd < 30_000 ? 1 : 2;
       const minVerticalBuyVol = liqF.reserveUsd < 30_000 ? 0.03 : 0.05;
       const minVerticalNetVol = liqF.reserveUsd < 30_000 ? 0.02 : 0.03;

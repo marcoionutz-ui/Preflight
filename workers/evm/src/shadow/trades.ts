@@ -47,7 +47,7 @@ export async function saveShadowTrade(
 
   const id  = Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
   const sw  = detectSecondWave(mem, flow);
-  const liq = getLiquidityContext(pairAddr);
+  const liq = getLiquidityContext(pool.chain, pairAddr);
 
   const note = [
     `WORKER ${WORKER_VERSION}`,
@@ -194,7 +194,7 @@ export async function updateOutcomes(pools: SourcePool[]): Promise<void> {
 
     } else if ((() => {
       const pnlPct  = (price - entry) / entry;
-      const liqCtx  = mem ? getLiquidityContext(mem.pairAddress) : { reserveUsd: 0, status: "MISSING" as const };
+      const liqCtx  = mem ? getLiquidityContext(mem.chain, mem.pairAddress) : { reserveUsd: 0, status: "MISSING" as const };
       const isLarge = liqCtx.reserveUsd >= 500_000;
       return flow.hasData &&
         flow.pressure === "SELLING" &&

@@ -69,8 +69,8 @@ export async function buildPairStates(): Promise<Record<string, PairStateSnapsho
 
     const flow    = getWsFlow(addr);
     const lp      = getLpSignal(addr);
-    const liq     = getLiquidityContext(addr);
-    const poolEth = poolLiquidity.get(addr)?.reserveEth ?? 0;
+    const liq     = getLiquidityContext(mem.chain, addr);
+    const poolEth = poolLiquidity.get(mem.chain, addr)?.reserveEth ?? 0;
     const removed = lp.lpRemoved5m ?? 0;
 
     // Pipeline state derivat din stores

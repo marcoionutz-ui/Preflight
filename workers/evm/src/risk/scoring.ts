@@ -64,7 +64,7 @@ export function quickEdgeScore(
   }
 
   // Liquidity context
-  const liq = getLiquidityContext(mem.pairAddress);
+  const liq = getLiquidityContext(mem.chain, mem.pairAddress);
   if      (liq.status === "CONFIRMED") score += 5;
   else if (liq.status === "WEAK")      score -= 10;
   else if (liq.status === "MISSING")   score -= 30;

@@ -110,7 +110,7 @@ function buildSignalPipelineEntries() {
     const events2    = wsFlow.get(addr) ?? [];
     const buys2      = events2.filter(e => e.isBuy);
     const sells2     = events2.filter(e => !e.isBuy);
-    const liq2       = getLiquidityContext(addr);
+    const liq2       = getLiquidityContext(chain, addr);
     const poolCount2 = (() => {
       const cp = mem2?.chain ?? "";
       return mem2 ? tokenPools.get(tokenPoolKey(cp, mem2.tokenAddress))?.size ?? 1 : 1;
@@ -203,7 +203,7 @@ function buildPairContextMap(): Record<string, PreflightPairContext> {
   const buildCtx = (addr: string, chain: PreflightEvmChain, pipelineState: "WATCHING" | "HOT", entryPrice?: number): PreflightPairContext => {
     const mem3    = memory.get(addr);
     const flow3   = getWsFlow(addr);
-    const liq3    = getLiquidityContext(addr);
+    const liq3    = getLiquidityContext(chain, addr);
     const events3 = wsFlow.get(addr) ?? [];
     const buys3   = events3.filter(e => e.isBuy);
     const sells3  = events3.filter(e => !e.isBuy);

@@ -22,16 +22,16 @@ export function getEntryGate(
   score:       number,
   entrySource: EntrySource = "SCAN",
 ) {
-  const liq = getLiquidityContext(mem.pairAddress);
-  if (liq.status === "MISSING") {
-    return { allowed: false, reason: "missing liquidity context — skip" };
-  }
-
   // mem.chain e opțional (PreflightMemoryEntry.chain?) — fail-closed dacă lipsește
-  // identitatea de chain, în loc să fabricăm una ("base") sau să pasăm undefined.
+  // identitatea de chain, ÎNAINTE de orice lookup chain-scoped.
   const chain = mem.chain;
   if (!chain) {
     return { allowed: false, reason: "missing chain identity — skip" };
+  }
+
+  const liq = getLiquidityContext(chain, mem.pairAddress);
+  if (liq.status === "MISSING") {
+    return { allowed: false, reason: "missing liquidity context — skip" };
   }
 
   const isV4 = mem.pairAddress.length === 66;

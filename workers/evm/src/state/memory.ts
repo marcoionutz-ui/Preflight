@@ -14,7 +14,7 @@ import { getRedis } from "../infra/redis";
 import { supabase } from "../infra/supabase";
 import { getNativePrice, getNativeSymbolForChain } from "../infra/nativePrice";
 import { WORKER_VERSION } from "../config/constants";
-import { REDIS_KEYS } from "@preflight/schema";
+import { REDIS_KEYS, pairKey, splitPairKey, type PairKey } from "@preflight/schema";
 import type { PreflightWorkerSnapshot } from "@preflight/schema";
 
 export function updatePoolLiquidity(addr: string, pool: SourcePool): void {
@@ -24,7 +24,7 @@ export function updatePoolLiquidity(addr: string, pool: SourcePool): void {
     const nativePrice   = getNativePrice(nativeSymbol) || getNativePrice("ETH") || 1;
     const reserveNative = reserveUsd / 2 / nativePrice;
 
-    poolLiquidity.set(addr.toLowerCase(), {
+    poolLiquidity.set(pool.chain, addr, {
       reserveUsd,
       reserveEth:    reserveNative, 
       reserveNative,
@@ -167,7 +167,7 @@ export async function saveMemoryToRedis(): Promise<void> {
     for (const [addr, mem] of memory.entries()) memoryObj[addr] = mem;
 
     const reserveObj: Record<string, number> = {};
-    for (const [addr, liqCtx] of poolLiquidity.entries()) reserveObj[addr] = liqCtx.reserveEth;
+    for (const [{ chain, address: addr }, liqCtx] of poolLiquidity.entries()) reserveObj[pairKey(chain, addr)] = liqCtx.reserveEth;
 
      const snapshot: PreflightWorkerSnapshot = {
       version:        WORKER_VERSION,
@@ -223,14 +223,23 @@ export async function loadMemoryFromRedis(): Promise<void> {
         tokenPools.get(key)!.add(addr);
       }
 
-     for (const [addr, nativeReserveRaw] of Object.entries(snap.poolReserveEth ?? {})) {
+     for (const [key, nativeReserveRaw] of Object.entries(snap.poolReserveEth ?? {})) {
+        // key e `pairKey` (chain:address) de la B3d-1; snapshot-urile vechi aveau
+        // doar adresa → splitPairKey dă chain="".
+        const { chain: keyChain, address } = splitPairKey(key as PairKey);
         const nativeReserve = Number(nativeReserveRaw);
         if (Number.isFinite(nativeReserve) && nativeReserve > 0) {
-          const mem          = snap.memory?.[addr];
-          const nativeSymbol = getNativeSymbolForChain(mem?.chain ?? "base");
+          // memory[key] e pregătit pt. B3e (când memory devine pairKey); acum cade pe [address].
+          const mem          = snap.memory?.[key] ?? snap.memory?.[address];
+          // Cheia NOUĂ (pairKey) e source-of-truth; mem.chain e DOAR fallback pt.
+          // snapshot-uri vechi unde keyChain="". Altfel, dacă memory (încă bare-addr
+          // până la B3e) a fost suprascris de alt chain, ai restaura pe chain greșit.
+          const setChain     = keyChain !== "" ? keyChain : mem?.chain;
+          if (!setChain) continue;
+          const nativeSymbol = getNativeSymbolForChain(setChain);
           const nativePrice  = getNativePrice(nativeSymbol) || getNativePrice("ETH") || 1;
 
-          poolLiquidity.set(addr, {
+          poolLiquidity.set(setChain, address, {
             reserveUsd:    nativeReserve * 2 * nativePrice,
             reserveEth:    nativeReserve, // legacy alias
             reserveNative: nativeReserve,

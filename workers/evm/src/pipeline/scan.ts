@@ -86,7 +86,7 @@ function pruneMemory(): void {
     const noRecentTrade = !mem.lastEntryTime || now - mem.lastEntryTime > 48 * 60 * 60_000;
     if (ageMs > 48 * 60 * 60_000 && noRecentTrade) {
       memory.delete(addr);
-      poolLiquidity.delete(addr);
+      if (c) poolLiquidity.delete(c, addr);
       wsFlow.delete(addr);
       pruned++;
     }
@@ -401,7 +401,7 @@ async function processPool(
   if (isNewPool) {
     const knownPools: KnownPool[] = [...(tokenPools.get(tokenPoolKey(pool.chain, tokenAddr)) ?? [])]
       .filter(pa => pa !== pairAddr)
-      .map(pa => ({ pairAddress: pa, liquidityUsd: poolLiquidity.get(pa)?.reserveUsd ?? 0 }));
+      .map(pa => ({ pairAddress: pa, liquidityUsd: poolLiquidity.get(pool.chain, pa)?.reserveUsd ?? 0 }));
 
     const sig = classifyNewPool(tokenAddr, mem.symbol, pool.chain, pairAddr, pool.reserveUsd, knownPools);
     if (sig.classification !== "LOW_LIQ_NOISE" && sig.classification !== "CLONE_RISK") {
@@ -668,7 +668,7 @@ async function processPool(
   const score = quickEdgeScore(pool, mem, wsFlowReal, lp);
   if (score < 80) {
     counters.lowScore++;
-    console.log(`[LOW SCORE] ${mem.symbol} (${pool.chain}) score=${score} flow=${wsFlowReal.pressure} liq=${getLiquidityContext(pairAddr).status}`);
+    console.log(`[LOW SCORE] ${mem.symbol} (${pool.chain}) score=${score} flow=${wsFlowReal.pressure} liq=${getLiquidityContext(pool.chain, pairAddr).status}`);
     return "CONTINUE";
   }
 
@@ -725,7 +725,7 @@ async function processPool(
   recordPipelineEvent("ARM_CONFIRMED", mem.symbol, pool.chain, pairAddr, "ARMED", "CONFIRMED");
   recordLifecycleOutcome(pairAddr, "QUALIFIED_EMITTED", "ARMED", "ARM_CONFIRMED: price + flow held");
 
-  const liqCtx = getLiquidityContext(pairAddr);
+  const liqCtx = getLiquidityContext(pool.chain, pairAddr);
   const qsScan = buildQualifiedSignalEntry({
     symbol: mem.symbol, chain: pool.chain, pairAddress: pairAddr, qualifiedAt: Date.now(),
     flow: {
@@ -760,11 +760,8 @@ function seedFollowListFromMemory(): void {
     const pc = mem.priceChange;
     if (!pc) continue;
     
-    // Defensive key lookup — poate fi addr sau chain:addr
     const reserveUsd =
-      poolLiquidity.get(addr)?.reserveUsd ??
-      poolLiquidity.get(`${mem.chain}:${addr}`)?.reserveUsd ??
-      0;
+      (mem.chain ? poolLiquidity.get(mem.chain, addr)?.reserveUsd : undefined) ?? 0;
   
     const shouldSeed =
       (reserveUsd >= 250_000 && (Math.abs(pc.h1) >= 500 || Math.abs(pc.h24) >= 1000)) ||

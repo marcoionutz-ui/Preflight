@@ -273,7 +273,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
         const qflow3 = getQuoteFlowAsEth(chain, base3, quote3, amount0, amount1);
         if (qflow3.ok && qflow3.ethAmount > 0) {
           recordLp(addr3, false, qflow3.ethAmount);
-          const poolEth    = poolLiquidity.get(addr3)?.reserveEth ?? 0;
+          const poolEth    = poolLiquidity.get(chain.id, addr3)?.reserveEth ?? 0;
           const removedPct = poolEth > 0 ? qflow3.ethAmount / poolEth : 0;
           console.log(`[V3 LP REMOVE ${chain.id}] ${mem3.symbol} -${qflow3.ethAmount.toFixed(3)} ETH (${(removedPct * 100).toFixed(1)}%) quote=${qflow3.quote}`);
         }
@@ -349,7 +349,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
         const ethAmount   = Number(wethIsT0 ? amount0 : amount1) / 1e18;
         recordLp(pairAddress, false, ethAmount);
 
-        const poolEth    = poolLiquidity.get(pairAddress)?.reserveEth ?? 0;
+        const poolEth    = poolLiquidity.get(chain.id, pairAddress)?.reserveEth ?? 0;
         const removedPct = poolEth > 0 ? ethAmount / poolEth : 0;
 
         console.log(

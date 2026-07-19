@@ -81,7 +81,7 @@ export const armedEntries = new PairMap<{
 
 // ── Liquidity ─────────────────────────────────────────────────────────────────
 
-export const poolLiquidity = new Map<string, {
+export const poolLiquidity = new PairMap<{
   reserveUsd:    number;
   reserveEth:    number; 
   reserveNative: number;
