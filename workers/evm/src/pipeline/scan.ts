@@ -722,7 +722,7 @@ async function processPool(
   armedEntries.delete(pool.chain, pairAddr);
 
   recordPipelineEvent("ARM_CONFIRMED", mem.symbol, pool.chain, pairAddr, "ARMED", "CONFIRMED");
-  recordLifecycleOutcome(pairAddr, "QUALIFIED_EMITTED", "ARMED", "ARM_CONFIRMED: price + flow held");
+  recordLifecycleOutcome(pool.chain, pairAddr, "QUALIFIED_EMITTED", "ARMED", "ARM_CONFIRMED: price + flow held");
 
   const liqCtx = getLiquidityContext(pool.chain, pairAddr);
   const qsScan = buildQualifiedSignalEntry({

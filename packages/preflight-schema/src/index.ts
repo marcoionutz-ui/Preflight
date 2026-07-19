@@ -449,6 +449,7 @@ export type LifecycleOutcome =
   | "FAILED_CONFIRMATION";
 
 export interface PreflightLifecycleEntry {
+  chain:         string;
   pairAddress:   string;
   lastOutcome:   LifecycleOutcome;
   lastOutcomeAt: number;

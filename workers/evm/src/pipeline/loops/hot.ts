@@ -95,7 +95,7 @@ export async function hotCandidatesLoop(): Promise<void> {
 
       console.log(`[HOT] ${mem.symbol} (${chainId}) — source:${source ?? "WS"} Edge ${score}`);
       recordPipelineEvent("ARM_CONFIRMED", mem.symbol, chainId, pairAddress, "HOT", "CONFIRMED");
-      recordLifecycleOutcome(pairAddress, "QUALIFIED_EMITTED", "HOT", "HOT_CONFIRMED: gate + flow held");
+      recordLifecycleOutcome(chainId, pairAddress, "QUALIFIED_EMITTED", "HOT", "HOT_CONFIRMED: gate + flow held");
 
       const liqCtx = getLiquidityContext(chainId, pairAddress);
       const qsHot  = buildQualifiedSignalEntry({

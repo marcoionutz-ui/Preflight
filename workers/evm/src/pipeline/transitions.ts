@@ -49,7 +49,7 @@ export function recordDrop(
     reason.toLowerCase().includes("confirmation window expired") ? "EXPIRED" as const :
     reason.toLowerCase().includes("price failed confirmation")   ? "FAILED_CONFIRMATION" as const :
     "DROPPED" as const;
-  recordLifecycleOutcome(pairAddr, lifecycleOutcome, previousState, reason);
+  recordLifecycleOutcome(chain, pairAddr, lifecycleOutcome, previousState, reason);
 
   recordPipelineEvent("DROPPED", symbol, chain, pairAddr, previousState, "NONE", reason);
 }

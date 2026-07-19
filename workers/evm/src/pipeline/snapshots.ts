@@ -226,7 +226,7 @@ function buildPairContextMap(): Record<string, PreflightPairContext> {
       priceVsEntryPct: (entryPrice && mem3?.currentPrice)
         ? Number(((mem3.currentPrice - entryPrice) / entryPrice * 100).toFixed(2)) : null,
     };
-    const lifecycle = getLifecycle(addr);
+    const lifecycle = getLifecycle(chain, addr);
 
     return {
       schemaVersion: SCHEMA_VERSION, workerVersion: WORKER_VERSION,
