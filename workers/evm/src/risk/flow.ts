@@ -5,7 +5,7 @@
  */
 
 import { MIN_FLOW_ETH, MIN_TOTAL_FLOW_ETH, FLOW_IMBALANCE } from "../config/constants";
-import { wsFlow, lpEvents, type SwapEvent, type LpEvent } from "../state/stores";
+import { wsFlow, lpEvents } from "../state/stores";
 import { NEUTRAL_FLOW, STABLE_LIQUIDITY, computeFlowFromTxns } from "../lib/engines/flowTypes";
 import type { FlowSignal, LiquiditySignal } from "../lib/engines/flowTypes";
 import type { SourcePool } from "../sources/normalize";

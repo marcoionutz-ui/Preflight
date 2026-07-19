@@ -6,7 +6,7 @@
 
 import {
   activeWatch, hotCandidates, armedEntries,
-  v3PoolMap, v4PoolMap, wsFlow, poolLiquidity,
+  v3PoolMap, v4PoolMap, wsFlow, lpEvents, poolLiquidity,
   memory, qualifiedSignalsBuffer, marketFollowList, geckoSourceHealth, WatchKind,
   dexscreenerSourceHealth, lastDsBoostedFetchAt, setLastDsBoostedFetchAt,
 } from "../state/stores";
@@ -86,7 +86,7 @@ function pruneMemory(): void {
     const noRecentTrade = !mem.lastEntryTime || now - mem.lastEntryTime > 48 * 60 * 60_000;
     if (ageMs > 48 * 60 * 60_000 && noRecentTrade) {
       memory.delete(addr);
-      if (c) { poolLiquidity.delete(c, addr); wsFlow.delete(c, addr); }
+      if (c) { poolLiquidity.delete(c, addr); wsFlow.delete(c, addr); lpEvents.delete(c, addr); }
       pruned++;
     }
   }
