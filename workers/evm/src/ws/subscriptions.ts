@@ -121,13 +121,13 @@ export function subscribeV3Scoped(chain: ChainConfig): void {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
 
   const hotV3Addrs = [...hotCandidates.entries()]
-    .filter(([addr, info]) => info.chain === chain.id && v3PoolMap.has(addr))
+    .filter(([addr, info]) => info.chain === chain.id && v3PoolMap.has(chain.id, addr))
     .map(([addr]) => addr);
 
   const addrs = [...new Set([
     ...hotV3Addrs,
     ...[...activeWatch.entries()]
-      .filter(([addr, info]) => info.chain === chain.id && v3PoolMap.has(addr))
+      .filter(([addr, info]) => info.chain === chain.id && v3PoolMap.has(chain.id, addr))
       .sort((a, b) => {
         const pa = watchPriority(a[1].kind);
         const pb = watchPriority(b[1].kind);
@@ -169,13 +169,13 @@ export function subscribeV4Scoped(chain: ChainConfig): void {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
 
   const hotV4Ids = [...hotCandidates.entries()]
-    .filter(([addr, info]) => info.chain === chain.id && v4PoolMap.has(addr))
+    .filter(([addr, info]) => info.chain === chain.id && v4PoolMap.has(chain.id, addr))
     .map(([addr]) => addr);
 
   const poolIds = [...new Set([
     ...hotV4Ids,
     ...[...activeWatch.entries()]
-      .filter(([addr, info]) => info.chain === chain.id && v4PoolMap.has(addr))
+      .filter(([addr, info]) => info.chain === chain.id && v4PoolMap.has(chain.id, addr))
       .sort((a, b) => {
         const pa = watchPriority(a[1].kind);
         const pb = watchPriority(b[1].kind);
@@ -237,10 +237,10 @@ export function subscribeV2Scoped(chain: ChainConfig): void {
 
   const rawAddrs = [
     ...[...hotCandidates.entries()]
-      .filter(([addr, info]) => info.chain === chain.id && !v3PoolMap.has(addr) && !v4PoolMap.has(addr))
+      .filter(([addr, info]) => info.chain === chain.id && !v3PoolMap.has(chain.id, addr) && !v4PoolMap.has(chain.id, addr))
       .map(([addr]) => addr),
     ...[...activeWatch.entries()]
-      .filter(([addr, info]) => info.chain === chain.id && !v3PoolMap.has(addr) && !v4PoolMap.has(addr))
+      .filter(([addr, info]) => info.chain === chain.id && !v3PoolMap.has(chain.id, addr) && !v4PoolMap.has(chain.id, addr))
       .sort((a, b) => watchPriority(a[1].kind) - watchPriority(b[1].kind))
       .map(([addr]) => addr),
   ];

@@ -106,7 +106,7 @@ export function addWatchCandidate(
   }
 
   activeWatch.set(pairAddr, info);
-  if (pool) watchedPoolCache.set(pairAddr, pool);
+  if (pool) watchedPoolCache.set(info.chain, pairAddr, pool);
   const sym = memory.get(pairAddr)?.symbol ?? pairAddr.slice(0, 8);
   if (!alreadyWatching) {
     recordPipelineEvent("WATCH_ADDED", sym, info.chain, pairAddr, "NONE", "WATCHING", info.reason);

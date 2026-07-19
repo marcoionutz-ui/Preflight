@@ -103,7 +103,7 @@ export async function buildPairStates(): Promise<Record<string, PairStateSnapsho
       chain:        mem.chain,
       pairAddress:  addr,
       tokenAddress: mem.tokenAddress ?? "",
-      dexType:      addr.length === 66 ? "V4" : v3PoolMap.has(addr) ? "V3" : "V2",
+      dexType:      addr.length === 66 ? "V4" : v3PoolMap.has(mem.chain, addr) ? "V3" : "V2",
 	  
 	  discovery: {
         primaryDiscoverySource: mem.primaryDiscoverySource ?? null,

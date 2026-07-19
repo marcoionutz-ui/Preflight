@@ -27,8 +27,15 @@ export function getEntryGate(
     return { allowed: false, reason: "missing liquidity context — skip" };
   }
 
+  // mem.chain e opțional (PreflightMemoryEntry.chain?) — fail-closed dacă lipsește
+  // identitatea de chain, în loc să fabricăm una ("base") sau să pasăm undefined.
+  const chain = mem.chain;
+  if (!chain) {
+    return { allowed: false, reason: "missing chain identity — skip" };
+  }
+
   const isV4 = mem.pairAddress.length === 66;
-  const isV3 = !isV4 && v3PoolMap.has(mem.pairAddress);
+  const isV3 = !isV4 && v3PoolMap.has(chain, mem.pairAddress);
   const sw   = detectSecondWave(mem, flow);
 
   if ((isV3 || isV4) && liq.status !== "CONFIRMED") {

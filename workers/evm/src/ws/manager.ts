@@ -145,7 +145,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
         const poolId = log4.topics?.[1]?.toLowerCase();
         if (!poolId || raw4.length < 128) return;
 
-        const pool  = v4PoolMap.get(poolId);
+        const pool  = v4PoolMap.get(chain.id, poolId);
         const memV4 = memory.get(poolId);
         if (!pool || !memV4) {
           if (pool && !memV4) console.log(`[V4 NO MEM] poolId=${poolId} pool=${pool.symbol}`);
@@ -205,7 +205,8 @@ export function connectChainWebSocket(chain: ChainConfig): void {
       if (msg.params?.result?.topics?.[0] === SWAP_V3_TOPIC) {
         const log3      = msg.params.result;
         const pairAddr3 = log3.address?.toLowerCase();
-        const pool3     = v3PoolMap.get(pairAddr3);
+        if (!pairAddr3) return;
+        const pool3     = v3PoolMap.get(chain.id, pairAddr3);
         const mem3      = memory.get(pairAddr3);
         if (!pool3 || !mem3) return;
         if (isBlockedSymbol(mem3.symbol)) return;
@@ -237,7 +238,8 @@ export function connectChainWebSocket(chain: ChainConfig): void {
       if (msg.params?.result?.topics?.[0] === MINT_V3_TOPIC) {
         const log3  = msg.params.result;
         const addr3 = log3.address?.toLowerCase();
-        const pool3 = v3PoolMap.get(addr3);
+        if (!addr3) return;
+        const pool3 = v3PoolMap.get(chain.id, addr3);
         const mem3  = pool3 ? memory.get(addr3) : null;
         if (!pool3 || !mem3) return;
         const raw3 = log3.data?.slice(2) ?? "";
@@ -258,7 +260,8 @@ export function connectChainWebSocket(chain: ChainConfig): void {
       if (msg.params?.result?.topics?.[0] === BURN_V3_TOPIC) {
         const log3  = msg.params.result;
         const addr3 = log3.address?.toLowerCase();
-        const pool3 = v3PoolMap.get(addr3);
+        if (!addr3) return;
+        const pool3 = v3PoolMap.get(chain.id, addr3);
         const mem3  = pool3 ? memory.get(addr3) : null;
         if (!pool3 || !mem3) return;
         const raw3 = log3.data?.slice(2) ?? "";
@@ -298,7 +301,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
         if (amount0In === 0n && amount1In === 0n) return;
 
         const mem   = memory.get(pairAddress)!;
-        const pool2 = watchedPoolCache.get(pairAddress);
+        const pool2 = watchedPoolCache.get(chain.id, pairAddress);
 
         const { baseToken: base2, quoteToken: quote2 } = pool2
           ? extractBaseQuote(pool2)

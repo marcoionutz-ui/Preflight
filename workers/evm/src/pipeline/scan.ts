@@ -95,16 +95,16 @@ function pruneMemory(): void {
 
 function rebuildPoolMaps(pools: SourcePool[]): void {
   const chainsPresent = new Set(pools.map(p => p.chain));
-  for (const [addr, p] of v3PoolMap.entries()) {
-    if (chainsPresent.has(p.chain)) v3PoolMap.delete(addr);
+  for (const [{ chain, address: addr }] of v3PoolMap.entries()) {
+    if (chainsPresent.has(chain)) v3PoolMap.delete(chain, addr);
   }
-  for (const [addr, p] of v4PoolMap.entries()) {
-    if (chainsPresent.has(p.chain)) v4PoolMap.delete(addr);
+  for (const [{ chain, address: addr }] of v4PoolMap.entries()) {
+    if (chainsPresent.has(chain)) v4PoolMap.delete(chain, addr);
   }
   for (const p of pools) {
 	if (isBlockedSymbol(p.symbol)) continue;
-    if (p.dexType === "V3" && V3_DEXES.has(p.dexId)) v3PoolMap.set(p.pairAddress, p);
-    if (p.dexType === "V4") v4PoolMap.set(p.pairAddress, p);
+    if (p.dexType === "V3" && V3_DEXES.has(p.dexId)) v3PoolMap.set(p.chain, p.pairAddress, p);
+    if (p.dexType === "V4") v4PoolMap.set(p.chain, p.pairAddress, p);
   }
 }
 
@@ -418,8 +418,8 @@ async function processPool(
   const wsFlowReal = getWsFlow(pairAddr);
   const flow       = getFlow(pool);
   const lp         = getLpSignal(pairAddr);
-  const isV3pool   = v3PoolMap.has(pairAddr);
-  const isV4pool   = v4PoolMap.has(pairAddr);
+  const isV3pool   = v3PoolMap.has(pool.chain, pairAddr);
+  const isV4pool   = v4PoolMap.has(pool.chain, pairAddr);
   if (isV3pool) counters.v3Seen++;
   if (isV4pool) counters.v4Seen++;
 

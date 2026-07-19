@@ -29,7 +29,7 @@ export async function fomoCandidatesLoop(): Promise<void> {
       continue;
     }
 
-    const cachedPool = watchedPoolCache.get(pairAddr);
+    const cachedPool = watchedPoolCache.get(info.chain, pairAddr);
     const mem        = memory.get(pairAddr);
     const flow       = getWsFlow(pairAddr);
 
@@ -40,7 +40,7 @@ export async function fomoCandidatesLoop(): Promise<void> {
     const pool      = freshPool ?? cachedPool;
 
     if (freshPool) {
-      watchedPoolCache.set(pairAddr, freshPool);
+      watchedPoolCache.set(info.chain, pairAddr, freshPool);
       updateMemory(freshPool, freshPool.priceUsd);
     }
 

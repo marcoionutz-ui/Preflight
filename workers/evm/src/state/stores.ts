@@ -106,12 +106,12 @@ export function incrementSwapSubReqId(): number {
 
 // ── Pool maps (pentru V3/V4 detection) ───────────────────────────────────────
 
-export const v3PoolMap = new Map<string, SourcePool>();
-export const v4PoolMap = new Map<string, SourcePool>();
+export const v3PoolMap = new PairMap<SourcePool>();
+export const v4PoolMap = new PairMap<SourcePool>();
 
 // ── Cache ─────────────────────────────────────────────────────────────────────
 
-export const watchedPoolCache = new Map<string, SourcePool>();
+export const watchedPoolCache = new PairMap<SourcePool>();
 
 // ── Pipeline events & drops ───────────────────────────────────────────────────
 

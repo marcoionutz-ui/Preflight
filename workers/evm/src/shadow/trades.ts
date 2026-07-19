@@ -40,7 +40,7 @@ export async function saveShadowTrade(
   }
 
   const isV4note = pairAddr.length === 66;
-  const isV3note = !isV4note && v3PoolMap.has(pairAddr.toLowerCase());
+  const isV3note = !isV4note && v3PoolMap.has(pool.chain, pairAddr);
   const dexType  = isV4note ? "V4" : isV3note ? "V3" : "V2";
   const price    = pool.priceUsd > 0 ? pool.priceUsd : mem.currentPrice;
   if (pool.priceUsd > 0) mem.currentPrice = pool.priceUsd;

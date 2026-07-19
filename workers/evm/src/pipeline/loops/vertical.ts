@@ -55,7 +55,7 @@ export async function verticalCandidatesLoop(): Promise<void> {
       const freshPool = chainCfg ? await fetchPoolByAddress(chainCfg, pairAddr) : null;
       if (!freshPool) continue;
 
-      watchedPoolCache.set(pairAddr, freshPool);
+      watchedPoolCache.set(info.chain, pairAddr, freshPool);
       updateMemory(freshPool, freshPool.priceUsd);
 
       const currentPrice = freshPool.priceUsd;

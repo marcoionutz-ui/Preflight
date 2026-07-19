@@ -72,7 +72,7 @@ export async function hotCandidatesLoop(): Promise<void> {
       // Preflight is a data layer; shadow trades are telemetry only.
       // saveShadowTrade() still dedupes persistence after the signal is emitted.
 
-      const pool = v4PoolMap.get(pairAddress) ?? v3PoolMap.get(pairAddress) ?? await fetchPoolByAddress(chainCfg, pairAddress);
+      const pool = v4PoolMap.get(chainId, pairAddress) ?? v3PoolMap.get(chainId, pairAddress) ?? await fetchPoolByAddress(chainCfg, pairAddress);
       if (!pool) { dropHotCandidate(pairAddress, "pool unavailable", chainId); continue; }
 
       const score = quickEdgeScore(pool, mem, effectiveFlow, lp);
@@ -145,8 +145,8 @@ export async function monitorOpenTrades(): Promise<void> {
       const chainCfg = CHAINS.find(c => c.id === trade.chain || c.gecko === trade.chain);
       if (!chainCfg) continue;
       const pool =
-        v4PoolMap.get(trade.pair_address.toLowerCase()) ??
-        v3PoolMap.get(trade.pair_address.toLowerCase()) ??
+        v4PoolMap.get(chainCfg.id, trade.pair_address) ??
+        v3PoolMap.get(chainCfg.id, trade.pair_address) ??
         await fetchPoolByAddress(chainCfg, trade.pair_address);
       if (pool) pools.push(pool);
     }
