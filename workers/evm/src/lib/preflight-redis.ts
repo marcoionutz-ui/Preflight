@@ -122,7 +122,9 @@ export interface PreflightPairContext {
   schemaVersion:      string;
   workerVersion:      string;
   symbol:             string;
-  chain:              string;
+  // EVM-only: produs exclusiv de worker-evm. Tip îngust ca să nu scape "eth"/
+  // "solana"/necanonic în JSON-ul contextului (cheia e chain-scoped oricum).
+  chain:              PreflightEvmChain;
   pairAddress:        string;
   pipelineState:      PipelineState;
   phase:              string;
@@ -239,10 +241,13 @@ export async function writePreflightRedis(r: Redis, input: PreflightWriteInput):
   );
 
   // ── preflight:pair_context ───────────────────────────────────────────────
-  const pairContextEntries = Object.entries(input.pairContextMap);
-  if (pairContextEntries.length > 0) {
-    for (const [addr, ctx] of pairContextEntries) {
-      pipeline.set(REDIS_KEYS.pairContext(addr), JSON.stringify(ctx), "EX", 120);
+  const pairContexts = Object.values(input.pairContextMap);
+  if (pairContexts.length > 0) {
+    for (const ctx of pairContexts) {
+      // Faza B2/B3: cheia derivă din DATELE contextului (ctx.chain + ctx.pairAddress),
+      // NU din cheia internă a mapului. În B3 cheia mapului devine deja `${chain}:${addr}`,
+      // iar `pairContext(ctx.chain, mapKey)` ar produce `pair_context:base:base:0xabc`.
+      pipeline.set(REDIS_KEYS.pairContext(ctx.chain, ctx.pairAddress), JSON.stringify(ctx), "EX", 120);
     }
   }
 

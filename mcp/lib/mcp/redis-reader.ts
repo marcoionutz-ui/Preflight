@@ -11,6 +11,8 @@ import type {
 } from "./types";
 import {
   REDIS_KEYS,
+  PREFLIGHT_EVM_CHAINS,
+  normalizeChainId,
   type PreflightMarketContext, type PreflightDrop,
   type PreflightMomentumEvent, type PreflightSignalPipelineEntry, type PreflightQualifiedSignal,
   type PreflightSolanaPool, type PreflightObservedCandidate, type PreflightSolanaQuoteType,
@@ -198,13 +200,46 @@ export function findLastDropForPair(addr: string, drops: PreflightDrop[]): Prefl
   return drops.find(d => d.pairAddress === addr) ?? null;
 }
 
-export async function readPairContext(addr: string): Promise<any | null> {
+/**
+ * Rezultatul căutării pair_context. Faza B2: cheile sunt chain-scoped, deci
+ * lookup-ul fără chain poate găsi aceeași adresă pe >1 chain EVM. În loc să
+ * alegem tăcut primul (coliziunea exact pe care B2 o elimină), raportăm
+ * ambiguitatea ca să cerem chain explicit.
+ */
+export interface PairContextLookup {
+  context:         any | null;
+  matchedChain:    string | null;
+  ambiguousChains: string[];
+}
+
+export async function readPairContext(addr: string, chain?: string): Promise<PairContextLookup> {
   const r = getRedis();
-  if (!r) return null;
+  if (!r) return { context: null, matchedChain: null, ambiguousChains: [] };
   try {
-    const raw = await r.get(REDIS_KEYS.pairContext(addr));
-    return raw ? JSON.parse(raw) : null;
-  } catch { return null; }
+    // Cu chain (hint din tool) → GET direct pe cheia chain-scoped.
+    if (chain) {
+      const canonicalChain = normalizeChainId(chain);
+      const raw = await r.get(REDIS_KEYS.pairContext(canonicalChain, addr));
+      return {
+        context:         raw ? JSON.parse(raw) : null,
+        matchedChain:    raw ? canonicalChain : null,
+        ambiguousChains: [],
+      };
+    }
+    // Fără chain → probăm chain-urile EVM cunoscute printr-un singur MGET
+    // (pair_context e scris DOAR de worker-evm pt. perechi EVM).
+    const keys = PREFLIGHT_EVM_CHAINS.map(c => REDIS_KEYS.pairContext(c, addr));
+    const raws = await r.mget(...keys);
+    const hits = raws
+      .map((raw, i) => ({ raw, chain: PREFLIGHT_EVM_CHAINS[i] }))
+      .filter((x): x is { raw: string; chain: typeof PREFLIGHT_EVM_CHAINS[number] } => x.raw !== null);
+
+    if (hits.length === 0) return { context: null, matchedChain: null, ambiguousChains: [] };
+    if (hits.length > 1)   return { context: null, matchedChain: null, ambiguousChains: hits.map(h => h.chain) };
+    return { context: JSON.parse(hits[0].raw), matchedChain: hits[0].chain, ambiguousChains: [] };
+  } catch {
+    return { context: null, matchedChain: null, ambiguousChains: [] };
+  }
 }
 
 // ── Pas 7B helpers ────────────────────────────────────────────────────────────

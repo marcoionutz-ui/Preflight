@@ -200,7 +200,7 @@ function buildPreflightDrops(): PreflightDrop[] {
 function buildPairContextMap(): Record<string, PreflightPairContext> {
   const pairContextMap: Record<string, PreflightPairContext> = {};
 
-  const buildCtx = (addr: string, chain: string, pipelineState: "WATCHING" | "HOT", entryPrice?: number): PreflightPairContext => {
+  const buildCtx = (addr: string, chain: PreflightEvmChain, pipelineState: "WATCHING" | "HOT", entryPrice?: number): PreflightPairContext => {
     const mem3    = memory.get(addr);
     const flow3   = getWsFlow(addr);
     const liq3    = getLiquidityContext(addr);
@@ -253,11 +253,17 @@ function buildPairContextMap(): Record<string, PreflightPairContext> {
     };
   };
 
+  // Guard isEvmChain narrows info.chain (string în stores.ts) la PreflightEvmChain.
+  // La runtime chain-ul de aici e mereu un chain EVM real (fallback-ul "unknown"
+  // e doar pe căile de drop → PreflightDrop, nu pe watch/hot); guardul e puntea
+  // de tip + o plasă defensivă (skip contexte fără chain valid).
   for (const [addr, info] of activeWatch.entries()) {
+    if (!isEvmChain(info.chain)) continue;
     pairContextMap[addr] = buildCtx(addr, info.chain, hotCandidates.has(addr) ? "HOT" : "WATCHING", info.entryPrice);
   }
   for (const [addr, info] of hotCandidates.entries()) {
     if (!pairContextMap[addr]) {
+      if (!isEvmChain(info.chain)) continue;
       pairContextMap[addr] = buildCtx(addr, info.chain, "HOT");
     }
   }

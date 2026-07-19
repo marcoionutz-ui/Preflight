@@ -24,6 +24,13 @@ export type PreflightEvmChain =
   | "ethereum"
   | "bsc";
 
+/**
+ * Chain-urile EVM la runtime (pt. iterare/probe — ex. reader-ul MCP care caută
+ * pair_context fără să știe chain-ul). Sursa de TIP rămâne PreflightEvmChain;
+ * `satisfies` garantează că nu strecori un chain invalid aici.
+ */
+export const PREFLIGHT_EVM_CHAINS = ["ethereum", "base", "arbitrum", "bsc"] as const satisfies readonly PreflightEvmChain[];
+
 // Global multichain union. EVM-only wire contracts (PreflightPairState,
 // PreflightDrop, momentum/pipeline/qualified signals, ChainConfig.id, etc.)
 // use PreflightEvmChain instead of this — narrower, so "solana" can never
@@ -928,9 +935,10 @@ export const REDIS_KEYS = {
   agentWatchRequests: "preflight:agent_watch_requests",
   lifecycle:          "preflight:lifecycle",
 
-  // Per-pair. NOTĂ: încă doar-adresă → coliziune cross-chain (P0-1). Migrare la
-  // pairKey(chain, addr) în Faza B2 (necesită chain în readPairContext + callers).
-  pairContext:       (addr: string) => `preflight:pair_context:${addr.toLowerCase()}`,
+  // Per-pair, chain-scoped (Faza B2). pairContext e EVM-only în practică, dar
+  // trecem prin pairKey pt. consistență (elimină coliziunea cross-chain P0-1).
+  // Reader-ul MCP probează PREFLIGHT_EVM_CHAINS când chain-ul nu e dat.
+  pairContext:       (chain: string, addr: string) => `preflight:pair_context:${pairKey(chain, addr)}`,
   risk:              (chain: string, token: string) => `preflight:risk:${normalizeChainId(chain)}:${token.toLowerCase()}`,
 
   // 6.10 — Own trending (chain normalizat + Solana case-safe via pairKey)

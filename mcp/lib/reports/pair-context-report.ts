@@ -18,7 +18,7 @@ import {
 } from "../mcp/redis-reader";
 import type { PairRiskSummary } from "../mcp/types";
 import type { McpConfidence, McpDataQuality } from "../mcp/errors";
-import type { SourceAgreement } from "@preflight/schema";
+import { normalizeChainId, type SourceAgreement } from "@preflight/schema";
 
 export interface PairContextReport {
   ok:            boolean;
@@ -102,8 +102,10 @@ export async function buildPairContextReport(
       };
     }
 
-    const normalizedChain = chain?.toLowerCase();
-    const ALLOWED_CHAINS  = new Set(["base", "arbitrum", "bsc", "eth", "solana"]);
+    // Formă canonică (eth→ethereum, trim). Schema + worker scriu "ethereum",
+    // deci acceptăm forma canonică, nu aliasul extern "eth".
+    const normalizedChain = chain ? normalizeChainId(chain) : undefined;
+    const ALLOWED_CHAINS  = new Set(["base", "arbitrum", "bsc", "ethereum", "solana"]);
     if (normalizedChain && !ALLOWED_CHAINS.has(normalizedChain)) {
       return {
         ok: false, payload: {}, freshnessSec: null, confidence: "LOW",
@@ -115,8 +117,12 @@ export async function buildPairContextReport(
 
     // ── 8.0l: Solana branch (runs before readAllRedis — avoids EVM reads) ──
     // Solana addresses are base58 and case-sensitive — preserve original case.
-    const isSolana = normalizedChain === "solana" ||
-      (!rawAddr.startsWith("0x") && rawAddr.length >= 32);
+    // Un chain EVM explicit bate euristica: doar când chain-ul LIPSEȘTE ghicim
+    // Solana din forma adresei (base58, fără 0x). Altfel `chain:"base"` + adresă
+    // lungă non-0x ar cădea greșit pe ramura Solana.
+    const isSolana =
+      normalizedChain === "solana" ||
+      (normalizedChain === undefined && !rawAddr.startsWith("0x") && rawAddr.length >= 32);
 
     if (isSolana) {
       const poolAddress = rawAddr; // preserve case — Redis keys are case-sensitive
@@ -164,8 +170,23 @@ export async function buildPairContextReport(
     const { now, states, watch, hot, armed, snapshot, pfMarket, regime } = ctx;
     const coveragePct = pfMarket?.flowCoveragePct ?? regime?.flowCoveragePct ?? null;
 
-    // Try preflight:pair_context first — richest data
-    const pfCtx = await readPairContext(addr);
+    // Try preflight:pair_context first — richest data.
+    // Faza B2: cheie chain-scoped. normalizedChain e hint-ul EVM (poate fi
+    // undefined → readPairContext probează chain-urile EVM cunoscute).
+    const pfLookup = await readPairContext(addr, normalizedChain);
+    // Aceeași adresă pe >1 chain EVM fără hint → NU alegem tăcut primul chain;
+    // cerem chain explicit (altfel B2 doar ar ascunde iar coliziunea).
+    if (pfLookup.ambiguousChains.length > 1) {
+      return {
+        ok: false,
+        payload: { found: false, pairAddress: addr, matchingChains: pfLookup.ambiguousChains },
+        freshnessSec: null,
+        confidence: "LOW",
+        errorCode: "AMBIGUOUS_PAIR",
+        errorMessage: "Pair address exists on multiple chains; specify chain",
+      };
+    }
+    const pfCtx = pfLookup.context;
 
     const watchEntry    = watch[addr] ?? null;
     const hotEntry      = hot[addr]   ?? null;
@@ -226,7 +247,7 @@ export async function buildPairContextReport(
     const mainPayload = {
       found: true, pairAddress: addr,
       symbol: data.symbol,
-      chain:  chain ?? pairState?.chain ?? watchOut?.chain ?? hotOut?.chain ?? armedOut?.chain ?? null,
+      chain:  normalizedChain ?? pfLookup.matchedChain ?? pairState?.chain ?? watchOut?.chain ?? hotOut?.chain ?? armedOut?.chain ?? null,
       phase: data.phase, seenCount: data.seenCount, currentPrice: data.currentPrice,
       priceChange: pairState?.priceChange ?? null,
       timing: {
