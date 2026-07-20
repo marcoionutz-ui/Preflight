@@ -52,7 +52,7 @@ export async function readAllRedis(): Promise<RedisContext | null> {
     statesRaws, watchRaws, hotRaws, armedRaws, snapshotRaws,
     regimeRaw, eventsRaws, dropsRaws,
     pfMarketRaw, pfMomentumRaws, pfPipelineRaws, pfQualifiedRaws,
-    pfCoverageRaw, pfScannerStatsRaw, pfLifecycleRaws,
+    pfCoverageRaws, pfScannerStatsRaws, pfLifecycleRaws,
   ] = await Promise.all([
     r.mget(...evmChains.map(c => REDIS_KEYS.pairStates(c))),
     r.mget(...evmChains.map(c => REDIS_KEYS.activeWatch(c))),
@@ -66,8 +66,8 @@ export async function readAllRedis(): Promise<RedisContext | null> {
     r.mget(...evmChains.map(c => REDIS_KEYS.momentumEvents(c))),
     r.mget(...evmChains.map(c => REDIS_KEYS.signalPipeline(c))),
     r.mget(...evmChains.map(c => REDIS_KEYS.qualifiedSignals(c))),
-    r.get(REDIS_KEYS.pipelineCoverage),
-    r.get(REDIS_KEYS.scannerStats),
+    r.mget(...evmChains.map(c => REDIS_KEYS.pipelineCoverage(c))),
+    r.mget(...evmChains.map(c => REDIS_KEYS.scannerStats(c))),
     r.mget(...evmChains.map(c => REDIS_KEYS.lifecycle(c))),
   ]);
 
@@ -141,6 +141,90 @@ export async function readAllRedis(): Promise<RedisContext | null> {
   const qualifiedM = mergeChainArrays<PreflightQualifiedSignal>(pfQualifiedRaws, "pf_qualified", q => q.qualifiedAt);
   const lifecycleM = mergeChainArrays<LifecycleEntry>(pfLifecycleRaws, "pf_lifecycle", l => l.lastOutcomeAt);
 
+  // B4c: pipeline_coverage chain-scoped → MGET + merge pe sub-obiectul `chains`
+  // (keysets chain-disjuncte, o intrare per chain), savedAt=max, version din cel mai nou.
+  const mergeCoverage = (raws: (string | null)[]): { merged: PipelineCoverage | null; any: boolean } => {
+    const chains: Record<string, unknown> = {};
+    let savedAt: number | null = null;
+    let version: string | null = null;
+    let any = false;
+    for (const raw of raws) {
+      if (raw == null) continue;
+      const snap = safeJson<PipelineCoverage | null>(raw, null, "pf_pipeline_coverage");
+      if (!snap) continue;
+      any = true;
+      Object.assign(chains, (snap as any).chains ?? {});
+      const sv = (snap as any).savedAt;
+      if (typeof sv === "number" && (savedAt === null || sv > savedAt)) {
+        savedAt = sv;
+        version = (snap as any).workerVersion ?? null;
+      } else if (savedAt === null) {
+        version = version ?? (snap as any).workerVersion ?? null;
+      }
+    }
+    return { merged: any ? ({ workerVersion: version, savedAt, chains } as unknown as PipelineCoverage) : null, any };
+  };
+  const coverageM = mergeCoverage(pfCoverageRaws);
+
+  // B4d-1: scanner_stats chain-scoped → MGET + merge ONEST (nu newest-wins silențios):
+  // `chains`/`sourceByChain` = Object.assign (chain-disjuncte); scan totaluri = SUMĂ pe
+  // chain-uri (writer-ul scrie felii LOCALE), durationMs = max; dexscreener = statusul cel
+  // mai SEVER (o problemă pe orice chain iese la suprafață); discoverySource = comun sau
+  // "mixed"; savedAt = max. null dacă nicio cheie.
+  const DEX_SEVERITY: Record<string, number> = { OK: 0, STARTING: 1, DEGRADED: 2, RATE_LIMITED: 3 };
+  const mergeScannerStats = (raws: (string | null)[]): { merged: ScannerStats | null; any: boolean } => {
+    const chains: Record<string, unknown> = {};
+    const sourceByChain: Record<string, unknown> = {};
+    let totalFetched = 0, processedPools = 0, durationMs = 0;
+    let savedAt: number | null = null;
+    let discoverySource: string | null = null, discoveryMixed = false;
+    let dex: any = null, dexRank = -1, dexSavedAt: number | null = null;
+    let any = false;
+    for (const raw of raws) {
+      if (raw == null) continue;
+      const st = safeJson<ScannerStats | null>(raw, null, "pf_scanner_stats");
+      if (!st) continue;
+      any = true;
+      Object.assign(chains,        (st as any).chains ?? {});
+      Object.assign(sourceByChain, (st as any).sourceByChain ?? {});
+      const sc = (st as any).scan ?? {};
+      totalFetched   += Number(sc.totalFetched   ?? 0);
+      processedPools += Number(sc.processedPools ?? 0);
+      durationMs      = Math.max(durationMs, Number(sc.durationMs ?? 0));
+      const sv = (st as any).savedAt;
+      const svNum = typeof sv === "number" ? sv : null;
+      if (svNum !== null) savedAt = savedAt === null ? svNum : Math.max(savedAt, svNum);
+      const ds = (st as any).discoverySource;
+      if (ds != null) { if (discoverySource === null) discoverySource = ds; else if (discoverySource !== ds) discoveryMixed = true; }
+      const d = (st as any).dexscreener;
+      if (d) {
+        const rank = DEX_SEVERITY[d.status] ?? 0;
+        // la severitate egală, preferă health-ul cel mai PROASPĂT (nu primul în ordinea chain-urilor)
+        const shouldReplace = rank > dexRank || (rank === dexRank && svNum !== null && (dexSavedAt === null || svNum > dexSavedAt));
+        if (shouldReplace) { dexRank = rank; dex = d; dexSavedAt = svNum; }
+      }
+    }
+    if (!any) return { merged: null, any };
+    // `dex` provine de la workerul cu statusul cel mai sever (poate MAI VECHI decât savedAt
+    // global). age-at-write e relativ la dexSavedAt; tp_health_check adaugă (now - savedAt
+    // global) → fără reancorare ar subestima vârsta. Offset = savedAt_global - dexSavedAt.
+    const dexAgeOffsetSec = savedAt !== null && dexSavedAt !== null ? Math.max(0, Math.round((savedAt - dexSavedAt) / 1000)) : 0;
+    const mergedDex = dex ? {
+      ...dex,
+      lastFetchAgeSec: dex.lastFetchAgeSec === null ? null : dex.lastFetchAgeSec + dexAgeOffsetSec,
+      last429AgeSec:   dex.last429AgeSec   === null ? null : dex.last429AgeSec   + dexAgeOffsetSec,
+    } : null;
+    return { merged: ({
+      savedAt,
+      discoverySource: discoveryMixed ? "mixed" : (discoverySource ?? "auto"),
+      scan: { durationMs, totalFetched, processedPools },
+      chains,
+      sourceByChain,
+      dexscreener: mergedDex,
+    } as unknown as ScannerStats), any };
+  };
+  const scannerM = mergeScannerStats(pfScannerStatsRaws);
+
   return {
     now,
     states:   statesM.merged,
@@ -166,8 +250,8 @@ export async function readAllRedis(): Promise<RedisContext | null> {
     pfPipeline:       pipelineM.any ? pipelineM.merged : null,
     pfQualified:      qualifiedM.any ? qualifiedM.merged : null,
     pfDrops: dropsM.any ? dropsM.merged : null,
-    pipelineCoverage: safeJson<PipelineCoverage | null>(pfCoverageRaw, null, "pf_pipeline_coverage"),
-    scannerStats:     safeJson<ScannerStats | null>(pfScannerStatsRaw, null, "pf_scanner_stats"),
+    pipelineCoverage: coverageM.merged,
+    scannerStats:     scannerM.merged,
     pfLifecycle:      lifecycleM.any ? lifecycleM.merged : null,
     keyExists: {
       pair_states:          statesM.any,
@@ -183,8 +267,8 @@ export async function readAllRedis(): Promise<RedisContext | null> {
       pf_pipeline:          pipelineM.any,
       pf_qualified:         qualifiedM.any,
       pf_drops:             dropsM.any,
-      pf_pipeline_coverage: pfCoverageRaw     !== null,
-      pf_scanner_stats:     pfScannerStatsRaw !== null,
+      pf_pipeline_coverage: coverageM.any,
+      pf_scanner_stats:     scannerM.any,
       pf_lifecycle:         lifecycleM.any,
     },
   };

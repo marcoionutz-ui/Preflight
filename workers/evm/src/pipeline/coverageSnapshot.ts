@@ -144,10 +144,17 @@ export async function writeCoverageSnapshot(r: Redis, states: Record<string, Pai
     };
   }
 
-  const snapshot: PreflightPipelineCoverage = {
-    workerVersion: WORKER_VERSION,
-    savedAt:       now,
-    chains,
-  };
-  await r.set(REDIS_KEYS.pipelineCoverage, JSON.stringify(snapshot), "EX", 120);
+  // B4c: pipeline_coverage chain-scoped — o cheie per-chain, fiecare cu doar
+  // sub-obiectul `chains` al ei. `chains` conține deja doar chain-urile runtime-ului
+  // (bucla peste CHAINS de mai sus) → ownership curat, un worker scrie doar cheile lui.
+  const pipe = r.pipeline();
+  for (const { id: chainId } of CHAINS) {
+    const snapshot: PreflightPipelineCoverage = {
+      workerVersion: WORKER_VERSION,
+      savedAt:       now,
+      chains:        { [chainId]: chains[chainId] },
+    };
+    pipe.set(REDIS_KEYS.pipelineCoverage(chainId), JSON.stringify(snapshot), "EX", 120);
+  }
+  await pipe.exec();
 }

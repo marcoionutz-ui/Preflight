@@ -951,8 +951,8 @@ export const REDIS_KEYS = {
   momentumEvents:     (chain: string) => `preflight:momentum_events:${normalizeChainId(chain)}`,
   signalPipeline:     (chain: string) => `preflight:signal_pipeline:${normalizeChainId(chain)}`,
   qualifiedSignals:   (chain: string) => `preflight:qualified_signals:${normalizeChainId(chain)}`,
-  pipelineCoverage:   "preflight:pipeline_coverage",
-  scannerStats:       "preflight:scanner_stats",
+  pipelineCoverage:   (chain: string) => `preflight:pipeline_coverage:${normalizeChainId(chain)}`,
+  scannerStats:       (chain: string) => `preflight:scanner_stats:${normalizeChainId(chain)}`,
   agentWatchRequests: "preflight:agent_watch_requests",
   lifecycle:          (chain: string) => `preflight:lifecycle:${normalizeChainId(chain)}`,
 

@@ -137,7 +137,24 @@ async function writeScannerStats(
       status:           dexscreenerSourceHealth.status,
     },
   };
-  await r.set(REDIS_KEYS.scannerStats, JSON.stringify(stats), "EX", 300);
+  // B4d-1: scanner_stats chain-scoped — o cheie per-chain. `chains`/`sourceByChain`
+  // sunt deja per-chain. **Scan totalurile sunt LOCALE chainului** (din sourceByChain:
+  // indexedCount+geckoCount) — NU totalurile globale replicate; altfel reader-ul (care
+  // sumează) ar dubla în single-process sau ar raporta doar un chain post-split.
+  // durationMs = durata scanului (per-worker) → reader ia max. dexscreener = health-ul
+  // sursei pt. acel worker (post-split fiecare are al lui) → reader ia cel mai sever.
+  const statsPipe = r.pipeline();
+  for (const { id: chainId } of CHAINS) {
+    const sbc = stats.sourceByChain[chainId];
+    const localFetched = sbc ? (sbc.indexedCount ?? 0) + (sbc.geckoCount ?? 0) : 0;
+    statsPipe.set(REDIS_KEYS.scannerStats(chainId), JSON.stringify({
+      ...stats,
+      scan:          { durationMs: stats.scan.durationMs, totalFetched: localFetched, processedPools: localFetched },
+      chains:        stats.chains[chainId] ? { [chainId]: stats.chains[chainId] } : {},
+      sourceByChain: sbc ? { [chainId]: sbc } : {},
+    }), "EX", 300);
+  }
+  await statsPipe.exec();
 }
 
 // ── Source dispatch ───────────────────────────────────────────────────────────
