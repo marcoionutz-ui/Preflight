@@ -9,7 +9,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { readAllRedis, formatEth, formatVol, formatPct, combineConfidence, getPipelineState, readSolanaIndexerStats, readSolanaMovers, readSolanaRecentActivity } from "../redis-reader";
-import { normalizeChainId } from "@preflight/schema";
+import { normalizeChainId, splitPairKey } from "@preflight/schema";
 import { mcpResponse, mcpErr, ERR } from "../errors";
 
 // Timestamp fallback — events pot folosi ts, detectedAt, sau timestamp
@@ -204,7 +204,8 @@ Args: chain — one of: base, arbitrum, eth, bsc, solana`,
 
         // ── Armed ──────────────────────────────────────────────────────────
         if (chainArmed.length > 0) {
-          const armedLines = chainArmed.map(([addr, a]) => {
+          const armedLines = chainArmed.map(([key, a]) => {
+            const addr   = splitPairKey(key).address; // cheia e pairKey → adresa brută
             const ageSec = Math.round((now - a.armedAt) / 1000);
             return `  → ${a.symbol ?? addr.slice(0, 8)} pair:${addr} score:${a.score} age:${ageSec}s flow:${a.flowPressure}`;
           });
@@ -216,9 +217,10 @@ Args: chain — one of: base, arbitrum, eth, bsc, solana`,
         if (chainHot.length > 0) {
           const hotLines = chainHot
             .sort(([, a], [, b]) => a.promotedAt - b.promotedAt)
-            .map(([addr, h]) => {
+            .map(([key, h]) => {
+              const addr      = splitPairKey(key).address;
               const ageSec    = Math.round((now - h.promotedAt) / 1000);
-              const pairState = states[addr];
+              const pairState = states[key];
               const pc   = pairState?.priceChange;
               let line   = `  → ${h.symbol ?? addr.slice(0, 8)} pair:${addr}`;
               line += `\n     source:${h.source ?? "WS"} age:${ageSec}s phase:${h.phase ?? "?"}`;
@@ -260,7 +262,8 @@ Args: chain — one of: base, arbitrum, eth, bsc, solana`,
           .slice(0, 10);
 
         if (observedMovers.length > 0) {
-          const moverLines = observedMovers.map(([addr, s]) => {
+          const moverLines = observedMovers.map(([key, s]) => {
+            const addr = splitPairKey(key).address;
             const pc = s.priceChange!;
             let line = `  → ${s.symbol ?? addr.slice(0, 8)} pair:${addr}`;
             line += `\n     m5:${formatPct(pc.m5)} h1:${formatPct(pc.h1)} h24:${formatPct(pc.h24)} liq:$${Math.round((s.reserveUsd ?? 0) / 1000)}K`;
@@ -274,7 +277,7 @@ Args: chain — one of: base, arbitrum, eth, bsc, solana`,
 
         // ── Top WATCHING by flow activity ──────────────────────────────────
         const watchingWithFlow = chainWatch
-          .map(([addr, w]) => ({ addr, w, pairState: states[addr] ?? null }))
+          .map(([key, w]) => ({ addr: splitPairKey(key).address, w, pairState: states[key] ?? null }))
           .filter(({ pairState }) => pairState?.flow?.hasData && pairState.flow.pressure === "BUYING")
           .sort((a, b) => (b.pairState?.flow?.buyVol5m ?? 0) - (a.pairState?.flow?.buyVol5m ?? 0))
           .slice(0, 5);

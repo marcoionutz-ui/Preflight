@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { readAllRedis, formatVol, formatPct, combineConfidence, dedupeByPair } from "../redis-reader";
+import { pairKey, splitPairKey } from "@preflight/schema";
 import { mcpErr, mcpResponse, ERR } from "../errors";
 import type { PairState } from "../types";
 
@@ -85,9 +86,12 @@ Observed movers section shows tokens moving on market that haven't passed pipeli
         const activeQualified = (pfQualified ?? []).filter(q => {
           const addr = q.pairAddress?.toLowerCase();
           if (!addr) return false;
-          const stillActive  = watch[addr] || hot[addr] || armed[addr];
+          // B3f-2: mapurile sunt keyed pe pairKey → construiește cheia cu q.chain.
+          const key = q.chain ? pairKey(q.chain, addr) : null;
+          const stillActive  = key ? (watch[key] || hot[key] || armed[key]) : false;
           const droppedAfter = (pfDrops ?? drops ?? []).some(d =>
             d.pairAddress?.toLowerCase() === addr &&
+            (!q.chain || (d.chain ?? "").toLowerCase() === q.chain.toLowerCase()) &&
             d.droppedAt > (q.qualifiedAt ?? 0)
           );
           const fresh = now - (q.qualifiedAt ?? 0) < 60_000;
@@ -111,10 +115,11 @@ Observed movers section shows tokens moving on market that haven't passed pipeli
           const hotList = Object.entries(hot)
             .sort(([, a]: any, [, b]: any) => a.promotedAt - b.promotedAt)
             .slice(0, 3)
-            .map(([addr, h]: any) => {
+            .map(([key, h]: any) => {
+              const addr      = splitPairKey(key).address;
               const ageSec    = Math.round((now - h.promotedAt) / 1000);
-              const watchKind = watch[addr]?.kind ?? null;
-              const psFlow = states[addr]?.flow ?? h.flow;
+              const watchKind = watch[key]?.kind ?? null;
+              const psFlow = states[key]?.flow ?? h.flow;
               return `  → ${h.symbol ?? addr.slice(0, 8)} [${h.chain}] pair:${addr}${watchKind ? ` kind:${watchKind}` : ""} source:${h.source ?? "WS"} age:${ageSec}s flow:${psFlow?.pressure} buys:${psFlow?.buys5m} buyVol:${formatVol((psFlow as any)?.buyVol5mUsd, psFlow?.buyVol5m ?? 0)}`;
             });
           lines.push(`HOT:\n${hotList.join("\n")}`);
@@ -122,9 +127,10 @@ Observed movers section shows tokens moving on market that haven't passed pipeli
 
 		// ── ARMED — first-class, înainte de noise ─────────────────────────
         if (armedCount > 0) {
-          const armedList = Object.entries(armed).map(([addr, a]: any) => {
+          const armedList = Object.entries(armed).map(([key, a]: any) => {
+            const addr     = splitPairKey(key).address;
             const ageSec   = Math.round((now - a.armedAt) / 1000);
-            const ps       = states[addr] ?? null;
+            const ps       = states[key] ?? null;
             const flowStr  = ps?.flow?.hasData
               ? `${ps.flow.pressure} buys:${ps.flow.buys5m} buyVol:${formatVol(ps.flow.buyVol5mUsd, ps.flow.buyVol5m ?? 0)}`
               : a.flowPressure ?? "?";
@@ -205,7 +211,7 @@ Observed movers section shows tokens moving on market that haven't passed pipeli
           const dropLines = recentDropsList.map(d => {
             const ageSec    = Math.round((now - d.droppedAt) / 1000);
             const fromState = d.wasIn ?? "?";
-            return `  ${ageSec}s: ${d.symbol} pair:${d.pairAddress} dropped from ${fromState} — ${d.dropReason ?? "?"}`;
+            return `  ${ageSec}s: ${d.symbol} [${d.chain ?? "?"}] pair:${d.pairAddress} dropped from ${fromState} — ${d.dropReason ?? "?"}`;
           });
           lines.push(`DROPPED:\n${dropLines.join("\n")}`);
         }
@@ -215,7 +221,7 @@ Observed movers section shows tokens moving on market that haven't passed pipeli
         if (recentEvents.length) {
           const evLines = recentEvents.map((e: any) => {
             const ageSec = Math.round((now - e.ts) / 1000);
-            return `  ${ageSec}s: ${e.symbol} ${e.from}→${e.to}${e.reason ? ` (${e.reason})` : ""}`;
+            return `  ${ageSec}s: ${e.symbol} [${e.chain ?? "?"}] pair:${e.pairAddress ?? "?"} ${e.from}→${e.to}${e.reason ? ` (${e.reason})` : ""}`;
           });
           lines.push(`TRANSITIONS:\n${evLines.join("\n")}`);
         }

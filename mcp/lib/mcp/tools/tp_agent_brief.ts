@@ -6,6 +6,7 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { readAllRedis, formatPct, combineConfidence, dedupeByPair } from "../redis-reader";
+import { splitPairKey } from "@preflight/schema";
 import { mcpResponse, mcpErr, ERR } from "../errors";
 
 export function registerNextAction(server: McpServer) {
@@ -73,8 +74,10 @@ Does not advise on trades. Routes to data, not to decisions.`,
           const c = (v as any).chain ?? "unknown";
           chainCounts[c] = (chainCounts[c] ?? 0) + 1;
         }
-        const topChain = Object.entries(chainCounts)
+        const topChainInternal = Object.entries(chainCounts)
           .sort(([, a], [, b]) => b - a)[0]?.[0] ?? null;
+        // tp_chain_report acceptă public "eth" (nu forma canonică "ethereum")
+        const topChain = topChainInternal === "ethereum" ? "eth" : topChainInternal;
 
         const lines: string[] = [];
         lines.push("NEXT CHECK:");
@@ -82,29 +85,31 @@ Does not advise on trades. Routes to data, not to decisions.`,
 
         // ── Priority routing ──────────────────────────────────────────────
         if (armedCount > 0) {
-          const armedList = Object.entries(armed).map(([addr, a]: any) =>
-            `${a.symbol ?? addr.slice(0, 8)} [${a.chain ?? "?"}] pair:${addr} score:${a.score} age:${Math.round((now - a.armedAt) / 1000)}s`
-          );
+          const armedList = Object.entries(armed).map(([key, a]: any) => {
+            const addr = splitPairKey(key).address; // cheia e pairKey → adresa brută
+            return `${a.symbol ?? addr.slice(0, 8)} [${a.chain ?? "?"}] pair:${addr} score:${a.score} age:${Math.round((now - a.armedAt) / 1000)}s`;
+          });
           lines.push(`FOCUS: ARMED — qualification criteria observed`);
           lines.push(`ARMED (${armedCount}):`);
           armedList.forEach(l => lines.push(`  → ${l}`));
           lines.push("");
           lines.push(`NEXT_CHECK:`);
-          lines.push(`  1. tp_candidate_brief(pair) — full context on armed pair`);
-          lines.push(`  2. tp_preflight_safety(pair) — contract/token safety check`);
-          lines.push(`  3. tp_late_move_context(pair) — check for late-move evidence`);
+          lines.push(`  1. tp_candidate_brief(pair, chain) — full context on armed pair`);
+          lines.push(`  2. tp_preflight_safety(pair, chain) — contract/token safety check`);
+          lines.push(`  3. tp_late_move_context(pair, chain) — check for late-move evidence`);
 
         } else if (hotCount > 0) {
-          const hotList = Object.entries(hot).map(([addr, h]: any) =>
-            `${h.symbol ?? addr.slice(0, 8)} [${h.chain}] pair:${addr} flow:${h.flow?.pressure} buys:${h.flow?.buys5m}`
-          );
+          const hotList = Object.entries(hot).map(([key, h]: any) => {
+            const addr = splitPairKey(key).address;
+            return `${h.symbol ?? addr.slice(0, 8)} [${h.chain}] pair:${addr} flow:${h.flow?.pressure} buys:${h.flow?.buys5m}`;
+          });
           lines.push(`FOCUS: HOT — confirmed buying flow`);
           lines.push(`HOT (${hotCount}):`);
           hotList.forEach(l => lines.push(`  → ${l}`));
           lines.push("");
          lines.push(`NEXT_CHECK:`);
-          lines.push(`  1. tp_candidate_brief(pair) — narrative case file`);
-          lines.push(`  2. tp_late_move_context(pair) — flap/distribution check`);
+          lines.push(`  1. tp_candidate_brief(pair, chain) — narrative case file`);
+          lines.push(`  2. tp_late_move_context(pair, chain) — flap/distribution check`);
 
         } else if (hotDrops.length > 0) {
           const dropList = hotDrops.slice(0, 3).map(d =>
@@ -116,7 +121,7 @@ Does not advise on trades. Routes to data, not to decisions.`,
           lines.push("");
          lines.push(`NEXT_CHECK:`);
           lines.push(`  1. tp_recent_pipeline_drops — recently dropped pairs with reasons`);
-          lines.push(`  2. tp_why_not(pair) — pipeline rejection reasons`);
+          lines.push(`  2. tp_why_not(pair, chain) — pipeline rejection reasons`);
 
         } else if (marketDead && watchCount > 0) {
           lines.push(`FOCUS: COVERAGE LOW — flow signals unreliable`);

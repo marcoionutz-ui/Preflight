@@ -2,6 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { readAllRedis } from "../redis-reader";
 import type { PairState, MemoryEntry } from "../types";
+import { splitPairKey, normalizeChainId } from "@preflight/schema";
 import { mcpResponse, mcpErr, ERR } from "../errors";
 
 export function registerWorkerSnapshot(server: McpServer, exposePerformance: boolean) {
@@ -14,12 +15,12 @@ export function registerWorkerSnapshot(server: McpServer, exposePerformance: boo
 Args:
   phase (optional): TRENDING, SECOND_WAVE, RECOVERING, PUMPING, ZOMBIE, DEAD
   flow_pressure (optional): BUYING, SELLING, NEUTRAL
-  chain (optional): base, arbitrum
+  chain (optional): base, arbitrum, bsc, eth
   min_seen_count (default 0), limit (default 20, max 100), offset (default 0)`,
       inputSchema: {
         phase:          z.string().optional(),
         flow_pressure:  z.string().optional(),
-        chain:          z.string().optional(),
+        chain:          z.enum(["base", "arbitrum", "bsc", "eth"]).optional(),
         min_seen_count: z.number().int().min(0).default(0),
         limit:          z.number().int().min(1).max(100).default(20),
         offset:         z.number().int().min(0).default(0),
@@ -57,8 +58,8 @@ Args:
         // addresses start with "0x", never with a chain name, so the filter
         // silently dropped almost everything whenever `chain` was passed.
         if (chain) {
-          const wantedChain = chain === "eth" ? "ethereum" : chain.toLowerCase();
-          pairs = pairs.filter(p => p.data.chain?.toLowerCase() === wantedChain);
+          const wantedChain = normalizeChainId(chain);
+          pairs = pairs.filter(p => p.data.chain != null && normalizeChainId(p.data.chain) === wantedChain);
         }
 
         const total     = pairs.length;
@@ -70,8 +71,14 @@ Args:
           text: JSON.stringify({
             total, count: paginated.length, offset,
             has_more: total > offset + paginated.length,
-            pairs: paginated.map(({ addr, data }) => ({
-              pairAddress: addr, symbol: data.symbol, phase: data.phase,
+            // B3f-2: `addr` e cheia pairKey (states/memory keyed pe pairKey). Payload
+            // extern = adresă brută + chain din cheie; fallback pe valoare pt. chei
+            // legacy fără `:` (fereastra scurtă după deploy). lookup-urile `states[addr]`
+            // rămân pe cheie.
+            pairs: paginated.map(({ addr, data }) => {
+              const ref = splitPairKey(addr);
+              return {
+              pairAddress: ref.address, chain: ref.chain || (data as any).chain || null, symbol: data.symbol, phase: data.phase,
               seenCount: data.seenCount, currentPrice: data.currentPrice,
               dexType:    states[addr]?.dexType    ?? null,
               reserveUsd: states[addr]?.reserveUsd ?? null,
@@ -85,7 +92,7 @@ Args:
                 consecutiveLosses: data.consecutiveLosses,
               } : undefined,
               updatedAt: states[addr]?.updatedAt ?? null,
-            })),
+            }; }),
             snapshotAgeSec: snapshotFreshnessSec,
             workerVersion:  snapshot?.version ?? null,
           }, null, 2),

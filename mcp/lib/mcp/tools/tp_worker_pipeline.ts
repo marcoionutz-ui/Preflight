@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { readAllRedis } from "../redis-reader";
-import { normalizeChainId } from "@preflight/schema";
+import { normalizeChainId, pairKey, splitPairKey } from "@preflight/schema";
 import { mcpResponse, mcpErr, ERR } from "../errors";
 
 export function registerWorkerPipeline(server: McpServer) {
@@ -41,7 +41,9 @@ Args: chain (filter: 'base', 'arbitrum', 'bsc', or 'eth')`,
 
         const activeWatch = Object.entries(watch)
           .filter(([, v]) => filterChain(v.chain))
-          .map(([addr, v]) => ({
+          .map(([key, v]) => {
+            const addr = splitPairKey(key).address; // cheia e pairKey → adresa brută
+            return {
             pairAddress: addr, symbol: v.symbol ?? addr.slice(0, 10) + "...",
             chain: v.chain, kind: v.kind,
             ageMin:          Math.round((now - v.addedAt) / 60_000 * 10) / 10,
@@ -51,34 +53,39 @@ Args: chain (filter: 'base', 'arbitrum', 'bsc', or 'eth')`,
             buySwapCount5m:  v.buySwapCount5m,
             sellSwapCount5m: v.sellSwapCount5m,
             largestBuyEth:   v.largestBuyEth,
-          }))
+          }; })
           .sort((a, b) => a.ageMin - b.ageMin);
 
         const hotCandidates = Object.entries(hot)
           .filter(([, v]) => filterChain(v.chain))
-          .map(([addr, v]) => ({
+          .map(([key, v]) => {
+            const addr = splitPairKey(key).address;
+            return {
             pairAddress: addr, symbol: v.symbol ?? addr.slice(0, 10) + "...",
             chain: v.chain, source: v.source ?? "WS",
             ageSec:         Math.round((now - v.promotedAt) / 1000),
             phase:          v.phase, flow: v.flow,
             largestBuyEth:  v.largestBuyEth,
             buySwapCount5m: v.buySwapCount5m,
-          }))
+          }; })
           .sort((a, b) => a.ageSec - b.ageSec);
 
         const armedEntries = Object.entries(armed)
           .filter(([, v]) => filterChain(v.chain ?? ""))
-          .map(([addr, v]) => ({
+          .map(([key, v]) => {
+            const addr = splitPairKey(key).address;
+            return {
             pairAddress: addr, symbol: v.symbol ?? addr.slice(0, 10) + "...",
             ageSec:       Math.round((now - v.armedAt) / 1000),
             price: v.price, score: v.score, flowPressure: v.flowPressure,
             phase: v.phase, chain: v.chain,
-          }))
+          }; })
           .sort((a, b) => a.ageSec - b.ageSec);
 		  
-		  const enrichFlowWithUsd = (pairAddress: string | undefined, flow: any) => {
+		  const enrichFlowWithUsd = (chain: string | undefined, pairAddress: string | undefined, flow: any) => {
           const addr = pairAddress?.toLowerCase?.() ?? "";
-          const ps   = addr ? states[addr]?.flow ?? null : null;
+          // B3f-2: states e keyed pe pairKey → construiește cheia cu chain-ul entry-ului.
+          const ps   = (chain && addr) ? states[pairKey(chain, addr)]?.flow ?? null : null;
 
           return {
             ...(flow ?? {}),
@@ -101,7 +108,7 @@ Args: chain (filter: 'base', 'arbitrum', 'bsc', or 'eth')`,
               watchAgeMin:       Math.round(e.watchAgeMs / 60_000 * 10) / 10,
               confidence:        e.confidence,
               entryRisk:         e.entryRisk,
-              flow:              enrichFlowWithUsd(e.pairAddress, e.flow),
+              flow:              enrichFlowWithUsd(e.chain, e.pairAddress, e.flow),
               riskFlags:         e.riskFlags,
               opportunitySignals: e.opportunitySignals,
               priceVsEntryPct:   e.priceVsEntryPct,
@@ -121,7 +128,7 @@ Args: chain (filter: 'base', 'arbitrum', 'bsc', or 'eth')`,
           entryRisk:          null,
           flow: (() => {
             const addr = a.pairAddress?.toLowerCase?.() ?? "";
-            const ps   = addr ? states[addr]?.flow ?? null : null;
+            const ps   = (a.chain && addr) ? states[pairKey(a.chain, addr)]?.flow ?? null : null;
 
             return {
               status:       ps?.pressure    ?? a.flowPressure ?? null,
@@ -149,7 +156,8 @@ Args: chain (filter: 'base', 'arbitrum', 'bsc', or 'eth')`,
           ? [
               ...armedPipelineEntries.filter(a =>
                 !pfEntries.some(e =>
-                  e.pairAddress?.toLowerCase() === a.pairAddress?.toLowerCase()
+                  e.pairAddress?.toLowerCase() === a.pairAddress?.toLowerCase() &&
+                  (e.chain ?? "").toLowerCase() === (a.chain ?? "").toLowerCase()
                 )
               ),
               ...pfEntries,

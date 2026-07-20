@@ -923,11 +923,13 @@ export interface PairRef { chain: string; address: string; }
  * base58 Solana) nu conțin `:`, deci despărțirea e neambiguă. Folosit de
  * PairMap ca să itereze cu cheia decodată.
  */
-export function splitPairKey(key: PairKey): PairRef {
-  const i = (key as string).indexOf(":");
+// Acceptă `string` (nu doar `PairKey`) — cheile din `Object.entries(map)` sunt
+// tipate `string` de TS, iar funcția suportă explicit chei legacy fără `:`.
+export function splitPairKey(key: string): PairRef {
+  const i = key.indexOf(":");
   return i < 0
-    ? { chain: "", address: key as string }
-    : { chain: (key as string).slice(0, i), address: (key as string).slice(i + 1) };
+    ? { chain: "", address: key }
+    : { chain: key.slice(0, i), address: key.slice(i + 1) };
 }
 
 export const REDIS_KEYS = {

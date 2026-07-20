@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { readAllRedis, readTrendingMovers, readSolanaMovers } from "../redis-reader";
+import { normalizeChainId } from "@preflight/schema";
 import type { MemoryEntry } from "../types";
 import { mcpResponse, mcpErr, ERR } from "../errors";
 
@@ -14,7 +15,7 @@ export function registerMarketOverview(server: McpServer) {
 Shows phase distribution, flow pressure, top buying pairs, pipeline counts, and own-source trending movers.
 Args: chain (optional), top_n (default 5, max 20)`,
       inputSchema: {
-        chain: z.string().optional(),
+        chain: z.enum(["base", "arbitrum", "bsc", "eth", "solana"]).optional(),
         top_n: z.number().int().min(1).max(20).default(5),
       },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
@@ -23,8 +24,7 @@ Args: chain (optional), top_n (default 5, max 20)`,
       try {
         // ── 8.0i-b/d: Solana branch — înainte de readAllRedis (EVM only) ──────
         // Normalize "eth" → "ethereum" (worker stochează "ethereum")
-        const rawChainId = chain?.toLowerCase().trim();
-        const chainId = rawChainId === "eth" ? "ethereum" : rawChainId;
+        const chainId = chain ? normalizeChainId(chain) : undefined;
 
         if (chainId === "solana") {
           const now = Date.now();
@@ -101,6 +101,12 @@ Args: chain (optional), top_n (default 5, max 20)`,
           totalWithFlow < entries.length ? "partial" :
           "present";
 
+        // B3f-2: watch/hot/armed sunt globale (toate chain-urile) — la un raport
+        // per-chain numărăm doar entries cu chain-ul cerut.
+        const countPipelineEntries = (m: Record<string, { chain?: string | null }>): number =>
+          !chainId ? Object.keys(m).length
+                   : Object.values(m).filter(e => e.chain != null && normalizeChainId(e.chain) === chainId).length;
+
         const freshnessSec = newestStateAt ? Math.round((now - newestStateAt) / 1000) : null;
 
         return mcpResponse({
@@ -110,15 +116,18 @@ Args: chain (optional), top_n (default 5, max 20)`,
               .filter(([, p]) => p.flow.hasData && p.flow.pressure === "BUYING")
               .sort(([, a], [, b]) => b.flow.buyVol5m - a.flow.buyVol5m)
               .slice(0, top_n)
-              .map(([addr, p]) => ({
-                symbol: p.symbol, pairAddress: addr, phase: p.phase,
+              // B3f-2: cheia e pairKey → expune adresa brută + chain din VALOARE (PairState).
+              .map(([, p]) => ({
+                symbol: p.symbol, pairAddress: p.pairAddress, chain: p.chain, phase: p.phase,
                 dexType: p.dexType, reserveUsd: p.reserveUsd,
                 buyVol5m: p.flow.buyVol5m, netVol5m: p.flow.netVol5m, buys5m: p.flow.buys5m,
               })),
             pipeline: {
-              watching: Object.keys(watch).length,
-              hot:      Object.keys(hot).length,
-              armed:    Object.keys(armed).length,
+              // B3f-2: numără doar entries pe chain-ul raportului (înainte era global —
+              // un overview Base raporta watching-ul de pe toate chain-urile).
+              watching: countPipelineEntries(watch),
+              hot:      countPipelineEntries(hot),
+              armed:    countPipelineEntries(armed),
             },
             totalTracked: entries.length,
             freshnessSec,
