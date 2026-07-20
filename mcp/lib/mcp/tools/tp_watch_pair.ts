@@ -8,7 +8,7 @@ import { z } from "zod";
 import { readAllRedis } from "../redis-reader";
 import { getRedis } from "@/lib/db/redis";
 import { mcpResponse, mcpErr, ERR } from "../errors";
-import { REDIS_KEYS } from "@preflight/schema";
+import { REDIS_KEYS, pairKey } from "@preflight/schema";
 
 export function registerWatchPair(server: McpServer) {
   server.registerTool(
@@ -38,6 +38,9 @@ Returns current status if pair is already being monitored.`,
       try {
         const addr           = pair_address.toLowerCase().trim();
         const normalizedChain = chain.toLowerCase().trim();
+        // B3f: hărțile live sunt keyed pe pairKey(chain, addr). Aici avem chain
+        // garantat (arg obligatoriu) → construim direct cheia.
+        const lookup = pairKey(normalizedChain, addr);
 
         const isEvmPoolId = /^0x[a-f0-9]{40}$/.test(addr) || /^0x[a-f0-9]{64}$/.test(addr);
         if (!isEvmPoolId) {
@@ -49,10 +52,10 @@ Returns current status if pair is already being monitored.`,
 
         const { now, states, watch, hot, armed } = ctx;
 
-        const pairState  = states[addr] ?? null;
-        const inWatch    = !!watch[addr];
-        const inHot      = !!hot[addr];
-        const inArmed    = !!armed[addr];
+        const pairState  = states[lookup] ?? null;
+        const inWatch    = !!watch[lookup];
+        const inHot      = !!hot[lookup];
+        const inArmed    = !!armed[lookup];
         const hasContext = !!pairState;
 
         const lines: string[] = [];
@@ -72,7 +75,7 @@ Returns current status if pair is already being monitored.`,
         }
 
         if (inWatch) {
-          const watchInfo = watch[addr] as any;
+          const watchInfo = watch[lookup] as any;
           const ageSec    = Math.round((now - watchInfo.addedAt) / 1_000);
           lines.push(`STATUS: already WATCHING`);
           lines.push(`  kind: ${watchInfo.kind ?? "?"} | age: ${ageSec}s | chain: ${watchInfo.chain}`);

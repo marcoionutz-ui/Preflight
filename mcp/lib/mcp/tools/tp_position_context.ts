@@ -10,7 +10,7 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { readAllRedis, formatVol, getPipelineState } from "../redis-reader";
+import { readAllRedis, formatVol, getPipelineState, resolvePairChain } from "../redis-reader";
 import { mcpResponse, mcpErr, ERR } from "../errors";
 
 // Normalizează timestamp: seconds → ms dacă e sub 10B
@@ -99,7 +99,10 @@ Returns per position:
 
         for (const pos of positions) {
           const addr      = (pos.pair_address ?? pos.token_address ?? "").toLowerCase().trim();
-          const pairState = addr ? (states[addr] ?? null) : null;
+          // B3f: states e keyed pe pairKey(chain, addr). pos.chain e hint-ul
+          // (fallback la probe dacă lipsește); cheia goală → not-found curat.
+          const lookup    = addr ? (resolvePairChain(addr, [states, watch, hot, armed], pos.chain).key ?? "") : "";
+          const pairState = addr ? (states[lookup] ?? null) : null;
           const symbol    = pos.symbol ?? pairState?.symbol ?? (addr ? addr.slice(0, 8) : "?");
           const chain     = pos.chain;
 
@@ -133,7 +136,7 @@ Returns per position:
           const hasFlow = flow?.hasData ?? false;
 
           // ── Pipeline state ────────────────────────────────────────────────
-          const pipeState = addr ? getPipelineState(addr, watch, hot, armed) : "UNKNOWN";
+          const pipeState = addr ? getPipelineState(lookup, watch, hot, armed) : "UNKNOWN";
 
           // ── Price change ──────────────────────────────────────────────────
           const pc = pairState?.priceChange ?? null;

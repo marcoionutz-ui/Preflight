@@ -15,10 +15,13 @@ import { z }              from "zod";
 import {
   readAllRedis,
   getPipelineState,
+  resolvePairChain,
+  chainsForAddressInArrays,
   formatVol,
   wsFlowQuality,
   combineConfidence,
 } from "../redis-reader";
+import { pairKey } from "@preflight/schema";
 import { mcpErr, mcpResponse, ERR } from "../errors";
 
 const FLAP_WINDOW_MS    = 10 * 60_000; // 10 minute
@@ -46,10 +49,11 @@ Best used on pairs currently HOT or recently dropped from HOT.
 Args: pair_address (0x... EVM address)`,
       inputSchema: {
         pair_address: z.string().min(10).describe("EVM pair address (0x...) or V4 pool ID"),
+        chain:        z.enum(["base", "arbitrum", "bsc", "eth"]).optional().describe("Optional chain hint — needed only if the same address exists on multiple chains"),
       },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async ({ pair_address }: { pair_address: string }) => {
+    async ({ pair_address, chain }: { pair_address: string; chain?: "base" | "arbitrum" | "bsc" | "eth" }) => {
       try {
         const ctx = await readAllRedis();
         if (!ctx) return mcpErr(ERR.REDIS_DOWN, "Redis not connected");
@@ -57,26 +61,41 @@ Args: pair_address (0x... EVM address)`,
         const { now, states, watch, hot, armed, snapshot, events, drops, pfMarket, regime } = ctx;
         const coveragePct = pfMarket?.flowCoveragePct ?? regime?.flowCoveragePct ?? null;
         const addr = pair_address.toLowerCase().trim();
+        // B3f: rezolvă chain-ul — hint (arg) > live maps > array-uri istorice
+        // (events/drops — tool-ul e pt. pairs care flap-uiesc/ies din pipeline).
+        const live = resolvePairChain(addr, [states, watch, hot, armed, snapshot?.memory], chain);
+        let resolvedChain = live.chain;
+        let ambiguous     = live.ambiguousChains;
+        if (!resolvedChain && ambiguous.length === 0) {
+          const histChains = chainsForAddressInArrays(addr, [events, drops]);
+          if (histChains.length === 1)      resolvedChain = histChains[0];
+          else if (histChains.length > 1)   ambiguous     = histChains;
+        }
+        if (ambiguous.length > 1) {
+          return mcpErr(ERR.INVALID_INPUT, `Pair ${addr} exists on multiple chains: ${ambiguous.join(", ")}. Specify chain.`);
+        }
+        const lookup   = resolvedChain ? pairKey(resolvedChain, addr) : "";
+        const matchKey = lookup; // identitate chain-scoped pt. match pe events/drops
 
-        const pipeState  = getPipelineState(addr, watch, hot, armed);
-        const pairState  = states[addr] ?? null;
-        const snapMem    = snapshot?.memory?.[addr] ?? null;
-        const data       = pairState ?? snapMem;
-        const symbol     = data?.symbol ?? hot[addr]?.symbol ?? watch[addr]?.symbol ?? addr.slice(0, 10);
-        const chain      = hot[addr]?.chain ?? watch[addr]?.chain ?? armed[addr]?.chain ?? "unknown";
+        const pipeState    = getPipelineState(lookup, watch, hot, armed);
+        const pairState    = states[lookup] ?? null;
+        const snapMem      = snapshot?.memory?.[lookup] ?? null;
+        const data         = pairState ?? snapMem;
+        const symbol       = data?.symbol ?? hot[lookup]?.symbol ?? watch[lookup]?.symbol ?? addr.slice(0, 10);
+        const displayChain = pairState?.chain ?? hot[lookup]?.chain ?? watch[lookup]?.chain ?? armed[lookup]?.chain ?? resolvedChain ?? "unknown";
 
         // ── Analiză HOT flapping ──────────────────────────────────────────────
-        const recentEvents = events.filter(e =>
-          e.pairAddress === addr && now - e.ts < FLAP_WINDOW_MS
-        );
+        const recentEvents = matchKey ? events.filter(e =>
+          e.chain != null && pairKey(e.chain, e.pairAddress) === matchKey && now - e.ts < FLAP_WINDOW_MS
+        ) : [];
 
         const hotPromotions = recentEvents.filter(e => e.to === "HOT").length;
         const hotDrops      = recentEvents.filter(e => e.from === "HOT").length;
 
         // ── Analiză drop reasons ──────────────────────────────────────────────
-        const recentDrops = drops.filter(d =>
-          d.pairAddress === addr && now - d.droppedAt < FLAP_WINDOW_MS
-        );
+        const recentDrops = matchKey ? drops.filter(d =>
+          d.chain != null && pairKey(d.chain, d.pairAddress) === matchKey && now - d.droppedAt < FLAP_WINDOW_MS
+        ) : [];
 
         const dropReasons      = recentDrops.map(d => (d.dropReason ?? "").toLowerCase());
         const hasFlowFade      = dropReasons.some(r => r.includes("flow faded") || r.includes("neutral"));
@@ -94,7 +113,7 @@ Args: pair_address (0x... EVM address)`,
         const swapSellRatio = (buys5m + sells5m) > 0 ? sells5m / (buys5m + sells5m) : null;
 
         // ── HOT stability ─────────────────────────────────────────────────────
-        const currentHotEntry  = hot[addr] ?? null;
+        const currentHotEntry  = hot[lookup] ?? null;
         const hotAgeMs         = currentHotEntry ? now - currentHotEntry.promotedAt : null;
         const hotIsStable      = hotAgeMs !== null && hotAgeMs > 60_000; // HOT > 1 min = stable
 
@@ -171,7 +190,7 @@ Args: pair_address (0x... EVM address)`,
 
         // ── Build response ────────────────────────────────────────────────────
         const lines: string[] = [];
-        lines.push(`LATE MOVE CONTEXT: ${symbol} / ${chain.toUpperCase()}`);
+        lines.push(`LATE MOVE CONTEXT: ${symbol} / ${displayChain.toUpperCase()}`);
         lines.push(`Address: ${addr}`);
         lines.push(`Pipeline: ${pipeState}`);
         lines.push("");

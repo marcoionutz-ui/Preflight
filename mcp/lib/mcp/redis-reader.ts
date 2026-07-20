@@ -13,6 +13,7 @@ import {
   REDIS_KEYS,
   PREFLIGHT_EVM_CHAINS,
   normalizeChainId,
+  pairKey,
   type PreflightMarketContext, type PreflightDrop,
   type PreflightMomentumEvent, type PreflightSignalPipelineEntry, type PreflightQualifiedSignal,
   type PreflightSolanaPool, type PreflightObservedCandidate, type PreflightSolanaQuoteType,
@@ -181,23 +182,54 @@ export function formatVol(usd: number | null | undefined, legacyNativeEq: number
 }
 
 export function getPipelineState(
-  addr:  string,
+  // B3f: `key` e `pairKey(chain, addr)` — hărțile sunt keyed pe pairKey.
+  // Callerii cu adresă brută rezolvă cheia întâi (resolvePairChain); callerii
+  // care iterează pasează cheia iterată (care ESTE pairKey).
+  key:   string,
   watch: Record<string, WatchEntry>,
   hot:   Record<string, HotEntry>,
   armed: Record<string, ArmedEntry>,
 ): "WATCHING" | "HOT" | "ARMED" | "NONE" {
-  if (armed[addr]) return "ARMED";
-  if (hot[addr])   return "HOT";
-  if (watch[addr]) return "WATCHING";
+  if (armed[key]) return "ARMED";
+  if (hot[key])   return "HOT";
+  if (watch[key]) return "WATCHING";
   return "NONE";
 }
 
-export function findLastEventForPair(addr: string, events: PipelineEvent[]): PipelineEvent | null {
-  return events.find(e => e.pairAddress === addr) ?? null;
+// B3f: events/drops sunt ARRAY-uri multi-chain — un match pe adresă brută poate
+// prinde evenimentul de pe alt chain (aceeași adresă pe base ȘI arbitrum). Ambele
+// tipuri au `.chain` (required), deci matchuim pe identitatea completă pairKey.
+export function findLastEventForPair(chain: string, addr: string, events: PipelineEvent[]): PipelineEvent | null {
+  const key = pairKey(chain, addr);
+  return events.find(e => e.chain != null && pairKey(e.chain, e.pairAddress) === key) ?? null;
 }
 
-export function findLastDropForPair(addr: string, drops: PreflightDrop[]): PreflightDrop | null {
-  return drops.find(d => d.pairAddress === addr) ?? null;
+export function findLastDropForPair(chain: string, addr: string, drops: PreflightDrop[]): PreflightDrop | null {
+  const key = pairKey(chain, addr);
+  return drops.find(d => d.chain != null && pairKey(d.chain, d.pairAddress) === key) ?? null;
+}
+
+/**
+ * B3f: rezolvă chain-ul unei adrese din array-uri istorice (events/drops/
+ * lifecycle) — folosit când adresa NU mai e în live maps (ex. pair dropat, pt.
+ * care `resolvePairChain` pe hărți nu găsește chain-ul). Întoarce chain-urile
+ * canonice DISTINCTE care conțin adresa; caller-ul decide: 1 → îl folosește,
+ * >1 → ambiguu (cere chain), 0 → not-found. Items fără `.chain` sunt ignorate.
+ */
+export function chainsForAddressInArrays(
+  addr: string,
+  arrays: Array<ReadonlyArray<{ pairAddress?: string | null; chain?: string | null }> | null | undefined>,
+): string[] {
+  const norm  = addr.toLowerCase();
+  const found = new Set<string>();
+  for (const arr of arrays) {
+    for (const item of arr ?? []) {
+      if (item.chain && (item.pairAddress ?? "").toLowerCase() === norm) {
+        found.add(normalizeChainId(item.chain));
+      }
+    }
+  }
+  return [...found];
 }
 
 /**
@@ -240,6 +272,41 @@ export async function readPairContext(addr: string, chain?: string): Promise<Pai
   } catch {
     return { context: null, matchedChain: null, ambiguousChains: [] };
   }
+}
+
+/**
+ * B3f: hărțile live in-process (states/watch/hot/armed/snapshot.memory/
+ * poolReserveEth) sunt acum keyed pe `pairKey(chain, addr)`. Un lookup cu
+ * adresă brută (de la user sau dintr-un array cu pairAddress) trebuie să
+ * cunoască chain-ul ca să construiască cheia.
+ *
+ * - Cu `hint` (chain din tool) → construim direct `pairKey(hint, addr)`.
+ * - Fără hint → probăm chain-urile EVM: construim `pairKey(c, addr)` și
+ *   verificăm prezența în oricare din hărțile date. Dacă adresa apare pe
+ *   >1 chain raportăm ambiguitatea (NU alegem tăcut primul — aceeași regulă
+ *   ca `readPairContext`). Fără hit → `key: null` (lookup-urile cad pe
+ *   not-found, exact ca înainte).
+ *
+ * `maps` = hărțile pairKey-keyed pe care se va face lookup (indexate cu cheia
+ * întoarsă); e suficient să dai câteva (ex. states/watch/hot/armed/memory).
+ */
+export function resolvePairChain(
+  addr: string,
+  maps: Array<Record<string, unknown> | null | undefined>,
+  hint?: string | null,
+): { chain: string | null; key: string | null; ambiguousChains: string[] } {
+  if (hint) {
+    const c = normalizeChainId(hint);
+    return { chain: c, key: pairKey(c, addr), ambiguousChains: [] };
+  }
+  const found: string[] = [];
+  for (const c of PREFLIGHT_EVM_CHAINS) {
+    const k = pairKey(c, addr);
+    if (maps.some(m => m != null && m[k] !== undefined)) found.push(c);
+  }
+  if (found.length === 1) return { chain: found[0], key: pairKey(found[0], addr), ambiguousChains: [] };
+  if (found.length > 1)   return { chain: null,     key: null,                    ambiguousChains: found };
+  return { chain: null, key: null, ambiguousChains: [] };
 }
 
 // ── Pas 7B helpers ────────────────────────────────────────────────────────────
@@ -300,23 +367,30 @@ export function combineConfidence(
  * Atașează `_eventCount` cu numărul total de intrări pentru același pair.
  * tsField: câmpul timestamp folosit pentru comparație (droppedAt, detectedAt, etc.)
  */
-export function dedupeByPair<T extends { pairAddress?: string | null }>(
+export function dedupeByPair<T extends { pairAddress?: string | null; chain?: string | null }>(
   arr:     T[] | null | undefined,
   tsField: keyof T,
 ): Array<T & { _eventCount: number }> {
   const map = new Map<string, T & { _eventCount: number }>();
 
   for (const item of arr ?? []) {
-    const addr = item.pairAddress?.toLowerCase();
-    if (!addr) continue;
+    const rawAddr = item.pairAddress?.trim();
+    if (!rawAddr) continue;
+
+    // B3f: identitatea de dedupe e chain-scoped când itemul are `.chain` — altfel
+    // un drop pe base:0xabc și unul pe arbitrum:0xabc s-ar comprima într-unul.
+    // Fallback la adresă lowercase pt. items fără chain (ex. momentum legacy).
+    const identity = typeof item.chain === "string" && item.chain
+      ? pairKey(item.chain, rawAddr)
+      : rawAddr.toLowerCase();
 
     const ts       = Number(item[tsField] ?? 0);
-    const existing = map.get(addr);
+    const existing = map.get(identity);
 
     if (!existing) {
-      map.set(addr, { ...item, _eventCount: 1 });
+      map.set(identity, { ...item, _eventCount: 1 });
     } else if (ts >= Number(existing[tsField] ?? 0)) {
-      map.set(addr, { ...item, _eventCount: existing._eventCount + 1 });
+      map.set(identity, { ...item, _eventCount: existing._eventCount + 1 });
     } else {
       existing._eventCount += 1;
     }

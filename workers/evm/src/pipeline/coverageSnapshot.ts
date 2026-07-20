@@ -39,12 +39,14 @@ export async function writeCoverageSnapshot(r: Redis, states: Record<string, Pai
     const chainId = chain.id;
 
     // ── Toate perechile urmărite pe acest chain — din pair_states (sursa de adevăr) ──
-    const allPairs = Object.entries(states).filter(([, s]) =>
+    // B3f-1: `states` e keyed pe pairKey(chain, addr) → cheia NU mai e adresa brută.
+    // Lucrăm pe VALORI; identitatea perechii e `s.pairAddress` (adresă brută) + `s.chain`.
+    const allPairs = Object.values(states).filter(s =>
       (s.chain ?? "").toLowerCase() === chainId
     );
 
     // ── Observed movers — aceeași logică ca tp_situation_report ──────────────
-    const observedMovers = allPairs.filter(([, s]) => {
+    const observedMovers = allPairs.filter(s => {
       const pc = s.priceChange;
       if (!pc) return false;
       if ((s.reserveUsd ?? 0) < MOVER_LIQ_MIN_USD) return false;
@@ -83,23 +85,23 @@ export async function writeCoverageSnapshot(r: Redis, states: Record<string, Pai
       watching.length + hot.filter(([{ chain, address: addr }]) => !activeWatch.has(chain, addr)).length;
 
     // ── Movers breakdown ──────────────────────────────────────────────────
-    const moversInPipeline = observedMovers.filter(([addr]) =>
-      activeWatch.has(chainId, addr) || hotCandidates.has(chainId, addr) || armedEntries.has(chainId, addr)
+    const moversInPipeline = observedMovers.filter(s =>
+      activeWatch.has(chainId, s.pairAddress) || hotCandidates.has(chainId, s.pairAddress) || armedEntries.has(chainId, s.pairAddress)
     );
-    const moversWithFlow      = observedMovers.filter(([addr]) => getWsFlow(chainId, addr).hasData);
-    const moversNotInPipeline = observedMovers.filter(([addr]) =>
-      !activeWatch.has(chainId, addr) && !hotCandidates.has(chainId, addr) && !armedEntries.has(chainId, addr)
+    const moversWithFlow      = observedMovers.filter(s => getWsFlow(chainId, s.pairAddress).hasData);
+    const moversNotInPipeline = observedMovers.filter(s =>
+      !activeWatch.has(chainId, s.pairAddress) && !hotCandidates.has(chainId, s.pairAddress) && !armedEntries.has(chainId, s.pairAddress)
     );
 
     // ── Top movers NOT in pipeline ─────────────────────────────────────────
     const topMoversNotWatched = moversNotInPipeline
-      .sort(([, a], [, b]) => moverScore(b.priceChange) - moverScore(a.priceChange))
+      .sort((a, b) => moverScore(b.priceChange) - moverScore(a.priceChange))
       .slice(0, TOP_UNSUBSCRIBED_N)
-      .map(([addr, s]) => {
+      .map(s => {
         const pc = s.priceChange;
         return {
           symbol:      s.symbol,
-          pairAddress: addr,
+          pairAddress: s.pairAddress,
           m5:          pc.m5,
           h1:          pc.h1,
           h24:         pc.h24,

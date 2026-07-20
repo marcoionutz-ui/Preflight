@@ -1,6 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { readAllRedis, dedupeByPair } from "../redis-reader";
+import { readAllRedis, dedupeByPair, resolvePairChain } from "../redis-reader";
 import { mcpResponse, mcpErr, ERR } from "../errors";
 
 export function registerRecentPipelineDrops(server: McpServer) {
@@ -40,7 +40,11 @@ Args: limit (default 10, max 30), minutes_back (default 10, max 10)`,
 
         for (const d of deduped) {
           const ageSec    = Math.round((now - d.droppedAt) / 1000);
-          const pairData  = states[(d.pairAddress ?? "").toLowerCase()];
+          // B3f: states e keyed pe pairKey(chain, addr). Drop-ul poartă chain
+          // (d.chain) → construim cheia cu hint-ul; fallback probe dacă lipsește.
+          const dAddr     = (d.pairAddress ?? "").toLowerCase();
+          const dKey      = dAddr ? (resolvePairChain(dAddr, [states], d.chain).key ?? "") : "";
+          const pairData  = states[dKey];
           // pairData.phase is now a real Phase union (item 4b), which can
           // never equal the "?" sentinel — swapped for an undefined check,
           // which also covers the (TS-invisible-here) case where the

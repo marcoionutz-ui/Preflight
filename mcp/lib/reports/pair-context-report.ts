@@ -14,7 +14,7 @@
 
 import {
   readAllRedis, freshnessLabel, getPipelineState, readPairContext,
-  wsFlowQuality, combineConfidence, readSolanaPoolContext,
+  resolvePairChain, wsFlowQuality, combineConfidence, readSolanaPoolContext,
 } from "../mcp/redis-reader";
 import type { PairRiskSummary } from "../mcp/types";
 import type { McpConfidence, McpDataQuality } from "../mcp/errors";
@@ -188,18 +188,36 @@ export async function buildPairContextReport(
     }
     const pfCtx = pfLookup.context;
 
-    const watchEntry    = watch[addr] ?? null;
-    const hotEntry      = hot[addr]   ?? null;
-    const armedEntry    = armed[addr] ?? null;
-    const pipelineState = getPipelineState(addr, watch, hot, armed);
+    // B3f: hărțile live (watch/hot/armed/states/snapshot.memory/poolReserveEth)
+    // sunt keyed pe pairKey(chain, addr). Precedență chain: hint explicit >
+    // match din pair_context > probe pe hărțile live. Ambiguitate în live-state
+    // fără hint → cerem chain explicit, la fel ca pair_context.
+    const liveHint = normalizedChain ?? pfLookup.matchedChain ?? undefined;
+    const live = resolvePairChain(addr, [states, watch, hot, armed, snapshot?.memory], liveHint);
+    if (live.ambiguousChains.length > 1) {
+      return {
+        ok: false,
+        payload: { found: false, pairAddress: addr, matchingChains: live.ambiguousChains },
+        freshnessSec: null,
+        confidence: "LOW",
+        errorCode: "AMBIGUOUS_PAIR",
+        errorMessage: "Pair address exists on multiple chains; specify chain",
+      };
+    }
+    const lookup = live.key ?? "";
+
+    const watchEntry    = watch[lookup] ?? null;
+    const hotEntry      = hot[lookup]   ?? null;
+    const armedEntry    = armed[lookup] ?? null;
+    const pipelineState = getPipelineState(lookup, watch, hot, armed);
 
     const watchOut = watchEntry ? { ...watchEntry, ageMs: now - watchEntry.addedAt }  : null;
     const hotOut   = hotEntry   ? { ...hotEntry,   ageMs: now - hotEntry.promotedAt } : null;
     const armedOut = armedEntry ? { ...armedEntry, ageMs: now - armedEntry.armedAt }  : null;
 
-    const pairState  = states[addr]             ?? null;
-    const snapMem    = snapshot?.memory?.[addr] ?? null;
-    const reserveEth = snapshot?.poolReserveEth?.[addr] ?? null;
+    const pairState  = states[lookup]             ?? null;
+    const snapMem    = snapshot?.memory?.[lookup] ?? null;
+    const reserveEth = snapshot?.poolReserveEth?.[lookup] ?? null;
 
     if (!pairState && !snapMem) {
       if (pfCtx) {
@@ -247,7 +265,7 @@ export async function buildPairContextReport(
     const mainPayload = {
       found: true, pairAddress: addr,
       symbol: data.symbol,
-      chain:  normalizedChain ?? pfLookup.matchedChain ?? pairState?.chain ?? watchOut?.chain ?? hotOut?.chain ?? armedOut?.chain ?? null,
+      chain:  normalizedChain ?? pfLookup.matchedChain ?? live.chain ?? pairState?.chain ?? watchOut?.chain ?? hotOut?.chain ?? armedOut?.chain ?? null,
       phase: data.phase, seenCount: data.seenCount, currentPrice: data.currentPrice,
       priceChange: pairState?.priceChange ?? null,
       timing: {
@@ -366,7 +384,10 @@ export async function buildPairContextReport(
       })(),
       freshnessSec,
       lifecycle: (() => {
-        const lc = (ctx.pfLifecycle ?? []).find(l => l.pairAddress?.toLowerCase() === addr) ?? null;
+        const lc = (ctx.pfLifecycle ?? []).find(l =>
+          l.pairAddress?.toLowerCase() === addr &&
+          (!live.chain || (l.chain ?? "").toLowerCase() === live.chain),
+        ) ?? null;
         if (!lc) return null;
         return {
           lastOutcome:   lc.lastOutcome,

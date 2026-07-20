@@ -1,6 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { readAllRedis, getPipelineState, findLastEventForPair, formatEth, formatVol, formatPct, wsFlowQuality, combineConfidence } from "../redis-reader";
+import { readAllRedis, getPipelineState, resolvePairChain, findLastEventForPair, formatEth, formatVol, formatPct, wsFlowQuality, combineConfidence } from "../redis-reader";
 import type { PairState } from "../types";
 import { mcpErr, mcpResponse, ERR } from "../errors";
 import type { SourceAgreement } from "@preflight/schema";
@@ -72,10 +72,11 @@ Use this after tp_situation_report identifies a HOT or ARMED candidate.
 Args: pair_address (0x... EVM address or V4 pool ID)`,
       inputSchema: {
         pair_address: z.string().min(10).describe("EVM pair address (0x...) or V4 pool ID"),
+        chain:        z.enum(["base", "arbitrum", "bsc", "eth"]).optional().describe("Optional chain hint — needed only if the same address exists on multiple chains"),
       },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async ({ pair_address }: { pair_address: string }) => {
+    async ({ pair_address, chain }: { pair_address: string; chain?: "base" | "arbitrum" | "bsc" | "eth" }) => {
       try {
         const ctx = await readAllRedis();
         if (!ctx) return mcpErr(ERR.REDIS_DOWN, "Redis not connected");
@@ -83,17 +84,24 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
         const { now, states, watch, hot, armed, snapshot, events, pfMarket, regime } = ctx;
         const coveragePct = pfMarket?.flowCoveragePct ?? regime?.flowCoveragePct ?? null;
         const addr = pair_address.toLowerCase().trim();
+        // B3f: hărțile sunt keyed pe pairKey(chain, addr). Rezolvăm chain-ul
+        // (hint arg > probe pe live maps). Ambiguu (>1 chain) → cerem chain.
+        const { chain: resolvedChain, key: pk, ambiguousChains } =
+          resolvePairChain(addr, [states, watch, hot, armed, snapshot?.memory], chain);
+        if (ambiguousChains.length > 1) {
+          return mcpErr(ERR.INVALID_INPUT, `Pair ${addr} exists on multiple chains: ${ambiguousChains.join(", ")}. Specify chain.`);
+        }
+        const lookup = pk ?? "";
 
-        const pairState  = states[addr]             ?? null;
-        const snapMem    = snapshot?.memory?.[addr] ?? null;
+        const pairState  = states[lookup]             ?? null;
+        const snapMem    = snapshot?.memory?.[lookup] ?? null;
         const data       = pairState ?? snapMem;
-        const watchEntry = watch[addr] ?? null;
-        const hotEntry   = hot[addr]   ?? null;
-        const armedEntry = armed[addr] ?? null;
-        const pipeState  = getPipelineState(addr, watch, hot, armed);
+        const watchEntry = watch[lookup] ?? null;
+        const hotEntry   = hot[lookup]   ?? null;
+        const armedEntry = armed[lookup] ?? null;
+        const pipeState  = getPipelineState(lookup, watch, hot, armed);
 
         const symbol = data?.symbol ?? watchEntry?.symbol ?? hotEntry?.symbol ?? armedEntry?.symbol ?? addr.slice(0, 10);
-        const chain  = watchEntry?.chain ?? hotEntry?.chain ?? armedEntry?.chain ?? "unknown";
 
         if (!data && pipeState === "NONE") {
           return mcpResponse({
@@ -104,7 +112,7 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
         }
 
         const lines: string[] = [];
-        const displayChain = pairState?.chain ?? chain ?? "unknown";
+        const displayChain = pairState?.chain ?? watchEntry?.chain ?? hotEntry?.chain ?? armedEntry?.chain ?? resolvedChain ?? "unknown";
         lines.push(`═══ CANDIDATE BRIEF: ${symbol} / ${displayChain.toUpperCase()} ═══`);
         lines.push(`Address: ${addr}`);
         lines.push(`Pipeline: ${pipeState}${watchEntry?.kind ? ` (${watchEntry.kind})` : ""}`);
@@ -194,7 +202,7 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
         if ((pairState?.poolCountSameToken ?? 1) >= 2) lines.push("  • Liquidity migrating to another pool for same token");
         if (data?.phase === "RECOVERING") lines.push("  • Phase stays RECOVERING with no BUYING confirmation");
 
-        const lastEvent = findLastEventForPair(addr, events);
+        const lastEvent = resolvedChain ? findLastEventForPair(resolvedChain, addr, events) : null;
         if (lastEvent) {
           const ageSec = Math.round((now - lastEvent.ts) / 1000);
           lines.push("");

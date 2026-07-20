@@ -51,33 +51,35 @@ export async function buildPairStates(): Promise<Record<string, PairStateSnapsho
   // Same chain guard as the main loop below — a mem without a valid chain
   // would otherwise get its risk looked up under a fabricated "base" key
   // even though it's excluded from pair_states entirely.
-  const riskItems = [...memory.values()]
-    .filter(mem => !!mem.tokenAddress && isEvmPreflightChain(mem.chain))
-    // Non-null assertion, not a cast — the .filter() above already checked
-    // isEvmPreflightChain(mem.chain), but a plain boolean-returning filter
-    // callback (as opposed to a callback with an inline type-predicate
-    // signature) doesn't propagate that narrowing to .map(), so TS still
-    // sees `string | undefined` here without it.
-    .map(mem => ({ tokenAddress: mem.tokenAddress!, chain: mem.chain! }));
+  const riskItems = [...memory.entries()]
+    .filter(([{ chain }, mem]) => !!mem.tokenAddress && isEvmPreflightChain(chain))
+    // Chain-ul vine din cheia PairMap (source of truth), nu din `mem.chain`.
+    // E `string` canonic; getCachedRisksBulk cere `chain: string`, deci fără
+    // non-null assertion pe chain. `!` rămâne doar pe tokenAddress (filtrul
+    // boolean nu propagă narrowing-ul type-predicate către .map()).
+    .map(([{ chain }, mem]) => ({ tokenAddress: mem.tokenAddress!, chain }));
   const riskMap = await getCachedRisksBulk(riskItems);
 
-  for (const [{ address: addr }, mem] of memory.entries()) {
-    if (!isEvmPreflightChain(mem.chain)) {
-      console.warn(`[PAIR STATE SKIP] invalid/missing chain for ${addr}: ${mem.chain ?? "missing"}`);
+  for (const [{ chain, address: addr }, mem] of memory.entries()) {
+    // Cheia PairMap decodată e AUTORITATEA pt. chain (nu `mem.chain`) — după
+    // migrare cheia = identitatea perechii. Post-B3e sunt egale, dar folosim
+    // consecvent cheia ca să nu depindem de realinierea valorii.
+    if (!isEvmPreflightChain(chain)) {
+      console.warn(`[PAIR STATE SKIP] invalid/missing chain for ${addr}: ${chain || "missing"}`);
       continue;
     }
 
-    const flow    = getWsFlow(mem.chain, addr);
-    const lp      = getLpSignal(mem.chain, addr);
-    const liq     = getLiquidityContext(mem.chain, addr);
-    const poolEth = poolLiquidity.get(mem.chain, addr)?.reserveEth ?? 0;
+    const flow    = getWsFlow(chain, addr);
+    const lp      = getLpSignal(chain, addr);
+    const liq     = getLiquidityContext(chain, addr);
+    const poolEth = poolLiquidity.get(chain, addr)?.reserveEth ?? 0;
     const removed = lp.lpRemoved5m ?? 0;
 
     // Pipeline state derivat din stores
     const pipelineState =
-	  armedEntries.has(mem.chain, addr)   ? "ARMED"      :
-	  hotCandidates.has(mem.chain, addr)  ? "HOT" :
-	  activeWatch.has(mem.chain, addr)    ? "WATCHING"   :
+	  armedEntries.has(chain, addr)   ? "ARMED"      :
+	  hotCandidates.has(chain, addr)  ? "HOT" :
+	  activeWatch.has(chain, addr)    ? "WATCHING"   :
 	  "NONE";
 
     // priceChange vine din PairMemoryEntry — workerul îl updatează la fiecare scan
@@ -85,9 +87,9 @@ export async function buildPairStates(): Promise<Record<string, PairStateSnapsho
 
     // Timing — pipelineEnteredAt = cel mai recent moment de intrare în pipeline
     const pipelineEnteredAt =
-      armedEntries.get(mem.chain, addr)?.armedAt ??
-      hotCandidates.get(mem.chain, addr)?.promotedAt ??
-      activeWatch.get(mem.chain, addr)?.addedAt ??
+      armedEntries.get(chain, addr)?.armedAt ??
+      hotCandidates.get(chain, addr)?.promotedAt ??
+      activeWatch.get(chain, addr)?.addedAt ??
       null;
 
     // priceVsFirstSeenPct — cât a mișcat față de prima apariție în worker
@@ -97,14 +99,13 @@ export async function buildPairStates(): Promise<Record<string, PairStateSnapsho
         ? Number(((mem.currentPrice - priceAtFirstSeen) / priceAtFirstSeen * 100).toFixed(2))
         : null;
 
-    states[addr] = {
+    states[pairKey(chain, addr)] = {
       symbol:       mem.symbol,
-      // No cast needed — isEvmPreflightChain() already narrowed mem.chain
-      // above; anything that didn't validate hit `continue` before this.
-      chain:        mem.chain,
+      // chain din cheia decodată (source of truth), narrowed la PreflightEvmChain.
+      chain,
       pairAddress:  addr,
       tokenAddress: mem.tokenAddress ?? "",
-      dexType:      addr.length === 66 ? "V4" : v3PoolMap.has(mem.chain, addr) ? "V3" : "V2",
+      dexType:      addr.length === 66 ? "V4" : v3PoolMap.has(chain, addr) ? "V3" : "V2",
 	  
 	  discovery: {
         primaryDiscoverySource: mem.primaryDiscoverySource ?? null,
@@ -178,7 +179,7 @@ export async function buildPairStates(): Promise<Record<string, PairStateSnapsho
       nativeSymbol:  liq.nativeSymbol,
       liqStatus:     liq.status,
       poolCountSameToken: (() => {
-        const cp = mem.chain ?? "";
+        const cp = chain;
         return tokenPools.get(tokenPoolKey(cp, mem.tokenAddress))?.size ?? 1;
       })(),
 
@@ -186,7 +187,7 @@ export async function buildPairStates(): Promise<Record<string, PairStateSnapsho
       updatedAt: now,
       risk: (() => {
         if (!mem.tokenAddress) return null;
-        const key = `${(mem.chain ?? "base").toLowerCase()}:${mem.tokenAddress.toLowerCase()}`;
+        const key = `${chain}:${mem.tokenAddress.toLowerCase()}`;
         return slimRisk(riskMap.get(key));
       })(),
     };
