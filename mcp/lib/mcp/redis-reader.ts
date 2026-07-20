@@ -11,9 +11,11 @@ import type {
 } from "./types";
 import {
   REDIS_KEYS,
+  SCHEMA_VERSION,
   PREFLIGHT_EVM_CHAINS,
   normalizeChainId,
   pairKey,
+  type PreflightWorkerRuntime, type PreflightEvmChain, type MarketRegime as PreflightMarketRegime,
   type PreflightMarketContext, type PreflightDrop,
   type PreflightMomentumEvent, type PreflightSignalPipelineEntry, type PreflightQualifiedSignal,
   type PreflightSolanaPool, type PreflightObservedCandidate, type PreflightSolanaQuoteType,
@@ -48,27 +50,29 @@ export async function readAllRedis(): Promise<RedisContext | null> {
   // B4: pair_states/active_watch/hot_candidates/armed_entries/worker_snapshot sunt
   // chain-scoped (o cheie per-chain) → MGET peste PREFLIGHT_EVM_CHAINS + merge mai jos.
   const evmChains = PREFLIGHT_EVM_CHAINS;
+  // B4d-2: market_regime/market_context NU se mai citesc din Redis — se derivă la read-time
+  // mai jos din pair_states-urile merge-uite + worker_runtime (heartbeat WS per-chain).
   const [
     statesRaws, watchRaws, hotRaws, armedRaws, snapshotRaws,
-    regimeRaw, eventsRaws, dropsRaws,
-    pfMarketRaw, pfMomentumRaws, pfPipelineRaws, pfQualifiedRaws,
+    eventsRaws, dropsRaws,
+    pfMomentumRaws, pfPipelineRaws, pfQualifiedRaws,
     pfCoverageRaws, pfScannerStatsRaws, pfLifecycleRaws,
+    workerRuntimeRaws,
   ] = await Promise.all([
     r.mget(...evmChains.map(c => REDIS_KEYS.pairStates(c))),
     r.mget(...evmChains.map(c => REDIS_KEYS.activeWatch(c))),
     r.mget(...evmChains.map(c => REDIS_KEYS.hotCandidates(c))),
     r.mget(...evmChains.map(c => REDIS_KEYS.armedEntries(c))),
     r.mget(...evmChains.map(c => REDIS_KEYS.workerSnapshot(c))),
-    r.get(REDIS_KEYS.marketRegime),
     r.mget(...evmChains.map(c => REDIS_KEYS.pipelineEvents(c))),
     r.mget(...evmChains.map(c => REDIS_KEYS.recentDrops(c))),
-    r.get(REDIS_KEYS.marketContext),
     r.mget(...evmChains.map(c => REDIS_KEYS.momentumEvents(c))),
     r.mget(...evmChains.map(c => REDIS_KEYS.signalPipeline(c))),
     r.mget(...evmChains.map(c => REDIS_KEYS.qualifiedSignals(c))),
     r.mget(...evmChains.map(c => REDIS_KEYS.pipelineCoverage(c))),
     r.mget(...evmChains.map(c => REDIS_KEYS.scannerStats(c))),
     r.mget(...evmChains.map(c => REDIS_KEYS.lifecycle(c))),
+    r.mget(...evmChains.map(c => REDIS_KEYS.workerRuntime(c))),
   ]);
 
   const now = Date.now();
@@ -225,6 +229,90 @@ export async function readAllRedis(): Promise<RedisContext | null> {
   };
   const scannerM = mergeScannerStats(pfScannerStatsRaws);
 
+  // ── B4d-2: market_context + market_regime DERIVATE la read-time ─────────────────
+  // Nu mai există writer global (evită last-writer-wins la split). Derivăm din states-urile
+  // per-chain merge-uite + heartbeat-ul WS per-chain (worker_runtime).
+  // CHEIA MGET = autoritatea pt. chain (nu payload-ul — altfel worker_runtime:base cu
+  // {chain:"bsc"} ar adopta un chain străin, exact bug-ul B4a). updatedAt lipsă/NaN/viitor
+  // sau expirat (>120s) = ignorat.
+  const wsConnectedChains: PreflightEvmChain[] = [];
+  const scanOnlyChains:    PreflightEvmChain[] = [];
+  const chainsActive:      PreflightEvmChain[] = [];
+  const runtimeUpdatedAts: number[] = [];
+  const RUNTIME_MAX_AGE_MS = 120_000;
+  for (let i = 0; i < workerRuntimeRaws.length; i++) {
+    const raw = workerRuntimeRaws[i];
+    if (raw == null) continue;
+    const keyChain = evmChains[i];
+    const wr = safeJson<Partial<PreflightWorkerRuntime> | null>(raw, null, `worker_runtime:${keyChain}`);
+    if (!wr) continue;
+    if (normalizeChainId(String(wr.chain ?? "")) !== keyChain) continue; // refuză chain străin
+    const updatedAt = Number(wr.updatedAt);
+    if (!Number.isFinite(updatedAt)) continue;
+    const ageMs = now - updatedAt;
+    if (ageMs < -30_000 || ageMs > RUNTIME_MAX_AGE_MS) continue; // viitor >30s sau expirat
+    runtimeUpdatedAts.push(updatedAt);
+    chainsActive.push(keyChain);
+    if (wr.wsConnected === true) wsConnectedChains.push(keyChain);
+    else scanOnlyChains.push(keyChain);
+  }
+  // Port 1:1 al deriveMarketContext (workers/evm/src/pipeline/marketContext.ts) pe states merge-uite.
+  const mcVals    = Object.values(statesM.merged) as Array<{ flow?: { hasData?: boolean; pressure?: string }; updatedAt?: number }>;
+  const mcTotal   = mcVals.length;
+  const mcWithFlow = mcVals.filter(v => v?.flow?.hasData);
+  const mcBuying  = mcWithFlow.filter(v => v?.flow?.pressure === "BUYING").length;
+  const mcSelling = mcWithFlow.filter(v => v?.flow?.pressure === "SELLING").length;
+  const buyingPctAll    = mcTotal ? Math.round(mcBuying  / mcTotal * 100) : 0;
+  const sellingPctAll   = mcTotal ? Math.round(mcSelling / mcTotal * 100) : 0;
+  const noWsPct         = mcTotal ? Math.round((mcTotal - mcWithFlow.length) / mcTotal * 100) : 100;
+  const derivedCoverage = mcTotal ? Math.round(mcWithFlow.length / mcTotal * 100) : 0;
+  const derivedRegime: PreflightMarketRegime =
+    buyingPctAll > 30     ? "RISK_ON"  :
+    sellingPctAll > 20    ? "RISK_OFF" :
+    derivedCoverage < 20  ? "DEAD"     :
+    "MIXED";
+  const momentumLast10m = momentumM.merged.filter(m => now - (m as any).detectedAt < 10 * 60_000).length;
+  // marketHasData = DOAR pair_states real. Un worker viu fără snapshot de piață NU e "piață
+  // moartă" (asta ar fi date indisponibile); heartbeat-ul completează doar chains/WS, nu
+  // autorizează derivarea regimului. Un pair_states:{} valid tot dă DEAD (snapshot real, 0 perechi).
+  const marketHasData = statesM.any;
+  // Freshness din SURSE (nu falsifica "fresh"/now): cel mai vechi updatedAt al state-urilor;
+  // fallback runtime/snapshot. pfMarket.updatedAt = timestampul datelor; regime.calculatedAt = now.
+  const stateUpdatedAts = mcVals.map(v => Number(v?.updatedAt)).filter(Number.isFinite);
+  const marketSourceAt =
+    stateUpdatedAts.length   > 0 ? Math.min(...stateUpdatedAts) :
+    runtimeUpdatedAts.length > 0 ? Math.min(...runtimeUpdatedAts) :
+    Number(snapshotMerged?.savedAt ?? now);
+  const marketAgeMs = Math.max(0, now - marketSourceAt);
+  const contextQuality = marketAgeMs < 45_000 ? "fresh" : marketAgeMs < 90_000 ? "aging" : "stale";
+  const derivedMarket: PreflightMarketContext | null = marketHasData ? {
+    schemaVersion:         SCHEMA_VERSION,
+    workerVersion:         snapshotMerged?.version ?? "unknown",
+    regime:                derivedRegime,
+    buyingPct:             buyingPctAll,
+    sellingPct:            sellingPctAll,
+    flowCoveragePct:       derivedCoverage,
+    trackedPairs:          mcTotal,
+    chainsActive,
+    momentumEventsLast10m: momentumLast10m,
+    contextQuality,
+    updatedAt:             marketSourceAt,
+  } : null;
+  const derivedRegimeObj: MarketRegime | null = marketHasData ? {
+    regime:            derivedRegime,
+    buyingPctAll,
+    sellingPctAll,
+    noWsPct,
+    flowCoveragePct:   derivedCoverage,
+    hotCount:          Object.keys(hotM.merged).length,
+    armedCount:        Object.keys(armedM.merged).length,
+    wsConnectedChains,
+    scanOnlyChains,
+    trackedPairs:      mcTotal,
+    pairsWithWsFlow:   mcWithFlow.length,
+    calculatedAt:      now,
+  } : null;
+
   return {
     now,
     states:   statesM.merged,
@@ -242,10 +330,10 @@ export async function readAllRedis(): Promise<RedisContext | null> {
     // to merge `pfMarket ?? regime as any` and prefer pfMarket first. Now
     // parses only its own key, and every consumer reads per-field fallbacks
     // (`pfMarket?.x ?? regime?.x`) instead of merging the two shapes.
-    regime:   safeJson<MarketRegime | null>        (regimeRaw, null, "market_regime"),
+    regime:   derivedRegimeObj,
     events:   eventsM.merged,
     drops:   dropsM.merged,
-    pfMarket:         safeJson<PreflightMarketContext | null>(pfMarketRaw, null, "pf_market"),
+    pfMarket:         derivedMarket,
     pfMomentum:       momentumM.any ? momentumM.merged : null,
     pfPipeline:       pipelineM.any ? pipelineM.merged : null,
     pfQualified:      qualifiedM.any ? qualifiedM.merged : null,
@@ -259,10 +347,10 @@ export async function readAllRedis(): Promise<RedisContext | null> {
       hot_candidates:       hotM.any,
       armed_entries:        armedM.any,
       worker_snapshot:      snapshotMerged !== null,
-      market_regime:        regimeRaw   !== null,
+      market_regime:        derivedRegimeObj !== null,
       pipeline_events:      eventsM.any,
       recent_drops:         dropsM.any,
-      pf_market:            pfMarketRaw    !== null,
+      pf_market:            derivedMarket !== null,
       pf_momentum:          momentumM.any,
       pf_pipeline:          pipelineM.any,
       pf_qualified:         qualifiedM.any,

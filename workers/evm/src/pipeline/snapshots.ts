@@ -6,11 +6,12 @@
 
 import type { Redis } from "ioredis";
 import {
-  activeWatch, hotCandidates, memory, wsFlow,
+  activeWatch, hotCandidates, memory, wsFlow, wsClients,
   momentumEventsBuffer, qualifiedSignalsBuffer, recentDrops,
 } from "../state/stores";
 import { buildPairStates, buildWatchSnapshot, buildHotSnapshot, buildArmedSnapshot } from "../state/pairStates";
-import { deriveMarketContext, writeMarketRegime, writeDropsAndEvents } from "./marketContext";
+import { writeDropsAndEvents } from "./marketContext";
+import WebSocket from "ws";
 import { getWsFlow } from "../risk/flow";
 import { getLiquidityContext } from "../risk/liquidity";
 import {
@@ -42,9 +43,22 @@ export async function writeAllSnapshots(r: Redis): Promise<void> {
   await writeSnapshotByChain(r, REDIS_KEYS.hotCandidates, buildHotSnapshot(),   120);
   await writeSnapshotByChain(r, REDIS_KEYS.armedEntries,  buildArmedSnapshot(), 120);
 
-  // ── market context + drops ────────────────────────────────────────────────
-  const ctx = deriveMarketContext(states);
-  await writeMarketRegime(r, ctx);
+  // ── worker runtime heartbeat + drops ──────────────────────────────────────
+  // B4d-2: market_context/market_regime NU se mai scriu — MCP le derivă la read-time din
+  // pair_states-urile per-chain. Fiecare worker publică DOAR starea lui WS per-chain (nu e
+  // în pair_states), ca MCP-ul să deriveze wsConnectedChains/scanOnlyChains. Un worker
+  // per-chain scrie doar cheile chain-urilor lui (CHAINS = runtime).
+  const runtimeNow  = Date.now();
+  const runtimePipe = r.pipeline();
+  for (const c of CHAINS) {
+    const ws = wsClients.get(c.id);
+    runtimePipe.set(REDIS_KEYS.workerRuntime(c.id), JSON.stringify({
+      chain:       c.id,
+      wsConnected: ws?.readyState === WebSocket.OPEN,
+      updatedAt:   runtimeNow,
+    }), "EX", 120);
+  }
+  await runtimePipe.exec();
   await writeDropsAndEvents(r);
 
   // ── preflight:* writes ─────────────────────────────────────────────────────
@@ -56,13 +70,7 @@ export async function writeAllSnapshots(r: Redis): Promise<void> {
     await writePreflightRedis(r, {
       workerVersion:    WORKER_VERSION,
       now:              Date.now(),
-      regime:           ctx.regime,
-      buyingPctAll:     ctx.buyingPctAll,
-      sellingPctAll:    ctx.sellingPctAll,
-      flowCoveragePct:  ctx.flowCoveragePct,
       pairContextMap,
-      trackedPairs:     ctx.total,
-      chainsActive:     CHAINS.map(c => c.id),
       momentumEventsBuffer,
       signalPipeline,
       qualifiedSignals: qualifiedSignalsBuffer,

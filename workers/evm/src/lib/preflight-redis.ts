@@ -29,7 +29,7 @@ import type { MomentumEvent } from "../risk/momentum";
 import { partitionArrayByChain } from "./redisArrays";
 import {
   REDIS_KEYS, SCHEMA_VERSION,
-  type PreflightDrop, type PreflightMarketContext, type PreflightEvmChain, type MarketRegime,
+  type PreflightDrop, type PreflightEvmChain,
   type PreflightMomentumEvent, type PreflightSignalPipelineEntry, type PreflightQualifiedSignal,
   type DexType,
 } from "@preflight/schema";
@@ -159,13 +159,6 @@ export interface PreflightWriteInput {
   workerVersion:    string;
   now:              number;
 
-  // Market context
-  regime:           MarketRegime;
-  buyingPctAll:     number;
-  sellingPctAll:    number;
-  flowCoveragePct:  number;
-  trackedPairs:     number;
-  chainsActive:     PreflightEvmChain[];
   momentumEventsBuffer: PreflightMomentumEvent[];
 
   // Signal pipeline (activeWatch + hotCandidates)
@@ -183,8 +176,7 @@ export interface PreflightWriteInput {
 
 export async function writePreflightRedis(r: Redis, input: PreflightWriteInput): Promise<void> {
   const {
-    workerVersion, now,
-    regime, buyingPctAll, sellingPctAll, flowCoveragePct, trackedPairs, chainsActive,
+    now,
     momentumEventsBuffer, signalPipeline, qualifiedSignals, recentDrops,
   } = input;
 
@@ -192,27 +184,9 @@ export async function writePreflightRedis(r: Redis, input: PreflightWriteInput):
 
   const pipeline = r.pipeline();
 
-  // ── preflight:market_context ─────────────────────────────────────────────
-  // Typed against the shared contract instead of an inline literal, so a
-  // field rename/removal in @preflight/schema is caught here at compile
-  // time instead of silently drifting like PreflightDrop did. No casts
-  // needed — regime/chainsActive are typed as MarketRegime/PreflightEvmChain[]
-  // all the way back to their source (marketContext.ts's deriveMarketContext,
-  // config/chains.ts's ChainConfig.id), not just widened to fit here.
-  const marketContext: PreflightMarketContext = {
-    schemaVersion:   SCHEMA_VERSION,
-    workerVersion,
-    regime,
-    buyingPct:       buyingPctAll,
-    sellingPct:      sellingPctAll,
-    flowCoveragePct,
-    trackedPairs,
-    chainsActive,
-    momentumEventsLast10m: momentumEventsBuffer.filter(e => recent10m(e.detectedAt)).length,
-    contextQuality:  "fresh",
-    updatedAt:       now,
-  };
-  pipeline.set(REDIS_KEYS.marketContext, JSON.stringify(marketContext), "EX", 120);
+  // B4d-2: market_context NU se mai scrie aici — MCP-ul îl derivă la read-time din
+  // pair_states-urile per-chain (vezi redis-reader.ts). Workerul publică doar heartbeat-ul
+  // WS per-chain (worker_runtime, în snapshots.ts).
 
   // ── preflight:momentum_events ────────────────────────────────────────────
   // B4b: limita per-chain (MAX_EVENTS în helper, după partiție) → fiecare chain

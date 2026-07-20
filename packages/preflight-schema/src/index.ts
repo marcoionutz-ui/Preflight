@@ -415,6 +415,16 @@ export interface PreflightMarketContext {
   updatedAt:             number;
 }
 
+// B4d-2: fapt de runtime per-chain publicat de fiecare worker. MCP-ul îl citește ca să
+// deriveze wsConnectedChains/scanOnlyChains în market_regime (starea WS e per-worker,
+// nu e în pair_states). market_context/market_regime NU se mai scriu în Redis — MCP-ul
+// le derivă la read-time din pair_states-urile per-chain + acest heartbeat.
+export interface PreflightWorkerRuntime {
+  chain:       PreflightEvmChain;
+  wsConnected: boolean;
+  updatedAt:   number;
+}
+
 // ── Drop ──────────────────────────────────────────────────────────────────────
 
 export interface PreflightDrop {
@@ -947,7 +957,10 @@ export const REDIS_KEYS = {
   pipelineEvents:  (chain: string) => `preflight:pipeline_events:${normalizeChainId(chain)}`,
 
   // Context
+  // ⚠️ B4d-2: market_context/market_regime NU se mai scriu — MCP le derivă la read-time.
+  // Cheile rămân doar ca referință; nimic nu le mai citește/scrie pe hot-path.
   marketContext:      "preflight:market_context",
+  workerRuntime:      (chain: string) => `preflight:worker_runtime:${normalizeChainId(chain)}`,
   momentumEvents:     (chain: string) => `preflight:momentum_events:${normalizeChainId(chain)}`,
   signalPipeline:     (chain: string) => `preflight:signal_pipeline:${normalizeChainId(chain)}`,
   qualifiedSignals:   (chain: string) => `preflight:qualified_signals:${normalizeChainId(chain)}`,
