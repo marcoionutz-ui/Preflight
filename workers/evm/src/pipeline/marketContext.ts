@@ -9,6 +9,7 @@ import { CHAINS } from "../config/chains";
 import { wsClients, recentDrops, pipelineEvents, hotCandidates, armedEntries } from "../state/stores";
 import type { PairStateSnapshot } from "../state/pairStates";
 import { REDIS_KEYS, type MarketRegime } from "@preflight/schema";
+import { partitionArrayByChain } from "../lib/redisArrays";
 
 export interface MarketContext {
   regime:           MarketRegime;
@@ -64,7 +65,9 @@ export async function writeMarketRegime(r: Redis, ctx: MarketContext): Promise<v
 
 export async function writeDropsAndEvents(r: Redis): Promise<void> {
   const now = Date.now();
-  await r.set(REDIS_KEYS.pipelineEvents, JSON.stringify(
-    pipelineEvents.filter(e => now - e.ts < 10 * 60_000),
-  ), "EX", 600);
+  // B4b: pipeline_events chain-scoped → o cheie per-chain.
+  const freshEvents = pipelineEvents.filter(e => now - e.ts < 10 * 60_000);
+  const pipe = r.pipeline();
+  for (const { key, value } of partitionArrayByChain(REDIS_KEYS.pipelineEvents, freshEvents)) pipe.set(key, value, "EX", 600);
+  await pipe.exec();
 }

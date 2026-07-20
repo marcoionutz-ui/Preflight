@@ -943,18 +943,18 @@ export const REDIS_KEYS = {
   armedEntries:    (chain: string) => `preflight:armed_entries:${normalizeChainId(chain)}`,
   workerSnapshot:  (chain: string) => `preflight:worker_snapshot:${normalizeChainId(chain)}:latest`,
   marketRegime:    "preflight:market_regime",
-  recentDrops:     "preflight:recent_drops",
-  pipelineEvents:  "preflight:pipeline_events",
+  recentDrops:     (chain: string) => `preflight:recent_drops:${normalizeChainId(chain)}`,
+  pipelineEvents:  (chain: string) => `preflight:pipeline_events:${normalizeChainId(chain)}`,
 
   // Context
   marketContext:      "preflight:market_context",
-  momentumEvents:     "preflight:momentum_events",
-  signalPipeline:     "preflight:signal_pipeline",
-  qualifiedSignals:   "preflight:qualified_signals",
+  momentumEvents:     (chain: string) => `preflight:momentum_events:${normalizeChainId(chain)}`,
+  signalPipeline:     (chain: string) => `preflight:signal_pipeline:${normalizeChainId(chain)}`,
+  qualifiedSignals:   (chain: string) => `preflight:qualified_signals:${normalizeChainId(chain)}`,
   pipelineCoverage:   "preflight:pipeline_coverage",
   scannerStats:       "preflight:scanner_stats",
   agentWatchRequests: "preflight:agent_watch_requests",
-  lifecycle:          "preflight:lifecycle",
+  lifecycle:          (chain: string) => `preflight:lifecycle:${normalizeChainId(chain)}`,
 
   // Per-pair, chain-scoped (Faza B2). pairContext e EVM-only în practică, dar
   // trecem prin pairKey pt. consistență (elimină coliziunea cross-chain P0-1).

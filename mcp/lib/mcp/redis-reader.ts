@@ -50,9 +50,9 @@ export async function readAllRedis(): Promise<RedisContext | null> {
   const evmChains = PREFLIGHT_EVM_CHAINS;
   const [
     statesRaws, watchRaws, hotRaws, armedRaws, snapshotRaws,
-    regimeRaw, eventsRaw, dropsRaw,
-    pfMarketRaw, pfMomentumRaw, pfPipelineRaw, pfQualifiedRaw,
-    pfCoverageRaw, pfScannerStatsRaw, pfLifecycleRaw,
+    regimeRaw, eventsRaws, dropsRaws,
+    pfMarketRaw, pfMomentumRaws, pfPipelineRaws, pfQualifiedRaws,
+    pfCoverageRaw, pfScannerStatsRaw, pfLifecycleRaws,
   ] = await Promise.all([
     r.mget(...evmChains.map(c => REDIS_KEYS.pairStates(c))),
     r.mget(...evmChains.map(c => REDIS_KEYS.activeWatch(c))),
@@ -60,15 +60,15 @@ export async function readAllRedis(): Promise<RedisContext | null> {
     r.mget(...evmChains.map(c => REDIS_KEYS.armedEntries(c))),
     r.mget(...evmChains.map(c => REDIS_KEYS.workerSnapshot(c))),
     r.get(REDIS_KEYS.marketRegime),
-    r.get(REDIS_KEYS.pipelineEvents),
-    r.get(REDIS_KEYS.recentDrops),
+    r.mget(...evmChains.map(c => REDIS_KEYS.pipelineEvents(c))),
+    r.mget(...evmChains.map(c => REDIS_KEYS.recentDrops(c))),
     r.get(REDIS_KEYS.marketContext),
-    r.get(REDIS_KEYS.momentumEvents),
-    r.get(REDIS_KEYS.signalPipeline),
-    r.get(REDIS_KEYS.qualifiedSignals),
+    r.mget(...evmChains.map(c => REDIS_KEYS.momentumEvents(c))),
+    r.mget(...evmChains.map(c => REDIS_KEYS.signalPipeline(c))),
+    r.mget(...evmChains.map(c => REDIS_KEYS.qualifiedSignals(c))),
     r.get(REDIS_KEYS.pipelineCoverage),
     r.get(REDIS_KEYS.scannerStats),
-    r.get(REDIS_KEYS.lifecycle),
+    r.mget(...evmChains.map(c => REDIS_KEYS.lifecycle(c))),
   ]);
 
   const now = Date.now();
@@ -117,16 +117,29 @@ export async function readAllRedis(): Promise<RedisContext | null> {
   };
   const snapshotMerged = mergeSnapshot(snapshotRaws);
 
-  const eventsFinal   = eventsRaw; // pipeline_events rămâne supreme pentru acum
-
-  // drops and pfDrops used to each JSON.parse() the same recentDrops blob
-  // into two incompatible interfaces (RecentDrop's previousState/reason vs
-  // PreflightDrop's wasIn/dropReason) — only the latter ever matched what's
-  // actually written. Parse once, share the result; pfDrops stays null when
-  // the key itself is genuinely missing (vs. drops' [] fallback), since
-  // some consumers use pfDrops' nullability to distinguish "no key" from
-  // "key present but empty".
-  const parsedDrops = safeJson<PreflightDrop[]>(dropsRaw, [], REDIS_KEYS.recentDrops);
+  // B4b: array-urile sunt acum chain-scoped (o cheie per-chain) → MGET + concat.
+  // `any` = a existat vreo cheie (păstrează semantica keyExists / pfX-nullability).
+  // B4b: array-urile per-chain sunt newest-first individual, dar concat-ul le
+  // grupează pe chain → re-sortăm global DESC pe timestamp, ca să restaurăm
+  // "newest-first" pe care consumatorii cu filter+.slice(0,N) o presupun.
+  const mergeChainArrays = <T,>(raws: (string | null)[], label: string, tsOf: (x: T) => number): { merged: T[]; any: boolean } => {
+    const merged: T[] = [];
+    let any = false;
+    for (const raw of raws) {
+      if (raw == null) continue;
+      any = true;
+      const arr = safeJson<T[]>(raw, [], label);
+      if (Array.isArray(arr)) merged.push(...arr);
+    }
+    merged.sort((a, b) => (Number(tsOf(b)) || 0) - (Number(tsOf(a)) || 0));
+    return { merged, any };
+  };
+  const eventsM    = mergeChainArrays<PipelineEvent>(eventsRaws, "pipeline_events", e => e.ts);
+  const dropsM     = mergeChainArrays<PreflightDrop>(dropsRaws, "recent_drops", d => d.droppedAt);
+  const momentumM  = mergeChainArrays<PreflightMomentumEvent>(pfMomentumRaws, "pf_momentum", m => m.detectedAt);
+  const pipelineM  = mergeChainArrays<PreflightSignalPipelineEntry>(pfPipelineRaws, "pf_pipeline", p => p.updatedAt);
+  const qualifiedM = mergeChainArrays<PreflightQualifiedSignal>(pfQualifiedRaws, "pf_qualified", q => q.qualifiedAt);
+  const lifecycleM = mergeChainArrays<LifecycleEntry>(pfLifecycleRaws, "pf_lifecycle", l => l.lastOutcomeAt);
 
   return {
     now,
@@ -146,16 +159,16 @@ export async function readAllRedis(): Promise<RedisContext | null> {
     // parses only its own key, and every consumer reads per-field fallbacks
     // (`pfMarket?.x ?? regime?.x`) instead of merging the two shapes.
     regime:   safeJson<MarketRegime | null>        (regimeRaw, null, "market_regime"),
-    events:   safeJson<PipelineEvent[]>            (eventsFinal, [],   "pipeline_events"),
-    drops:   parsedDrops,
+    events:   eventsM.merged,
+    drops:   dropsM.merged,
     pfMarket:         safeJson<PreflightMarketContext | null>(pfMarketRaw, null, "pf_market"),
-    pfMomentum:       safeJson<PreflightMomentumEvent[] | null>(pfMomentumRaw, null, "pf_momentum"),
-    pfPipeline:       safeJson<PreflightSignalPipelineEntry[] | null>(pfPipelineRaw, null, "pf_pipeline"),
-    pfQualified:      safeJson<PreflightQualifiedSignal[] | null>(pfQualifiedRaw, null, "pf_qualified"),
-    pfDrops: dropsRaw !== null ? parsedDrops : null,
+    pfMomentum:       momentumM.any ? momentumM.merged : null,
+    pfPipeline:       pipelineM.any ? pipelineM.merged : null,
+    pfQualified:      qualifiedM.any ? qualifiedM.merged : null,
+    pfDrops: dropsM.any ? dropsM.merged : null,
     pipelineCoverage: safeJson<PipelineCoverage | null>(pfCoverageRaw, null, "pf_pipeline_coverage"),
     scannerStats:     safeJson<ScannerStats | null>(pfScannerStatsRaw, null, "pf_scanner_stats"),
-    pfLifecycle:      safeJson<LifecycleEntry[] | null>(pfLifecycleRaw, null, "pf_lifecycle"),
+    pfLifecycle:      lifecycleM.any ? lifecycleM.merged : null,
     keyExists: {
       pair_states:          statesM.any,
       active_watch:         watchM.any,
@@ -163,16 +176,16 @@ export async function readAllRedis(): Promise<RedisContext | null> {
       armed_entries:        armedM.any,
       worker_snapshot:      snapshotMerged !== null,
       market_regime:        regimeRaw   !== null,
-      pipeline_events:      eventsRaw   !== null,
-      recent_drops:         dropsRaw    !== null,
+      pipeline_events:      eventsM.any,
+      recent_drops:         dropsM.any,
       pf_market:            pfMarketRaw    !== null,
-      pf_momentum:          pfMomentumRaw  !== null,
-      pf_pipeline:          pfPipelineRaw  !== null,
-      pf_qualified:         pfQualifiedRaw !== null,
-      pf_drops:             dropsRaw    !== null,
+      pf_momentum:          momentumM.any,
+      pf_pipeline:          pipelineM.any,
+      pf_qualified:         qualifiedM.any,
+      pf_drops:             dropsM.any,
       pf_pipeline_coverage: pfCoverageRaw     !== null,
       pf_scanner_stats:     pfScannerStatsRaw !== null,
-      pf_lifecycle:         pfLifecycleRaw    !== null,
+      pf_lifecycle:         lifecycleM.any,
     },
   };
 }

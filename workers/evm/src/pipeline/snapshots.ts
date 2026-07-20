@@ -23,6 +23,7 @@ import { tokenPools, tokenPoolKey } from "../infra/poolTracker";
 import { WORKER_VERSION } from "../config/constants";
 import { getLifecycle, getRecentLifecycles } from "../state/lifecycle";
 import { CHAINS } from "../config/chains";
+import { partitionArrayByChain } from "../lib/redisArrays";
 import { writeCoverageSnapshot } from "./coverageSnapshot";
 import { writeTrendingSnapshots } from "../trending/trendingSnapshots";
 import { calculateMovers } from "../trending/trendingMovers";
@@ -73,12 +74,10 @@ export async function writeAllSnapshots(r: Redis): Promise<void> {
 
 // ── preflight:lifecycle ───────────────────────────────────────────────────
   try {
-    await r.set(
-      REDIS_KEYS.lifecycle,
-      JSON.stringify(getRecentLifecycles()),
-      "EX",
-      600,
-    );
+    // B4b: lifecycle chain-scoped → o cheie per-chain (fiecare entry are `.chain`).
+    const lifePipe = r.pipeline();
+    for (const { key, value } of partitionArrayByChain(REDIS_KEYS.lifecycle, getRecentLifecycles())) lifePipe.set(key, value, "EX", 600);
+    await lifePipe.exec();
   } catch (e) {
     console.error("[LIFECYCLE] Write failed:", e instanceof Error ? e.message : e);
   }

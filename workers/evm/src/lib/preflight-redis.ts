@@ -26,6 +26,7 @@ import {
   type Confidence,
 } from "./observation";
 import type { MomentumEvent } from "../risk/momentum";
+import { partitionArrayByChain } from "./redisArrays";
 import {
   REDIS_KEYS, SCHEMA_VERSION,
   type PreflightDrop, type PreflightMarketContext, type PreflightEvmChain, type MarketRegime,
@@ -214,31 +215,19 @@ export async function writePreflightRedis(r: Redis, input: PreflightWriteInput):
   pipeline.set(REDIS_KEYS.marketContext, JSON.stringify(marketContext), "EX", 120);
 
   // ── preflight:momentum_events ────────────────────────────────────────────
-  const recentMomentum = momentumEventsBuffer
-    .filter(e => recent10m(e.detectedAt))
-    .slice(0, MAX_EVENTS);
-  pipeline.set(REDIS_KEYS.momentumEvents, JSON.stringify(recentMomentum), "EX", 600);
+  // B4b: limita per-chain (MAX_EVENTS în helper, după partiție) → fiecare chain
+  // deținut își păstrează propriile top-N, fără înfometare cross-chain.
+  const recentMomentum = momentumEventsBuffer.filter(e => recent10m(e.detectedAt));
+  for (const { key, value } of partitionArrayByChain(REDIS_KEYS.momentumEvents, recentMomentum, MAX_EVENTS)) pipeline.set(key, value, "EX", 600);
 
   // ── preflight:signal_pipeline ────────────────────────────────────────────
-  pipeline.set(
-    REDIS_KEYS.signalPipeline,
-    JSON.stringify(signalPipeline.slice(0, MAX_PIPELINE)),
-    "EX", 120,
-  );
+  for (const { key, value } of partitionArrayByChain(REDIS_KEYS.signalPipeline, signalPipeline, MAX_PIPELINE)) pipeline.set(key, value, "EX", 120);
 
   // ── preflight:qualified_signals ──────────────────────────────────────────
-  pipeline.set(
-    REDIS_KEYS.qualifiedSignals,
-    JSON.stringify(qualifiedSignals.slice(0, MAX_QUALIFIED)),
-    "EX", 120,
-  );
+  for (const { key, value } of partitionArrayByChain(REDIS_KEYS.qualifiedSignals, qualifiedSignals, MAX_QUALIFIED)) pipeline.set(key, value, "EX", 120);
 
   // ── preflight:recent_drops ───────────────────────────────────────────────
-  pipeline.set(
-    REDIS_KEYS.recentDrops,
-    JSON.stringify(recentDrops.filter(d => recent10m(d.droppedAt)).slice(0, MAX_DROPS)),
-    "EX", 600,
-  );
+  for (const { key, value } of partitionArrayByChain(REDIS_KEYS.recentDrops, recentDrops.filter(d => recent10m(d.droppedAt)), MAX_DROPS)) pipeline.set(key, value, "EX", 600);
 
   // ── preflight:pair_context ───────────────────────────────────────────────
   const pairContexts = Object.values(input.pairContextMap);
