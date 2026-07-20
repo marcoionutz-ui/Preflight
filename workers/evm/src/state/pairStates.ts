@@ -61,7 +61,7 @@ export async function buildPairStates(): Promise<Record<string, PairStateSnapsho
     .map(mem => ({ tokenAddress: mem.tokenAddress!, chain: mem.chain! }));
   const riskMap = await getCachedRisksBulk(riskItems);
 
-  for (const [addr, mem] of memory.entries()) {
+  for (const [{ address: addr }, mem] of memory.entries()) {
     if (!isEvmPreflightChain(mem.chain)) {
       console.warn(`[PAIR STATE SKIP] invalid/missing chain for ${addr}: ${mem.chain ?? "missing"}`);
       continue;
@@ -198,7 +198,7 @@ export async function buildPairStates(): Promise<Record<string, PairStateSnapsho
 export function buildWatchSnapshot(): Record<string, object> {
   const watchObj: Record<string, object> = {};
   for (const [{ chain, address: addr }, info] of activeWatch.entries()) {
-    const mem         = memory.get(addr);
+    const mem         = memory.get(chain, addr);
     const watchEvents = wsFlow.get(chain, addr) ?? [];
     const watchBuys   = watchEvents.filter(e => e.isBuy);
     const watchSells  = watchEvents.filter(e => !e.isBuy);
@@ -223,7 +223,7 @@ export function buildWatchSnapshot(): Record<string, object> {
 export function buildHotSnapshot(): Record<string, object> {
   const hotObj: Record<string, object> = {};
   for (const [{ chain, address: addr }, info] of hotCandidates.entries()) {
-    const mem       = memory.get(addr);
+    const mem       = memory.get(chain, addr);
     const flow      = getWsFlow(chain, addr);
     const hotEvents = wsFlow.get(chain, addr) ?? [];
     const hotBuys   = hotEvents.filter(e => e.isBuy);
@@ -250,7 +250,7 @@ export function buildHotSnapshot(): Record<string, object> {
 export function buildArmedSnapshot(): Record<string, object> {
   const armedObj: Record<string, object> = {};
   for (const [{ chain, address: addr }, info] of armedEntries.entries()) {
-    const mem = memory.get(addr);
+    const mem = memory.get(chain, addr);
     armedObj[pairKey(chain, addr)] = {
       armedAt: info.armedAt, ageMs: Date.now() - info.armedAt,
       price: info.price, score: info.score, flowPressure: info.flowPressure,

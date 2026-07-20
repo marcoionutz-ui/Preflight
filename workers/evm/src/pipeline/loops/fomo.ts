@@ -24,13 +24,13 @@ export async function fomoCandidatesLoop(): Promise<void> {
     if (ageMs < FOMO_RECHECK_MIN_AGE_MS) continue;
 
     if (ageMs > FOMO_RECHECK_MAX_AGE_MS) {
-      console.log(`[FOMO EXPIRE] ${memory.get(pairAddr)?.symbol ?? pairAddr} — no continuation after ${Math.round(ageMs / 60_000)}m`);
+      console.log(`[FOMO EXPIRE] ${memory.get(chain, pairAddr)?.symbol ?? pairAddr} — no continuation after ${Math.round(ageMs / 60_000)}m`);
       dropWatchCandidate(pairAddr, chain, `no continuation after ${Math.round(ageMs / 60_000)}m`);
       continue;
     }
 
     const cachedPool = watchedPoolCache.get(chain, pairAddr);
-    const mem        = memory.get(pairAddr);
+    const mem        = memory.get(chain, pairAddr);
     const flow       = getWsFlow(chain, pairAddr);
 
     if (!cachedPool || !mem) continue;

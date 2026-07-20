@@ -48,7 +48,7 @@ export interface LpEvent   { ts: number; isAdd: boolean; ethAmount: number; }
 
 // ── Pair memory ───────────────────────────────────────────────────────────────
 
-export const memory = new Map<string, PairMemoryEntry>();
+export const memory = new PairMap<PairMemoryEntry>();
 
 // ── WS flow data ──────────────────────────────────────────────────────────────
 

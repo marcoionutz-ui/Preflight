@@ -70,7 +70,7 @@ function clearExpiredArmedEntries(): void {
   for (const [{ chain, address: addr }, armed] of armedEntries.entries()) {
     if (now - armed.armedAt > ARM_TTL_MS) {
       console.log(`[ARM EXPIRE] ${addr} — confirmation window expired`);
-      recordDrop(addr, memory.get(addr)?.symbol ?? addr.slice(0, 8), chain, "ARMED", "confirmation window expired");
+      recordDrop(addr, memory.get(chain, addr)?.symbol ?? addr.slice(0, 8), chain, "ARMED", "confirmation window expired");
       armedEntries.delete(chain, addr);
     }
   }
@@ -79,14 +79,14 @@ function clearExpiredArmedEntries(): void {
 function pruneMemory(): void {
   const now    = Date.now();
   let   pruned = 0;
-  for (const [addr, mem] of memory.entries()) {
-    const c = mem.chain;
-    if (c && (activeWatch.has(c, addr) || hotCandidates.has(c, addr) || armedEntries.has(c, addr))) continue;
+  for (const [{ chain, address: addr }, mem] of memory.entries()) {
+    // chain din cheia decodată e mereu prezent → nu mai avem nevoie de guard `if(c)`.
+    if (activeWatch.has(chain, addr) || hotCandidates.has(chain, addr) || armedEntries.has(chain, addr)) continue;
     const ageMs         = now - mem.lastSeen;
     const noRecentTrade = !mem.lastEntryTime || now - mem.lastEntryTime > 48 * 60 * 60_000;
     if (ageMs > 48 * 60 * 60_000 && noRecentTrade) {
-      memory.delete(addr);
-      if (c) { poolLiquidity.delete(c, addr); wsFlow.delete(c, addr); lpEvents.delete(c, addr); }
+      memory.delete(chain, addr);
+      poolLiquidity.delete(chain, addr); wsFlow.delete(chain, addr); lpEvents.delete(chain, addr);
       pruned++;
     }
   }
@@ -753,14 +753,13 @@ async function processPool(
 function seedFollowListFromMemory(): void {
   let seeded = 0;
 
-  for (const [addr, mem] of memory.entries()) {
-   const followChain = mem.chain ?? "base";
+  for (const [{ chain, address: addr }, mem] of memory.entries()) {
+   const followChain = chain;
    if (marketFollowList.has(followChain, addr)) continue;
     const pc = mem.priceChange;
     if (!pc) continue;
     
-    const reserveUsd =
-      (mem.chain ? poolLiquidity.get(mem.chain, addr)?.reserveUsd : undefined) ?? 0;
+    const reserveUsd = poolLiquidity.get(chain, addr)?.reserveUsd ?? 0;
   
     const shouldSeed =
       (reserveUsd >= 250_000 && (Math.abs(pc.h1) >= 500 || Math.abs(pc.h24) >= 1000)) ||

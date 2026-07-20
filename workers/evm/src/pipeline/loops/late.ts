@@ -27,12 +27,12 @@ export async function lateCandidatesLoop(): Promise<void> {
       if (ageMs < 30_000) continue;
 
       if (ageMs > 8 * 60_000) {
-        console.log(`[LATE EXPIRE] ${memory.get(pairAddr)?.symbol ?? pairAddr} — no confirmation in 8m`);
+        console.log(`[LATE EXPIRE] ${memory.get(chain, pairAddr)?.symbol ?? pairAddr} — no confirmation in 8m`);
         dropWatchCandidate(pairAddr, chain, "no confirmation in 8m");
         continue;
       }
 
-      const mem  = memory.get(pairAddr);
+      const mem  = memory.get(chain, pairAddr);
       const flow = getWsFlow(chain, pairAddr);
       if (!mem) continue;
 

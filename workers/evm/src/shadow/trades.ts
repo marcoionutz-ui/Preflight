@@ -106,7 +106,7 @@ export async function saveShadowTrade(
   }
 
   mem.totalEntries += 1; mem.lastEntryTime = Date.now(); mem.lastEntryPrice = price;
-  memory.set(pairAddr, mem);
+  memory.set(pool.chain, pairAddr, mem);
 
   const emoji =
     entrySource === "VERTICAL" ? "🚀" :
@@ -166,7 +166,8 @@ export async function updateOutcomes(pools: SourcePool[]): Promise<void> {
     const flow   = getWsFlow(trade.chain, trade.pair_address);
     const lp     = getLpSignal(trade.chain, trade.pair_address);
     const update: Record<string, unknown> = { current_price: price };
-    const mem    = memory.get(trade.pair_address?.toLowerCase());
+    const taddr  = trade.pair_address?.toLowerCase();
+    const mem    = (taddr && trade.chain) ? memory.get(trade.chain, taddr) : undefined;
     const entry  = Number(trade.entry_price);
     const priceDrop = (entry - price) / entry;
 

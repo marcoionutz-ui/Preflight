@@ -57,13 +57,13 @@ export function recordDrop(
 export function dropHotCandidate(pairAddr: string, chain: string, reason: string): void {
   // chain e acum OBLIGATORIU (toți callerii îl au) — cheia hotCandidates e
   // chain-scoped, deci nu mai putem face lookup fără el.
-  const sym = memory.get(pairAddr)?.symbol ?? pairAddr.slice(0, 8);
+  const sym = memory.get(chain, pairAddr)?.symbol ?? pairAddr.slice(0, 8);
   hotCandidates.delete(chain, pairAddr);
   recordDrop(pairAddr, sym, chain, "HOT", reason);
 }
 
 export function dropWatchCandidate(pairAddr: string, chain: string, reason: string): void {
-  const sym = memory.get(pairAddr)?.symbol ?? pairAddr.slice(0, 8);
+  const sym = memory.get(chain, pairAddr)?.symbol ?? pairAddr.slice(0, 8);
   activeWatch.delete(chain, pairAddr);
   recordDrop(pairAddr, sym, chain, "WATCHING", reason);
 }
@@ -75,7 +75,7 @@ export function promoteHotCandidate(
 ): void {
   const watchKind = activeWatch.get(chain, pairAddr)?.kind;
   if (watchKind && CONTEXT_ONLY_WATCH_KINDS.has(watchKind)) return;
-  const sym = memory.get(pairAddr)?.symbol ?? pairAddr.slice(0, 8);
+  const sym = memory.get(chain, pairAddr)?.symbol ?? pairAddr.slice(0, 8);
   hotCandidates.set(chain, pairAddr, { chain, promotedAt: Date.now(), source });
   activeWatch.delete(chain, pairAddr);
   recordPipelineEvent("PROMOTED_HOT", sym, chain, pairAddr, "WATCHING", "HOT");
@@ -106,7 +106,7 @@ export function addWatchCandidate(
 
   activeWatch.set(info.chain, pairAddr, info);
   if (pool) watchedPoolCache.set(info.chain, pairAddr, pool);
-  const sym = memory.get(pairAddr)?.symbol ?? pairAddr.slice(0, 8);
+  const sym = memory.get(info.chain, pairAddr)?.symbol ?? pairAddr.slice(0, 8);
   if (!alreadyWatching) {
     recordPipelineEvent("WATCH_ADDED", sym, info.chain, pairAddr, "NONE", "WATCHING", info.reason);
   }
@@ -119,7 +119,7 @@ export function armCandidate(
   score:        number,
   flowPressure: string,
 ): void {
-  const sym = memory.get(pairAddr)?.symbol ?? pairAddr.slice(0, 8);
+  const sym = memory.get(chain, pairAddr)?.symbol ?? pairAddr.slice(0, 8);
   armedEntries.set(chain, pairAddr, { chain, armedAt: Date.now(), price, score, flowPressure });
   recordPipelineEvent("ARMED", sym, chain, pairAddr, "HOT", "ARMED");
 }

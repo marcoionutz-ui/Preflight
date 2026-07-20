@@ -105,7 +105,7 @@ export async function writeAllSnapshots(r: Redis): Promise<void> {
 
 function buildSignalPipelineEntries() {
   const makeEntry = (addr: string, chain: string, pipelineState: string, watchKind: string, enteredAt: number, entryPrice?: number) => {
-    const mem2       = memory.get(addr);
+    const mem2       = memory.get(chain, addr);
     const flow2      = getWsFlow(chain, addr);
     const events2    = wsFlow.get(chain, addr) ?? [];
     const buys2      = events2.filter(e => e.isBuy);
@@ -201,7 +201,7 @@ function buildPairContextMap(): Record<string, PreflightPairContext> {
   const pairContextMap: Record<string, PreflightPairContext> = {};
 
   const buildCtx = (addr: string, chain: PreflightEvmChain, pipelineState: "WATCHING" | "HOT", entryPrice?: number): PreflightPairContext => {
-    const mem3    = memory.get(addr);
+    const mem3    = memory.get(chain, addr);
     const flow3   = getWsFlow(chain, addr);
     const liq3    = getLiquidityContext(chain, addr);
     const events3 = wsFlow.get(chain, addr) ?? [];

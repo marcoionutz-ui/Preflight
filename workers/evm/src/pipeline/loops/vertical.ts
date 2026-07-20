@@ -28,12 +28,12 @@ export async function verticalCandidatesLoop(): Promise<void> {
       if (ageMs < 15_000) continue;
 
       if (ageMs > 3 * 60_000) {
-        console.log(`[VERTICAL EXPIRE] ${memory.get(pairAddr)?.symbol ?? pairAddr} — no confirmation in 3m`);
+        console.log(`[VERTICAL EXPIRE] ${memory.get(chain, pairAddr)?.symbol ?? pairAddr} — no confirmation in 3m`);
         dropWatchCandidate(pairAddr, chain, "no confirmation in 3m");
         continue;
       }
 
-      const mem  = memory.get(pairAddr);
+      const mem  = memory.get(chain, pairAddr);
       const flow = getWsFlow(chain, pairAddr);
       if (!mem) continue;
 

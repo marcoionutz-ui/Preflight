@@ -7,14 +7,13 @@
 import { detectPhase } from "../lib/engines/phaseDetector";
 import type { PairMemoryEntry } from "../lib/engines/pairMemory";
 import type { SourcePool } from "../sources/normalize";
-import { cleanEvmAddress } from "../sources/normalize";
 import { memory, poolLiquidity } from "./stores";
 import { tokenPoolKey, tokenPools } from "../infra/poolTracker";
 import { getRedis } from "../infra/redis";
 import { supabase } from "../infra/supabase";
 import { getNativePrice, getNativeSymbolForChain } from "../infra/nativePrice";
 import { WORKER_VERSION } from "../config/constants";
-import { REDIS_KEYS, pairKey, splitPairKey, type PairKey } from "@preflight/schema";
+import { REDIS_KEYS, pairKey, splitPairKey, normalizeChainId, normalizePairAddress, type PairKey } from "@preflight/schema";
 import type { PreflightWorkerSnapshot } from "@preflight/schema";
 
 export function updatePoolLiquidity(addr: string, pool: SourcePool): void {
@@ -43,7 +42,7 @@ export function updateMemory(pool: SourcePool, price: number): PairMemoryEntry {
   const h1           = pool.priceChange.h1;
   const h24          = pool.priceChange.h24;
 
-  const existing = memory.get(addr);
+  const existing = memory.get(pool.chain, addr);
   if (!existing) {
     const mem: PairMemoryEntry = {
       pairAddress: addr, symbol, tokenAddress,
@@ -60,7 +59,7 @@ export function updateMemory(pool: SourcePool, price: number): PairMemoryEntry {
         totalEntries: 0, wins24h: 0, losses24h: 0, badExits24h: 0,
       }),
     };
-    memory.set(addr, mem);
+    memory.set(pool.chain, addr, mem);
     updatePoolLiquidity(addr, pool);
     return mem;
   }
@@ -99,7 +98,7 @@ export function updateMemory(pool: SourcePool, price: number): PairMemoryEntry {
     existing.primaryDiscoverySource ??= pool.discoverySource;
   }
 
-  memory.set(addr, existing);
+  memory.set(pool.chain, addr, existing);
   updatePoolLiquidity(addr, pool);
   return existing;
 }
@@ -107,21 +106,25 @@ export function updateMemory(pool: SourcePool, price: number): PairMemoryEntry {
 export async function loadPairStats(): Promise<void> {
   const { data: trades } = await supabase
     .from("shadow_trades")
-    .select("pair_address, symbol, token_address, entry_price, exit_reason, exited_at, created_at, current_price")
+    .select("pair_address, symbol, token_address, chain, entry_price, exit_reason, exited_at, created_at, current_price")
     .gte("timestamp", Date.now() - 24 * 3600_000);
 
   if (!trades) return;
 
   for (const t of trades) {
-    const addr = t.pair_address?.toLowerCase();
-    if (!addr) continue;
+    const rawChain   = String(t.chain ?? "").trim();
+    const rawAddress = String(t.pair_address ?? "").trim();
+    if (!rawChain || !rawAddress) continue;  // fără chain nu putem cheia intrarea (B3e)
+    const chain = normalizeChainId(rawChain);
+    const addr  = normalizePairAddress(chain, rawAddress);
 
-    if (!memory.has(addr)) {
+    if (!memory.has(chain, addr)) {
       const ep = Number(t.entry_price);
       const cp = Number(t.current_price || t.entry_price);
-      memory.set(addr, {
+      memory.set(chain, addr, {
         pairAddress: addr, symbol: t.symbol?.trim() ?? "?",
         tokenAddress: t.token_address ?? "",
+        chain,
         firstSeen: new Date(t.created_at).getTime(),
         lastSeen:  new Date(t.created_at).getTime(),
         seenCount: 0, priceAtFirstSeen: ep,
@@ -132,7 +135,7 @@ export async function loadPairStats(): Promise<void> {
       });
     }
 
-    const mem = memory.get(addr)!;
+    const mem = memory.get(chain, addr)!;
     mem.totalEntries  += 1;
     mem.lastEntryTime  = Math.max(mem.lastEntryTime, new Date(t.created_at).getTime());
     mem.lastEntryPrice = Number(t.entry_price);
@@ -164,7 +167,7 @@ export async function saveMemoryToRedis(): Promise<void> {
     if (!r) return;
 
     const memoryObj: Record<string, PairMemoryEntry> = {};
-    for (const [addr, mem] of memory.entries()) memoryObj[addr] = mem;
+    for (const [{ chain, address: addr }, mem] of memory.entries()) memoryObj[pairKey(chain, addr)] = { ...mem, chain, pairAddress: addr };
 
     const reserveObj: Record<string, number> = {};
     for (const [{ chain, address: addr }, liqCtx] of poolLiquidity.entries()) reserveObj[pairKey(chain, addr)] = liqCtx.reserveEth;
@@ -214,13 +217,22 @@ export async function loadMemoryFromRedis(): Promise<void> {
       }
 
       let count = 0;
-      for (const [addr, mem] of Object.entries(snap.memory ?? {})) {
-        memory.set(addr, mem);
+      for (const [k, mem] of Object.entries(snap.memory ?? {})) {
+        // k e `pairKey` (chain:address) de la B3e; snapshot-uri vechi aveau doar
+        // adresa → splitPairKey dă chain="" și cădem pe mem.chain.
+        const { chain: keyChain, address } = splitPairKey(k as PairKey);
+        const rawChain = keyChain !== "" ? keyChain : (mem.chain ?? "");
+        if (!rawChain) continue;
+        // Canonicalizăm ȘI realiniem valoarea (mem.chain/pairAddress) la cheie,
+        // ca modulele care citesc mem.chain să nu vadă `eth` necanonic.
+        const setChain   = normalizeChainId(rawChain);
+        const setAddress = normalizePairAddress(setChain, address);
+        const restoredMem: PairMemoryEntry = { ...mem, chain: setChain, pairAddress: setAddress };
+        memory.set(setChain, setAddress, restoredMem);
         count++;
-        const chainPrefix = mem.chain ?? "unknown";
-        const key = tokenPoolKey(chainPrefix, mem.tokenAddress);
+        const key = tokenPoolKey(setChain, restoredMem.tokenAddress);
         if (!tokenPools.has(key)) tokenPools.set(key, new Set());
-        tokenPools.get(key)!.add(addr);
+        tokenPools.get(key)!.add(setAddress);
       }
 
      for (const [key, nativeReserveRaw] of Object.entries(snap.poolReserveEth ?? {})) {
@@ -234,12 +246,14 @@ export async function loadMemoryFromRedis(): Promise<void> {
           // Cheia NOUĂ (pairKey) e source-of-truth; mem.chain e DOAR fallback pt.
           // snapshot-uri vechi unde keyChain="". Altfel, dacă memory (încă bare-addr
           // până la B3e) a fost suprascris de alt chain, ai restaura pe chain greșit.
-          const setChain     = keyChain !== "" ? keyChain : mem?.chain;
-          if (!setChain) continue;
+          const rawChain     = keyChain !== "" ? keyChain : mem?.chain;
+          if (!rawChain) continue;
+          const setChain     = normalizeChainId(rawChain);
+          const setAddress   = normalizePairAddress(setChain, address);
           const nativeSymbol = getNativeSymbolForChain(setChain);
           const nativePrice  = getNativePrice(nativeSymbol) || getNativePrice("ETH") || 1;
 
-          poolLiquidity.set(setChain, address, {
+          poolLiquidity.set(setChain, setAddress, {
             reserveUsd:    nativeReserve * 2 * nativePrice,
             reserveEth:    nativeReserve, // legacy alias
             reserveNative: nativeReserve,

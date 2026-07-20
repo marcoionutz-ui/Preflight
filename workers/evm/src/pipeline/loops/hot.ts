@@ -37,7 +37,7 @@ export async function hotCandidatesLoop(): Promise<void> {
       const chainCfg = CHAINS.find(c => c.id === chainId);
       if (!chainCfg) { dropHotCandidate(pairAddress, chainId, "chain config missing"); continue; }
 
-      const mem = memory.get(pairAddress);
+      const mem = memory.get(chainId, pairAddress);
       if (!mem)                  { dropHotCandidate(pairAddress, chainId, "memory missing"); continue; }
       if (isBlockedSymbol(mem.symbol)) { dropHotCandidate(pairAddress, chainId, "blocked asset"); continue; }
 

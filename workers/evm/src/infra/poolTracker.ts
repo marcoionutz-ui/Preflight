@@ -20,7 +20,7 @@ export function tokenPoolKey(chain: string, tokenId: string): string {
 }
 
 export function trackPool(tokenAddress: string, pairAddress: string, chain: string): boolean {
-  const sym = memory.get(pairAddress.toLowerCase())?.symbol?.trim().toLowerCase() ?? "";
+  const sym = memory.get(chain, pairAddress)?.symbol?.trim().toLowerCase() ?? "";
   if (BLUECHIP_SYMBOLS.has(sym)) return false;
   const key   = tokenPoolKey(chain, tokenAddress);
   const known = tokenPools.get(key) ?? new Set<string>();

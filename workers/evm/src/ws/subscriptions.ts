@@ -61,7 +61,7 @@ export function cleanupActiveWatch(): void {
 
     if (info.kind === "CONFIRMED_MOMENTUM") {
       if (ageMs > 3 * 60_000) {
-        console.log(`[WATCH EVICT] ${memory.get(addr)?.symbol ?? addr} — kind:CONFIRMED_MOMENTUM age:${Math.round(ageMs / 1000)}s`);
+        console.log(`[WATCH EVICT] ${memory.get(chain, addr)?.symbol ?? addr} — kind:CONFIRMED_MOMENTUM age:${Math.round(ageMs / 1000)}s`);
         dropWatchCandidate(addr, chain, `evict CONFIRMED_MOMENTUM age:${Math.round(ageMs / 1000)}s`);
       }
       continue;
@@ -69,7 +69,7 @@ export function cleanupActiveWatch(): void {
 
     if (info.kind === "VERTICAL") {
       if (ageMs > 3 * 60_000) {
-        console.log(`[WATCH EVICT] ${memory.get(addr)?.symbol ?? addr} — kind:VERTICAL age:${Math.round(ageMs / 1000)}s`);
+        console.log(`[WATCH EVICT] ${memory.get(chain, addr)?.symbol ?? addr} — kind:VERTICAL age:${Math.round(ageMs / 1000)}s`);
         dropWatchCandidate(addr, chain, `evict VERTICAL age:${Math.round(ageMs / 1000)}s`);
       }
       continue;
@@ -77,7 +77,7 @@ export function cleanupActiveWatch(): void {
 
     if (info.kind === "EVENT_WATCH") {
       if (ageMs > 5 * 60_000) {
-        console.log(`[WATCH EVICT] ${memory.get(addr)?.symbol ?? addr} — kind:EVENT_WATCH age:${Math.round(ageMs / 60_000)}m`);
+        console.log(`[WATCH EVICT] ${memory.get(chain, addr)?.symbol ?? addr} — kind:EVENT_WATCH age:${Math.round(ageMs / 60_000)}m`);
         dropWatchCandidate(addr, chain, `evict EVENT_WATCH age:${Math.round(ageMs / 60_000)}m`);
       }
       continue;
@@ -85,7 +85,7 @@ export function cleanupActiveWatch(): void {
 
     if (info.kind === "SHORT_WATCH") {
       if (ageMs > SHORT_WATCH_TTL_MS) {
-        console.log(`[WATCH EVICT] ${memory.get(addr)?.symbol ?? addr} — kind:SHORT_WATCH age:${Math.round(ageMs / 1000)}s`);
+        console.log(`[WATCH EVICT] ${memory.get(chain, addr)?.symbol ?? addr} — kind:SHORT_WATCH age:${Math.round(ageMs / 1000)}s`);
         dropWatchCandidate(addr, chain, `evict SHORT_WATCH age:${Math.round(ageMs / 1000)}s`);
       }
       continue;
@@ -93,7 +93,7 @@ export function cleanupActiveWatch(): void {
 
     if (info.kind === "FOMO") {
       if (ageMs > FOMO_WATCH_TTL_MS) {
-        console.log(`[WATCH EVICT] ${memory.get(addr)?.symbol ?? addr} — kind:FOMO age:${Math.round(ageMs / 1000)}s`);
+        console.log(`[WATCH EVICT] ${memory.get(chain, addr)?.symbol ?? addr} — kind:FOMO age:${Math.round(ageMs / 1000)}s`);
         dropWatchCandidate(addr, chain, `evict FOMO age:${Math.round(ageMs / 1000)}s`);
       }
       continue;
@@ -107,7 +107,7 @@ export function cleanupActiveWatch(): void {
 
     if (shouldEvict) {
       console.log(
-        `[WATCH EVICT] ${memory.get(addr)?.symbol ?? addr}`
+        `[WATCH EVICT] ${memory.get(chain, addr)?.symbol ?? addr}`
         + ` — kind:NORMAL age:${Math.round(ageMs / 60_000)}m`
         + ` flow:${flow.hasData ? flow.pressure : "NO_WS"}`,
       );

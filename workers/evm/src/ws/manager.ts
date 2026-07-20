@@ -146,7 +146,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
         if (!poolId || raw4.length < 128) return;
 
         const pool  = v4PoolMap.get(chain.id, poolId);
-        const memV4 = memory.get(poolId);
+        const memV4 = memory.get(chain.id, poolId);
         if (!pool || !memV4) {
           if (pool && !memV4) console.log(`[V4 NO MEM] poolId=${poolId} pool=${pool.symbol}`);
           return;
@@ -195,7 +195,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
       if (msg.params?.result?.topics?.[0] === MODIFY_LIQUIDITY_V4_TOPIC && msg.params?.result?.address?.toLowerCase() === V4_POOL_MANAGERS[chain.id]?.toLowerCase()) {
         const log4   = msg.params.result;
         const poolId = log4.topics?.[1]?.toLowerCase();
-        const mem4   = poolId ? memory.get(poolId) : null;
+        const mem4   = poolId ? memory.get(chain.id, poolId) : null;
         const raw4   = log4.data?.slice(2) ?? "";
         console.log(`[V4 LIQ] ${mem4?.symbol ?? poolId} len=${raw4.length} data=${raw4.slice(0, 192)} tx=${log4.transactionHash}`);
         return;
@@ -207,7 +207,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
         const pairAddr3 = log3.address?.toLowerCase();
         if (!pairAddr3) return;
         const pool3     = v3PoolMap.get(chain.id, pairAddr3);
-        const mem3      = memory.get(pairAddr3);
+        const mem3      = memory.get(chain.id, pairAddr3);
         if (!pool3 || !mem3) return;
         if (isBlockedSymbol(mem3.symbol)) return;
 
@@ -240,7 +240,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
         const addr3 = log3.address?.toLowerCase();
         if (!addr3) return;
         const pool3 = v3PoolMap.get(chain.id, addr3);
-        const mem3  = pool3 ? memory.get(addr3) : null;
+        const mem3  = pool3 ? memory.get(chain.id, addr3) : null;
         if (!pool3 || !mem3) return;
         const raw3 = log3.data?.slice(2) ?? "";
         if (raw3.length < 256) return;
@@ -262,7 +262,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
         const addr3 = log3.address?.toLowerCase();
         if (!addr3) return;
         const pool3 = v3PoolMap.get(chain.id, addr3);
-        const mem3  = pool3 ? memory.get(addr3) : null;
+        const mem3  = pool3 ? memory.get(chain.id, addr3) : null;
         if (!pool3 || !mem3) return;
         const raw3 = log3.data?.slice(2) ?? "";
         if (raw3.length < 192) return;
@@ -284,7 +284,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
 
       const log         = msg.params.result;
       const pairAddress = log.address?.toLowerCase();
-      if (!pairAddress || !memory.has(pairAddress)) return;
+      if (!pairAddress || !memory.has(chain.id, pairAddress)) return;
 
       const raw = log.data?.slice(2);
       if (!raw || raw.length < 128) return;
@@ -300,7 +300,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
 
         if (amount0In === 0n && amount1In === 0n) return;
 
-        const mem   = memory.get(pairAddress)!;
+        const mem   = memory.get(chain.id, pairAddress)!;
         const pool2 = watchedPoolCache.get(chain.id, pairAddress);
 
         const { baseToken: base2, quoteToken: quote2 } = pool2
@@ -331,7 +331,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
       if (topic0 === MINT_V2_TOPIC) {
         const amount0   = BigInt("0x" + raw.slice(0,  64));
         const amount1   = BigInt("0x" + raw.slice(64, 128));
-        const memLp     = memory.get(pairAddress);
+        const memLp     = memory.get(chain.id, pairAddress);
         const tokenAddrLp = memLp?.tokenAddress.replace(`${chain.id}_`, "").toLowerCase() ?? "";
         const wethIsT0  = chain.weth.toLowerCase() < tokenAddrLp.replace(/^[a-z]+_/, "");
         const ethAmount = Number(wethIsT0 ? amount0 : amount1) / 1e18;
@@ -343,7 +343,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
       if (topic0 === BURN_V2_TOPIC) {
         const amount0     = BigInt("0x" + raw.slice(0,  64));
         const amount1     = BigInt("0x" + raw.slice(64, 128));
-        const memLp       = memory.get(pairAddress);
+        const memLp       = memory.get(chain.id, pairAddress);
         const tokenAddrLp = memLp?.tokenAddress.replace(`${chain.id}_`, "").toLowerCase() ?? "";
         const wethIsT0    = chain.weth.toLowerCase() < tokenAddrLp.replace(/^[a-z]+_/, "");
         const ethAmount   = Number(wethIsT0 ? amount0 : amount1) / 1e18;
@@ -375,7 +375,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
                 exit_reason: "LP REMOVED",
               }).eq("id", trade.id);
 
-              const m = memory.get(pairAddress);
+              const m = memory.get(chain.id, pairAddress);
               if (m) {
                 m.badExits24h      += 1;
                 m.consecutiveLosses += 1;
