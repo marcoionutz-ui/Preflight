@@ -26,18 +26,20 @@ import { CHAINS } from "../config/chains";
 import { writeCoverageSnapshot } from "./coverageSnapshot";
 import { writeTrendingSnapshots } from "../trending/trendingSnapshots";
 import { calculateMovers } from "../trending/trendingMovers";
-import { REDIS_KEYS, SCHEMA_VERSION, pairKey, type PreflightDrop, type PreflightEvmChain } from "@preflight/schema";
+import { REDIS_KEYS, SCHEMA_VERSION, pairKey, splitPairKey, type PreflightDrop, type PreflightEvmChain } from "@preflight/schema";
 
 export async function writeAllSnapshots(r: Redis): Promise<void> {
-  // ── supreme:pair_states ────────────────────────────────────────────────────
+  // ── pair_states / active_watch / hot / armed — B4: chei per-chain ─────────
+  // Blob-urile sunt keyed pe pairKey (B3) → partiționăm pe chain-ul din cheie și
+  // scriem o cheie per-chain (EX 120). Un worker per-chain va scrie doar cheia lui;
+  // MCP agregă. Scriem și {} pt. chain-urile din CHAINS fără pairs (semnal liveness).
   const states = await buildPairStates();
-  await r.set(REDIS_KEYS.pairStates, JSON.stringify(states), "EX", 120);
-  console.log(`[REDIS] Wrote ${Object.keys(states).length} pair states`);
+  await writeSnapshotByChain(r, REDIS_KEYS.pairStates, states, 120);
+  console.log(`[REDIS] Wrote ${Object.keys(states).length} pair states (per-chain)`);
 
-  // ── supreme:active_watch / hot / armed ────────────────────────────────────
-  await r.set(REDIS_KEYS.activeWatch,   JSON.stringify(buildWatchSnapshot()), "EX", 120);
-  await r.set(REDIS_KEYS.hotCandidates, JSON.stringify(buildHotSnapshot()),   "EX", 120);
-  await r.set(REDIS_KEYS.armedEntries,  JSON.stringify(buildArmedSnapshot()), "EX", 120);
+  await writeSnapshotByChain(r, REDIS_KEYS.activeWatch,   buildWatchSnapshot(), 120);
+  await writeSnapshotByChain(r, REDIS_KEYS.hotCandidates, buildHotSnapshot(),   120);
+  await writeSnapshotByChain(r, REDIS_KEYS.armedEntries,  buildArmedSnapshot(), 120);
 
   // ── market context + drops ────────────────────────────────────────────────
   const ctx = deriveMarketContext(states);
@@ -101,6 +103,30 @@ export async function writeAllSnapshots(r: Redis): Promise<void> {
   } catch (e) {
     console.error("[TRENDING] Movers failed:", e instanceof Error ? e.message : e);
   }
+}
+
+// B4: partiționează un blob {pairKey: value} pe chain (din cheia decodată) și
+// scrie o cheie per-chain cu EX ttlSec. Inițializăm cu toate CHAINS ca să scriem
+// {} pt. chain-urile fără pairs (cheia există → worker viu pe acel chain; expiră
+// singură dacă worker-ul acelui chain moare).
+async function writeSnapshotByChain(
+  r: Redis,
+  keyFn: (chain: string) => string,
+  obj: Record<string, unknown>,
+  ttlSec: number,
+): Promise<void> {
+  const byChain: Record<string, Record<string, unknown>> = {};
+  for (const c of CHAINS) byChain[c.id] = {};
+  for (const [key, val] of Object.entries(obj)) {
+    const chain = splitPairKey(key).chain;
+    if (!chain || !(chain in byChain)) continue; // fără `:` sau chain din afara runtime-ului → NU-l adoptăm
+    byChain[chain][key] = val;
+  }
+  const pipe = r.pipeline();
+  for (const [chain, subset] of Object.entries(byChain)) {
+    pipe.set(keyFn(chain), JSON.stringify(subset), "EX", ttlSec);
+  }
+  await pipe.exec();
 }
 
 function buildSignalPipelineEntries() {

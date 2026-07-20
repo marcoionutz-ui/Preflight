@@ -934,12 +934,14 @@ export function splitPairKey(key: string): PairRef {
 
 export const REDIS_KEYS = {
     
-  // Pipeline state
-  pairStates:      "preflight:pair_states",
-  activeWatch:     "preflight:active_watch",
-  hotCandidates:   "preflight:hot_candidates",
-  armedEntries:    "preflight:armed_entries",
-  workerSnapshot:  "preflight:worker_snapshot:latest",
+  // Pipeline state — B4: chain-scoped (chei per-chain, TTL/liveness independent).
+  // Un worker per-chain scrie DOAR cheia lui; MCP citește toate PREFLIGHT_EVM_CHAINS
+  // și agregă. Valorile sunt deja keyed pe pairKey (B3) → keysets chain-disjuncte.
+  pairStates:      (chain: string) => `preflight:pair_states:${normalizeChainId(chain)}`,
+  activeWatch:     (chain: string) => `preflight:active_watch:${normalizeChainId(chain)}`,
+  hotCandidates:   (chain: string) => `preflight:hot_candidates:${normalizeChainId(chain)}`,
+  armedEntries:    (chain: string) => `preflight:armed_entries:${normalizeChainId(chain)}`,
+  workerSnapshot:  (chain: string) => `preflight:worker_snapshot:${normalizeChainId(chain)}:latest`,
   marketRegime:    "preflight:market_regime",
   recentDrops:     "preflight:recent_drops",
   pipelineEvents:  "preflight:pipeline_events",

@@ -45,17 +45,20 @@ export async function readAllRedis(): Promise<RedisContext | null> {
   const r = getRedis();
   if (!r) return null;
 
+  // B4: pair_states/active_watch/hot_candidates/armed_entries/worker_snapshot sunt
+  // chain-scoped (o cheie per-chain) → MGET peste PREFLIGHT_EVM_CHAINS + merge mai jos.
+  const evmChains = PREFLIGHT_EVM_CHAINS;
   const [
-    statesRaw, watchRaw, hotRaw, armedRaw,
-    snapshotRaw, regimeRaw, eventsRaw, dropsRaw,
+    statesRaws, watchRaws, hotRaws, armedRaws, snapshotRaws,
+    regimeRaw, eventsRaw, dropsRaw,
     pfMarketRaw, pfMomentumRaw, pfPipelineRaw, pfQualifiedRaw,
     pfCoverageRaw, pfScannerStatsRaw, pfLifecycleRaw,
   ] = await Promise.all([
-    r.get(REDIS_KEYS.pairStates),
-    r.get(REDIS_KEYS.activeWatch),
-    r.get(REDIS_KEYS.hotCandidates),
-    r.get(REDIS_KEYS.armedEntries),
-    r.get(REDIS_KEYS.workerSnapshot),
+    r.mget(...evmChains.map(c => REDIS_KEYS.pairStates(c))),
+    r.mget(...evmChains.map(c => REDIS_KEYS.activeWatch(c))),
+    r.mget(...evmChains.map(c => REDIS_KEYS.hotCandidates(c))),
+    r.mget(...evmChains.map(c => REDIS_KEYS.armedEntries(c))),
+    r.mget(...evmChains.map(c => REDIS_KEYS.workerSnapshot(c))),
     r.get(REDIS_KEYS.marketRegime),
     r.get(REDIS_KEYS.pipelineEvents),
     r.get(REDIS_KEYS.recentDrops),
@@ -70,6 +73,50 @@ export async function readAllRedis(): Promise<RedisContext | null> {
 
   const now = Date.now();
 
+  // B4: merge cheile per-chain. Keysets-urile sunt pairKey (B3) → chain-disjuncte,
+  // deci Object.assign nu pierde nimic. `any` = a existat vreo cheie (keyExists).
+  const mergeChainObjects = <T,>(raws: (string | null)[], label: string): { merged: Record<string, T>; any: boolean } => {
+    const merged: Record<string, T> = {};
+    let any = false;
+    for (const raw of raws) {
+      if (raw == null) continue;
+      any = true;
+      Object.assign(merged, safeJson<Record<string, T>>(raw, {}, label));
+    }
+    return { merged, any };
+  };
+  const statesM = mergeChainObjects<PairState>(statesRaws, "pair_states");
+  const watchM  = mergeChainObjects<WatchEntry>(watchRaws, "active_watch");
+  const hotM    = mergeChainObjects<HotEntry>(hotRaws, "hot_candidates");
+  const armedM  = mergeChainObjects<ArmedEntry>(armedRaws, "armed_entries");
+
+  // worker_snapshot: {memory, poolReserveEth, savedAt, version} → merge sub-obiectele
+  // (savedAt = cel mai recent între chain-uri).
+  const mergeSnapshot = (raws: (string | null)[]): WorkerSnapshot | null => {
+    const memory:         Record<string, unknown> = {};
+    const poolReserveEth: Record<string, unknown> = {};
+    let savedAt: number | null = null;
+    let version: string | null = null;
+    let any = false;
+    for (const raw of raws) {
+      if (raw == null) continue;
+      const snap = safeJson<WorkerSnapshot | null>(raw, null, "worker_snapshot");
+      if (!snap) continue;
+      any = true;
+      Object.assign(memory,         (snap as any).memory ?? {});
+      Object.assign(poolReserveEth, (snap as any).poolReserveEth ?? {});
+      const sv = (snap as any).savedAt;
+      if (typeof sv === "number" && (savedAt === null || sv > savedAt)) {
+        savedAt = sv;
+        version = (snap as any).version ?? null; // versiunea vine din snapshot-ul cel mai NOU
+      } else if (savedAt === null) {
+        version = version ?? (snap as any).version ?? null; // fallback: niciun savedAt numeric
+      }
+    }
+    return any ? ({ memory, poolReserveEth, savedAt, version } as unknown as WorkerSnapshot) : null;
+  };
+  const snapshotMerged = mergeSnapshot(snapshotRaws);
+
   const eventsFinal   = eventsRaw; // pipeline_events rămâne supreme pentru acum
 
   // drops and pfDrops used to each JSON.parse() the same recentDrops blob
@@ -83,11 +130,11 @@ export async function readAllRedis(): Promise<RedisContext | null> {
 
   return {
     now,
-    states:   safeJson<Record<string, PairState>> (statesRaw,   {},   "pair_states"),
-    watch:    safeJson<Record<string, WatchEntry>>(watchRaw,    {},   "active_watch"),
-    hot:      safeJson<Record<string, HotEntry>>  (hotRaw,      {},   "hot_candidates"),
-    armed:    safeJson<Record<string, ArmedEntry>>(armedRaw,    {},   "armed_entries"),
-    snapshot: safeJson<WorkerSnapshot | null>     (snapshotRaw, null, "worker_snapshot"),
+    states:   statesM.merged,
+    watch:    watchM.merged,
+    hot:      hotM.merged,
+    armed:    armedM.merged,
+    snapshot: snapshotMerged,
     // Was `pfMarketRaw ?? regimeRaw` — pfMarketRaw is preflight:market_context
     // JSON (schemaVersion/regime/buyingPct/chainsActive/...), a completely
     // different shape from the legacy MarketRegime interface
@@ -110,11 +157,11 @@ export async function readAllRedis(): Promise<RedisContext | null> {
     scannerStats:     safeJson<ScannerStats | null>(pfScannerStatsRaw, null, "pf_scanner_stats"),
     pfLifecycle:      safeJson<LifecycleEntry[] | null>(pfLifecycleRaw, null, "pf_lifecycle"),
     keyExists: {
-      pair_states:          statesRaw   !== null,
-      active_watch:         watchRaw    !== null,
-      hot_candidates:       hotRaw      !== null,
-      armed_entries:        armedRaw    !== null,
-      worker_snapshot:      snapshotRaw !== null,
+      pair_states:          statesM.any,
+      active_watch:         watchM.any,
+      hot_candidates:       hotM.any,
+      armed_entries:        armedM.any,
+      worker_snapshot:      snapshotMerged !== null,
       market_regime:        regimeRaw   !== null,
       pipeline_events:      eventsRaw   !== null,
       recent_drops:         dropsRaw    !== null,

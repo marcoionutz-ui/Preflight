@@ -13,7 +13,8 @@ import { getRedis } from "../infra/redis";
 import { supabase } from "../infra/supabase";
 import { getNativePrice, getNativeSymbolForChain } from "../infra/nativePrice";
 import { WORKER_VERSION } from "../config/constants";
-import { REDIS_KEYS, pairKey, splitPairKey, normalizeChainId, normalizePairAddress, type PairKey } from "@preflight/schema";
+import { CHAINS } from "../config/chains";
+import { REDIS_KEYS, pairKey, splitPairKey, normalizeChainId, normalizePairAddress } from "@preflight/schema";
 import type { PreflightWorkerSnapshot } from "@preflight/schema";
 
 export function updatePoolLiquidity(addr: string, pool: SourcePool): void {
@@ -166,24 +167,32 @@ export async function saveMemoryToRedis(): Promise<void> {
     const r = getRedis();
     if (!r) return;
 
-    const memoryObj: Record<string, PairMemoryEntry> = {};
-    for (const [{ chain, address: addr }, mem] of memory.entries()) memoryObj[pairKey(chain, addr)] = { ...mem, chain, pairAddress: addr };
-
-    const reserveObj: Record<string, number> = {};
-    for (const [{ chain, address: addr }, liqCtx] of poolLiquidity.entries()) reserveObj[pairKey(chain, addr)] = liqCtx.reserveEth;
-
-     const snapshot: PreflightWorkerSnapshot = {
-      version:        WORKER_VERSION,
-      savedAt:        Date.now(),
-      memory:         memoryObj,
-      poolReserveEth: reserveObj,
-    };
-     await r.set(
-      REDIS_KEYS.workerSnapshot,
-      JSON.stringify(snapshot),
-      "EX", 24 * 60 * 60,
-    );
-    console.log(`[REDIS] Worker snapshot saved: ${memory.size} pairs, ${poolLiquidity.size} reserves`);
+    // B4: worker_snapshot chain-scoped — partiționăm pe chain (din cheia PairMap)
+    // și scriem o cheie per-chain (fiecare chain restaurează independent).
+    const memByChain: Record<string, Record<string, PairMemoryEntry>> = {};
+    for (const [{ chain, address: addr }, mem] of memory.entries()) {
+      (memByChain[chain] ??= {})[pairKey(chain, addr)] = { ...mem, chain, pairAddress: addr };
+    }
+    const resByChain: Record<string, Record<string, number>> = {};
+    for (const [{ chain, address: addr }, liqCtx] of poolLiquidity.entries()) {
+      (resByChain[chain] ??= {})[pairKey(chain, addr)] = liqCtx.reserveEth;
+    }
+    const savedAt = Date.now();
+    const pipe    = r.pipeline();
+    // Iterăm chain-urile RUNTIME-ului (CHAINS = ENABLED_CHAINS), nu doar cele cu date:
+    // fiecare chain deținut primește o cheie proaspătă (chiar goală `{}`) → suprascrie
+    // orice cheie stale și confirmă ownership-ul. Un chain din afara runtime-ului NU e scris.
+    for (const { id: chain } of CHAINS) {
+      const snapshot: PreflightWorkerSnapshot = {
+        version:        WORKER_VERSION,
+        savedAt,
+        memory:         memByChain[chain] ?? {},
+        poolReserveEth: resByChain[chain] ?? {},
+      };
+      pipe.set(REDIS_KEYS.workerSnapshot(chain), JSON.stringify(snapshot), "EX", 24 * 60 * 60);
+    }
+    await pipe.exec();
+    console.log(`[REDIS] Worker snapshot saved (per-chain): ${memory.size} pairs, ${poolLiquidity.size} reserves`);
   } catch {
     console.log(`[REDIS] Snapshot save failed`);
   }
@@ -195,32 +204,42 @@ export async function loadMemoryFromRedis(): Promise<void> {
       const r = getRedis();
       if (!r) return;
 
-      const raw = await r.get(REDIS_KEYS.workerSnapshot);
-      if (!raw) return;
-
-      // Blind cast, not runtime validation — matches the risk tolerance
-      // already established elsewhere in this codebase (no Zod parsing
-      // introduced here). Partial<> because every field is optional at this
-      // point: the two guards below (version/savedAt) handle a snapshot
-      // that fails to parse as expected.
-      const snap = JSON.parse(raw) as Partial<PreflightWorkerSnapshot>;
-
-      if (snap.version && snap.version !== WORKER_VERSION) {
-        console.log(`[REDIS] Snapshot from ${snap.version} ignored — current is ${WORKER_VERSION}`);
-        return;
-      }
-
+      // B4: worker_snapshot chain-scoped → citim chain-urile runtime-ului și agregăm.
+      // Fiecare chain e validat independent (version + age); merge pe memory +
+      // poolReserveEth (keysets pairKey disjuncte). Blind cast, fără Zod (același
+      // risk-tolerance ca restul codebase-ului).
+      // Doar chain-urile RUNTIME-ului (CHAINS = ENABLED_CHAINS): un worker per-chain
+      // NU restaurează (și apoi rescrie) memoria altor chain-uri → ownership curat.
+      const runtimeChains = CHAINS.map(c => c.id);
+      const raws = await r.mget(...runtimeChains.map(c => REDIS_KEYS.workerSnapshot(c)));
+      const mergedMemory:  Record<string, PairMemoryEntry> = {};
+      const mergedReserve: Record<string, number> = {};
+      let newestSavedAt = 0;
+      let anyLoaded = false;
       const SNAPSHOT_MAX_AGE_MS = 6 * 60 * 60_000;
-      if (snap.savedAt && Date.now() - snap.savedAt > SNAPSHOT_MAX_AGE_MS) {
-        console.log(`[REDIS] Snapshot too old ignored — age:${Math.round((Date.now() - snap.savedAt) / 60_000)}m`);
-        return;
+      for (const raw of raws) {
+        if (!raw) continue;
+        const snap = JSON.parse(raw) as Partial<PreflightWorkerSnapshot>;
+        if (snap.version && snap.version !== WORKER_VERSION) {
+          console.log(`[REDIS] Snapshot from ${snap.version} ignored — current is ${WORKER_VERSION}`);
+          continue;
+        }
+        if (snap.savedAt && Date.now() - snap.savedAt > SNAPSHOT_MAX_AGE_MS) {
+          console.log(`[REDIS] Snapshot too old ignored — age:${Math.round((Date.now() - snap.savedAt) / 60_000)}m`);
+          continue;
+        }
+        Object.assign(mergedMemory,  snap.memory ?? {});
+        Object.assign(mergedReserve, snap.poolReserveEth ?? {});
+        if (snap.savedAt && snap.savedAt > newestSavedAt) newestSavedAt = snap.savedAt;
+        anyLoaded = true;
       }
+      if (!anyLoaded) return;
 
       let count = 0;
-      for (const [k, mem] of Object.entries(snap.memory ?? {})) {
+      for (const [k, mem] of Object.entries(mergedMemory)) {
         // k e `pairKey` (chain:address) de la B3e; snapshot-uri vechi aveau doar
         // adresa → splitPairKey dă chain="" și cădem pe mem.chain.
-        const { chain: keyChain, address } = splitPairKey(k as PairKey);
+        const { chain: keyChain, address } = splitPairKey(k);
         const rawChain = keyChain !== "" ? keyChain : (mem.chain ?? "");
         if (!rawChain) continue;
         // Canonicalizăm ȘI realiniem valoarea (mem.chain/pairAddress) la cheie,
@@ -235,14 +254,14 @@ export async function loadMemoryFromRedis(): Promise<void> {
         tokenPools.get(key)!.add(setAddress);
       }
 
-     for (const [key, nativeReserveRaw] of Object.entries(snap.poolReserveEth ?? {})) {
+     for (const [key, nativeReserveRaw] of Object.entries(mergedReserve)) {
         // key e `pairKey` (chain:address) de la B3d-1; snapshot-urile vechi aveau
         // doar adresa → splitPairKey dă chain="".
-        const { chain: keyChain, address } = splitPairKey(key as PairKey);
+        const { chain: keyChain, address } = splitPairKey(key);
         const nativeReserve = Number(nativeReserveRaw);
         if (Number.isFinite(nativeReserve) && nativeReserve > 0) {
           // memory[key] e pregătit pt. B3e (când memory devine pairKey); acum cade pe [address].
-          const mem          = snap.memory?.[key] ?? snap.memory?.[address];
+          const mem          = mergedMemory[key] ?? mergedMemory[address];
           // Cheia NOUĂ (pairKey) e source-of-truth; mem.chain e DOAR fallback pt.
           // snapshot-uri vechi unde keyChain="". Altfel, dacă memory (încă bare-addr
           // până la B3e) a fost suprascris de alt chain, ai restaura pe chain greșit.
@@ -258,7 +277,7 @@ export async function loadMemoryFromRedis(): Promise<void> {
             reserveEth:    nativeReserve, // legacy alias
             reserveNative: nativeReserve,
             nativeSymbol,
-            updatedAt: snap.savedAt ?? Date.now(),
+            updatedAt: newestSavedAt || Date.now(),
           });
         }
       }
