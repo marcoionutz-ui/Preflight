@@ -14,6 +14,7 @@ import { sendTelegram } from "../infra/telegram";
 import { fetchPoolByAddress } from "../sources/gecko";
 import { memory, v3PoolMap } from "../state/stores";
 import { CHAINS } from "../config/chains";
+import { normalizeChainId, normalizePairAddress, pairKey } from "@preflight/schema";
 import { WORKER_VERSION, MAX_HOLD_MS } from "../config/constants";
 import type { EntrySource } from "../state/stores";
 
@@ -31,6 +32,7 @@ export async function saveShadowTrade(
     .from("shadow_trades")
     .select("id")
     .eq("pair_address", pairAddr)
+    .eq("chain", pool.chain)   // B5a: duplicate-check chain-scoped — un trade Base nu mai blochează unul Arbitrum cu aceeași adresă
     .is("exited_at", null)
     .limit(1);
 
@@ -126,7 +128,9 @@ export async function saveShadowTrade(
 
 export async function updateOutcomes(pools: SourcePool[]): Promise<void> {
   const priceMap = new Map<string, number>();
-  pools.forEach(p => priceMap.set(p.pairAddress, p.priceUsd));
+  // B5a: cheie = identitate completă pairKey(chain, addr), nu doar adresa — aceeași
+  // adresă pe base+arbitrum nu mai suprascrie prețul celuilalt chain (P0-1).
+  for (const p of pools) priceMap.set(pairKey(p.chain, p.pairAddress), p.priceUsd);
 
   // FOMO blocks
   const { data: blocks } = await supabase
@@ -136,7 +140,9 @@ export async function updateOutcomes(pools: SourcePool[]): Promise<void> {
 
   if (blocks) {
     for (const b of blocks) {
-      let price = priceMap.get(b.pair_address?.toLowerCase());
+      const blockChain = normalizeChainId(String(b.chain ?? ""));
+      const blockAddr  = normalizePairAddress(blockChain, String(b.pair_address ?? ""));
+      let price = priceMap.get(pairKey(blockChain, blockAddr));  // B5a: identitate completă (chain:addr)
       if (!price) {
         const chainCfg = CHAINS.find(c => c.id === b.chain || c.gecko === b.chain);
         if (chainCfg) {
@@ -153,21 +159,27 @@ export async function updateOutcomes(pools: SourcePool[]): Promise<void> {
   }
 
   // Shadow trades
+  const ownedChains = new Set<string>(CHAINS.map(c => c.id));
   const { data: trades } = await supabase
-    .from("shadow_trades").select("*").is("exited_at", null);
+    .from("shadow_trades").select("*")
+    .is("exited_at", null)
+    .in("chain", CHAINS.map(c => c.id));   // B5a: ownership la nivel de query
 
   if (!trades) return;
 
   for (const trade of trades) {
-    const price = priceMap.get(trade.pair_address?.toLowerCase());
+    const tradeChain = normalizeChainId(String(trade.chain ?? ""));
+    if (!ownedChains.has(tradeChain)) continue;  // B5a: guard trust-boundary (query poate avea alias-uri necanonice)
+    const tradeAddr  = normalizePairAddress(tradeChain, String(trade.pair_address ?? ""));
+
+    const price = priceMap.get(pairKey(tradeChain, tradeAddr));  // B5a: lookup pe identitate completă (chain:addr)
     if (!price) continue;
 
     const ageMs  = Date.now() - trade.timestamp;
-    const flow   = getWsFlow(trade.chain, trade.pair_address);
-    const lp     = getLpSignal(trade.chain, trade.pair_address);
+    const flow   = getWsFlow(tradeChain, tradeAddr);
+    const lp     = getLpSignal(tradeChain, tradeAddr);
     const update: Record<string, unknown> = { current_price: price };
-    const taddr  = trade.pair_address?.toLowerCase();
-    const mem    = (taddr && trade.chain) ? memory.get(trade.chain, taddr) : undefined;
+    const mem    = memory.get(tradeChain, tradeAddr);
     const entry  = Number(trade.entry_price);
     const priceDrop = (entry - price) / entry;
 

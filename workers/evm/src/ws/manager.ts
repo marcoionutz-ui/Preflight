@@ -363,6 +363,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
             .from("shadow_trades")
             .select("id, symbol, entry_price, current_price, chain")
             .eq("pair_address", pairAddress)
+            .eq("chain", chain.id)   // B5a: never match cross-chain data only by address (P0-1) — aceeași adresă pe base+arbitrum nu mai închide trade-ul celuilalt chain
             .is("exited_at", null);
 
           if (openTrades?.length) {

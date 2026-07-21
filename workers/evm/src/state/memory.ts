@@ -112,11 +112,14 @@ export async function loadPairStats(): Promise<void> {
 
   if (!trades) return;
 
+  const ownedChains = new Set<string>(CHAINS.map(c => c.id));
+
   for (const t of trades) {
     const rawChain   = String(t.chain ?? "").trim();
     const rawAddress = String(t.pair_address ?? "").trim();
     if (!rawChain || !rawAddress) continue;  // fără chain nu putem cheia intrarea (B3e)
     const chain = normalizeChainId(rawChain);
+    if (!ownedChains.has(chain)) continue;  // B5a: ownership — restaurăm DOAR chain-urile runtime-ului (CHAINS); un worker per-chain nu adoptă stats din alte chain-uri
     const addr  = normalizePairAddress(chain, rawAddress);
 
     if (!memory.has(chain, addr)) {
