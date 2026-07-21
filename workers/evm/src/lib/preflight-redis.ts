@@ -5,12 +5,12 @@
  * Scrie preflight:* keys în Redis în paralel cu supreme:*
  * MCP-ul citește preflight:* first, fallback supreme:*
  *
- * Schema nouă:
- * - preflight:market_context
- * - preflight:signal_pipeline
- * - preflight:momentum_events
- * - preflight:qualified_signals
- * - preflight:recent_drops
+ * Schema (chei per-chain, sufix :${chain}):
+ * - preflight:signal_pipeline:${chain}
+ * - preflight:momentum_events:${chain}
+ * - preflight:qualified_signals:${chain}
+ * - preflight:recent_drops:${chain}
+ * (market_context/market_regime NU se mai scriu aici — MCP le derivă la read-time; B4d-2.)
  */
 
 import type { Redis } from "ioredis";

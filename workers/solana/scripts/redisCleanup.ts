@@ -98,14 +98,40 @@ const solanaExact = [
 const evmDerivedPatterns = [
   "preflight:pair_context:*",
   "preflight:agent_watch_requests:*",
+  // B5: chei migrate la per-chain în B4a–B4e — pattern `:*` (exact NU mai prinde `:${chain}`).
+  "preflight:pair_states:*",
+  "preflight:active_watch:*",
+  "preflight:hot_candidates:*",
+  "preflight:armed_entries:*",
+  "preflight:signal_pipeline:*",
+  "preflight:pipeline_events:*",
+  "preflight:qualified_signals:*",
+  "preflight:recent_drops:*",
+  "preflight:momentum_events:*",
+  "preflight:pipeline_coverage:*",
+  "preflight:scanner_stats:*",
+  "preflight:lifecycle:*",
+  "preflight:worker_snapshot:*",   // prinde ȘI vechiul bare `:latest` ȘI noile `:${chain}:latest`
+  "preflight:worker_runtime:*",    // nou din B4d-2 (nu era în listă)
 ];
 const evmDerivedExact = [
-  "preflight:pair_states", "preflight:active_watch", "preflight:hot_candidates",
-  "preflight:armed_entries", "preflight:signal_pipeline", "preflight:pipeline_events",
-  "preflight:qualified_signals", "preflight:market_context", "preflight:market_regime",
-  "preflight:worker_snapshot:latest", "preflight:recent_drops", "preflight:momentum_events",
-  "preflight:pipeline_coverage", "preflight:scanner_stats",
+  // Chei bare LEGACY pre-B4 (fără sufix per-chain): patternurile `:*` de mai jos NU prind
+  // cheia fără sufix (`preflight:pair_states` ≠ `preflight:pair_states:*`) → le curățăm explicit
+  // ca să nu rămână relicve din instalările pre-migrare.
+  "preflight:pair_states",
+  "preflight:active_watch",
+  "preflight:hot_candidates",
+  "preflight:armed_entries",
+  "preflight:signal_pipeline",
+  "preflight:pipeline_events",
+  "preflight:qualified_signals",
+  "preflight:recent_drops",
+  "preflight:momentum_events",
+  "preflight:pipeline_coverage",
+  "preflight:scanner_stats",
   "preflight:lifecycle",
+  // Vestigiale post-B4d-2 (nimeni nu le mai scrie).
+  "preflight:market_context", "preflight:market_regime",
   // legacy bare key pre-B4e: patternul agent_watch_requests:* NU prinde cheia fără sufix;
   // se auto-expiră EX300, dar o curățăm explicit pt. fereastra de migrare.
   "preflight:agent_watch_requests",
