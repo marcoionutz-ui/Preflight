@@ -952,14 +952,13 @@ export const REDIS_KEYS = {
   hotCandidates:   (chain: string) => `preflight:hot_candidates:${normalizeChainId(chain)}`,
   armedEntries:    (chain: string) => `preflight:armed_entries:${normalizeChainId(chain)}`,
   workerSnapshot:  (chain: string) => `preflight:worker_snapshot:${normalizeChainId(chain)}:latest`,
-  marketRegime:    "preflight:market_regime",
   recentDrops:     (chain: string) => `preflight:recent_drops:${normalizeChainId(chain)}`,
   pipelineEvents:  (chain: string) => `preflight:pipeline_events:${normalizeChainId(chain)}`,
 
   // Context
-  // ⚠️ B4d-2: market_context/market_regime NU se mai scriu — MCP le derivă la read-time.
-  // Cheile rămân doar ca referință; nimic nu le mai citește/scrie pe hot-path.
-  marketContext:      "preflight:market_context",
+  // ⚠️ B4d-2/B5: market_context/market_regime au fost ELIMINATE din REDIS_KEYS — MCP le
+  // derivă la read-time din snapshot-urile per-chain. Tipurile MarketContext/MarketRegime
+  // rămân (folosite de reader); doar cheile Redis au fost scoase (nimic nu le mai scrie).
   workerRuntime:      (chain: string) => `preflight:worker_runtime:${normalizeChainId(chain)}`,
   momentumEvents:     (chain: string) => `preflight:momentum_events:${normalizeChainId(chain)}`,
   signalPipeline:     (chain: string) => `preflight:signal_pipeline:${normalizeChainId(chain)}`,
@@ -980,4 +979,4 @@ export const REDIS_KEYS = {
   trendingMovers:    (chain: string) => `preflight:trending:movers:${normalizeChainId(chain)}`,
 } as const;
 
-export const SCHEMA_VERSION = "preflight-schema-v1";
+export const SCHEMA_VERSION = "preflight-schema-v2";  // B5: bump — schema per-chain post-B4 (marker de observabilitate; NU e gated la citire)
