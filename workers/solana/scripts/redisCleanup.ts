@@ -97,14 +97,18 @@ const solanaExact = [
 // ── GRUP 2: EVM derived state (V4 flow inversat — TTL scurt, ~0 după zile off) ─
 const evmDerivedPatterns = [
   "preflight:pair_context:*",
+  "preflight:agent_watch_requests:*",
 ];
 const evmDerivedExact = [
   "preflight:pair_states", "preflight:active_watch", "preflight:hot_candidates",
   "preflight:armed_entries", "preflight:signal_pipeline", "preflight:pipeline_events",
   "preflight:qualified_signals", "preflight:market_context", "preflight:market_regime",
   "preflight:worker_snapshot:latest", "preflight:recent_drops", "preflight:momentum_events",
-  "preflight:pipeline_coverage", "preflight:scanner_stats", "preflight:agent_watch_requests",
+  "preflight:pipeline_coverage", "preflight:scanner_stats",
   "preflight:lifecycle",
+  // legacy bare key pre-B4e: patternul agent_watch_requests:* NU prinde cheia fără sufix;
+  // se auto-expiră EX300, dar o curățăm explicit pt. fereastra de migrare.
+  "preflight:agent_watch_requests",
 ];
 
 async function main() {

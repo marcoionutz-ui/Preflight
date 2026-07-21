@@ -8,7 +8,7 @@ import { z } from "zod";
 import { readAllRedis } from "../redis-reader";
 import { getRedis } from "@/lib/db/redis";
 import { mcpResponse, mcpErr, ERR } from "../errors";
-import { REDIS_KEYS, pairKey } from "@preflight/schema";
+import { REDIS_KEYS, pairKey, normalizeChainId } from "@preflight/schema";
 
 export function registerWatchPair(server: McpServer) {
   server.registerTool(
@@ -29,15 +29,15 @@ Does not guarantee pipeline promotion — pair must still pass watch gates.
 Returns current status if pair is already being monitored.`,
       inputSchema: {
         pair_address: z.string().min(10).describe("Pool/pair contract address or V4 pool ID"),
-        chain:        z.enum(["base", "arbitrum", "bsc"]).describe("Chain"),
+        chain:        z.enum(["base", "arbitrum", "bsc", "eth"]).describe("Chain: 'base', 'arbitrum', 'bsc', or 'eth'"),
         reason:       z.string().max(160).optional().describe("Optional: why you're watching this pair"),
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async ({ pair_address, chain, reason }: { pair_address: string; chain: "base" | "arbitrum" | "bsc"; reason?: string }) => {
+    async ({ pair_address, chain, reason }: { pair_address: string; chain: "base" | "arbitrum" | "bsc" | "eth"; reason?: string }) => {
       try {
         const addr           = pair_address.toLowerCase().trim();
-        const normalizedChain = chain.toLowerCase().trim();
+        const normalizedChain = normalizeChainId(chain); // API public: eth → runtime/Redis: ethereum (aceeași convenție ca celelalte tp_ tools)
         // B3f: hărțile live sunt keyed pe pairKey(chain, addr). Aici avem chain
         // garantat (arg obligatoriu) → construim direct cheia.
         const lookup = pairKey(normalizedChain, addr);
@@ -95,9 +95,9 @@ Returns current status if pair is already being monitored.`,
 
         await r
           .multi()
-          .lpush(REDIS_KEYS.agentWatchRequests, request)
-          .ltrim(REDIS_KEYS.agentWatchRequests, 0, 99)
-          .expire(REDIS_KEYS.agentWatchRequests, 300)
+          .lpush(REDIS_KEYS.agentWatchRequests(normalizedChain), request)
+          .ltrim(REDIS_KEYS.agentWatchRequests(normalizedChain), 0, 99)
+          .expire(REDIS_KEYS.agentWatchRequests(normalizedChain), 300)
           .exec();
 
         lines.push(`STATUS: queued for monitoring`);

@@ -966,7 +966,7 @@ export const REDIS_KEYS = {
   qualifiedSignals:   (chain: string) => `preflight:qualified_signals:${normalizeChainId(chain)}`,
   pipelineCoverage:   (chain: string) => `preflight:pipeline_coverage:${normalizeChainId(chain)}`,
   scannerStats:       (chain: string) => `preflight:scanner_stats:${normalizeChainId(chain)}`,
-  agentWatchRequests: "preflight:agent_watch_requests",
+  agentWatchRequests: (chain: string) => `preflight:agent_watch_requests:${normalizeChainId(chain)}`,
   lifecycle:          (chain: string) => `preflight:lifecycle:${normalizeChainId(chain)}`,
 
   // Per-pair, chain-scoped (Faza B2). pairContext e EVM-only în practică, dar
