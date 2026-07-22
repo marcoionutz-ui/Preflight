@@ -12,6 +12,7 @@
  */
 
 import { getRedis } from "./redis";
+import type { ChainId } from "../config/factories";
 
 const KEY_PREFIX = "preflight:indexer:cursor";
 
@@ -19,6 +20,47 @@ export const MAX_CATCHUP_BLOCKS          = 10_000; // > 10k blocuri în urmă �
 export const CATCHUP_BATCHES_PER_LOOP    = 5;      // max batches per loop în catch-up
 export const BATCH_SIZE                  = 500;    // blocuri per batch eth_getLogs
 export const INDEXER_INITIAL_LOOKBACK_BLOCKS = 1_000; // first run: start de la latest - 1000
+
+/**
+ * Confirmation depth — reorg safety (C5).
+ * Nu indexăm blocuri mai noi de `latest - CONFIRMATION_DEPTH`: write-urile de registry
+ * sunt SET NX (ireversibile), deci un pair dintr-un bloc reorganizat ar rămâne PERMANENT
+ * în index dacă l-am scrie înainte de confirmare (iar event-ul din blocul de înlocuire
+ * s-ar rata). Per-chain: BSC reorg-uiește mai des; L2-urile (Base/Arbitrum) rar; ETH post-merge rar.
+ * Override: INDEXER_CONFIRMATION_DEPTH_{CHAIN} (ex. INDEXER_CONFIRMATION_DEPTH_BSC=15)
+ * sau global INDEXER_CONFIRMATION_DEPTH. 0 = dezactivat (indexează până la head).
+ */
+export const DEFAULT_CONFIRMATION_DEPTH: Record<ChainId, number> = {
+  base:     5,
+  arbitrum: 5,
+  bsc:      15,
+  ethereum: 6,
+};
+
+/** Adâncimea de confirmare pentru un chain (env override → default per-chain). */
+export function confirmationDepth(chain: ChainId): number {
+  const raw =
+    process.env[`INDEXER_CONFIRMATION_DEPTH_${chain.toUpperCase()}`] ??
+    process.env.INDEXER_CONFIRMATION_DEPTH;
+  if (raw !== undefined && raw !== "") {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n >= 0) return Math.floor(n);
+    console.warn(
+      `[INDEXER][CURSOR][${chain.toUpperCase()}] CONFIRMATION_DEPTH override invalid ("${raw}") — ` +
+      `folosesc default ${DEFAULT_CONFIRMATION_DEPTH[chain]}`,
+    );
+  }
+  return DEFAULT_CONFIRMATION_DEPTH[chain];
+}
+
+/**
+ * Head sigur de indexat = latest - confirmationDepth, clamp la >= 0.
+ * TOATE calculele downstream (computeCursorState, getBatchRanges, health blocksBehind)
+ * folosesc safeHead, NU raw head — altfel health raportează perpetuu `behind == depth`.
+ */
+export function safeHead(chain: ChainId, latestBlock: number): number {
+  return Math.max(0, latestBlock - confirmationDepth(chain));
+}
 
 export type CursorStatus = "OK" | "DEGRADED" | "CATCHING_UP";
 

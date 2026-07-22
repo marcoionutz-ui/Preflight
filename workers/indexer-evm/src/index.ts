@@ -17,7 +17,7 @@ dotenv.config();
 
 import { getEnabledChains, getEnabledFactories } from "./config/factories";
 import type { ChainId } from "./config/factories";
-import { readCursor, writeCursor, computeCursorState, MAX_CATCHUP_BLOCKS } from "./infra/cursor";
+import { readCursor, writeCursor, computeCursorState, MAX_CATCHUP_BLOCKS, safeHead, confirmationDepth } from "./infra/cursor";
 import type { CursorState } from "./infra/cursor";
 import { getBlockNumber, getRpcUrl, getRpcEnvName } from "./infra/rpc";
 import {
@@ -74,9 +74,9 @@ async function syncChain(chain: ChainId): Promise<void> {
   }
 
   // ── eth_blockNumber ────────────────────────────────────────────────────────
-  let latestBlock: number;
+  let rawHead: number;
   try {
-    latestBlock = await getBlockNumber(rpcUrl);
+    rawHead = await getBlockNumber(rpcUrl);
   } catch (err) {
     const msg = (err as Error).message;
     console.error(`[INDEXER][${chain.toUpperCase()}] eth_blockNumber failed: ${msg}`);
@@ -89,6 +89,12 @@ async function syncChain(chain: ChainId): Promise<void> {
     );
     return;
   }
+
+  // Confirmation depth (C5) — indexăm DOAR până la head-ul confirmat, ca un pair dintr-un
+  // bloc reorganizat să nu ajungă permanent în registry (write-uri SET NX, ireversibile).
+  // safeHead curge în TOT ce urmează: cursor, discovery și health blocksBehind.
+  const depth       = confirmationDepth(chain);
+  const latestBlock = safeHead(chain, rawHead);
 
   // ── Cursor ────────────────────────────────────────────────────────────────
   const savedBlock  = await readCursor(chain);
@@ -108,7 +114,7 @@ async function syncChain(chain: ChainId): Promise<void> {
 
   console.log(
     `[INDEXER][${chain.toUpperCase()}] ` +
-    `latest:${latestBlock} | cursor:${cursorState.lastBlock} | ` +
+    `head:${rawHead} confirmed:${latestBlock} (depth ${depth}) | cursor:${cursorState.lastBlock} | ` +
     `behind:${cursorState.blocksBehind} | status:${cursorState.status} | ` +
     `factories:${factories.map(f => f.dexId).join(",")}`,
   );

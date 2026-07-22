@@ -5,7 +5,9 @@
   "scripts": {
     "dev": "tsx --env-file=../../.env.local src/index.ts",
     "start": "tsx src/index.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:c5": "tsx scripts/confirmationDepth.test.ts",
+    "test": "npm run test:c5"
   },
   "dependencies": {
     "dotenv": "^17.4.2",
