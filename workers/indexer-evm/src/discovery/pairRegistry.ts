@@ -34,17 +34,24 @@ import { fetchV2Price } from "../infra/v2Pricing";
 import type { PriceStatus, AmmVersion, PricingSource, ReserveSource } from "../infra/v2Pricing";
 import { intEnv } from "../config/env";
 import type Redis from "ioredis";
+import {
+  enqueueEnrich, claimDueEnrich, reclaimExpiredEnrich,
+  markEnrichDone, markEnrichFailed, ENRICH_LEASE_MS,
+} from "./enrichQueue";
 
 // ── Enrichment concurrency guard ──────────────────────────────────────────────
-
-const MAX_ENRICHMENTS = intEnv("INDEXER_METADATA_CONCURRENCY", 4);
-let activeEnrichments = 0;
 
 // ── Re-pricing (C3) ───────────────────────────────────────────────────────────
 const REPRICE_TOP_K    = intEnv("INDEXER_REPRICE_TOP_K", 50);        // top-K perechi recente scanate/pasaj
 const REPRICE_STALE_MS = intEnv("INDEXER_REPRICE_STALE_MS", 45_000); // re-preț dacă pricedAt e mai vechi
 const REPRICE_BATCH    = intEnv("INDEXER_REPRICE_BATCH", 20);        // max re-prețuite pe pasaj (bound RPC)
 const REPRICE_CONCURRENCY = intEnv("INDEXER_REPRICE_CONCURRENCY", 4);   // câte re-prețuiri simultan (worker-pool)
+
+// ── Enrichment queue drain (C2) ─────────────────────────────────────────────────
+const ENRICH_DRAIN_BATCH       = intEnv("INDEXER_ENRICH_DRAIN_BATCH", 20);        // max drenate pe pasaj
+const ENRICH_DRAIN_CONCURRENCY = intEnv("INDEXER_ENRICH_DRAIN_CONCURRENCY", 4);   // worker-pool drain
+const ENRICH_REPAIR_SCAN_K     = intEnv("INDEXER_ENRICH_REPAIR_SCAN_K", 200);     // fereastra de scan reparație (paginat)
+const repairOffset = new Map<ChainId, number>();                                   // cursor paginare reparație per chain
 
 export interface IndexedPair {
   // ── Core (scris întotdeauna) ──────────────────────────────────────────────
@@ -107,12 +114,15 @@ function tsSetKey(chain: string): string {
  * Best-effort enrichment: fetch token metadata + base/quote detection + overwrite pair JSON.
  * Called fire-and-forget — cursor advancement never waits for this.
  */
+/** Rezultat explicit al enrichment-ului (C2): ok DOAR dacă recordul e scris ȘI servabil (priceStatus OK). */
+type EnrichOutcome = { ok: true } | { ok: false; reason: string };
+
 async function enrichPairMetadata(
   chain:   ChainId,
   rpcUrl:  string,
   pair:    IndexedPair,
   jsonKey: string,
-): Promise<void> {
+): Promise<EnrichOutcome> {
   const { baseToken, quoteToken, quoteStatus } = chooseBaseQuote(chain, pair.token0, pair.token1);
 
   // Redis disponibil devreme — necesar pentru Chainlink cache (6.11)
@@ -154,21 +164,29 @@ async function enrichPairMetadata(
     ...pricing,
   };
 
-  if (!r) return;
+  if (!r) return { ok: false, reason: "no_redis" };
 
   try {
     await r.set(jsonKey, JSON.stringify(enriched));
-    console.log(
-      `[INDEXED] enriched ${pair.pairAddress} ` +
-      `base:${baseMeta.symbol ?? "?"} quote:${quoteMeta?.symbol ?? "?"} ` +
-      `price:$${pricing.priceUsd.toFixed(6)} reserve:$${pricing.reserveUsd.toFixed(0)} ` +
-      `meta:${metadataStatus} price_status:${pricing.priceStatus} ` +
-      `amm:${pricing.ammVersion ?? "?"} price_src:${pricing.pricingSource ?? "?"} reserve_src:${pricing.reserveSource ?? "?"} ` +
-      `quote_price_src:${pricing.quotePriceSource} quote_price_age:${pricing.quotePriceAgeSec ?? "n/a"}s`,
-    );
   } catch (err) {
     console.error(`[REGISTRY] enrich SET(${pair.pairAddress}) error:`, (err as Error).message);
+    return { ok: false, reason: "set_failed" };
   }
+
+  console.log(
+    `[INDEXED] enriched ${pair.pairAddress} ` +
+    `base:${baseMeta.symbol ?? "?"} quote:${quoteMeta?.symbol ?? "?"} ` +
+    `price:$${pricing.priceUsd.toFixed(6)} reserve:$${pricing.reserveUsd.toFixed(0)} ` +
+    `meta:${metadataStatus} price_status:${pricing.priceStatus} ` +
+    `amm:${pricing.ammVersion ?? "?"} price_src:${pricing.pricingSource ?? "?"} reserve_src:${pricing.reserveSource ?? "?"} ` +
+    `quote_price_src:${pricing.quotePriceSource} quote_price_age:${pricing.quotePriceAgeSec ?? "n/a"}s`,
+  );
+
+  // C2: succes DOAR dacă prețul e servabil (priceStatus OK). Altfel drain-ul reîncearcă / dead-letter,
+  // NU marchează DONE un pair încă neservabil (bugul principal din review).
+  return pricing.priceStatus === "OK"
+    ? { ok: true }
+    : { ok: false, reason: `price_status:${pricing.priceStatus}` };
 }
 
 // ── Pricing core (C3) ──────────────────────────────────────────────────────────
@@ -383,18 +401,15 @@ export async function writePair(
     await r.zadd(blockSetKey(chain), decoded.blockNumber, pairAddr);
     await r.zadd(tsSetKey(chain), now, pairAddr);
 
-    // Best-effort metadata enrichment — fire-and-forget, never blocks cursor
-    const rpcUrl = getRpcUrl(chain);
-    if (rpcUrl) {
-      if (activeEnrichments >= MAX_ENRICHMENTS) {
-        console.log(`[METADATA] enrichment skipped for ${pairAddr} reason:concurrency_limit`);
-      } else {
-        activeEnrichments++;
-        enrichPairMetadata(chain, rpcUrl, pair, jsonKey)
-          .catch(err => {
-            console.error(`[REGISTRY] enrichPairMetadata(${pairAddr}) unhandled:`, (err as Error).message);
-          })
-          .finally(() => { activeEnrichments--; });
+    // C2: TOATE perechile noi intră DOAR prin coada persistentă de enrichment — un SINGUR execution
+    // path (fără enrichment inline), o singură limită de concurență (drain), nimic pierdut la crash.
+    // Dacă enqueue eșuează, pair-ul e deja în registry (SET NX de mai sus) → repair-ul îl prinde ulterior;
+    // NU întoarcem "error" (ar reprocesa blocul → SET NX "exists" → tot n-ar ajunge în coadă).
+    if (getRpcUrl(chain)) {
+      try {
+        await enqueueEnrich(r, chain, pairAddr);
+      } catch (err) {
+        console.error(`[REGISTRY] enqueue(${pairAddr}) failed (repair va reîncerca):`, (err as Error).message);
       }
     }
 
@@ -456,5 +471,132 @@ export async function getRecentPairs(
       .filter((p): p is IndexedPair => p !== null);
   } catch {
     return [];
+  }
+}
+
+
+// ── Enrichment queue drain (C2) ─────────────────────────────────────────────────
+
+/**
+ * Drenează coada de enrichment (C2): ia perechile eligibile, le enrichuiește (metadata+price),
+ * marchează OK/retry/dead. reclaim (lease expirat) → claim ATOMIC (pending→processing) → enrich → DONE/FAIL.
+ * Mărginit pe apel de ENRICH_DRAIN_BATCH + concurență ENRICH_DRAIN_CONCURRENCY. Repair-ul e SEPARAT (repairEnrichQueue).
+ */
+export async function drainEnrichQueue(chain: ChainId): Promise<{ enriched: number; retry: number; dead: number }> {
+  const r = getRedis();
+  if (!r) return { enriched: 0, retry: 0, dead: 0 };
+  const rpcUrl = getRpcUrl(chain);
+  if (!rpcUrl) return { enriched: 0, retry: 0, dead: 0 };
+
+  try {
+    const now = Date.now();
+    // Recuperare crash: lease-uri expirate din processing → înapoi în pending (înainte de claim).
+    await reclaimExpiredEnrich(r, chain, now);
+    // Claim ATOMIC: mută due din pending → processing cu lease (ZREM-ca-lock, sigur multi-replică).
+    const claimed = await claimDueEnrich(r, chain, now, ENRICH_LEASE_MS, ENRICH_DRAIN_BATCH);
+    if (claimed.length === 0) return { enriched: 0, retry: 0, dead: 0 };
+
+    let enriched = 0, retry = 0, dead = 0;
+    let idx = 0;
+    async function worker(): Promise<void> {
+      while (idx < claimed.length) {
+        const addr = claimed[idx++];
+        const jsonKey = pairKey(chain, addr);
+
+        // GET eșuat (eroare Redis) ≠ pair dispărut (null): la EROARE NU marcăm DONE (am scoate din coadă
+        // exact când Redis are probleme) → retry/dead-letter. La null CHIAR lipsește → DONE.
+        let raw: string | null;
+        try {
+          raw = await r!.get(jsonKey);
+        } catch (err) {
+          const res = await markEnrichFailed(r!, chain, addr);
+          if (res === "dead") dead++; else retry++;
+          console.error(`[ENRICH-QUEUE][${chain.toUpperCase()}] GET(${addr}) failed:`, (err as Error).message);
+          continue;
+        }
+        if (raw === null) { await markEnrichDone(r!, chain, addr); continue; } // chiar dispărut
+
+        let pair: IndexedPair;
+        try {
+          pair = JSON.parse(raw) as IndexedPair;
+        } catch {
+          const res = await markEnrichFailed(r!, chain, addr);              // corupt ≠ succes → retry/dead
+          if (res === "dead") dead++; else retry++;
+          continue;
+        }
+
+        // Succes EXPLICIT (write confirmat + priceStatus OK) → DONE; altfel retry/dead-letter.
+        const outcome = await enrichPairMetadata(chain, rpcUrl!, pair, jsonKey).catch(
+          (e): EnrichOutcome => ({ ok: false, reason: `threw:${(e as Error).message}` }),
+        );
+        if (outcome.ok) {
+          await markEnrichDone(r!, chain, addr);
+          enriched++;
+        } else {
+          const res = await markEnrichFailed(r!, chain, addr);
+          if (res === "dead") {
+            dead++;
+            console.warn(`[ENRICH-QUEUE][${chain.toUpperCase()}] dead-letter ${addr} (${outcome.reason})`);
+          } else {
+            retry++;
+          }
+        }
+      }
+    }
+    await Promise.all(
+      Array.from({ length: Math.min(ENRICH_DRAIN_CONCURRENCY, claimed.length) }, () => worker()),
+    );
+
+    if (enriched || retry || dead) {
+      console.log(`[ENRICH-QUEUE][${chain.toUpperCase()}] enriched ${enriched} retry ${retry} dead ${dead} (claimed ${claimed.length})`);
+    }
+    return { enriched, retry, dead };
+  } catch (err) {
+    console.error(`[ENRICH-QUEUE][${chain.toUpperCase()}] error:`, (err as Error).message);
+    return { enriched: 0, retry: 0, dead: 0 };
+  }
+}
+
+/**
+ * Reparație (C2) — mecanism de migrare pt. perechi rămase neenrichuite (skip pre-C2 / enrichment
+ * resolved fără metadataStatus / enqueue eșuat la write). Rulează pe CADENȚĂ PROPRIE (nu depinde de
+ * coadă goală → nu poate fi starvation-uit), paginat prin ts ZSET (fereastră glisantă de SCAN_K).
+ * `enqueueEnrich` refuză oricum dead-letter-ul (terminal) și duplicatele → sigur de rulat repetat.
+ */
+export async function repairEnrichQueue(chain: ChainId): Promise<number> {
+  const r = getRedis();
+  if (!r) return 0;
+  try {
+    const total = await r.zcard(tsSetKey(chain));
+    if (total === 0) return 0;
+
+    let off = repairOffset.get(chain) ?? 0;
+    if (off >= total) off = 0;                                     // wrap la capăt
+    const addrs = await r.zrevrange(tsSetKey(chain), off, off + ENRICH_REPAIR_SCAN_K - 1);
+    repairOffset.set(chain, off + addrs.length);                  // avansează fereastra
+    if (addrs.length === 0) return 0;
+
+    const pipe = r.pipeline();
+    for (const a of addrs) pipe.get(pairKey(chain, a));
+    const results = await pipe.exec();
+    if (!results) return 0;
+
+    let queued = 0;
+    for (const [err, raw] of results) {
+      if (err || !raw) continue;
+      try {
+        const pair = JSON.parse(raw as string) as IndexedPair;
+        if (pair.metadataStatus === undefined) {
+          const added = await enqueueEnrich(r, chain, pair.pairAddress); // sare dead/processing/dup
+          if (added) queued++;
+        }
+      } catch { /* skip malformed */ }
+    }
+    if (queued > 0) {
+      console.log(`[ENRICH-QUEUE][${chain.toUpperCase()}] repair queued ${queued} unenriched (window ${off}-${off + addrs.length})`);
+    }
+    return queued;
+  } catch {
+    return 0;
   }
 }

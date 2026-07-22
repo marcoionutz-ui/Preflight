@@ -26,7 +26,9 @@ import {
   buildDegradedHealth,
 } from "./infra/health";
 import { runDiscovery, DRY_RUN } from "./discovery/discoveryLoop";
-import { getTotalPairsCount, getFreshPairs24h, repriceRecentPairs } from "./discovery/pairRegistry";
+import {
+  getTotalPairsCount, getFreshPairs24h, repriceRecentPairs, drainEnrichQueue, repairEnrichQueue,
+} from "./discovery/pairRegistry";
 import { intEnv } from "./config/env";
 
 const INDEXER_VERSION  = "0.2.0";
@@ -62,6 +64,55 @@ function maybeScheduleReprice(chain: ChainId): void {
     .finally(() => {
       lastRepriceAt.set(chain, Date.now());
       repriceInFlight.delete(chain);
+    });
+}
+
+// C2: drenează coada de enrichment în BACKGROUND (guard per-chain + interval). Coada AMÂNĂ enrichment-ul
+// când s-a atins limita de concurență / a eșuat, ca perechile să nu rămână permanent necitite.
+const ENRICH_DRAIN_INTERVAL_MS = intEnv("INDEXER_ENRICH_DRAIN_INTERVAL_MS", 15_000);
+const lastEnrichDrainAt   = new Map<ChainId, number>();
+const enrichDrainInFlight = new Set<ChainId>();
+
+function maybeScheduleEnrichDrain(chain: ChainId): void {
+  if (DRY_RUN || enrichDrainInFlight.has(chain)) return;
+  const last = lastEnrichDrainAt.get(chain) ?? 0;
+  if (Date.now() - last < ENRICH_DRAIN_INTERVAL_MS) return;
+
+  enrichDrainInFlight.add(chain);
+  void drainEnrichQueue(chain)
+    .then(({ enriched, retry, dead }) => {
+      if (enriched > 0 || dead > 0) {
+        console.log(`[INDEXER][${chain.toUpperCase()}] enrich-queue: +${enriched} enriched, ${retry} retry, ${dead} dead`);
+      }
+    })
+    .catch(err => {
+      console.error(`[ENRICH-QUEUE][${chain.toUpperCase()}] unhandled:`, (err as Error).message);
+    })
+    .finally(() => {
+      lastEnrichDrainAt.set(chain, Date.now());
+      enrichDrainInFlight.delete(chain);
+    });
+}
+
+// C2: reparație pe CADENȚĂ PROPRIE (nu depinde de coadă goală → nu poate fi starvation-uit). Paginat
+// prin registry ca să prindă perechile rămase neenrichuite (skip pre-C2 / enqueue eșuat la write).
+const ENRICH_REPAIR_INTERVAL_MS = intEnv("INDEXER_ENRICH_REPAIR_INTERVAL_MS", 90_000);
+const lastRepairAt   = new Map<ChainId, number>();
+const repairInFlight = new Set<ChainId>();
+
+function maybeScheduleRepair(chain: ChainId): void {
+  if (DRY_RUN || repairInFlight.has(chain)) return;
+  const last = lastRepairAt.get(chain) ?? 0;
+  if (Date.now() - last < ENRICH_REPAIR_INTERVAL_MS) return;
+
+  repairInFlight.add(chain);
+  void repairEnrichQueue(chain)
+    .catch(err => {
+      console.error(`[ENRICH-QUEUE][${chain.toUpperCase()}] repair unhandled:`, (err as Error).message);
+    })
+    .finally(() => {
+      lastRepairAt.set(chain, Date.now());
+      repairInFlight.delete(chain);
     });
 }
 
@@ -243,6 +294,12 @@ async function syncChain(chain: ChainId): Promise<void> {
   // ── Re-pricing periodic (C3) — BACKGROUND, non-blocant (vezi maybeScheduleReprice) ──
   // Prețul e altfel calculat DOAR la discovery → îngheață → momentum fals (NO_MOMENTUM, movers 0%).
   maybeScheduleReprice(chain);
+
+  // ── Enrichment queue drain (C2) — BACKGROUND, non-blocant ──────────────────
+  maybeScheduleEnrichDrain(chain);
+
+  // ── Enrichment repair (C2) — cadență proprie, migrare perechi neenrichuite ──
+  maybeScheduleRepair(chain);
 }
 
 /** Loop principal — chains secvențial (evită rate limiting RPC). */
