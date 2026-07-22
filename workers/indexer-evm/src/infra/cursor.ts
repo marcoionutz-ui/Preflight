@@ -13,6 +13,7 @@
 
 import { getRedis } from "./redis";
 import type { ChainId } from "../config/factories";
+import type Redis from "ioredis";
 
 const KEY_PREFIX = "preflight:indexer:cursor";
 
@@ -70,35 +71,78 @@ export interface CursorState {
   status:       CursorStatus;
 }
 
+/**
+ * Rezultat READ fail-closed (C4) — distinge eroarea de absență:
+ *   { ok: true,  value: number } → cursor găsit
+ *   { ok: true,  value: null }   → cheie absentă (first run legit)
+ *   { ok: false }                → eroare Redis / valoare coruptă / Redis neconfigurat → apelantul NU
+ *                                  tratează ca first-run (altfel resetează cursorul + sare blocuri silențios)
+ */
+export type CursorRead = { ok: true; value: number | null } | { ok: false };
+
 function cursorKey(chain: string): string {
   return `${KEY_PREFIX}:${chain.toLowerCase()}`;
 }
 
-/** Citește lastBlock din Redis. Returnează null dacă nu există (first run). */
-export async function readCursor(chain: string): Promise<number | null> {
-  const r = getRedis();
-  if (!r) return null;
+/**
+ * Citește lastBlock din Redis — FAIL-CLOSED (C4).
+ * Eroarea Redis, valoarea coruptă ȘI Redis-ul neconfigurat NU se colapsează în `null` (care ar fi
+ * tratat drept first-run → reset la latest-lookback → blocuri sărite silențios). Fără client = {ok:false}
+ * (fără persistență nu există confirmare → un dry-run fără Redis e mod EXPLICIT, nu default fail-closed).
+ * Validarea valorii e STRICTĂ (parseInt e prea permisiv: "123abc"→123, "7.9"→7, "-5"→-5).
+ * `client` injectabil pentru teste; implicit = singletonul getRedis().
+ */
+export async function readCursor(
+  chain:  string,
+  client: Redis | null = getRedis(),
+): Promise<CursorRead> {
+  if (!client) {
+    console.error(`[INDEXER][CURSOR] readCursor(${chain}) — Redis neconfigurat (REDIS_URL lipsește) — fail-closed`);
+    return { ok: false };
+  }
 
   try {
-    const val = await r.get(cursorKey(chain));
-    if (!val) return null;
-    const n = parseInt(val, 10);
-    return Number.isFinite(n) ? n : null;
+    const val = await client.get(cursorKey(chain));
+    if (val === null || val === undefined) return { ok: true, value: null }; // cheie absentă = first run legit
+    if (!/^\d+$/.test(val)) {
+      console.error(`[INDEXER][CURSOR] readCursor(${chain}) valoare coruptă: "${val}" — fail-closed`);
+      return { ok: false };
+    }
+    const n = Number(val);
+    if (!Number.isSafeInteger(n) || n < 0) {
+      console.error(`[INDEXER][CURSOR] readCursor(${chain}) valoare invalidă: "${val}" — fail-closed`);
+      return { ok: false };
+    }
+    return { ok: true, value: n };
   } catch (err) {
     console.error(`[INDEXER][CURSOR] readCursor(${chain}) error:`, (err as Error).message);
-    return null;
+    return { ok: false };
   }
 }
 
-/** Scrie lastBlock în Redis după un batch procesat cu succes. */
-export async function writeCursor(chain: string, block: number): Promise<void> {
-  const r = getRedis();
-  if (!r) return;
+/**
+ * Scrie lastBlock în Redis după un batch procesat. Întoarce `true` DOAR la scriere confirmată (C4).
+ * `false` → apelantul NU avansează lastProcessedBlock/health (altfel raportează „synced" fără ca
+ * cursorul persistent să fi fost scris → la restart sare/re-procesează blocuri).
+ * Fără Redis = `false` (fail-closed: fără persistență nu există confirmare; nu pretindem succes).
+ * `client` injectabil pentru teste.
+ */
+export async function writeCursor(
+  chain:  string,
+  block:  number,
+  client: Redis | null = getRedis(),
+): Promise<boolean> {
+  if (!client) {
+    console.error(`[INDEXER][CURSOR] writeCursor(${chain}, ${block}) — Redis neconfigurat (REDIS_URL lipsește) — fail-closed`);
+    return false;
+  }
 
   try {
-    await r.set(cursorKey(chain), String(block));
+    await client.set(cursorKey(chain), String(block));
+    return true;
   } catch (err) {
     console.error(`[INDEXER][CURSOR] writeCursor(${chain}, ${block}) error:`, (err as Error).message);
+    return false;
   }
 }
 

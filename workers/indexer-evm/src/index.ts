@@ -96,8 +96,24 @@ async function syncChain(chain: ChainId): Promise<void> {
   const depth       = confirmationDepth(chain);
   const latestBlock = safeHead(chain, rawHead);
 
-  // ── Cursor ────────────────────────────────────────────────────────────────
-  const savedBlock  = await readCursor(chain);
+  // ── Cursor (fail-closed, C4) ──────────────────────────────────────────────
+  // O eroare Redis / cursor corupt NU trebuie tratat ca first-run (ar reseta cursorul la
+  // latest-lookback și ar sări blocuri silențios). La {ok:false}: skip iterația, health DEGRADED.
+  const cursorRead = await readCursor(chain);
+  if (!cursorRead.ok) {
+    console.error(
+      `[INDEXER][${chain.toUpperCase()}] readCursor fail-closed — skip iterație (Redis error / cursor corupt)`,
+    );
+    await writeIndexerHealth(
+      chain,
+      buildDegradedHealth({
+        lastErrorAt: now,
+        reason:      "readCursor: Redis error sau cursor corupt (fail-closed)",
+      }),
+    );
+    return;
+  }
+  const savedBlock  = cursorRead.value;
   const cursorState = computeCursorState(savedBlock, latestBlock, chain);
 
   // Persist cursor on first run (init startBlock) or explicit SKIP_TO_LATEST
@@ -106,7 +122,20 @@ async function syncChain(chain: ChainId): Promise<void> {
     (process.env.INDEXER_SKIP_TO_LATEST === "true" && cursorState.lastBlock !== savedBlock);
 
   if (shouldPersist) {
-    await writeCursor(chain, cursorState.lastBlock);
+    const persisted = await writeCursor(chain, cursorState.lastBlock);
+    if (!persisted) {
+      console.error(
+        `[INDEXER][${chain.toUpperCase()}] writeCursor(init) a eșuat — skip iterație (DEGRADED)`,
+      );
+      await writeIndexerHealth(
+        chain,
+        buildDegradedHealth({
+          lastErrorAt: now,
+          reason:      "writeCursor(init) a eșuat — cursor neinițializat în Redis",
+        }),
+      );
+      return;
+    }
     console.log(
       `[INDEXER][${chain.toUpperCase()}] Cursor ${savedBlock === null ? "inițializat" : "skipped"} la block ${cursorState.lastBlock}`,
     );
@@ -140,7 +169,7 @@ async function syncChain(chain: ChainId): Promise<void> {
       buildDegradedHealth({
         lastErrorAt:  now,
         blocksBehind: Math.max(0, latestBlock - discovery.lastProcessedBlock),
-        reason:       `eth_getLogs: ${discovery.error}`,
+        reason:       `discovery: ${discovery.error}`,
       }),
     );
     return;

@@ -7,7 +7,8 @@
     "start": "tsx src/index.ts",
     "typecheck": "tsc --noEmit",
     "test:c5": "tsx scripts/confirmationDepth.test.ts",
-    "test": "npm run test:c5"
+    "test": "npm run test:c5 && npm run test:c4",
+    "test:c4": "tsx scripts/cursorFailClosed.test.ts"
   },
   "dependencies": {
     "dotenv": "^17.4.2",

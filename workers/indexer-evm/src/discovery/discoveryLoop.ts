@@ -143,9 +143,16 @@ export async function runDiscovery(
     // On Redis failure: stop outer loop too — don't advance cursor
     if (batchFailed) break;
 
-    // Cursor advance: always in LIVE mode, optional in DRY_RUN
+    // Cursor advance: always in LIVE mode, optional in DRY_RUN.
+    // C4: lastProcessedBlock (și implicit health) avansează DOAR după ce writeCursor confirmă
+    // scrierea în Redis. Altfel am raporta „synced" fără cursor persistent → la restart
+    // se sar/re-procesează blocuri. La eșec: break cu error, cursorul rămâne la ultimul batch scris.
     if (ADVANCE_CURSOR) {
-      await writeCursor(chain, toBlock);
+      const persisted = await writeCursor(chain, toBlock);
+      if (!persisted) {
+        discoveryError = `cursor write failed at block ${toBlock}`;
+        break;
+      }
       lastProcessedBlock = toBlock;
     }
     batchesProcessed++;
