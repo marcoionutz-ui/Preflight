@@ -33,11 +33,18 @@ import type { QuotePriceSource } from "../infra/quotePrices";
 import { fetchV2Price } from "../infra/v2Pricing";
 import type { PriceStatus, AmmVersion, PricingSource, ReserveSource } from "../infra/v2Pricing";
 import { intEnv } from "../config/env";
+import type Redis from "ioredis";
 
 // ── Enrichment concurrency guard ──────────────────────────────────────────────
 
 const MAX_ENRICHMENTS = intEnv("INDEXER_METADATA_CONCURRENCY", 4);
 let activeEnrichments = 0;
+
+// ── Re-pricing (C3) ───────────────────────────────────────────────────────────
+const REPRICE_TOP_K    = intEnv("INDEXER_REPRICE_TOP_K", 50);        // top-K perechi recente scanate/pasaj
+const REPRICE_STALE_MS = intEnv("INDEXER_REPRICE_STALE_MS", 45_000); // re-preț dacă pricedAt e mai vechi
+const REPRICE_BATCH    = intEnv("INDEXER_REPRICE_BATCH", 20);        // max re-prețuite pe pasaj (bound RPC)
+const REPRICE_CONCURRENCY = intEnv("INDEXER_REPRICE_CONCURRENCY", 4);   // câte re-prețuiri simultan (worker-pool)
 
 export interface IndexedPair {
   // ── Core (scris întotdeauna) ──────────────────────────────────────────────
@@ -68,6 +75,7 @@ export interface IndexedPair {
   priceUsd?:    number;
   reserveUsd?:  number;
   priceStatus?: PriceStatus;
+  pricedAt?:    number;   // C3: Unix ms al ultimei prețuiri (freshness pt. re-pricing + staleness la reader)
 
   // ── Faza 6.9b: pricing metadata (opțional — prezent după enrichment) ──────
   ammVersion?:       AmmVersion;
@@ -123,29 +131,12 @@ async function enrichPairMetadata(
     baseMeta.status === "FAILED" && (quoteMeta === null || quoteMeta?.status === "FAILED") ? "FAILED" :
     "PARTIAL";
 
-  // ── Faza 6.11: quote price async cu Chainlink + Redis cache ─────────────────
-  const quotePriceResult = quoteToken
-    ? await getQuotePriceResult(quoteToken, chain, rpcUrl, r)
-    : null;
-  const quotePriceUsd = quotePriceResult?.price ?? null;
-
-  // V4: pass StateView address for pricing via PoolManager lens
-  const v4Config = getV4Config(chain);
-
-  const { priceUsd, reserveUsd, priceStatus, ammVersion, pricingSource, reserveSource } = await fetchV2Price({
-    rpcUrl,
-    pairAddress:       pair.pairAddress,
-    dexId:             pair.dexId,
-    token0:            pair.token0,
-    token1:            pair.token1,
-    baseToken,
-    baseDecimals:      baseMeta.decimals,
-    quoteToken,
-    quoteDecimals:     quoteMeta?.decimals ?? null,
-    quoteStatus,
-    quotePriceUsd,
-    stateViewAddress:  v4Config?.stateViewAddress,
-  });
+  // ── Pricing (C3: partajat cu re-pricing — vezi computePricing) ──────────────
+  const pricing = await computePricing(
+    chain, rpcUrl, r, pair,
+    baseToken, quoteToken, quoteStatus,
+    baseMeta.decimals, quoteMeta?.decimals ?? null,
+  );
 
   // ── Write enriched pair ───────────────────────────────────────────────────
   const enriched: IndexedPair = {
@@ -159,19 +150,8 @@ async function enrichPairMetadata(
     baseDecimals:  baseMeta.decimals  ?? undefined,
     quoteDecimals: quoteMeta?.decimals ?? undefined,
     metadataStatus,
-    // 6.5: price
-    priceUsd,
-    reserveUsd,
-    priceStatus,
-    // 6.9b: pricing metadata
-    ammVersion,
-    pricingSource,
-    reserveSource,
-    // 6.11: quote price source + age
-    quotePriceSource: quotePriceResult?.source ?? "UNKNOWN",
-    quotePriceAgeSec: quotePriceResult
-      ? Math.max(0, Math.floor((Date.now() - quotePriceResult.updatedAt) / 1000))
-      : undefined,
+    // 6.5/6.9b/6.11 + C3: price + reserve + pricing sources + quote source/age + pricedAt
+    ...pricing,
   };
 
   if (!r) return;
@@ -181,13 +161,172 @@ async function enrichPairMetadata(
     console.log(
       `[INDEXED] enriched ${pair.pairAddress} ` +
       `base:${baseMeta.symbol ?? "?"} quote:${quoteMeta?.symbol ?? "?"} ` +
-      `price:$${priceUsd.toFixed(6)} reserve:$${reserveUsd.toFixed(0)} ` +
-      `meta:${metadataStatus} price_status:${priceStatus} ` +
-      `amm:${ammVersion ?? "?"} price_src:${pricingSource ?? "?"} reserve_src:${reserveSource ?? "?"} ` +
-      `quote_price_src:${quotePriceResult?.source ?? "none"} quote_price_age:${enriched.quotePriceAgeSec ?? "n/a"}s`,
+      `price:$${pricing.priceUsd.toFixed(6)} reserve:$${pricing.reserveUsd.toFixed(0)} ` +
+      `meta:${metadataStatus} price_status:${pricing.priceStatus} ` +
+      `amm:${pricing.ammVersion ?? "?"} price_src:${pricing.pricingSource ?? "?"} reserve_src:${pricing.reserveSource ?? "?"} ` +
+      `quote_price_src:${pricing.quotePriceSource} quote_price_age:${pricing.quotePriceAgeSec ?? "n/a"}s`,
     );
   } catch (err) {
     console.error(`[REGISTRY] enrich SET(${pair.pairAddress}) error:`, (err as Error).message);
+  }
+}
+
+// ── Pricing core (C3) ──────────────────────────────────────────────────────────
+
+interface PricingFields {
+  priceUsd:          number;
+  reserveUsd:        number;
+  priceStatus:       PriceStatus;
+  ammVersion?:       AmmVersion;
+  pricingSource?:    PricingSource;
+  reserveSource?:    ReserveSource;
+  quotePriceSource:  QuotePriceSource;
+  quotePriceAgeSec?: number;
+  pricedAt:          number;
+}
+
+/**
+ * Calculează prețul + rezerva unei perechi (quote price Chainlink + reserves/price on-chain).
+ * Partajat între enrichment (metadata proaspăt fetch-uită) și re-pricing (metadata din registry).
+ * Stampează `pricedAt = now` la fiecare apel.
+ */
+async function computePricing(
+  chain:         ChainId,
+  rpcUrl:        string,
+  r:             Redis | null,
+  pair:          IndexedPair,
+  baseToken:     string,
+  quoteToken:    string | null,
+  quoteStatus:   QuoteStatus,
+  baseDecimals:  number | null,
+  quoteDecimals: number | null,
+): Promise<PricingFields> {
+  const quotePriceResult = quoteToken
+    ? await getQuotePriceResult(quoteToken, chain, rpcUrl, r)
+    : null;
+  const quotePriceUsd = quotePriceResult?.price ?? null;
+  const v4Config = getV4Config(chain);
+
+  const { priceUsd, reserveUsd, priceStatus, ammVersion, pricingSource, reserveSource } =
+    await fetchV2Price({
+      rpcUrl,
+      pairAddress:      pair.pairAddress,
+      dexId:            pair.dexId,
+      token0:           pair.token0,
+      token1:           pair.token1,
+      baseToken,
+      baseDecimals,
+      quoteToken,
+      quoteDecimals,
+      quoteStatus,
+      quotePriceUsd,
+      stateViewAddress: v4Config?.stateViewAddress,
+    });
+
+  return {
+    priceUsd, reserveUsd, priceStatus, ammVersion, pricingSource, reserveSource,
+    quotePriceSource: quotePriceResult?.source ?? "UNKNOWN",
+    quotePriceAgeSec: quotePriceResult
+      ? Math.max(0, Math.floor((Date.now() - quotePriceResult.updatedAt) / 1000))
+      : undefined,
+    pricedAt: Date.now(),
+  };
+}
+
+/**
+ * Selecție PURĂ (testabilă): care perechi deja enrichuite sunt destul de vechi ca să merite re-preț.
+ * Exclude neenrichuitele (fără metadataStatus) și cele proaspete; sortează cele mai vechi întâi; cap la `batch`.
+ */
+export function selectPairsToReprice<T extends { metadataStatus?: string; pricedAt?: number }>(
+  pairs:   T[],
+  now:     number,
+  staleMs: number,
+  batch:   number,
+): T[] {
+  return pairs
+    .filter(p => p.metadataStatus !== undefined)
+    .filter(p => now - (p.pricedAt ?? 0) >= staleMs)
+    .sort((a, b) => (a.pricedAt ?? 0) - (b.pricedAt ?? 0))
+    .slice(0, batch);
+}
+
+/** Re-prețuiește o pereche deja enrichuită folosind metadata din registry (fără RPC de metadata). */
+async function repricePair(
+  chain:   ChainId,
+  rpcUrl:  string,
+  r:       Redis,
+  pair:    IndexedPair,
+  jsonKey: string,
+): Promise<boolean> {
+  const baseToken = pair.baseToken;
+  if (!baseToken || pair.metadataStatus === undefined) return false; // încă neenrichuită
+  const pricing = await computePricing(
+    chain, rpcUrl, r, pair,
+    baseToken,
+    pair.quoteToken   ?? null,
+    pair.quoteStatus  ?? "NO_KNOWN_QUOTE",
+    pair.baseDecimals ?? null,
+    pair.quoteDecimals ?? null,
+  );
+  const updated: IndexedPair = { ...pair, ...pricing };
+  try {
+    await r.set(jsonKey, JSON.stringify(updated));
+    return true;
+  } catch (err) {
+    console.error(`[REPRICE] SET(${pair.pairAddress}) error:`, (err as Error).message);
+    return false;
+  }
+}
+
+/**
+ * Pasaj periodic de re-pricing (C3): re-prețuiește cele mai vechi perechi dintre top-K cele mai
+ * recent descoperite, ca INDEXER_PRIMARY să nu mai servească prețuri înghețate la discovery
+ * (rezolvă NO_MOMENTUM permanent / movers 0%). Mărginit pe apel de REPRICE_BATCH.
+ */
+export async function repriceRecentPairs(chain: ChainId): Promise<{ repriced: number; scanned: number }> {
+  const r = getRedis();
+  if (!r) return { repriced: 0, scanned: 0 };
+  const rpcUrl = getRpcUrl(chain);
+  if (!rpcUrl) return { repriced: 0, scanned: 0 };
+
+  try {
+    const addrs = await r.zrevrange(tsSetKey(chain), 0, REPRICE_TOP_K - 1);
+    if (addrs.length === 0) return { repriced: 0, scanned: 0 };
+
+    const pipe = r.pipeline();
+    for (const a of addrs) pipe.get(pairKey(chain, a));
+    const results = await pipe.exec();
+    if (!results) return { repriced: 0, scanned: 0 };
+
+    const pairs: IndexedPair[] = [];
+    for (const [err, raw] of results) {
+      if (err || !raw) continue;
+      try { pairs.push(JSON.parse(raw as string) as IndexedPair); } catch { /* skip malformed */ }
+    }
+
+    const toReprice = selectPairsToReprice(pairs, Date.now(), REPRICE_STALE_MS, REPRICE_BATCH);
+
+    // Worker-pool cu concurență mărginită (NU 20 secvențial, NU 20 simultan) — o pereche V3/V4
+    // poate face mai multe RPC calls; ținem RPC-ul sub control fără să serializăm tot pasajul.
+    let repriced = 0;
+    let idx = 0;
+    async function worker(): Promise<void> {
+      while (idx < toReprice.length) {
+        const p = toReprice[idx++];
+        const ok = await repricePair(chain, rpcUrl, r!, p, pairKey(chain, p.pairAddress)).catch(() => false);
+        if (ok) repriced++;
+      }
+    }
+    await Promise.all(
+      Array.from({ length: Math.min(REPRICE_CONCURRENCY, toReprice.length) }, () => worker()),
+    );
+    if (toReprice.length > 0) {
+      console.log(`[REPRICE][${chain.toUpperCase()}] repriced ${repriced}/${toReprice.length} (scanned top-${addrs.length})`);
+    }
+    return { repriced, scanned: addrs.length };
+  } catch (err) {
+    console.error(`[REPRICE][${chain.toUpperCase()}] error:`, (err as Error).message);
+    return { repriced: 0, scanned: 0 };
   }
 }
 

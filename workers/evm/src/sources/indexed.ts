@@ -64,6 +64,7 @@ interface IndexedPair {
   priceUsd?:    number;
   reserveUsd?:  number;
   priceStatus?: string;
+  pricedAt?:    number;   // C3: Unix ms al ultimei prețuiri (staleness)
 
   // Faza 6.11: quote price transparency
   quotePriceSource?: QuotePriceSource;
@@ -78,6 +79,25 @@ const PAIR_KEY      = (chain: string, addr: string) => `preflight:indexed:pair:$
 
 /** Maximum pairs to load per chain per scan — keeps pipeline bounded */
 const MAX_PAIRS = 200;
+
+/**
+ * C3: prețurile indexer sunt re-calculate periodic + stampate cu `pricedAt`. Un preț mai vechi de
+ * MAX_PRICE_AGE_MS = înghețat (indexer oprit / pereche ieșită din top-K re-pricing) → NU-l servim,
+ * ca INDEXER_PRIMARY să nu raporteze momentum fals; cade pe fallback (Gecko). Override: INDEXED_MAX_PRICE_AGE_MS.
+ */
+const MAX_PRICE_AGE_MS = Number(process.env.INDEXED_MAX_PRICE_AGE_MS ?? 120_000);
+
+/** True dacă prețul indexat e servabil: priceStatus OK ȘI prețuit recent (nu înghețat la discovery). C3. */
+export function isIndexedPriceServable(
+  pair:     { priceStatus?: string; pricedAt?: number },
+  now:      number,
+  maxAgeMs: number,
+): boolean {
+  if (pair.priceStatus !== "OK") return false;
+  if (!Number.isFinite(pair.pricedAt)) return false;   // lipsă (legacy) / NaN → nu servi
+  const ageMs = now - (pair.pricedAt as number);
+  return ageMs >= 0 && ageMs <= maxAgeMs;              // respinge ȘI timestampuri din viitor (age<0)
+}
 
 /** dexIds that correspond to V3 pools (fee in topics[3], not data) */
 const V3_DEX_IDS = new Set(["uniswap-v3", "pancakeswap-v3"]);
@@ -194,15 +214,17 @@ export async function fetchIndexedDiscoveryPools(
 
     const pools: SourcePool[] = [];
     const skipped: Record<string, number> = {};
+    const now = Date.now();
 
     for (const [err, raw] of results) {
       if (err || !raw) continue;
       try {
         const pair = JSON.parse(raw as string) as IndexedPair;
 
-        // Servim doar pairs priced OK — registry le păstrează pe toate
-        if (pair.priceStatus !== "OK") {
-          const key = pair.priceStatus ?? "MISSING";
+        // C3: servim doar prețuri OK ȘI proaspete — un preț înghețat la discovery ar da momentum
+        // fals (NO_MOMENTUM permanent). Vechi/lipsă → skip → INDEXER_PRIMARY nu-l servește → Gecko.
+        if (!isIndexedPriceServable(pair, now, MAX_PRICE_AGE_MS)) {
+          const key = pair.priceStatus !== "OK" ? (pair.priceStatus ?? "MISSING") : "STALE_PRICE";
           skipped[key] = (skipped[key] ?? 0) + 1;
           continue;
         }
@@ -243,6 +265,9 @@ export async function fetchIndexedPoolByAddress(
     const raw = await r.get(PAIR_KEY(chainId, pairAddress.toLowerCase()));
     if (!raw) return null;
     const pair = JSON.parse(raw) as IndexedPair;
+    // C3: invarianta „nu servi prețuri vechi" se aplică ȘI lookup-ului single-pair, nu doar bulk-ului.
+    // Preț înghețat → null → callerul cade pe fallback (Gecko), nu servește momentum fals.
+    if (!isIndexedPriceServable(pair, Date.now(), MAX_PRICE_AGE_MS)) return null;
     return toSourcePool(pair, chain);
   } catch (err) {
     console.error(`[INDEXED] fetchIndexedPoolByAddress(${chain.id}, ${pairAddress}) error:`, (err as Error).message);

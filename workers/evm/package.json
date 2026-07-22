@@ -7,11 +7,12 @@
     "start": "tsx src/index.ts",
     "typecheck": "tsc --noEmit",
     "test:a5": "tsx scripts/quoteFlow.test.ts",
-    "test": "npm run test:a5"
+    "test": "npm run test:a5 && npm run test:c3",
+    "test:c3": "tsx scripts/indexedFreshness.test.ts"
   },
   "dependencies": {
     "@preflight/schema": "*",
-	"@preflight/risk-layer": "*",
+    "@preflight/risk-layer": "*",
     "@supabase/supabase-js": "^2.106.0",
     "dotenv": "^17.4.2",
     "ethers": "^6.16.0",

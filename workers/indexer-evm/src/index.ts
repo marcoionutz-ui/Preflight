@@ -26,10 +26,44 @@ import {
   buildDegradedHealth,
 } from "./infra/health";
 import { runDiscovery, DRY_RUN } from "./discovery/discoveryLoop";
-import { getTotalPairsCount, getFreshPairs24h } from "./discovery/pairRegistry";
+import { getTotalPairsCount, getFreshPairs24h, repriceRecentPairs } from "./discovery/pairRegistry";
+import { intEnv } from "./config/env";
 
 const INDEXER_VERSION  = "0.2.0";
 const LOOP_INTERVAL_MS = 10_000;
+
+// C3: pasaj periodic de re-pricing per chain (gated pe interval, doar LIVE).
+const REPRICE_INTERVAL_MS = intEnv("INDEXER_REPRICE_INTERVAL_MS", 30_000);
+const lastRepriceAt   = new Map<ChainId, number>();
+const repriceInFlight = new Set<ChainId>();
+
+/**
+ * Programează re-pricing-ul C3 în BACKGROUND (fire-and-forget) — NU-l await-uim în syncChain.
+ * Altfel un RPC lent (o pereche V3/V4 = mai multe eth_call timeout-guarded) ar bloca discovery-ul
+ * celorlalte chain-uri și ar lăsa health key-ul (TTL 60s) să expire → workerul vede indexerul
+ * MISSING și cade inutil pe Gecko. Guard per-chain (un singur pasaj activ/chain) + interval.
+ * `lastRepriceAt` se setează la FINAL (în finally) → cadența se măsoară de la terminare, fără overlap.
+ */
+function maybeScheduleReprice(chain: ChainId): void {
+  if (DRY_RUN || repriceInFlight.has(chain)) return;
+  const last = lastRepriceAt.get(chain) ?? 0;
+  if (Date.now() - last < REPRICE_INTERVAL_MS) return;
+
+  repriceInFlight.add(chain);
+  void repriceRecentPairs(chain)
+    .then(({ repriced, scanned }) => {
+      if (repriced > 0) {
+        console.log(`[INDEXER][${chain.toUpperCase()}] re-priced ${repriced} perechi (top-${scanned})`);
+      }
+    })
+    .catch(err => {
+      console.error(`[REPRICE][${chain.toUpperCase()}] unhandled:`, (err as Error).message);
+    })
+    .finally(() => {
+      lastRepriceAt.set(chain, Date.now());
+      repriceInFlight.delete(chain);
+    });
+}
 
 const activeChains = getEnabledChains();
 
@@ -205,6 +239,10 @@ async function syncChain(chain: ChainId): Promise<void> {
       freshPairs24h,
     }),
   );
+
+  // ── Re-pricing periodic (C3) — BACKGROUND, non-blocant (vezi maybeScheduleReprice) ──
+  // Prețul e altfel calculat DOAR la discovery → îngheață → momentum fals (NO_MOMENTUM, movers 0%).
+  maybeScheduleReprice(chain);
 }
 
 /** Loop principal — chains secvențial (evită rate limiting RPC). */
