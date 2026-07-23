@@ -10,6 +10,7 @@
 import type { PairMemoryEntry } from "../lib/engines/pairMemory";
 import type { SourcePool } from "../sources/normalize";
 import { PairMap } from "./PairMap";
+import { createScopedSubStore } from "../ws/scopedSubs";
 import { MAX_MOMENTUM_BUFFER, MAX_QUALIFIED_BUFFER } from "../config/constants";
 import { pairKey, type DiscoverySource, type PreflightMomentumEvent, type PreflightQualifiedSignal } from "@preflight/schema";
 
@@ -96,12 +97,23 @@ export const swapSubIds        = new Map<string, string[]>();
 export const pendingSwapSubs   = new Map<number, string>();
 export let   swapSubReqId      = 10_000;
 export const swapSubSnapshot   = new Map<string, string>();
-export const v3SwapSubIds      = new Map<string, string>();
-export const v4SwapSubIds      = new Map<string, string>();
 export const lastImmediateSub  = new Map<string, number>();
 
 export function incrementSwapSubReqId(): number {
   return ++swapSubReqId;
+}
+
+// ── Scoped V2/V3/V4 subscriptions (D3: confirmare explicită) ────────────────────
+// Vechile `v3SwapSubIds`/`v4SwapSubIds` (Map<string,string> cu sufixe „_snap"/„_v2_id") setau
+// snapshot-ul OPTIMIST, înainte de confirmarea serverului — la un `eth_subscribe` eșuat, snapshot-ul
+// rămânea setat și scanul următor făcea short-circuit → subscripția moară → flow zero. Înlocuite cu
+// un state-machine cu confirmare explicită (`ws/scopedSubs.ts`): `active` = doar ce-a confirmat serverul,
+// `pending` = ce-am cerut dar încă neconfirmat. reqId unic per cerere (staleness detection).
+export const scopedSubStore = createScopedSubStore();
+export let   scopedSubReqId  = 20_000;
+
+export function nextScopedSubReqId(): number {
+  return ++scopedSubReqId;
 }
 
 // ── Pool maps (pentru V3/V4 detection) ───────────────────────────────────────

@@ -9,9 +9,14 @@ import {
   wsClients, activeWatch, hotCandidates,
   v3PoolMap, v4PoolMap,
   swapSubIds, swapSubSnapshot, pendingSwapSubs, swapSubReqId,
-  v3SwapSubIds, v4SwapSubIds, lastImmediateSub,
+  lastImmediateSub,
+  scopedSubStore, nextScopedSubReqId,
   incrementSwapSubReqId,
 } from "../state/stores";
+import {
+  planScopedSubscribe, planScopedUnsubscribe, abandonScopedSubRequest,
+  hasHardExpiredScopedRequest, SCOPED_SUB_HARD_TIMEOUT_MS, scopedSubKey,
+} from "./scopedSubs";
 import { dropWatchCandidate } from "../pipeline/transitions";
 import { getWsFlow } from "../risk/flow";
 import { memory } from "../state/stores";
@@ -31,6 +36,40 @@ export const MINT_V2_TOPIC = "0x4c209b5fc8ad50758f13e2e1088ba56a560dff690a1c6fef
 export const BURN_V2_TOPIC = "0xdccd412f0b1252819cb1fd330b93224ca42612892bb3f4f789976e6d81936496";
 export const MINT_V3_TOPIC = "0x7a53080ba414158be7ec69b987b5fb7d07dee101fe85488f0853ae16239d0bde";
 export const BURN_V3_TOPIC = "0x0c396cd989a39f4459b5fa1aed6a9a8dcdbc45908acfd67e028cd568da98982c";
+
+/**
+ * D3: trimite `eth_subscribe` cu rollback la eșec de transport. `ws.send` nu are rollback, iar dacă
+ * socketul trece în CLOSING între guard-ul `readyState` și send (sau send-ul aruncă / callback-ul dă
+ * eroare), cererea ar rămâne pending pe veci → `noop-in-flight` ar îngheța retry-ul. `abandonScopedSubRequest`
+ * scoate cererea din pending (+ curăță `latestReq` dacă e cea mai recentă) → scanul următor retrimite.
+ * Callback-ul confirmă DOAR că transportul a acceptat mesajul; confirmarea reală a subscripției rămâne
+ * în manager.ts (răspunsul JSON-RPC).
+ */
+/**
+ * D3: dacă un `eth_subscribe` stă ne-confirmat > hard-timeout (Alchemy mut pe subscribe, viu pe rest),
+ * resetează socketul. `close` → `clearScopedSubsForChain` golește pending-urile acumulate + reconnect
+ * fresh → `pending` rămâne mărginit. Întoarce `true` dacă a resetat (call-site-ul face `return`).
+ */
+function resetIfScopedAckStalled(ws: WebSocket, key: string, now: number, label: string): boolean {
+  if (!hasHardExpiredScopedRequest(scopedSubStore, key, now)) return false;
+  console.error(`[${label}] subscribe ACK stalled >${SCOPED_SUB_HARD_TIMEOUT_MS}ms — resetting WS`);
+  ws.terminate();
+  return true;
+}
+
+function sendScopedSubscribe(ws: WebSocket, reqId: number, params: unknown, label: string): void {
+  const payload = JSON.stringify({ jsonrpc: "2.0", id: reqId, method: "eth_subscribe", params });
+  try {
+    ws.send(payload, (err?: Error) => {
+      if (!err) return;
+      abandonScopedSubRequest(scopedSubStore, reqId);
+      console.error(`[${label}] Scoped subscribe send failed req#${reqId}: ${err.message}`);
+    });
+  } catch (err) {
+    abandonScopedSubRequest(scopedSubStore, reqId);
+    console.error(`[${label}] Scoped subscribe send threw req#${reqId}: ${(err as Error).message}`);
+  }
+}
 
 export function watchPriority(kind?: string): number {
   if (kind === "CONFIRMED_MOMENTUM") return 0;
@@ -137,31 +176,28 @@ export function subscribeV3Scoped(chain: ChainConfig): void {
       .map(([{ address: addr }]) => addr),
   ])].slice(0, MAX_V3_WATCH);
 
+  const key = scopedSubKey(chain.id, "v3");
+  const now = Date.now();
+  if (resetIfScopedAckStalled(ws, key, now, "V3")) return; // ACK mut → reset WS (bounded pending)
+
   if (!addrs.length) {
-    const oldId = v3SwapSubIds.get(chain.id);
-    if (oldId) {
-      ws.send(JSON.stringify({ jsonrpc: "2.0", id: 51, method: "eth_unsubscribe", params: [oldId] }));
-      v3SwapSubIds.delete(chain.id);
-      v3SwapSubIds.delete(chain.id + "_snap");
+    // D3: teardown — anulează DOAR subscripția confirmată activă (nu snapshot optimist)
+    const { unsub } = planScopedUnsubscribe(scopedSubStore, key);
+    for (const id of unsub) {
+      ws.send(JSON.stringify({ jsonrpc: "2.0", id: 51, method: "eth_unsubscribe", params: [id] }));
       console.log(`[V3] Unsubscribed — nothing in watch`);
     }
     return;
   }
 
-  const snapshot = addrs.join(",");
-  if (v3SwapSubIds.get(chain.id + "_snap") === snapshot) return;
-  v3SwapSubIds.set(chain.id + "_snap", snapshot);
+  // D3: NU marcăm snapshot-ul ca activ acum și NU anulăm subscripția veche — doar înregistrăm cererea.
+  // Vechiul sub se anulează abia când noul `eth_subscribe` e confirmat (în manager.ts).
+  const desired = addrs.join(",");
+  const plan = planScopedSubscribe(scopedSubStore, key, desired, nextScopedSubReqId(), now);
+  if (plan.reqId == null) return; // deja activ pe acest snapshot / cerere identică proaspătă în zbor
 
-  const oldId = v3SwapSubIds.get(chain.id);
-  if (oldId) {
-    ws.send(JSON.stringify({ jsonrpc: "2.0", id: 51, method: "eth_unsubscribe", params: [oldId] }));
-  }
-  ws.send(JSON.stringify({
-    jsonrpc: "2.0", id: 7,
-    method: "eth_subscribe",
-    params: ["logs", { address: addrs, topics: [[SWAP_V3_TOPIC, MINT_V3_TOPIC, BURN_V3_TOPIC]] }],
-  }));
-  console.log(`[V3] Scoped subscribe: ${addrs.length} watched pools (${chain.id})`);
+  sendScopedSubscribe(ws, plan.reqId, ["logs", { address: addrs, topics: [[SWAP_V3_TOPIC, MINT_V3_TOPIC, BURN_V3_TOPIC]] }], "V3");
+  console.log(`[V3] Scoped subscribe req#${plan.reqId}: ${addrs.length} watched pools (${chain.id})`);
 }
 
 export function subscribeV4Scoped(chain: ChainConfig): void {
@@ -185,12 +221,14 @@ export function subscribeV4Scoped(chain: ChainConfig): void {
       .map(([{ address: addr }]) => addr),
   ])].slice(0, MAX_V4_WATCH);
 
+  const key = scopedSubKey(chain.id, "v4");
+  const now = Date.now();
+  if (resetIfScopedAckStalled(ws, key, now, "V4")) return; // ACK mut → reset WS (bounded pending)
+
   if (!poolIds.length) {
-    const oldId = v4SwapSubIds.get(chain.id);
-    if (oldId) {
-      ws.send(JSON.stringify({ jsonrpc: "2.0", id: 50, method: "eth_unsubscribe", params: [oldId] }));
-      v4SwapSubIds.delete(chain.id);
-      v4SwapSubIds.delete(chain.id + "_snap");
+    const { unsub } = planScopedUnsubscribe(scopedSubStore, key);
+    for (const id of unsub) {
+      ws.send(JSON.stringify({ jsonrpc: "2.0", id: 50, method: "eth_unsubscribe", params: [id] }));
       console.log(`[V4] Unsubscribed — nothing in watch`);
     }
     return;
@@ -202,20 +240,13 @@ export function subscribeV4Scoped(chain: ChainConfig): void {
     return;
   }
 
-  const snapshot = poolIds.join(",");
-  if (v4SwapSubIds.get(chain.id + "_snap") === snapshot) return;
-  v4SwapSubIds.set(chain.id + "_snap", snapshot);
+  // D3: înregistrează cererea; active/unsub la confirmare (manager.ts). Fără snapshot optimist.
+  const desired = poolIds.join(",");
+  const plan = planScopedSubscribe(scopedSubStore, key, desired, nextScopedSubReqId(), now);
+  if (plan.reqId == null) return;
 
-  const oldId = v4SwapSubIds.get(chain.id);
-  if (oldId) {
-    ws.send(JSON.stringify({ jsonrpc: "2.0", id: 50, method: "eth_unsubscribe", params: [oldId] }));
-  }
-  ws.send(JSON.stringify({
-    jsonrpc: "2.0", id: 5,
-    method: "eth_subscribe",
-    params: ["logs", { address: poolManager, topics: [[SWAP_V4_TOPIC, MODIFY_LIQUIDITY_V4_TOPIC], poolIds] }],
-  }));
-  console.log(`[V4] Scoped subscribe: ${poolIds.length} watched pools (${chain.id})`);
+  sendScopedSubscribe(ws, plan.reqId, ["logs", { address: poolManager, topics: [[SWAP_V4_TOPIC, MODIFY_LIQUIDITY_V4_TOPIC], poolIds] }], "V4");
+  console.log(`[V4] Scoped subscribe req#${plan.reqId}: ${poolIds.length} watched pools (${chain.id})`);
 }
 
 export function requestImmediateScopedSubscribe(chain: ChainConfig): void {
@@ -232,8 +263,9 @@ export function subscribeV2Scoped(chain: ChainConfig): void {
   const ws = wsClients.get(chain.id) as WebSocket | undefined;
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
 
-  const snapKey = chain.id + "_v2_snap";
-  const idKey   = chain.id + "_v2_id";
+  const key = scopedSubKey(chain.id, "v2");
+  const now = Date.now();
+  if (resetIfScopedAckStalled(ws, key, now, "V2")) return; // ACK mut → reset WS (bounded pending)
 
   const rawAddrs = [
     ...[...hotCandidates.entries()]
@@ -252,28 +284,18 @@ export function subscribeV2Scoped(chain: ChainConfig): void {
   )].slice(0, 50);
 
   if (!addrs.length) {
-    const oldId = v3SwapSubIds.get(idKey);
-    if (oldId) {
-      ws.send(JSON.stringify({ jsonrpc: "2.0", id: 53, method: "eth_unsubscribe", params: [oldId] }));
-      v3SwapSubIds.delete(idKey);
-      v3SwapSubIds.delete(snapKey);
+    const { unsub } = planScopedUnsubscribe(scopedSubStore, key);
+    for (const id of unsub) {
+      ws.send(JSON.stringify({ jsonrpc: "2.0", id: 53, method: "eth_unsubscribe", params: [id] }));
     }
     return;
   }
 
-  const snapshot = addrs.join(",");
-  if (v3SwapSubIds.get(snapKey) === snapshot) return;
-  v3SwapSubIds.set(snapKey, snapshot);
+  // D3: înregistrează cererea; active/unsub la confirmare (manager.ts). Fără snapshot optimist.
+  const desired = addrs.join(",");
+  const plan = planScopedSubscribe(scopedSubStore, key, desired, nextScopedSubReqId(), now);
+  if (plan.reqId == null) return;
 
-  const oldId = v3SwapSubIds.get(idKey);
-  if (oldId) {
-    ws.send(JSON.stringify({ jsonrpc: "2.0", id: 53, method: "eth_unsubscribe", params: [oldId] }));
-  }
-
-  ws.send(JSON.stringify({
-    jsonrpc: "2.0", id: 52,
-    method: "eth_subscribe",
-    params: ["logs", { address: addrs, topics: [[SWAP_V2_TOPIC, MINT_V2_TOPIC, BURN_V2_TOPIC]] }],
-  }));
-  console.log(`[V2] Scoped subscribe: ${addrs.length} watched pools (${chain.id})`);
+  sendScopedSubscribe(ws, plan.reqId, ["logs", { address: addrs, topics: [[SWAP_V2_TOPIC, MINT_V2_TOPIC, BURN_V2_TOPIC]] }], "V2");
+  console.log(`[V2] Scoped subscribe req#${plan.reqId}: ${addrs.length} watched pools (${chain.id})`);
 }

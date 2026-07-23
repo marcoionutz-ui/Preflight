@@ -9,10 +9,11 @@ import { getQuoteFlowAsEth, toPoolConventionAmounts } from "./quoteFlow";
 import {
   wsClients, v3PoolMap, v4PoolMap,
   swapSubIds, swapSubSnapshot, pendingSwapSubs,
-  v3SwapSubIds, v4SwapSubIds, poolLiquidity, memory, hotCandidates,
+  scopedSubStore, poolLiquidity, memory, hotCandidates,
   watchedPoolCache,
   incrementSwapSubReqId,
 } from "../state/stores";
+import { applyScopedSubResponse, clearScopedSubsForChain } from "./scopedSubs";
 import { recordSwap, recordLp } from "../risk/flow";
 import { getWsFlow } from "../risk/flow";
 import { promoteHotCandidate } from "../pipeline/transitions";
@@ -91,10 +92,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
     console.log(`[WS] Connected to Alchemy ${chain.id.toUpperCase()}`);
     swapSubIds.delete(chain.id);
     swapSubSnapshot.delete(chain.id);
-    v4SwapSubIds.delete(chain.id);
-    v4SwapSubIds.delete(chain.id + "_snap");
-    v3SwapSubIds.delete(chain.id);
-    v3SwapSubIds.delete(chain.id + "_snap");
+    clearScopedSubsForChain(scopedSubStore, chain.id); // D3: reconnect → stare scoped goală (active+pending+latest)
     for (const [reqId, reqChain] of pendingSwapSubs.entries()) {
       if (reqChain === chain.id) pendingSwapSubs.delete(reqId);
     }
@@ -107,12 +105,18 @@ export function connectChainWebSocket(chain: ChainConfig): void {
     try {
       const msg = JSON.parse(data.toString());
 
-      // Sub confirmations pentru V3/V4
-      if (msg.id === 5 || msg.id === 6 || msg.id === 7 || msg.id === 52) {
-        if (msg.id === 5  && typeof msg.result === "string") v4SwapSubIds.set(chain.id, msg.result);
-	    if (msg.id === 7  && typeof msg.result === "string") v3SwapSubIds.set(chain.id, msg.result);
-	    if (msg.id === 52 && typeof msg.result === "string") v3SwapSubIds.set(chain.id + "_v2_id", msg.result);
-        console.log(`[SUB DEBUG ${chain.id}] ${data.toString()}`);
+      // D3: confirmări scoped V2/V3/V4 — snapshot-ul devine ACTIV doar aici, după răspunsul serverului.
+      // Succes pe cea mai recentă cerere → promovează + anulează subscripția veche; eroare → păstrează
+      // subscripția veche (retry la scanul următor); răspuns depășit → anulează subId-ul orfan.
+      if (typeof msg.id === "number" && scopedSubStore.pending.has(msg.id)) {
+        const result = typeof msg.result === "string"
+          ? { ok: true as const, subId: msg.result }
+          : { ok: false as const };
+        const { unsub, outcome } = applyScopedSubResponse(scopedSubStore, msg.id, result);
+        for (const subId of unsub) {
+          wsClient.send(JSON.stringify({ jsonrpc: "2.0", id: 88, method: "eth_unsubscribe", params: [subId] }));
+        }
+        console.log(`[SCOPED SUB ${chain.id}] req#${msg.id} → ${outcome}${unsub.length ? ` (unsub ${unsub.join(",")})` : ""}`);
         return;
       }
 
@@ -402,12 +406,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
 
   wsClient.on("close", () => {
     clearInterval(pingInterval);
-    v4SwapSubIds.delete(chain.id);
-    v4SwapSubIds.delete(chain.id + "_snap");
-    v3SwapSubIds.delete(chain.id);
-    v3SwapSubIds.delete(chain.id + "_snap");
-	v3SwapSubIds.delete(chain.id + "_v2_id");
-	v3SwapSubIds.delete(chain.id + "_v2_snap");
+    clearScopedSubsForChain(scopedSubStore, chain.id); // D3: subscripțiile mor cu socketul → stare goală
     console.log(`[WS ${chain.id}] Disconnected — reconnecting in 5s...`);
     setTimeout(() => connectChainWebSocket(chain), 5_000);
   });
