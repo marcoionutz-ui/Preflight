@@ -13,6 +13,7 @@
  */
 
 import { getRedis }         from "../infra/redis";
+import { insertRecordAndIndex, casUpdateJson } from "./registryWrite";
 import { resolveTokenMeta } from "../infra/tokenMetadata";
 import {
   CHAIN, INDEXER_VERSION,
@@ -86,13 +87,13 @@ export async function writeLaunchRecord(
     const nowMs  = Date.now();
     const json   = JSON.stringify(launch);
 
-    // SET NX — insert doar daca nu exista (fara TTL: launch-urile sunt permanente)
-    const set = await redis.set(key, json, "NX");
-    if (!set) return "exists";
-
-    // ZADD in ambele ZSET (doar dupa insert nou)
-    await redis.zadd(KEY_LAUNCHES,    launch.slot, launch.mint);
-    await redis.zadd(KEY_LAUNCHES_TS, nowMs,        launch.mint);
+    // C1: SET NX blob + ambele ZADD ATOMIC — launch-ul e ori complet indexat, ori deloc.
+    const inserted = await insertRecordAndIndex(redis, {
+      jsonKey: key, blob: json, member: launch.mint,
+      zsetA: KEY_LAUNCHES,    scoreA: launch.slot,
+      zsetB: KEY_LAUNCHES_TS, scoreB: nowMs,
+    });
+    if (!inserted) return "exists";
 
     return "inserted";
   } catch (err) {
@@ -113,48 +114,45 @@ export async function linkLaunchToPool(
   mint: string,
   pool: PoolLinkInfo,
 ): Promise<void> {
-  const redis = getRedis();
-  const key   = KEY_LAUNCH(mint);
+  const redis     = getRedis();
+  const key       = KEY_LAUNCH(mint);
+  const linkedAt  = new Date().toISOString();
 
-  const launchJson = await redis.get(key);
-  if (!launchJson) return; // nu exista launch pentru acest mint — skip
+  // C1: read-modify-write ATOMIC prin CAS — înainte GET→modify→SET neatomic se putea suprascrie
+  // cu enrichLaunchRecord (ambele scriau blob-ul launch-ului). Acum CAS + retry → merge, nu clobber.
+  const res = await casUpdateJson<SolanaLaunch>(redis, key, (launch) => {
+    // Idempotent — nu adaugam acelasi pool de doua ori
+    const existing = launch.raydiumPools ?? [];
+    if (existing.some(p => p.poolAddress === pool.poolAddress)) return null; // deja legat → no-op
 
-  let launch: SolanaLaunch;
-  try {
-    launch = JSON.parse(launchJson) as SolanaLaunch;
-  } catch (_err) {
-    return; // JSON corupt — skip, nu crasam
+    const link: RaydiumPoolLink = {
+      poolAddress: pool.poolAddress,
+      program:     pool.program,
+      slot:        pool.slot,
+      signature:   pool.signature,
+      linkedAt,
+    };
+    return {
+      ...launch,
+      lifecycleStage: "RAYDIUM_POOL_FOUND",
+      graduated:      true,
+      // graduatedAt = prima data cand a absolvit (nu suprascrie la pool-uri ulterioare)
+      graduatedAt:    launch.graduatedAt ?? linkedAt,
+      raydiumPools:   [...existing, link],
+    };
+  });
+
+  // "absent" (fara launch pentru acest mint) / "noop" (deja legat) / "corrupt" / "conflict" → silent
+  if (res === "ok") {
+    console.log(
+      "[SOLANA][LAUNCH] graduated"
+      + " mint=" + mint.slice(0, 8) + "..."
+      + " pool=" + pool.poolAddress.slice(0, 8) + "..."
+      + " program=" + pool.program,
+    );
+  } else if (res === "conflict" || res === "corrupt") {
+    console.error("[SOLANA][LAUNCH] linkLaunchToPool " + res + " mint=" + mint.slice(0, 8));
   }
-
-  const link: RaydiumPoolLink = {
-    poolAddress: pool.poolAddress,
-    program:     pool.program,
-    slot:        pool.slot,
-    signature:   pool.signature,
-    linkedAt:    new Date().toISOString(),
-  };
-
-  // Idempotent — nu adaugam acelasi pool de doua ori
-  const existing = launch.raydiumPools ?? [];
-  if (existing.some(p => p.poolAddress === pool.poolAddress)) return;
-
-  const updated: SolanaLaunch = {
-    ...launch,
-    lifecycleStage: "RAYDIUM_POOL_FOUND",
-    graduated:      true,
-    // graduatedAt = prima data cand a absolvit (nu suprascrie la pool-uri ulterioare)
-    graduatedAt:    launch.graduatedAt ?? new Date().toISOString(),
-    raydiumPools:   [...existing, link],
-  };
-
-  await redis.set(key, JSON.stringify(updated));
-
-  console.log(
-    "[SOLANA][LAUNCH] graduated"
-    + " mint=" + mint.slice(0, 8) + "..."
-    + " pool=" + pool.poolAddress.slice(0, 8) + "..."
-    + " program=" + pool.program,
-  );
 }
 
 // ── Enrichment ─────────────────────────────────────────────────────────────────────────────────
@@ -164,35 +162,6 @@ export async function linkLaunchToPool(
 //   2m   — retry daca 429 sau nu e inca indexat
 //   10m  — last chance; dupa asta marcam FAILED
 const ENRICH_DELAYS_MS = [30_000, 120_000, 600_000];
-
-/**
- * Citeste starea curenta a launch record din Redis.
- * Folosit de enrichLaunchRecord inainte de fiecare write pentru a nu suprascrie
- * graduation fields setate intre timp de linkLaunchToPool.
- * Daca Redis nu are recordul (unlikely) sau JSON corupt, fallback la obiectul initial.
- *
- * NOTĂ (item 6b): asta MICȘOREAZĂ fereastra de race, nu o elimină — GET aici
- * și SET-ul din enrichLaunchRecord/linkLaunchToPool rămân operații separate,
- * neatomice. Un enrich și o graduation care nimeresc exact în același
- * interval GET→SET tot se pot suprascrie reciproc (rar — enrich rulează la
- * 30s/2m/10m fix, graduation doar când vine un pool matching). Fix real =
- * update atomic (Lua EVAL, pattern deja folosit în infra/cursor.ts's
- * advanceCursor) — scos deliberat din scope-ul 6b (schema consolidation) și
- * mutat ca task separat de concurrency hardening, cu teste automate
- * dedicate, nu QA manual pe Redis-ul de producție.
- */
-async function readCurrentLaunch(
-  mint:     string,
-  fallback: SolanaLaunch,
-): Promise<SolanaLaunch> {
-  try {
-    const raw = await getRedis().get(KEY_LAUNCH(mint));
-    if (!raw) return fallback;
-    return JSON.parse(raw) as SolanaLaunch;
-  } catch {
-    return fallback;
-  }
-}
 
 /**
  * Enricheaza launch record cu metadata din Jupiter.
@@ -223,46 +192,36 @@ export async function enrichLaunchRecord(launch: SolanaLaunch): Promise<void> {
       }
       // Ultima incercare — citim starea curenta si marcam FAILED
       // (pastreaza raydiumPools[] / graduated / lifecycleStage daca linkLaunchToPool a scris intre timp)
-      const current = await readCurrentLaunch(launch.mint, launch);
-      const failed: SolanaLaunch = {
+      // C1: CAS atomic — pastreaza graduation fields daca linkLaunchToPool a scris intre timp
+      const res = await casUpdateJson<SolanaLaunch>(redis, key, (current) => ({
         ...current,
         symbol:         current.symbol ?? launch.mint.slice(0, 6) + "...",
         decimals:       current.decimals ?? null,
         metaSource:     current.metaSource ?? "FALLBACK",
         metadataStatus: "FAILED",
-      };
-      try {
-        await redis.set(key, JSON.stringify(failed));
-        console.log(
-          "[SOLANA][LAUNCH][META] mint=" + m8
-          + " source=FALLBACK status=FAILED",
-        );
-      } catch (err) {
-        console.error("[SOLANA][LAUNCH][META] redis write error:", (err as Error).message);
+      }));
+      if (res === "ok") {
+        console.log("[SOLANA][LAUNCH][META] mint=" + m8 + " source=FALLBACK status=FAILED");
+      } else {
+        console.error("[SOLANA][LAUNCH][META] mint=" + m8 + " write " + res);
       }
       return;
     }
 
     // Metadata reala gasita — citim starea curenta si facem merge
-    const current = await readCurrentLaunch(launch.mint, launch);
-    const enriched: SolanaLaunch = {
+    // C1: CAS atomic — merge peste graduation fields scrise intre timp de linkLaunchToPool
+    const res = await casUpdateJson<SolanaLaunch>(redis, key, (current) => ({
       ...current,
       symbol:         meta.symbol,
       name:           meta.name,
       decimals:       meta.decimals,
       metaSource:     meta.source,
       metadataStatus: "ENRICHED",
-    };
-
-    try {
-      await redis.set(key, JSON.stringify(enriched));
-      console.log(
-        "[SOLANA][LAUNCH][META] mint=" + m8
-        + " source=" + meta.source
-        + " symbol=" + meta.symbol,
-      );
-    } catch (err) {
-      console.error("[SOLANA][LAUNCH][META] redis write error:", (err as Error).message);
+    }));
+    if (res === "ok") {
+      console.log("[SOLANA][LAUNCH][META] mint=" + m8 + " source=" + meta.source + " symbol=" + meta.symbol);
+    } else {
+      console.error("[SOLANA][LAUNCH][META] mint=" + m8 + " write " + res);
     }
     return;
   }

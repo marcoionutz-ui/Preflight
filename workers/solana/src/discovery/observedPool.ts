@@ -36,6 +36,7 @@ import { USDC_MINT, USDT_MINT, WSOL_MINT } from "../config/programs";
 import type { PriceSnapshot } from "./priceTracker";
 import type { PreflightSolanaQuoteType, PreflightObservedSolanaPool, PreflightObservedCandidate } from "@preflight/schema";
 import { linkLaunchToPool } from "./launchWriter";
+import { insertRecordAndIndex } from "./registryWrite";
 
 // ── Constante ─────────────────────────────────────────────────────────────────
 
@@ -199,15 +200,15 @@ export async function maybeRecordObservedCandidate(
     };
     const registryRecord = JSON.stringify(registryEntry);
 
-    // SET NX — nu overwrite dacă pool-ul a fost indexat între timp
-    const inserted = await redis.set(pairKey, registryRecord, "NX"); // permanent — fara TTL (registry)
+    // C1: SET NX blob + ambele ZADD ATOMIC — pool observat e ori complet indexat, ori deloc
+    // (înainte SET NX + pipeline neatomic → putea rămâne în registry dar invizibil în ZSET).
+    const inserted = await insertRecordAndIndex(redis, {
+      jsonKey: pairKey, blob: registryRecord, member: candidate.poolAddress,
+      zsetA: KEY_PAIRS,    scoreA: 0,     // slot=0 pentru observed
+      zsetB: KEY_PAIRS_TS, scoreB: now,
+    });
 
     if (inserted) {
-      // Actualizăm ZSET-urile (slot=0 pentru observed, score=now pentru TS)
-      const pipeline = redis.pipeline();
-      pipeline.zadd(KEY_PAIRS,    0,   candidate.poolAddress);
-      pipeline.zadd(KEY_PAIRS_TS, now, candidate.poolAddress);
-      await pipeline.exec();
 
       // 8.0k-b + item 6b — al doilea write path pe pool registry (alături de
       // pairWriter.ts's writeSolanaPool()) trebuia să cheme și el

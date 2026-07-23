@@ -9,7 +9,8 @@
     "test:a2": "tsx scripts/txFetcher.test.ts",
     "test:a3": "tsx scripts/mintDecimals.test.ts",
     "test:c6": "tsx scripts/discoveryQueue.test.ts",
-    "test": "npm run test:a2 && npm run test:a3 && npm run test:c6",
+    "test:c1": "tsx scripts/registryWrite.test.ts",
+    "test": "npm run test:a2 && npm run test:a3 && npm run test:c6 && npm run test:c1",
     "inspect:redis": "tsx --env-file=../../.env.local scripts/redisInspect.ts",
     "cleanup:redis": "tsx --env-file=../../.env.local scripts/redisCleanup.ts"
   },

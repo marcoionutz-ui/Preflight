@@ -11,6 +11,7 @@
  */
 
 import { getRedis } from "../infra/redis";
+import { insertRecordAndIndex } from "./registryWrite";
 import {
   CHAIN, KEY_PAIR, KEY_PAIRS, KEY_PAIRS_TS, KEY_PRICE_SNAPSHOT, INDEXER_VERSION,
 } from "../config/constants";
@@ -58,15 +59,14 @@ export async function writeSolanaPool(pool: SolanaPool): Promise<WriteResult> {
   const key   = KEY_PAIR(pool.poolAddress);
 
   try {
-    // SET NX — atomic: scrie doar daca cheia nu exista; registry persistent
-    const inserted = await redis.set(key, JSON.stringify(pool), "NX"); // permanent — fara TTL (registry)
+    // C1: SET NX blob + ambele ZADD ATOMIC (un singur EVAL) — pool-ul e ori complet indexat,
+    // ori deloc; nu mai poate exista în registry dar invizibil în ZSET. Idempotent pe replay.
+    const inserted = await insertRecordAndIndex(redis, {
+      jsonKey: key, blob: JSON.stringify(pool), member: pool.poolAddress,
+      zsetA: KEY_PAIRS,    scoreA: pool.slot,
+      zsetB: KEY_PAIRS_TS, scoreB: Date.now(),
+    });
     if (!inserted) return "exists";
-
-    // Actualizeaza ZSET-urile doar daca am inserat cu succes
-    const pipeline = redis.pipeline();
-    pipeline.zadd(KEY_PAIRS,    pool.slot,  pool.poolAddress);
-    pipeline.zadd(KEY_PAIRS_TS, Date.now(), pool.poolAddress);
-    await pipeline.exec();
 
     // 8.0k-a1 — sync price snapshot knownPool (fire-and-forget)
     // Daca exista un snapshot cu knownPool=false (sampled inainte de indexare), il corectam
