@@ -2,6 +2,15 @@
  * infra/health.ts
  * Scrie health key în Redis după fiecare ciclu de slot check.
  * Același pattern ca indexer-evm: TTL scurt, reînnoit la fiecare heartbeat.
+ *
+ * C6: health ONEST. Înainte, singurul semnal era „behind" pe OBSERVED slot (cel mai mare slot cu
+ * log WS văzut) — care avansa la simpla observare, deci raporta „OK" chiar când un candidat pica la
+ * fetch/write (pool pierdut). Acum:
+ *   - `behindSlots` rămâne pe OBSERVED slot = LIVENESS (WS livrează logs aproape de head).
+ *   - Integritatea PROCESĂRII vine din starea cozii de discovery: `deadCount > 0` (candidați picați
+ *     definitiv = pierdere reală de date) sau backlog vechi (pending nedrenajat) → status escaladat
+ *     la cel puțin DEGRADED. Gata cu falsul „OK".
+ *   - `processedSlot` / `lastProcessedAt` = observabilitate (ultimul write durabil), NU măsură de lag.
  */
 
 import { getRedis }    from "./redis";
@@ -10,6 +19,7 @@ import {
   HEALTH_TTL_SEC,
   BEHIND_OK_SLOTS,
   BEHIND_DEGRADED_SLOTS,
+  DISC_BACKLOG_DEGRADED_MS,
   INDEXER_VERSION,
   CHAIN,
 } from "../config/constants";
@@ -18,6 +28,13 @@ import type { PreflightSolanaHealth, PreflightSolanaSlotStatus } from "@prefligh
 export type SlotStatus = PreflightSolanaSlotStatus;
 
 export type SolanaHealth = PreflightSolanaHealth;
+
+export interface DiscoveryQueueSnapshot {
+  pending:            number;
+  processing:         number;
+  dead:               number;
+  oldestPendingAgeMs: number | null;
+}
 
 export function resolveStatus(behindSlots: number): SlotStatus {
   if (behindSlots <= BEHIND_OK_SLOTS)       return "OK";
@@ -31,19 +48,40 @@ export async function writeHealth(health: SolanaHealth): Promise<void> {
 }
 
 export function buildHealth(
-  latestSlot: number,
-  cursorSlot: number | null,
-  nodeVersion: string,
+  latestSlot:      number,
+  observedSlot:    number | null,
+  processedSlot:   number | null,
+  lastProcessedAt: number | null,   // ms epoch
+  queue:           DiscoveryQueueSnapshot,
+  nodeVersion:     string,
 ): SolanaHealth {
-  const behindSlots = cursorSlot !== null ? Math.max(0, latestSlot - cursorSlot) : 0;
+  const behindSlots = observedSlot !== null ? Math.max(0, latestSlot - observedSlot) : 0;
+
+  // Status de bază = liveness pe OBSERVED slot.
+  let status: SlotStatus = observedSlot === null ? "STARTING" : resolveStatus(behindSlots);
+
+  // Escaladare ONESTĂ pe integritatea procesării — dead-letter (pierdere reală) sau backlog blocat.
+  const degradedBySignal =
+    queue.dead > 0 ||
+    (queue.oldestPendingAgeMs !== null && queue.oldestPendingAgeMs > DISC_BACKLOG_DEGRADED_MS);
+  if (degradedBySignal && (status === "OK" || status === "STARTING")) {
+    status = "DEGRADED";
+  }
+
   return {
-    chain:          CHAIN,
-    version:        nodeVersion,
+    chain:           CHAIN,
+    version:         nodeVersion,
     latestSlot,
-    cursorSlot,
+    cursorSlot:      observedSlot,   // OBSERVED slot (alias istoric „cursor")
     behindSlots,
-    status:         cursorSlot === null ? "STARTING" : resolveStatus(behindSlots),
-    updatedAt:      new Date().toISOString(),
-    indexerVersion: INDEXER_VERSION,
+    status,
+    updatedAt:       new Date().toISOString(),
+    indexerVersion:  INDEXER_VERSION,
+    // ── C6 ──
+    processedSlot,
+    lastProcessedAt: lastProcessedAt !== null ? new Date(lastProcessedAt).toISOString() : null,
+    pendingCount:    queue.pending,
+    processingCount: queue.processing,
+    deadCount:       queue.dead,
   };
 }

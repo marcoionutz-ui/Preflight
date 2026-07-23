@@ -854,11 +854,17 @@ export interface PreflightSolanaHealth {
   chain:          "solana";
   version:        string;
   latestSlot:     number;
-  cursorSlot:     number | null;
-  behindSlots:    number;
+  cursorSlot:     number | null;   // C6: OBSERVED slot (liveness WS). Alias istoric „cursor".
+  behindSlots:    number;          // C6: latest - observed (liveness), NU procesare.
   status:         PreflightSolanaSlotStatus;
   updatedAt:      string;
   indexerVersion: string;
+  // ── C6: integritate write durabil (opționale — absente pe blob-uri pre-C6) ──
+  processedSlot?:    number | null;  // cel mai mare slot cu record scris durabil
+  lastProcessedAt?:  string | null;  // ISO — când a reușit ultima scriere durabilă
+  pendingCount?:     number;         // candidați în așteptare în coada de discovery
+  processingCount?:  number;         // candidați revendicați, în procesare (cu lease)
+  deadCount?:        number;         // candidați picați definitiv (dead-letter) = pierdere reală
 }
 
 // ── Redis key constants ───────────────────────────────────────────────────────

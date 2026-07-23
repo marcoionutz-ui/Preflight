@@ -19,11 +19,17 @@
  * 8.0k-b:  observed pool candidate promotion — swap-sampled pools promovate în registry după 3 samples/2min.
  * 8.0l:    MCP tools Solana branch — tp_pair_context + tp_preflight_safety Solana-aware.
  * 8.0m:    Debt sweep — registry permanent (no TTL), atomic cursor Lua, health clamp, defensive log match.
+ * C6:      Coadă durabilă de discovery — candidatul e enqueue-uit ÎNAINTE de fetch/write; drain cu
+ *          retry+dead-letter (crash-safe); OBSERVED vs PROCESSED slot; health onest (dead-letter/backlog).
  */
 
+import type Redis from "ioredis";
 import { getSolanaRpcUrl, getSolanaWsUrl, getSlot, getVersion, getConnection } from "./infra/rpc";
 import { getRedis }                 from "./infra/redis";
-import { readCursor, advanceCursor } from "./infra/cursor";
+import {
+  readObservedSlot, advanceObservedSlot,
+  readProcessedSlot, readLastProcessedAt, advanceProcessedSlot,
+} from "./infra/cursor";
 import { buildHealth, writeHealth } from "./infra/health";
 import { startLogSubscriptions }    from "./discovery/logSubscriber";
 import { isCpmmInitLog, fetchCpmmInit } from "./discovery/txFetcher";
@@ -38,6 +44,12 @@ import { buildLaunchRecord, writeLaunchRecord, enrichLaunchRecord } from "./disc
 import { resolveTokenMeta }         from "./infra/tokenMetadata";
 import { startSolPriceOracle }      from "./infra/solPriceOracle";
 import {
+  enqueueCandidate, claimDueCandidates, reclaimExpiredCandidates,
+  markCandidateDone, markCandidateFailed, decodeCandidate, discoveryQueueStats,
+  DISC_LEASE_MS, DISC_DRAIN_BATCH, DISC_DRAIN_CONCURRENCY, DISC_DRAIN_INTERVAL_MS,
+  type DiscoveryProgram, type DiscoveryCandidate,
+} from "./discovery/discoveryQueue";
+import {
   CHAIN, INDEXER_VERSION, POLL_INTERVAL_MS, KEY_PAIRS,
 } from "./config/constants";
 import {
@@ -49,21 +61,14 @@ function sleep(ms: number): Promise<void> {
 }
 
 // ── Dedupe ───────────────────────────────────────────────────────────────────
-// Key = "{program}:{signature}" — dedupam per-program, nu global.
-// Previne situatia in care aceeasi tx vine intai pe alt subscription si e
-// marcata "vazuta" inainte sa ajunga pe subscriptionul relevant (CPMM).
-const seenKeys = new Set<string>();
-const MAX_SEEN = 10_000;
-
-function isDuplicate(key: string): boolean {
-  if (seenKeys.has(key)) return true;
-  if (seenKeys.size >= MAX_SEEN) seenKeys.clear();
-  seenKeys.add(key);
-  return false;
-}
+// C6 (fix varu — blocker): NU mai dedupăm in-proces ÎNAINTE de enqueue. Un dedupe in-memory care
+// marca „văzut" înainte ca enqueue-ul Redis să confirme putea PIERDE candidatul: dacă enqueue pică,
+// cheia era deja în set → o redelivery WS era respinsă → pierdut permanent. Acum ZADD NX din coadă
+// (enqueueCandidate) e dedupe-ul AUTORITATIV — idempotent la redelivery (writeSolanaPool → "exists"),
+// și nu marchează nimic „văzut" până Redis nu confirmă.
 
 // ── Stats ────────────────────────────────────────────────────────────────────
-const stats = { events: 0, cpmmTotal: 0, clmmTotal: 0, pumpfunTotal: 0, deduped: 0, candidates: 0, fetched: 0, inserted: 0, launchesInserted: 0, errors: 0 };
+const stats = { events: 0, cpmmTotal: 0, clmmTotal: 0, pumpfunTotal: 0, deduped: 0, candidates: 0, fetched: 0, inserted: 0, launchesInserted: 0, dead: 0, errors: 0 };
 
 function logStats(): void {
   console.log(
@@ -74,6 +79,7 @@ function logStats(): void {
     + " fetched=" + stats.fetched
     + " inserted=" + stats.inserted
     + " launchesInserted=" + stats.launchesInserted
+    + " dead=" + stats.dead
     + " cpmmTotal=" + stats.cpmmTotal
     + " clmmTotal=" + stats.clmmTotal
     + " pumpfunTotal=" + stats.pumpfunTotal
@@ -87,18 +93,27 @@ function logStats(): void {
 // ── Health loop ──────────────────────────────────────────────────────────────
 async function healthLoop(nodeVersion: string): Promise<void> {
   let statsTick = 0;
+  const redis = getRedis();
   while (true) {
     try {
       const latestSlot = await getSlot();
-      const cursorSlot = await readCursor();
-      const health = buildHealth(latestSlot, cursorSlot, nodeVersion);
+      const [observedSlot, processedSlot, lastProcessedAt, queueStats] = await Promise.all([
+        readObservedSlot(),
+        readProcessedSlot(),
+        readLastProcessedAt(),
+        discoveryQueueStats(redis, CHAIN),
+      ]);
+      const health = buildHealth(
+        latestSlot, observedSlot, processedSlot, lastProcessedAt, queueStats, nodeVersion,
+      );
       await writeHealth(health);
 
-      const behind = cursorSlot !== null ? Math.max(0, latestSlot - cursorSlot) : "?";
+      const behind = observedSlot !== null ? Math.max(0, latestSlot - observedSlot) : "?";
       console.log(
         "[SOLANA] latest:" + latestSlot
-        + " | cursor:" + (cursorSlot ?? "null")
+        + " | observed:" + (observedSlot ?? "null")
         + " | behind:" + behind
+        + " | q(pend/proc/dead):" + queueStats.pending + "/" + queueStats.processing + "/" + queueStats.dead
         + " | status:" + health.status,
       );
 
@@ -111,136 +126,30 @@ async function healthLoop(nodeVersion: string): Promise<void> {
   }
 }
 
-// ── CPMM init pipeline ───────────────────────────────────────────────────────
-function handleCpmmCandidate(
+// ── Procesare candidat (dispatch pe program) ──────────────────────────────────
+// Întoarce:
+//   "written" — record scris durabil (inserted/exists) → ack + avansează PROCESSED slot
+//   "retry"   — fetch null / write "error" / excepție → markFailed (backoff → dead-letter la MAX).
+//               Fix varu (blocker): `null` NU mai e ACK tăcut. Fetcher-ii ÎNGHIT erorile RPC intern
+//               și întorc `null` ȘI la RPC-exhaustion (nu doar la „ne-candidat") → un ACK ar pierde
+//               pool-ul la un outage RPC susținut (>~22s), exact bug-ul C6. Acum re-încearcă; un
+//               ne-candidat real ajunge în dead-letter după MAX (health DEGRADED) — mai onest decât
+//               pierdere tăcută. (Rafinare ulterioară: fetcher discriminat INVALID vs UNAVAILABLE →
+//               doar INVALID = ack fără processedSlot.)
+async function processCandidate(
   connection: ReturnType<typeof getConnection>,
-  signature:  string,
-  slot:       number,
-): void {
-  stats.candidates++;
-  fetchCpmmInit(connection, signature)
-    .then(async (result) => {
-      stats.fetched++;
-      if (!result) return;
-
-      const pool = buildSolanaPool(
-        result.poolAddress,
-        result.mint0,
-        result.mint1,
-        slot,
-        signature,
-        "raydium_cpmm",
-        "LIVE",
-      );
-
-      const outcome = await writeSolanaPool(pool);
-      if (outcome === "inserted") {
-        stats.inserted++;
-        console.log(
-          "[SOLANA][POOL] raydium_cpmm inserted"
-          + " pool=" + result.poolAddress.slice(0, 8) + "..."
-          + " base=" + pool.baseMint.slice(0, 8) + "..."
-          + " quote=" + pool.quoteMint.slice(0, 8) + "..."
-          + " quoteType=" + pool.quoteType
-          + " slot=" + slot,
-        );
-        // Enrichment async — non-blocking, nu întârzie discovery pipeline
-        Promise.all([
-          resolveTokenMeta(pool.baseMint),
-          resolveTokenMeta(pool.quoteMint),
-        ]).then(([baseMeta, quoteMeta]) => {
-          console.log(
-            "[SOLANA][META] enriched"
-            + " pool=" + result.poolAddress.slice(0, 8) + "..."
-            + " base=" + baseMeta.symbol + "(" + baseMeta.source + ")"
-            + " quote=" + quoteMeta.symbol + "(" + quoteMeta.source + ")",
-          );
-          return enrichSolanaPool(pool, baseMeta, quoteMeta);
-        }).catch((err: Error) => {
-          console.error("[SOLANA][META] enrichment error:", err.message);
-        });
-      } else if (outcome === "error") {
-        stats.errors++;
-      }
-    })
-    .catch((err: Error) => {
-      stats.errors++;
-      console.error("[SOLANA][CPMM] pipeline error:", err.message);
-    });
-}
-
-// ── CLMM init pipeline ───────────────────────────────────────────────────────
-function handleClmmCandidate(
-  connection: ReturnType<typeof getConnection>,
-  signature:  string,
-  slot:       number,
-): void {
-  stats.candidates++;
-  fetchClmmCreate(connection, signature)
-    .then(async (result) => {
-      stats.fetched++;
-      if (!result) return;
-
-      const pool = buildSolanaPool(
-        result.poolAddress,
-        result.mint0,
-        result.mint1,
-        slot,
-        signature,
-        "raydium_clmm",
-        "LIVE",
-      );
-
-      const outcome = await writeSolanaPool(pool);
-      if (outcome === "inserted") {
-        stats.inserted++;
-        console.log(
-          "[SOLANA][POOL] raydium_clmm inserted"
-          + " pool=" + result.poolAddress.slice(0, 8) + "..."
-          + " base=" + pool.baseMint.slice(0, 8) + "..."
-          + " quote=" + pool.quoteMint.slice(0, 8) + "..."
-          + " quoteType=" + pool.quoteType
-          + " slot=" + slot,
-        );
-        // Enrichment async — non-blocking
-        Promise.all([
-          resolveTokenMeta(pool.baseMint),
-          resolveTokenMeta(pool.quoteMint),
-        ]).then(([baseMeta, quoteMeta]) => {
-          console.log(
-            "[SOLANA][META] enriched"
-            + " pool=" + result.poolAddress.slice(0, 8) + "..."
-            + " base=" + baseMeta.symbol + "(" + baseMeta.source + ")"
-            + " quote=" + quoteMeta.symbol + "(" + quoteMeta.source + ")",
-          );
-          return enrichSolanaPool(pool, baseMeta, quoteMeta);
-        }).catch((err: Error) => {
-          console.error("[SOLANA][META] enrichment error:", err.message);
-        });
-      } else if (outcome === "error") {
-        stats.errors++;
-      }
-    })
-    .catch((err: Error) => {
-      stats.errors++;
-      console.error("[SOLANA][CLMM] pipeline error:", err.message);
-    });
-}
-
-// ── pump.fun launch pipeline ──────────────────────────────────────────────────
-function handlePumpfunCandidate(
-  connection: ReturnType<typeof getConnection>,
-  signature:  string,
-  slot:       number,
-): void {
-  stats.candidates++;
-  fetchPumpfunCreate(connection, signature)
-    .then(async (result) => {
-      stats.fetched++;
-      if (!result) return;
+  candidate:  DiscoveryCandidate,
+): Promise<"written" | "retry"> {
+  const { program, slot, signature } = candidate;
+  stats.fetched++;
+  try {
+    if (program === "pumpfun") {
+      const result = await fetchPumpfunCreate(connection, signature);
+      if (!result) return "retry";
 
       const launch  = buildLaunchRecord(result, slot, signature);
       const outcome = await writeLaunchRecord(launch);
+      if (outcome === "error") return "retry";
 
       if (outcome === "inserted") {
         stats.launchesInserted++;
@@ -256,14 +165,120 @@ function handlePumpfunCandidate(
         enrichLaunchRecord(launch).catch((err: Error) => {
           console.error("[SOLANA][LAUNCH][META] enrichment error:", err.message);
         });
-      } else if (outcome === "error") {
-        stats.errors++;
       }
-    })
-    .catch((err: Error) => {
-      stats.errors++;
-      console.error("[SOLANA][PUMPFUN] pipeline error:", err.message);
-    });
+      return "written";
+    }
+
+    // raydium_cpmm | raydium_clmm
+    const result = program === "raydium_cpmm"
+      ? await fetchCpmmInit(connection, signature)
+      : await fetchClmmCreate(connection, signature);
+    if (!result) return "retry";
+
+    const pool = buildSolanaPool(
+      result.poolAddress,
+      result.mint0,
+      result.mint1,
+      slot,
+      signature,
+      program,
+      "LIVE",
+    );
+
+    const outcome = await writeSolanaPool(pool);
+    if (outcome === "error") return "retry";
+
+    if (outcome === "inserted") {
+      stats.inserted++;
+      console.log(
+        "[SOLANA][POOL] " + program + " inserted"
+        + " pool=" + result.poolAddress.slice(0, 8) + "..."
+        + " base=" + pool.baseMint.slice(0, 8) + "..."
+        + " quote=" + pool.quoteMint.slice(0, 8) + "..."
+        + " quoteType=" + pool.quoteType
+        + " slot=" + slot,
+      );
+      // Enrichment async — non-blocking, nu întârzie drain-ul
+      Promise.all([
+        resolveTokenMeta(pool.baseMint),
+        resolveTokenMeta(pool.quoteMint),
+      ]).then(([baseMeta, quoteMeta]) => {
+        console.log(
+          "[SOLANA][META] enriched"
+          + " pool=" + result.poolAddress.slice(0, 8) + "..."
+          + " base=" + baseMeta.symbol + "(" + baseMeta.source + ")"
+          + " quote=" + quoteMeta.symbol + "(" + quoteMeta.source + ")",
+        );
+        return enrichSolanaPool(pool, baseMeta, quoteMeta);
+      }).catch((err: Error) => {
+        console.error("[SOLANA][META] enrichment error:", err.message);
+      });
+    }
+    return "written";
+  } catch (err) {
+    stats.errors++;
+    console.error(
+      "[SOLANA][DISC-QUEUE] process error " + program + " sig=" + signature.slice(0, 12) + ":",
+      (err as Error).message,
+    );
+    return "retry";
+  }
+}
+
+// ── Drain coadă discovery (background, guard + interval) ───────────────────────
+async function drainDiscoveryQueue(
+  redis:      Redis,
+  connection: ReturnType<typeof getConnection>,
+): Promise<void> {
+  const now = Date.now();
+
+  // 1) recuperare crash: lease-uri expirate → înapoi în pending
+  const reclaimed = await reclaimExpiredCandidates(redis, CHAIN, now);
+  if (reclaimed > 0) {
+    console.log("[SOLANA][DISC-QUEUE] reclaimed=" + reclaimed + " (lease expirat → pending)");
+  }
+
+  // 2) claim ATOMIC due din pending
+  const members = await claimDueCandidates(redis, CHAIN, now, DISC_LEASE_MS, DISC_DRAIN_BATCH);
+  if (members.length === 0) return;
+
+  // 3) worker-pool cu concurență mărginită (nu DRAIN_BATCH simultan)
+  let idx = 0;
+  const worker = async (): Promise<void> => {
+    while (idx < members.length) {
+      const member    = members[idx++];
+      const candidate = decodeCandidate(member);
+      if (!candidate) {
+        // membru corupt (n-ar trebui să existe) — scoate-l, nu-l lăsa blocat în processing
+        await markCandidateDone(redis, CHAIN, member);
+        console.error("[SOLANA][DISC-QUEUE] membru corupt, scos: " + member.slice(0, 40));
+        continue;
+      }
+
+      const res = await processCandidate(connection, candidate);
+      if (res === "retry") {
+        const outcome = await markCandidateFailed(redis, CHAIN, member);
+        if (outcome === "dead") {
+          stats.dead++;
+          console.error(
+            "[SOLANA][DISC-QUEUE] DEAD-LETTER " + candidate.program
+            + " sig=" + candidate.signature.slice(0, 12)
+            + " slot=" + candidate.slot + " (după MAX încercări — pierdere reală, health DEGRADED)",
+          );
+        }
+        continue;
+      }
+
+      // "written" → ack + avansează PROCESSED slot (record durabil prezent).
+      await markCandidateDone(redis, CHAIN, member);
+      await advanceProcessedSlot(candidate.slot).catch((err: Error) => {
+        console.error("[SOLANA][DISC-QUEUE] advanceProcessedSlot error:", err.message);
+      });
+    }
+  };
+
+  const poolSize = Math.min(DISC_DRAIN_CONCURRENCY, members.length);
+  await Promise.all(Array.from({ length: poolSize }, () => worker()));
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -311,12 +326,31 @@ async function main(): Promise<void> {
   // Activat cu SOLANA_BACKFILL_ENABLED=1
   await runCpmmBackfill(connection);
 
+  // C6: candidatul e ENQUEUE-uit durabil (nu procesat inline fire-and-forget). Drain-ul
+  // background face fetch→write→ack cu retry+dead-letter, crash-safe.
+  const enqueueDiscovery = (program: DiscoveryProgram, signature: string, slot: number): void => {
+    // Fix varu (blocker): stats.candidates DOAR la enqueue confirmat nou (added); redelivery pe care
+    // NX o respinge → deduped. Retry scurt: WS nu oferă replay, deci un enqueue eșuat = candidat
+    // pierdut — câteva reîncercări reduc fereastra. Garanția reală: „durabil DUPĂ ACK Redis".
+    const attempt = (tries: number): void => {
+      enqueueCandidate(redis, CHAIN, { program, slot, signature })
+        .then(added => { if (added) stats.candidates++; else stats.deduped++; })
+        .catch((err: Error) => {
+          if (tries > 0) { setTimeout(() => attempt(tries - 1), 500); return; }
+          stats.errors++;
+          console.error("[SOLANA][DISC-QUEUE] enqueue error (renunț după retries):", err.message);
+        });
+    };
+    attempt(3);
+  };
+
   startLogSubscriptions(connection, (event) => {
     stats.events++;
 
-    // Avanseaza cursorul pentru orice event (independent de program)
-    advanceCursor(event.slot).catch((err: Error) => {
-      console.error("[SOLANA][DISCOVERY] advanceCursor error:", err.message);
+    // OBSERVED slot — liveness WS (cel mai mare slot cu log văzut). NU înseamnă „procesat":
+    // procesarea durabilă e semnalată separat de PROCESSED slot, avansat din drain după ack.
+    advanceObservedSlot(event.slot).catch((err: Error) => {
+      console.error("[SOLANA][DISCOVERY] advanceObservedSlot error:", err.message);
     });
 
     // ── pump.fun launch pipeline (8.0g-b6) ───────────────────────────────────
@@ -324,8 +358,7 @@ async function main(): Promise<void> {
       stats.pumpfunTotal++;
       handlePumpfunShadow(connection, event.signature, event.slot, event.logs);
       if (!isPumpfunCreateLog(event.logs)) return;
-      if (isDuplicate("pumpfun:" + event.signature)) { stats.deduped++; return; }
-      handlePumpfunCandidate(connection, event.signature, event.slot);
+      enqueueDiscovery("pumpfun", event.signature, event.slot);
       return;
     }
 
@@ -339,11 +372,7 @@ async function main(): Promise<void> {
 
       // Pipeline real — doar pentru pool creation events
       if (!isClmmCreateLog(event.logs)) return;
-      if (isDuplicate("raydium_clmm:" + event.signature)) {
-        stats.deduped++;
-        return;
-      }
-      handleClmmCandidate(connection, event.signature, event.slot);
+      enqueueDiscovery("raydium_clmm", event.signature, event.slot);
       return;
     }
 
@@ -353,11 +382,20 @@ async function main(): Promise<void> {
       // Swap activity shadow — parses sampled swaps, writes activity only for known pools
       handleSwapShadow(connection, event.signature, event.slot, event.logs, "cpmm");
       if (!isCpmmInitLog(event.logs)) return;
-      if (isDuplicate("raydium_cpmm:" + event.signature)) { stats.deduped++; return; }
-      handleCpmmCandidate(connection, event.signature, event.slot);
+      enqueueDiscovery("raydium_cpmm", event.signature, event.slot);
       return;
     }
   });
+
+  // Drain background — guard per-proces + interval (non-blocant, ca schedulerele C3/C2 din EVM)
+  let drainInFlight = false;
+  setInterval(() => {
+    if (drainInFlight) return;
+    drainInFlight = true;
+    drainDiscoveryQueue(redis, connection)
+      .catch((err: Error) => console.error("[SOLANA][DISC-QUEUE] drain error:", err.message))
+      .finally(() => { drainInFlight = false; });
+  }, DISC_DRAIN_INTERVAL_MS);
 
   await healthLoop(nodeVersion);
 }

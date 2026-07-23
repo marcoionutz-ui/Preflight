@@ -21,6 +21,12 @@ export const KEY_PAIR     = (poolId: string) => `preflight:indexed:pair:${CHAIN}
 /** Slot cursor persistent */
 export const KEY_CURSOR   = `preflight:indexer:cursor:${CHAIN}`;
 
+/** PROCESSED slot — cel mai mare slot cu record scris durabil (C6, avansat din drain, după ack) */
+export const KEY_PROCESSED_SLOT = `preflight:indexer:processed:slot:${CHAIN}`;
+
+/** lastProcessedAt (ms epoch) — când a reușit ultima scriere durabilă (C6) */
+export const KEY_PROCESSED_AT   = `preflight:indexer:processed:at:${CHAIN}`;
+
 /** Health heartbeat (JSON) */
 export const KEY_HEALTH   = `preflight:indexer:health:${CHAIN}`;
 
@@ -55,6 +61,10 @@ export const BEHIND_OK_SLOTS      = 120;
 
 /** Slot-uri în urmă până la care considerăm DEGRADED (~3-5min pe Solana) */
 export const BEHIND_DEGRADED_SLOTS = 600;
+
+/** C6: dacă cel mai vechi candidat din coada de discovery (pending) e mai vechi de atât,
+ *  drain-ul nu ține pasul / e blocat → health cel puțin DEGRADED (semnal onest de backlog). */
+export const DISC_BACKLOG_DEGRADED_MS = 120_000;
 
 // ── pump.fun launch namespace ─────────────────────────────────────────────────
 
