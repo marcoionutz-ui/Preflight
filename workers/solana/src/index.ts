@@ -31,7 +31,8 @@ import {
   readProcessedSlot, readLastProcessedAt, advanceProcessedSlot,
 } from "./infra/cursor";
 import { buildHealth, writeHealth } from "./infra/health";
-import { startLogSubscriptions }    from "./discovery/logSubscriber";
+import { recordProgramLog, snapshotProgramFreshness, computeProgramHealth, hasCriticalEvidence } from "./infra/programFreshness";
+import { startLogSubscriptions, DISCOVERY_PROGRAM_HEALTH } from "./discovery/logSubscriber";
 import { isCpmmInitLog, fetchCpmmInit } from "./discovery/txFetcher";
 import { buildSolanaPool, writeSolanaPool, enrichSolanaPool } from "./discovery/pairWriter";
 import { runCpmmBackfill }          from "./discovery/backfillCpmm";
@@ -51,6 +52,7 @@ import {
 } from "./discovery/discoveryQueue";
 import {
   CHAIN, INDEXER_VERSION, POLL_INTERVAL_MS, KEY_PAIRS,
+  PROGRAM_STALE_MS, PROGRAM_STARTUP_GRACE_MS,
 } from "./config/constants";
 import {
   RAYDIUM_AMM_V4, RAYDIUM_CLMM, RAYDIUM_CPMM, PUMPFUN_PROGRAM,
@@ -91,7 +93,10 @@ function logStats(): void {
 }
 
 // ── Health loop ──────────────────────────────────────────────────────────────
-async function healthLoop(nodeVersion: string): Promise<void> {
+// `subscriptionsStartedAt` (D2): grația de freshness se raportează la momentul PORNIRII subscripțiilor,
+// NU la pornirea procesului — altfel un backfill lung (rulat înainte) ar consuma grația și programele
+// abia conectate ar fi marcate stale imediat.
+async function healthLoop(nodeVersion: string, subscriptionsStartedAt: number): Promise<void> {
   let statsTick = 0;
   const redis = getRedis();
   while (true) {
@@ -103,10 +108,22 @@ async function healthLoop(nodeVersion: string): Promise<void> {
         readLastProcessedAt(),
         discoveryQueueStats(redis, CHAIN),
       ]);
+      // D2: freshness per-program (subscripție WS) — un program CRITIC mort tăcut e detectat aici, chiar
+      // dacă `behindSlots` rămâne mic pentru că alte programe avansează observed slot.
+      const programHealth = computeProgramHealth(
+        snapshotProgramFreshness(), DISCOVERY_PROGRAM_HEALTH,
+        { now: Date.now(), startedAt: subscriptionsStartedAt, staleMs: PROGRAM_STALE_MS, graceMs: PROGRAM_STARTUP_GRACE_MS },
+      );
+      // D2 (edge restart): la un restart, `observedSlot` vine persistent din Redis (procesul vechi), dar
+      // trackerul e gol → fără dovadă de viață din procesul CURENT, statusul e STARTING, nu OK-ul fantomă.
+      const hasCurrentCriticalEvidence = hasCriticalEvidence(programHealth.perProgram);
       const health = buildHealth(
-        latestSlot, observedSlot, processedSlot, lastProcessedAt, queueStats, nodeVersion,
+        latestSlot, observedSlot, processedSlot, lastProcessedAt, queueStats, programHealth, hasCurrentCriticalEvidence, nodeVersion,
       );
       await writeHealth(health);
+      if (programHealth.staleCount > 0) {
+        console.warn("[SOLANA] STALE PROGRAMS: " + programHealth.perProgram.filter(p => p.stale).map(p => p.program).join(","));
+      }
 
       const behind = observedSlot !== null ? Math.max(0, latestSlot - observedSlot) : "?";
       console.log(
@@ -344,14 +361,22 @@ async function main(): Promise<void> {
     attempt(3);
   };
 
+  // D2: ancoră grația de freshness la momentul PORNIRII subscripțiilor (după backfill), nu la start proces.
+  const subscriptionsStartedAt = Date.now();
   startLogSubscriptions(connection, (event) => {
-    stats.events++;
-
-    // OBSERVED slot — liveness WS (cel mai mare slot cu log văzut). NU înseamnă „procesat":
+    // D2: ORICE callback (chiar tx eșuată) dovedește liveness-ul WS → atât freshness per-program CÂT ȘI
+    // observed slot avansează ÎNAINTE de gate-ul `succeeded`. `observedSlot` = cel mai mare slot cu LOG
+    // WS văzut (nu cu tx REUȘITĂ) — altfel freshness ar zice „subscripția e vie" iar cursorul global
+    // „n-am auzit nimic" (contradicție: STARTING/BEHIND cu programe fresh). NU înseamnă „procesat":
     // procesarea durabilă e semnalată separat de PROCESSED slot, avansat din drain după ack.
+    recordProgramLog(event.program, event.slot, Date.now());
     advanceObservedSlot(event.slot).catch((err: Error) => {
       console.error("[SOLANA][DISCOVERY] advanceObservedSlot error:", err.message);
     });
+
+    if (!event.succeeded) return; // tx eșuată → subscripția e vie, dar NU intră în pipeline
+
+    stats.events++;
 
     // ── pump.fun launch pipeline (8.0g-b6) ───────────────────────────────────
     if (event.program === "pumpfun") {
@@ -397,7 +422,7 @@ async function main(): Promise<void> {
       .finally(() => { drainInFlight = false; });
   }, DISC_DRAIN_INTERVAL_MS);
 
-  await healthLoop(nodeVersion);
+  await healthLoop(nodeVersion, subscriptionsStartedAt);
 }
 
 main().catch((err) => {

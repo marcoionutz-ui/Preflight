@@ -66,6 +66,22 @@ export const BEHIND_DEGRADED_SLOTS = 600;
  *  drain-ul nu ține pasul / e blocat → health cel puțin DEGRADED (semnal onest de backlog). */
 export const DISC_BACKLOG_DEGRADED_MS = 120_000;
 
+/** D2: dacă un program de discovery (subscripție WS) n-a mai livrat NICIUN log de atât timp, îl
+ *  considerăm stale (subscripție căzută tăcut, în timp ce alte programe avansează observed slot) →
+ *  health cel puțin DEGRADED. Programele Raydium/pump.fun sunt de mare volum pe mainnet → un gol > atât
+ *  = subscripție moartă, nu liniște. Override din env `SOLANA_PROGRAM_STALE_MS`. */
+export const PROGRAM_STALE_MS =
+  Number.isFinite(Number(process.env.SOLANA_PROGRAM_STALE_MS)) && Number(process.env.SOLANA_PROGRAM_STALE_MS) > 0
+    ? Number(process.env.SOLANA_PROGRAM_STALE_MS)
+    : 90_000;
+
+/** D2: grație de pornire — un program care nu a livrat ÎNCĂ niciun log nu-i considerat stale până nu
+ *  trece atât de la start (lasă subscripțiile să se conecteze). Override `SOLANA_PROGRAM_GRACE_MS`. */
+export const PROGRAM_STARTUP_GRACE_MS =
+  Number.isFinite(Number(process.env.SOLANA_PROGRAM_GRACE_MS)) && Number(process.env.SOLANA_PROGRAM_GRACE_MS) > 0
+    ? Number(process.env.SOLANA_PROGRAM_GRACE_MS)
+    : 120_000;
+
 // ── pump.fun launch namespace ─────────────────────────────────────────────────
 
 /** ZSET cu toate launch-urile indexate (score = slot descoperire) */

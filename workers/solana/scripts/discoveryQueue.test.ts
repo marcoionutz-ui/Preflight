@@ -56,29 +56,32 @@ async function main(): Promise<void> {
 
   // health onest (pur)
   const noQ = { pending: 0, processing: 0, dead: 0, oldestPendingAgeMs: null };
-  const hOk = buildHealth(1000, 995, 990, 111, noQ, "v");
+  // D2: buildHealth cere acum programHealth + hasCurrentCriticalEvidence. Aici testăm DOAR logica
+  // C6 (slot/dead/backlog) → valori D2-neutre: niciun program stale + dovadă curentă prezentă.
+  const okPH = { perProgram: [], staleCount: 0, staleCriticalCount: 0 };
+  const hOk = buildHealth(1000, 995, 990, 111, noQ, okPH, true, "v");
   check("A16. observed lag mic → OK", hOk.status === "OK");
   check("A17. cursorSlot = observed", hOk.cursorSlot === 995);
   check("A18. behindSlots = latest-observed", hOk.behindSlots === 5);
   check("A19. processedSlot expus", hOk.processedSlot === 990);
   check("A20. lastProcessedAt ISO", typeof hOk.lastProcessedAt === "string" && hOk.lastProcessedAt!.includes("T"));
 
-  const hStart = buildHealth(1000, null, null, null, noQ, "v");
+  const hStart = buildHealth(1000, null, null, null, noQ, okPH, true, "v");
   check("A21. observed null → STARTING", hStart.status === "STARTING");
   check("A22. lastProcessedAt null → null", hStart.lastProcessedAt === null);
 
-  const hDead = buildHealth(1000, 999, 990, 111, { pending: 2, processing: 0, dead: 1, oldestPendingAgeMs: 500 }, "v");
+  const hDead = buildHealth(1000, 999, 990, 111, { pending: 2, processing: 0, dead: 1, oldestPendingAgeMs: 500 }, okPH, true, "v");
   check("A23. dead>0 escaladează OK→DEGRADED", hDead.status === "DEGRADED");
   check("A24. deadCount expus în health", hDead.deadCount === 1);
   check("A25. pendingCount expus", hDead.pendingCount === 2);
 
-  const hBacklog = buildHealth(1000, 999, 990, 111, { pending: 5, processing: 0, dead: 0, oldestPendingAgeMs: 200_000 }, "v");
+  const hBacklog = buildHealth(1000, 999, 990, 111, { pending: 5, processing: 0, dead: 0, oldestPendingAgeMs: 200_000 }, okPH, true, "v");
   check("A26. backlog vechi escaladează OK→DEGRADED", hBacklog.status === "DEGRADED");
 
-  const hBehind = buildHealth(100000, 50000, 40000, 111, { pending: 0, processing: 0, dead: 3, oldestPendingAgeMs: null }, "v");
+  const hBehind = buildHealth(100000, 50000, 40000, 111, { pending: 0, processing: 0, dead: 3, oldestPendingAgeMs: null }, okPH, true, "v");
   check("A27. BEHIND NU e coborât la DEGRADED de dead", hBehind.status === "BEHIND");
 
-  const hBacklogFresh = buildHealth(1000, 999, 990, 111, { pending: 5, processing: 1, dead: 0, oldestPendingAgeMs: 1000 }, "v");
+  const hBacklogFresh = buildHealth(1000, 999, 990, 111, { pending: 5, processing: 1, dead: 0, oldestPendingAgeMs: 1000 }, okPH, true, "v");
   check("A28. backlog proaspăt (mic) rămâne OK", hBacklogFresh.status === "OK");
 
   // parseStoredSlot — fail-closed la citire cursor (fix varu blocker 3; doctrina C4 EVM)

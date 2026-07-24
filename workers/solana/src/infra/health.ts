@@ -23,6 +23,7 @@ import {
   INDEXER_VERSION,
   CHAIN,
 } from "../config/constants";
+import { resolveSolanaStatus, type ProgramHealthResult } from "./programFreshness";
 import type { PreflightSolanaHealth, PreflightSolanaSlotStatus } from "@preflight/schema";
 
 export type SlotStatus = PreflightSolanaSlotStatus;
@@ -53,20 +54,27 @@ export function buildHealth(
   processedSlot:   number | null,
   lastProcessedAt: number | null,   // ms epoch
   queue:           DiscoveryQueueSnapshot,
+  programHealth:   ProgramHealthResult,  // D2: freshness per-program (subscripție WS)
+  hasCurrentCriticalEvidence: boolean,   // D2: subscripțiile procesului CURENT au dovedit viață?
   nodeVersion:     string,
 ): SolanaHealth {
   const behindSlots = observedSlot !== null ? Math.max(0, latestSlot - observedSlot) : 0;
+  const slotStatus: SlotStatus = resolveStatus(behindSlots);
 
-  // Status de bază = liveness pe OBSERVED slot.
-  let status: SlotStatus = observedSlot === null ? "STARTING" : resolveStatus(behindSlots);
-
-  // Escaladare ONESTĂ pe integritatea procesării — dead-letter (pierdere reală) sau backlog blocat.
+  // Escaladare ONESTĂ (pură, testabilă): integritate procesare (dead-letter/backlog blocat — C6) SAU
+  // un program CRITIC de discovery mort tăcut (D2 — pierdere PARȚIALĂ pe care `behindSlots` n-o vede).
+  // + edge de restart: fără dovadă de viață din procesul CURENT, statusul e STARTING (nu ne bazăm pe
+  // `observedSlot` persistent din procesul mort ca dovadă a socketului actual).
   const degradedBySignal =
     queue.dead > 0 ||
     (queue.oldestPendingAgeMs !== null && queue.oldestPendingAgeMs > DISC_BACKLOG_DEGRADED_MS);
-  if (degradedBySignal && (status === "OK" || status === "STARTING")) {
-    status = "DEGRADED";
-  }
+  const status = resolveSolanaStatus({
+    hasCurrentCriticalEvidence,
+    observedSlot,
+    slotStatus,
+    degradedBySignal,
+    staleCriticalCount: programHealth.staleCriticalCount, // DOAR critice → escaladare
+  });
 
   return {
     chain:           CHAIN,
@@ -83,5 +91,9 @@ export function buildHealth(
     pendingCount:    queue.pending,
     processingCount: queue.processing,
     deadCount:       queue.dead,
+    // ── D2: freshness per-program ──
+    programHealth:             programHealth.perProgram,
+    staleProgramCount:         programHealth.staleCount,          // TOATE stale (onest cu programHealth[])
+    staleCriticalProgramCount: programHealth.staleCriticalCount,  // doar critice (ăsta a dat DEGRADED)
   };
 }

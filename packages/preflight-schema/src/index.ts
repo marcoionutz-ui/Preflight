@@ -850,6 +850,17 @@ export interface PreflightSolanaPoolActivity {
 // `PreflightSolanaSlotStatus`.
 export type PreflightSolanaSlotStatus = "OK" | "DEGRADED" | "BEHIND" | "STARTING";
 
+// ── D2: freshness per-program (per-subscripție WS) ──
+// Un program de discovery a cărui subscripție onLogs moare tăcut nu mai apare aici ca proaspăt,
+// chiar dacă `behindSlots` rămâne mic (alte programe avansează observed slot).
+export interface PreflightSolanaProgramHealth {
+  program:      string;         // ex. "pumpfun", "raydium_clmm"
+  critical:     boolean;        // dacă staleness-ul lui poate degrada statusul (vs. doar diagnostic)
+  lastLogAgeMs: number | null;  // ms de la ultimul log (null = niciodată văzut de la pornire)
+  lastSlot:     number | null;  // cel mai mare slot văzut pt. program
+  stale:        boolean;        // n-a mai livrat logs în fereastra așteptată
+}
+
 export interface PreflightSolanaHealth {
   chain:          "solana";
   version:        string;
@@ -865,6 +876,10 @@ export interface PreflightSolanaHealth {
   pendingCount?:     number;         // candidați în așteptare în coada de discovery
   processingCount?:  number;         // candidați revendicați, în procesare (cu lease)
   deadCount?:        number;         // candidați picați definitiv (dead-letter) = pierdere reală
+  // ── D2: freshness per-program (opționale — absente pe blob-uri pre-D2) ──
+  programHealth?:             PreflightSolanaProgramHealth[]; // freshness per subscripție WS
+  staleProgramCount?:         number;                          // TOATE programele stale (inclusiv diagnostic-only)
+  staleCriticalProgramCount?: number;                          // doar cele CRITICE stale (>0 → status ≥ DEGRADED)
 }
 
 // ── Redis key constants ───────────────────────────────────────────────────────
