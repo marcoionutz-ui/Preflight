@@ -121,6 +121,12 @@ export function nextScopedSubReqId(): number {
 export const v3PoolMap = new PairMap<SourcePool>();
 export const v4PoolMap = new PairMap<SourcePool>();
 
+// D5: marker „routing-only" — o intrare din v3/v4PoolMap păstrată la rebuild pt. un pool încă urmărit
+// care a căzut din scanul curent. Metadata (tip/tokeni) e imuabilă → validă pt. RUTAREA WS (manager.ts/
+// subscriptions.ts), dar datele de piață (price/reserve/momentum) sunt STALE → scoringul (hot.ts) NU
+// trebuie să le folosească; când e marcat, cere un snapshot proaspăt. Curățat la reapariția în scan.
+export const routingOnlyPools = new PairMap<boolean>();
+
 // ── Cache ─────────────────────────────────────────────────────────────────────
 
 export const watchedPoolCache = new PairMap<SourcePool>();

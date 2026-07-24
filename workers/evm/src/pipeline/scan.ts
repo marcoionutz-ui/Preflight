@@ -6,7 +6,7 @@
 
 import {
   activeWatch, hotCandidates, armedEntries,
-  v3PoolMap, v4PoolMap, wsFlow, lpEvents, poolLiquidity,
+  v3PoolMap, v4PoolMap, routingOnlyPools, wsFlow, lpEvents, poolLiquidity,
   memory, qualifiedSignalsBuffer, marketFollowList, geckoSourceHealth, WatchKind,
   dexscreenerSourceHealth, lastDsBoostedFetchAt, setLastDsBoostedFetchAt,
 } from "../state/stores";
@@ -42,11 +42,12 @@ import { addWatchCandidate, armCandidate, recordDrop, recordPipelineEvent } from
 import { recordLifecycleOutcome } from "../state/lifecycle";
 import { triggerRiskCheck } from "../risk/riskChecker";
 import { requestImmediateScopedSubscribe } from "../ws/subscriptions";
+import { planPoolMapRebuild } from "./poolMapRebuild";
 import { writeAllSnapshots } from "./snapshots";
 import { subscribeV3Scoped, subscribeV4Scoped, subscribeV2Scoped, cleanupActiveWatch } from "../ws/subscriptions";
 import type { Redis } from "ioredis";
 import {
-  REDIS_KEYS, normalizeChainId,
+  REDIS_KEYS, normalizeChainId, pairKey,
   type PreflightScannerStats, type PreflightSourceByChainEntry, type PreflightGeckoChainHealth,
 } from "@preflight/schema";
 
@@ -94,17 +95,31 @@ function pruneMemory(): void {
 }
 
 function rebuildPoolMaps(pools: SourcePool[]): void {
-  const chainsPresent = new Set(pools.map(p => p.chain));
-  for (const [{ chain, address: addr }] of v3PoolMap.entries()) {
-    if (chainsPresent.has(chain)) v3PoolMap.delete(chain, addr);
+  const scanChains = new Set(pools.map(p => p.chain));
+  // D5: un pool încă URMĂRIT care a căzut din scanul curent trebuie PĂSTRAT în hartă — altfel
+  // manager.ts nu-l mai găsește la swap-urile WS (`v3/v4PoolMap.get()` = undefined → drop, fără
+  // fallback) → flow ZERO pe un pool urmărit; iar subscriptions.ts îl rutează greșit ca V2.
+  // DAR: intrarea păstrată are date de piață STALE → o marcăm `routingOnly` ca scoringul (hot.ts) să
+  // ceară un snapshot proaspăt în loc s-o folosească. Aceeași mulțime „activă" ca pruneMemory.
+  const isWatched = (chain: string, addr: string) =>
+    activeWatch.has(chain, addr) || hotCandidates.has(chain, addr) || armedEntries.has(chain, addr);
+  // D5 (runda 3): un pool urmărit PREZENT în scan dar reclasificat (acum V2 / dexId neacceptat / blocat)
+  // NU trebuie păstrat routing-only — re-add-ul îl sare, dar intrarea V3/V4 veche ar rămâne (rutare greșită).
+  // seenInScan distinge „a dispărut din scan" (conservă) de „a apărut și s-a reclasificat" (crede scanul).
+  // pairKey = aceeași normalizare (chain+adresă) ca PairMap → comparație corectă.
+  const scanKeys = new Set(pools.map(p => pairKey(p.chain, p.pairAddress)));
+  const seenInScan = (chain: string, addr: string) => scanKeys.has(pairKey(chain, addr));
+
+  for (const map of [v3PoolMap, v4PoolMap]) {
+    const { toDelete, toMarkRouting } = planPoolMapRebuild([...map.entries()].map(([k]) => k), scanChains, seenInScan, isWatched);
+    for (const { chain, address } of toDelete)      { map.delete(chain, address); routingOnlyPools.delete(chain, address); }
+    for (const { chain, address } of toMarkRouting) routingOnlyPools.set(chain, address, true);
   }
-  for (const [{ chain, address: addr }] of v4PoolMap.entries()) {
-    if (chainsPresent.has(chain)) v4PoolMap.delete(chain, addr);
-  }
+  // Re-add din scanul curent → date proaspete; curăță markerul routing-only (nu mai e stale).
   for (const p of pools) {
-	if (isBlockedSymbol(p.symbol)) continue;
-    if (p.dexType === "V3" && V3_DEXES.has(p.dexId)) v3PoolMap.set(p.chain, p.pairAddress, p);
-    if (p.dexType === "V4") v4PoolMap.set(p.chain, p.pairAddress, p);
+    if (isBlockedSymbol(p.symbol)) continue;
+    if (p.dexType === "V3" && V3_DEXES.has(p.dexId)) { v3PoolMap.set(p.chain, p.pairAddress, p); routingOnlyPools.delete(p.chain, p.pairAddress); }
+    if (p.dexType === "V4")                          { v4PoolMap.set(p.chain, p.pairAddress, p); routingOnlyPools.delete(p.chain, p.pairAddress); }
   }
 }
 

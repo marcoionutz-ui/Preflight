@@ -4,7 +4,8 @@
  * Monitor open trades — verifică exit conditions.
  */
 
-import { hotCandidates, v4PoolMap, v3PoolMap, memory, qualifiedSignalsBuffer } from "../../state/stores";
+import { hotCandidates, v4PoolMap, v3PoolMap, routingOnlyPools, memory, qualifiedSignalsBuffer } from "../../state/stores";
+import { poolSnapshotForScoring } from "../poolMapRebuild";
 import { dropHotCandidate, deleteHotCandidate, recordPipelineEvent } from "../transitions";
 import { recordLifecycleOutcome } from "../../state/lifecycle";
 import { getWsFlow, getLpSignal } from "../../risk/flow";
@@ -72,8 +73,13 @@ export async function hotCandidatesLoop(): Promise<void> {
       // Preflight is a data layer; shadow trades are telemetry only.
       // saveShadowTrade() still dedupes persistence after the signal is emitted.
 
-      const pool = v4PoolMap.get(chainId, pairAddress) ?? v3PoolMap.get(chainId, pairAddress) ?? await fetchPoolByAddress(chainCfg, pairAddress);
-      if (!pool) { dropHotCandidate(pairAddress, chainId, "pool unavailable"); continue; }
+      // D5: dacă intrarea din hartă e routing-only (păstrată stale pt. rutare WS), NU o folosi la
+      // scoring (price/reserve/momentum înghețate) → cere un snapshot proaspăt. Altfel cache-ul e din
+      // scanul curent = proaspăt.
+      const cachedPool = v4PoolMap.get(chainId, pairAddress) ?? v3PoolMap.get(chainId, pairAddress);
+      const pool = poolSnapshotForScoring(cachedPool, routingOnlyPools.has(chainId, pairAddress))
+        ?? await fetchPoolByAddress(chainCfg, pairAddress);
+      if (!pool) { dropHotCandidate(pairAddress, chainId, "pool unavailable (fresh snapshot)"); continue; }
 
       const score = quickEdgeScore(pool, mem, effectiveFlow, lp);
       const minHotScore =
@@ -144,10 +150,10 @@ export async function monitorOpenTrades(): Promise<void> {
       if (!trade.chain || !trade.pair_address) continue;
       const chainCfg = CHAINS.find(c => c.id === trade.chain || c.gecko === trade.chain);
       if (!chainCfg) continue;
-      const pool =
-        v4PoolMap.get(chainCfg.id, trade.pair_address) ??
-        v3PoolMap.get(chainCfg.id, trade.pair_address) ??
-        await fetchPoolByAddress(chainCfg, trade.pair_address);
+      // D5: același principiu ca în hotCandidatesLoop — routing-only → snapshot proaspăt pt. scoring.
+      const cachedTradePool = v4PoolMap.get(chainCfg.id, trade.pair_address) ?? v3PoolMap.get(chainCfg.id, trade.pair_address);
+      const pool = poolSnapshotForScoring(cachedTradePool, routingOnlyPools.has(chainCfg.id, trade.pair_address))
+        ?? await fetchPoolByAddress(chainCfg, trade.pair_address);
       if (pool) pools.push(pool);
     }
 
