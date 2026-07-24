@@ -32,6 +32,7 @@ import {
 } from "./infra/cursor";
 import { buildHealth, writeHealth } from "./infra/health";
 import { recordProgramLog, snapshotProgramFreshness, computeProgramHealth, hasCriticalEvidence } from "./infra/programFreshness";
+import { isWsStalled } from "./infra/wsWatchdog";
 import { startLogSubscriptions, DISCOVERY_PROGRAM_HEALTH } from "./discovery/logSubscriber";
 import { isCpmmInitLog, fetchCpmmInit } from "./discovery/txFetcher";
 import { buildSolanaPool, writeSolanaPool, enrichSolanaPool } from "./discovery/pairWriter";
@@ -52,7 +53,7 @@ import {
 } from "./discovery/discoveryQueue";
 import {
   CHAIN, INDEXER_VERSION, POLL_INTERVAL_MS, KEY_PAIRS,
-  PROGRAM_STALE_MS, PROGRAM_STARTUP_GRACE_MS,
+  PROGRAM_STALE_MS, PROGRAM_STARTUP_GRACE_MS, SOLANA_WS_STALL_MS,
 } from "./config/constants";
 import {
   RAYDIUM_AMM_V4, RAYDIUM_CLMM, RAYDIUM_CPMM, PUMPFUN_PROGRAM,
@@ -110,9 +111,10 @@ async function healthLoop(nodeVersion: string, subscriptionsStartedAt: number): 
       ]);
       // D2: freshness per-program (subscripție WS) — un program CRITIC mort tăcut e detectat aici, chiar
       // dacă `behindSlots` rămâne mic pentru că alte programe avansează observed slot.
+      const now = Date.now();
       const programHealth = computeProgramHealth(
         snapshotProgramFreshness(), DISCOVERY_PROGRAM_HEALTH,
-        { now: Date.now(), startedAt: subscriptionsStartedAt, staleMs: PROGRAM_STALE_MS, graceMs: PROGRAM_STARTUP_GRACE_MS },
+        { now, startedAt: subscriptionsStartedAt, staleMs: PROGRAM_STALE_MS, graceMs: PROGRAM_STARTUP_GRACE_MS },
       );
       // D2 (edge restart): la un restart, `observedSlot` vine persistent din Redis (procesul vechi), dar
       // trackerul e gol → fără dovadă de viață din procesul CURENT, statusul e STARTING, nu OK-ul fantomă.
@@ -123,6 +125,22 @@ async function healthLoop(nodeVersion: string, subscriptionsStartedAt: number): 
       await writeHealth(health);
       if (programHealth.staleCount > 0) {
         console.warn("[SOLANA] STALE PROGRAMS: " + programHealth.perProgram.filter(p => p.stale).map(p => p.program).join(","));
+      }
+
+      // D1: hard-stall al WS-ului. web3.js multiplexează toate subscripțiile onLogs peste UN singur socket;
+      // dacă TOATE programele critice au tăcut > SOLANA_WS_STALL_MS, socketul comun e mort (nu o tăcere
+      // parțială = D2/DEGRADED). Vârsta de tăcere a unui program niciodată văzut = vârsta sesiunii
+      // (`now - subscriptionsStartedAt`) — altfel un critic rămas `null` ar masca stall-ul total pe veci,
+      // inclusiv un socket mort de la startup. Reparația subscripție-cu-subscripție într-un proces wedged nu
+      // ajută → scriem health-ul (mai sus, ca ops să vadă ultima stare) apoi exit(1) → process manager
+      // repornește curat cu un Connection nou. Verificat DUPĂ writeHealth: ultima stare e persistată.
+      if (isWsStalled(programHealth.perProgram, SOLANA_WS_STALL_MS, now - subscriptionsStartedAt)) {
+        const diag = programHealth.perProgram.filter(p => p.critical).map(p => p.program + "=" + (p.lastLogAgeMs ?? (now - subscriptionsStartedAt)) + "ms").join(",");
+        console.error(
+          "[SOLANA] WS HARD STALL — toate programele critice tăcute > " + SOLANA_WS_STALL_MS + "ms (" + diag + ")"
+          + " → exit(1) pentru reconnect curat via process manager",
+        );
+        process.exit(1);
       }
 
       const behind = observedSlot !== null ? Math.max(0, latestSlot - observedSlot) : "?";

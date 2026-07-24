@@ -82,6 +82,19 @@ export const PROGRAM_STARTUP_GRACE_MS =
     ? Number(process.env.SOLANA_PROGRAM_GRACE_MS)
     : 120_000;
 
+/** D1: hard-stall al WS-ului. web3.js multiplexează TOATE subscripțiile `onLogs` peste UN singur WebSocket
+ *  al Connection-ului; dacă acel socket se blochează tăcut, TOATE programele critice amuțesc simultan iar
+ *  procesul rămâne „viu" fără reconnect. Dacă toate programele critice tac > atât, socketul comun e mort →
+ *  `process.exit(1)` → reconnect curat via process manager. DELIBERAT mai mare decât `PROGRAM_STALE_MS`
+ *  (D2 = DEGRADED, raportare): exit-ul e nuclear, deci pragul e conservator ca să nu producă restart-loops
+ *  pentru o tăcere scurtă. Override `SOLANA_WS_STALL_MS`, dar clamp-uit la `PROGRAM_STALE_MS + 1` ca invariantul
+ *  „WS stall > program stale" să țină chiar dacă env-ul e prost setat (altfel D1 ar putea declanșa înaintea D2). */
+const WS_STALL_CONFIGURED_MS =
+  Number.isFinite(Number(process.env.SOLANA_WS_STALL_MS)) && Number(process.env.SOLANA_WS_STALL_MS) > 0
+    ? Number(process.env.SOLANA_WS_STALL_MS)
+    : 180_000;
+export const SOLANA_WS_STALL_MS = Math.max(WS_STALL_CONFIGURED_MS, PROGRAM_STALE_MS + 1);
+
 // ── pump.fun launch namespace ─────────────────────────────────────────────────
 
 /** ZSET cu toate launch-urile indexate (score = slot descoperire) */

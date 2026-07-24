@@ -11,7 +11,8 @@
     "test:c6": "tsx scripts/discoveryQueue.test.ts",
     "test:c1": "tsx scripts/registryWrite.test.ts",
     "test:d2": "tsx scripts/programFreshness.test.ts",
-    "test": "npm run test:a2 && npm run test:a3 && npm run test:c6 && npm run test:c1 && npm run test:d2",
+    "test:d1": "tsx scripts/wsStall.test.ts",
+    "test": "npm run test:a2 && npm run test:a3 && npm run test:c6 && npm run test:c1 && npm run test:d2 && npm run test:d1",
     "inspect:redis": "tsx --env-file=../../.env.local scripts/redisInspect.ts",
     "cleanup:redis": "tsx --env-file=../../.env.local scripts/redisCleanup.ts"
   },
