@@ -14,6 +14,7 @@ import {
   incrementSwapSubReqId,
 } from "../state/stores";
 import { applyScopedSubResponse, clearScopedSubsForChain } from "./scopedSubs";
+import { heartbeatTick } from "./heartbeat";
 import { recordSwap, recordLp } from "../risk/flow";
 import { getWsFlow } from "../risk/flow";
 import { promoteHotCandidate } from "../pipeline/transitions";
@@ -36,6 +37,9 @@ import {
   V4_POOL_MANAGERS,
   MIN_LP_REMOVE_ETH, INSTANT_LP_EXIT_PCT,
 } from "../config/constants";
+
+/** D1: intervalul heartbeat (ping + verificare pong). Un ping fără pong într-un interval → socket zombie. */
+const WS_PING_INTERVAL_MS = 30_000;
 
 function int256FromWord(hex64: string): bigint {
   const x = BigInt("0x" + hex64);
@@ -81,12 +85,30 @@ export function connectChainWebSocket(chain: ChainConfig): void {
   }
   console.log(`[CHAIN MODE] ${chain.id.toUpperCase()} — full mode (scan + WS flow)`);
 
-  const wsClient    = new WebSocket(chain.wsUrl);
+  // D1: `handshakeTimeout` — o conexiune blocată în `CONNECTING` (TCP prins, dar upgrade-ul WS nu se
+  // finalizează niciodată) ar rămâne fără `open` ȘI fără `close` → reconnect-ul nu s-ar declanșa (aceeași
+  // familie ca socketul zombie, dar în faza de conectare). La timeout, `ws` emite `error` → `close` →
+  // reconnect (handlerele existente). Heartbeat-ul de mai jos acoperă socketul deja `OPEN` care devine mut.
+  const wsClient    = new WebSocket(chain.wsUrl, { handshakeTimeout: 30_000 });
   wsClients.set(chain.id, wsClient);
 
+  // D1: heartbeat cu detecție de socket ZOMBIE. Fără listener de `pong` + fără `terminate`, un socket
+  // half-open (TCP viu, server mut) rămâne `OPEN` pe veci → `close` nu se emite → reconnect-ul din
+  // `on("close")` nu se declanșează → flow tăcut zero. Acum: dacă ping-ul precedent n-a primit pong într-un
+  // interval → socket mort → `terminate()` (forțează `close` → reconnect). `pong` de la server resetează.
+  let awaitingPong = false;
+  wsClient.on("pong", () => { awaitingPong = false; });
   const pingInterval = setInterval(() => {
-    if (wsClient.readyState === WebSocket.OPEN) wsClient.ping();
-  }, 30_000);
+    if (wsClient.readyState !== WebSocket.OPEN) return;
+    const tick = heartbeatTick(awaitingPong);
+    awaitingPong = tick.awaitingPong;
+    if (tick.action === "terminate") {
+      console.warn(`[WS ${chain.id}] no pong to last ping — terminating stale socket (D1 watchdog)`);
+      wsClient.terminate(); // → emite `close` → reconnect (handler existent)
+    } else {
+      wsClient.ping();
+    }
+  }, WS_PING_INTERVAL_MS);
 
   wsClient.on("open", () => {
     console.log(`[WS] Connected to Alchemy ${chain.id.toUpperCase()}`);
