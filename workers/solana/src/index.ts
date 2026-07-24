@@ -34,6 +34,7 @@ import { buildHealth, writeHealth } from "./infra/health";
 import { recordProgramLog, snapshotProgramFreshness, computeProgramHealth, hasCriticalEvidence } from "./infra/programFreshness";
 import { isWsStalled } from "./infra/wsWatchdog";
 import { startLogSubscriptions, DISCOVERY_PROGRAM_HEALTH } from "./discovery/logSubscriber";
+import { handleAmmV4Shadow, logAmmV4Stats } from "./discovery/ammV4Shadow";
 import { isCpmmInitLog, fetchCpmmInit } from "./discovery/txFetcher";
 import { buildSolanaPool, writeSolanaPool, enrichSolanaPool } from "./discovery/pairWriter";
 import { runCpmmBackfill }          from "./discovery/backfillCpmm";
@@ -91,6 +92,7 @@ function logStats(): void {
   logClmmStats();
   logPumpfunStats();
   logSwapStats();
+  logAmmV4Stats();
 }
 
 // ── Health loop ──────────────────────────────────────────────────────────────
@@ -395,6 +397,15 @@ async function main(): Promise<void> {
     if (!event.succeeded) return; // tx eșuată → subscripția e vie, dar NU intră în pipeline
 
     stats.events++;
+
+    // ── D4a: AMM V4 shadow diagnostics (raydium_amm_v4) ──────────────────────
+    // AMM V4 e nativ (nu Anchor) și n-are încă pipeline de procesare — înainte cădea prin toate ramurile
+    // fără să facă nimic. Shadow-ul observă discriminatorul + layout-ul real (ZERO Redis writes, bounded)
+    // ca să scriem un fetcher determinist la promovare (D4c). NU intră în coadă / registry / criticalitate.
+    if (event.program === "raydium_amm_v4") {
+      handleAmmV4Shadow(connection, event.signature, event.slot, event.logs);
+      return;
+    }
 
     // ── pump.fun launch pipeline (8.0g-b6) ───────────────────────────────────
     if (event.program === "pumpfun") {
