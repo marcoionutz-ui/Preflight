@@ -1,13 +1,13 @@
 /**
  * scripts/ammV4Shadow.test.ts — D4a (AMM V4 shadow, funcții PURE).
  *
- * Testează prefiltrul de log + rezumatul instrucțiunilor + detecția de migrare. Fără Connection/RPC.
- * Un `base58Encode` local (self-validat prin roundtrip cu `base58Decode`-ul real) construiește date de
- * instrucțiune cu un tag ales, ca să verificăm că `summarizeAmmV4Init` extrage discriminatorul corect.
+ * D4a.1: gate SCOPED pe invocation-stack + clasificare pe Initialize2 real (tag 1 / 21 conturi).
+ * Fără Connection/RPC. Un `base58Encode` local (self-validat prin roundtrip cu `base58Decode`-ul real)
+ * construiește date de instrucțiune cu tag ales.
  */
 
 import {
-  isAmmV4InitLog, summarizeAmmV4Init, detectMigration, isExpectedAmmV4Layout,
+  isScopedAmmV4InitLog, summarizeAmmV4Init, findInitialize2Candidates, decodeTag, detectMigration,
   type AmmV4Instruction,
 } from "../src/discovery/ammV4Shadow";
 import { base58Decode } from "../src/discovery/txFetcher";
@@ -43,12 +43,16 @@ function ix(dataBytes: number[], nAccounts: number): AmmV4Instruction {
   return { dataB58: base58Encode(dataBytes), accounts: Array.from({ length: nAccounts }, (_, i) => "acc" + i) };
 }
 
-function main(): void {
-  console.log("D4a — ammV4Shadow (pure: log gate, summary, migration)");
+const OTHER = "OtheRProgram1111111111111111111111111111111";
+const ROUTER = "RouteRProgram111111111111111111111111111111";
+const TOKEN = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 
-  // ── Sanity: base58Encode roundtrip cu base58Decode-ul real ──
+function main(): void {
+  console.log("D4a — ammV4Shadow (scoped gate, init2 classification, migration)");
+
+  // ── Sanity: base58Encode roundtrip ──
   {
-    const vectors = [[0], [1], [57], [1, 2, 3], [0, 0, 9], [255, 254, 1]];
+    const vectors = [[0], [1], [57], [1, 2, 3], [0, 0, 9], [255, 254, 1], [16], [9]];
     let ok = true;
     for (const v of vectors) {
       const dec = base58Decode(base58Encode(v));
@@ -57,71 +61,123 @@ function main(): void {
     check("D4.0. base58Encode roundtrip cu decoder-ul real", ok);
   }
 
-  // ── isAmmV4InitLog (prefiltru) ──
-  check("D4.1a. log initialize2 → candidat", isAmmV4InitLog([
+  // ── isScopedAmmV4InitLog (gate scoped pe stivă) ──
+  check("D4.1a. AMM V4 invoke → initialize2 → success → true", isScopedAmmV4InitLog([
     "Program " + RAYDIUM_AMM_V4 + " invoke [1]",
-    "Program log: initialize2: InitializeInstruction2 { nonce: 254, open_time: 0 }",
-  ]) === true);
-  check("D4.1b. log initialize (init vechi) → candidat", isAmmV4InitLog([
-    "Program log: initialize: InitializeInstruction { nonce: 253 }",
-  ]) === true);
-  check("D4.1c. ray_log (swap) → NU candidat", isAmmV4InitLog([
-    "Program log: ray_log: A9c3Bd0eF...",
-  ]) === false);
-  check("D4.1d. Token InitializeAccount3 → NU candidat (evită bug-ul A2)", isAmmV4InitLog([
-    "Program log: Instruction: InitializeAccount3",
-  ]) === false);
-  check("D4.1e. zgomot → NU candidat", isAmmV4InitLog(["Program log: some other thing"]) === false);
-  check("D4.1f. logs goale → NU candidat", isAmmV4InitLog([]) === false);
+    "Program log: initialize2: InitializeInstruction2 { nonce: 254 }",
+    "Program " + RAYDIUM_AMM_V4 + " success",
+  ], RAYDIUM_AMM_V4) === true);
 
-  // ── summarizeAmmV4Init ──
+  check("D4.1b. ALT program → initialize2 → success → false (log nu-i al AMM V4)", isScopedAmmV4InitLog([
+    "Program " + OTHER + " invoke [1]",
+    "Program log: initialize2: ceva",
+    "Program " + OTHER + " success",
+  ], RAYDIUM_AMM_V4) === false);
+
+  check("D4.1c. init2 sub ALT program + AMM V4 (swap) în același tx → false", isScopedAmmV4InitLog([
+    "Program " + OTHER + " invoke [1]",
+    "Program log: initialize2: ceva",
+    "Program " + OTHER + " success",
+    "Program " + RAYDIUM_AMM_V4 + " invoke [1]",
+    "Program log: ray_log: swapdata",
+    "Program " + RAYDIUM_AMM_V4 + " success",
+  ], RAYDIUM_AMM_V4) === false);
+
+  check("D4.1d. AMM V4 nested CPI → initialize2 → true", isScopedAmmV4InitLog([
+    "Program " + ROUTER + " invoke [1]",
+    "Program " + RAYDIUM_AMM_V4 + " invoke [2]",
+    "Program log: initialize2: InitializeInstruction2 { }",
+    "Program " + RAYDIUM_AMM_V4 + " success",
+    "Program " + ROUTER + " success",
+  ], RAYDIUM_AMM_V4) === true);
+
+  check("D4.1e. Token InitializeAccount3 → false (evită bug-ul A2)", isScopedAmmV4InitLog([
+    "Program " + TOKEN + " invoke [1]",
+    "Program log: Instruction: InitializeAccount3",
+    "Program " + TOKEN + " success",
+  ], RAYDIUM_AMM_V4) === false);
+
+  check("D4.1f. AMM V4 invoke fără initialize2 (doar swap) → false", isScopedAmmV4InitLog([
+    "Program " + RAYDIUM_AMM_V4 + " invoke [1]",
+    "Program log: ray_log: swapdata",
+    "Program " + RAYDIUM_AMM_V4 + " success",
+  ], RAYDIUM_AMM_V4) === false);
+
+  check("D4.1g. logs goale → false", isScopedAmmV4InitLog([], RAYDIUM_AMM_V4) === false);
+
+  check("D4.1h. AMM V4 failed (nu success) tot golește stiva corect", isScopedAmmV4InitLog([
+    "Program " + RAYDIUM_AMM_V4 + " invoke [1]",
+    "Program " + RAYDIUM_AMM_V4 + " failed: custom error",
+    "Program log: initialize2: ceva", // după ce AMM V4 a ieșit → nu mai e pe stivă
+  ], RAYDIUM_AMM_V4) === false);
+
+  // BLOCKER varu: init2 emis, DAR invocarea AMM V4 eșuează (părintele prinde eroarea, tx global succeeded) → false
+  check("D4.1i. AMM init2 apoi failed → false (tentativă eșuată de creare)", isScopedAmmV4InitLog([
+    "Program " + ROUTER + " invoke [1]",
+    "Program " + RAYDIUM_AMM_V4 + " invoke [2]",
+    "Program log: initialize2: InitializeInstruction2 {}",
+    "Program " + RAYDIUM_AMM_V4 + " failed: custom program error: 0x1",
+    "Program " + ROUTER + " success",
+  ], RAYDIUM_AMM_V4) === false);
+
+  check("D4.1j. prima creare AMM eșuează, a doua reușește → true", isScopedAmmV4InitLog([
+    "Program " + RAYDIUM_AMM_V4 + " invoke [1]",
+    "Program log: initialize2: failed attempt",
+    "Program " + RAYDIUM_AMM_V4 + " failed: custom error",
+    "Program " + RAYDIUM_AMM_V4 + " invoke [1]",
+    "Program log: initialize2: successful attempt",
+    "Program " + RAYDIUM_AMM_V4 + " success",
+  ], RAYDIUM_AMM_V4) === true);
+
+  check("D4.1k. init2 fără log de completion → false (conservator)", isScopedAmmV4InitLog([
+    "Program " + RAYDIUM_AMM_V4 + " invoke [1]",
+    "Program log: initialize2: truncated logs",
+  ], RAYDIUM_AMM_V4) === false);
+
+  // ── findInitialize2Candidates + summarizeAmmV4Init (clasificare pe tag 1 / 21 conturi) ──
   {
     const s = summarizeAmmV4Init([]);
-    check("D4.2a. 0 instrucțiuni → rejected", s.outcome === "rejected");
-    check("D4.2b. rejected → tag null", s.tag === null);
-    check("D4.2c. rejected → accountCount null", s.accountCount === null);
+    check("D4.2a. 0 instrucțiuni → rejected", s.outcome === "rejected" && s.tag === null);
   }
   {
-    // initialize2 e presupus tag 1 în ecosistem — dar aici doar VERIFICĂM că extragem primul byte,
-    // nu hardcodăm nimic în producție. Data = [1, ...payload].
-    const s = summarizeAmmV4Init([ix([1, 254, 0, 0, 0, 0], 18)]);
-    check("D4.3a. exact 1 instrucțiune → parsed", s.outcome === "parsed");
-    check("D4.3b. tag = primul byte (1)", s.tag === 1);
-    check("D4.3c. accountCount = 18", s.accountCount === 18);
+    // tag 16 / 8 conturi (ce prindea gate-ul vechi — un swap) → NU Initialize2 → rejected
+    const s = summarizeAmmV4Init([ix([16, 1, 2], 8)]);
+    check("D4.3a. swap (tag 16, 8 conturi) → rejected (nu-i Initialize2)", s.outcome === "rejected");
   }
   {
-    const s = summarizeAmmV4Init([ix([0, 9], 21)]);
-    check("D4.4a. tag 0 extras corect", s.tag === 0 && s.outcome === "parsed");
-    check("D4.4b. accountCount 21", s.accountCount === 21);
+    // tag 1 dar 20 conturi (layout greșit) → rejected
+    const s = summarizeAmmV4Init([ix([1], 20)]);
+    check("D4.3b. tag 1 dar 20 conturi → rejected", s.outcome === "rejected");
   }
   {
-    const s = summarizeAmmV4Init([ix([1, 9], 18), ix([7, 1], 12)]);
-    check("D4.5a. >1 instrucțiune AMM V4 → ambiguous", s.outcome === "ambiguous");
-    check("D4.5b. ambiguous → tag/accountCount din PRIMA (diag)", s.tag === 1 && s.accountCount === 18);
+    const s = summarizeAmmV4Init([ix([1, 254, 0, 0], 21)]);
+    check("D4.4a. tag 1 + 21 conturi → parsed", s.outcome === "parsed");
+    check("D4.4b. parsed → tag 1, accountCount 21", s.tag === 1 && s.accountCount === 21);
   }
   {
-    // Onestitate (fix varu): 1 instrucțiune cu date INVALIDE (fără discriminator) → rejected, nu parsed.
-    const s = summarizeAmmV4Init([{ dataB58: "", accounts: ["a", "b"] }]);
-    check("D4.6a. data goală (fără discriminator) → rejected", s.outcome === "rejected");
-    check("D4.6b. rejected → tag null, accountCount păstrat (2)", s.tag === null && s.accountCount === 2);
+    // KEY (varu): Initialize2 real + un swap AMM V4 în același tx → tot parsed (nu ambiguous)
+    const s = summarizeAmmV4Init([ix([1, 9], 21), ix([9, 1], 17)]);
+    check("D4.5a. Initialize2 + swap AMM V4 în același tx → parsed (nu ambiguous)", s.outcome === "parsed");
   }
   {
-    const s = summarizeAmmV4Init([{ dataB58: "0OIl", accounts: ["a"] }]); // caractere invalide base58 → decode null
-    check("D4.6c. data base58 invalidă → rejected", s.outcome === "rejected" && s.tag === null);
+    const s = summarizeAmmV4Init([ix([1], 21), ix([1], 21)]);
+    check("D4.5b. DOUĂ Initialize2 reale → ambiguous", s.outcome === "ambiguous");
   }
-
-  // ── isExpectedAmmV4Layout (vs sursa oficială: tag 1, 21 conturi) ──
-  check("D4.8a. tag 1 + 21 conturi → EXPECTED", isExpectedAmmV4Layout(1, 21) === true);
-  check("D4.8b. tag 1 + 20 conturi → anomaly", isExpectedAmmV4Layout(1, 20) === false);
-  check("D4.8c. tag 0 + 21 conturi → anomaly", isExpectedAmmV4Layout(0, 21) === false);
-  check("D4.8d. tag null → anomaly", isExpectedAmmV4Layout(null, 21) === false);
-  check("D4.8e. accountCount null → anomaly", isExpectedAmmV4Layout(1, null) === false);
+  {
+    const cands = findInitialize2Candidates([ix([1], 21), ix([9], 17), ix([1], 20), ix([1], 21)]);
+    check("D4.6a. findInitialize2Candidates filtrează exact tag1/21", cands.length === 2);
+  }
+  {
+    check("D4.6b. decodeTag primul byte (tag 1)", decodeTag(base58Encode([1, 2, 3])) === 1);
+    check("D4.6c. decodeTag data goală → null", decodeTag("") === null);
+    check("D4.6d. decodeTag base58 invalid → null", decodeTag("0OIl") === null);
+  }
 
   // ── detectMigration ──
   check("D4.7a. instrucțiune pump.fun în tx → confirmed", detectMigration(
     [RAYDIUM_AMM_V4, PUMPFUN_PROGRAM], ["x", "y"],
   ) === "confirmed");
-  check("D4.7b. migration authority NU e tratată ca program (doar în programIds) → none", detectMigration(
+  check("D4.7b. migration authority DOAR în programIds → none (authority ≠ program)", detectMigration(
     [RAYDIUM_AMM_V4, PUMPFUN_MIGRATION], ["x"],
   ) === "none");
   check("D4.7c. migration authority DOAR în conturi → suspected", detectMigration(
