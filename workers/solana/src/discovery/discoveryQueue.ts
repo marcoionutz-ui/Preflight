@@ -80,11 +80,49 @@ function pendingKey(chain: string):    string { return `preflight:indexer:disc:p
 function processingKey(chain: string): string { return `preflight:indexer:disc:processing:${chain}`; }
 function attemptsKey(chain: string):   string { return `preflight:indexer:disc:attempts:${chain}`; }
 function deadKey(chain: string):       string { return `preflight:indexer:disc:dead:${chain}`; }
+/** NF3: quarantine durabil pt. instrucțiuni pump.fun cu layout necunoscut (posibilă variantă nouă). HASH:
+ *  field = signature, value = JSON {program, slot, accountCounts, detectedAt}. NON-degrading (nu atinge health). */
+function unsupportedKey(chain: string): string { return `preflight:indexer:disc:unsupported:${chain}`; }
 
 /** Backoff exponential cu cap (PUR, testabil). Aceeași formulă e replicată în LUA_FAILED. */
 export function nextBackoffMs(attempts: number, base: number, max: number): number {
   const exp = base * Math.pow(2, Math.max(0, attempts - 1));
   return Math.min(exp, max);
+}
+
+// ── NF3: politica de coadă (PURĂ, testabilă) ─────────────────────────────────────
+// Rezultatul procesării unui candidat → acțiunea pe coada durabilă. Separat de I/O ca să aibă regression
+// protection (partea cea mai importantă a NF3 e ce se întâmplă cu coada, nu doar ce întoarce fetcher-ul).
+
+export type CandidateOutcome =
+  | { kind: "written" }
+  | { kind: "retry" }
+  | { kind: "invalid" }
+  | { kind: "unsupported"; accountCounts: number[]; reason: string };
+
+/** Ce facem pe coadă pt. fiecare outcome. `ack`=scoate; `ack_advance`=scoate+avansează processedSlot;
+ *  `fail`=markFailed (backoff→dead pe MAX); `quarantine_ack`=scrie în quarantine + scoate. */
+export type QueueAction = "ack" | "ack_advance" | "fail" | "quarantine_ack";
+
+export function queueActionFor(o: CandidateOutcome): QueueAction {
+  switch (o.kind) {
+    case "written":     return "ack_advance"; // record durabil scris → avansează cursorul
+    case "retry":       return "fail";        // tranzitoriu (RPC/scriere) → backoff → dead pe MAX
+    case "invalid":     return "ack";         // sigur nu-i o creare → scoate din coadă (nu-i pierdere)
+    case "unsupported": return "quarantine_ack"; // variantă necunoscută → păstrează dovada + scoate din coadă
+  }
+}
+
+/** NF3 reconcile: ce facem cu un membru DEAD deja existent, după re-fetch. */
+export type ReconcileAction = "requeue" | "drop" | "quarantine" | "leave";
+
+export function reconcileActionFor(status: "ok" | "invalid" | "unsupported" | "unavailable"): ReconcileAction {
+  switch (status) {
+    case "ok":          return "requeue";    // e chiar o creare validă (fals dead-letter din vechiul null) → reprocesează
+    case "invalid":     return "drop";       // sigur nu-i creare → scoate din dead (curăță health-ul)
+    case "unsupported": return "quarantine"; // variantă nouă → mută în quarantine + scoate din dead
+    case "unavailable": return "leave";      // RPC tot nu servește → lasă în dead (nu inventăm o decizie)
+  }
 }
 
 // ── Scripturi Lua (fiecare tranziție = 1 EVAL atomic) ───────────────────────────
@@ -135,6 +173,17 @@ if backoff > maxb then backoff = maxb end
 redis.call('ZADD', KEYS[2], tonumber(ARGV[3]) + backoff, ARGV[1])
 return 'retry'`;
 
+/** -- requeue-dead (NF3 reconcile)  KEYS: dead, pending, processing, attempts  ARGV: member, eligibleAt
+ *  → 1 dacă mutat din dead în pending, 0 dacă nu era în dead. ATOMIC (fără fereastra remove-apoi-enqueue). */
+const LUA_REQUEUE_DEAD = `-- requeue-dead
+if not redis.call('ZSCORE', KEYS[1], ARGV[1]) then return 0 end
+redis.call('ZREM', KEYS[1], ARGV[1])
+redis.call('HDEL', KEYS[4], ARGV[1])
+if not redis.call('ZSCORE', KEYS[3], ARGV[1]) then
+  redis.call('ZADD', KEYS[2], 'NX', ARGV[2], ARGV[1])
+end
+return 1`;
+
 // ── API (thin wrappers peste EVAL) ──────────────────────────────────────────────
 
 /** Adaugă candidatul în coadă dacă NU e deja acolo / în procesare / dead-letter (atomic). true dacă adăugat. */
@@ -179,6 +228,53 @@ export async function markCandidateFailed(
     String(DISC_BACKOFF_BASE_MS), String(DISC_BACKOFF_MAX_MS),
   );
   return res === "dead" ? "dead" : "retry";
+}
+
+// ── NF3: quarantine + primitive dead-set (pt. reconcile) ─────────────────────────
+
+/** Scrie un candidat cu layout necunoscut în quarantine durabil (HASH per signature). Idempotent. */
+export async function quarantineUnsupported(
+  r: Redis, chain: string, candidate: DiscoveryCandidate, accountCounts: number[], reason: string, now: number = Date.now(),
+): Promise<void> {
+  const payload = JSON.stringify({
+    program:      candidate.program,
+    slot:         candidate.slot,
+    signature:    candidate.signature,
+    accountCounts,
+    reason,
+    detectedAt:   new Date(now).toISOString(),
+  });
+  await r.hset(unsupportedKey(chain), candidate.signature, payload);
+}
+
+export async function quarantineCount(r: Redis, chain: string): Promise<number> {
+  return r.hlen(unsupportedKey(chain));
+}
+
+/** Toți membrii din dead-set (pt. reconcile one-time). */
+export async function readDeadMembers(r: Redis, chain: string): Promise<string[]> {
+  return (await r.zrange(deadKey(chain), 0, -1)) as string[];
+}
+
+/** Scoate un membru din dead-set (reconcile: drop / după quarantine). Single ZREM = atomic. */
+export async function removeFromDead(r: Redis, chain: string, member: string): Promise<void> {
+  await r.zrem(deadKey(chain), member);
+}
+
+/**
+ * NF3 reconcile ATOMIC: mută un membru din dead → pending (scoate din dead, curăță attempts, adaugă în pending
+ * dacă nu-i deja în processing). Un singur EVAL → fără fereastra „scos din dead, dar necrash-uit în pending"
+ * (remove+enqueue în două apeluri ar pierde membrul la crash între ele). Idempotent: a doua oară → 0 (nu-i în dead).
+ */
+export async function requeueDeadCandidate(
+  r: Redis, chain: string, member: string, eligibleAtMs: number = Date.now(),
+): Promise<boolean> {
+  const res = await r.eval(
+    LUA_REQUEUE_DEAD, 4,
+    deadKey(chain), pendingKey(chain), processingKey(chain), attemptsKey(chain),
+    member, String(eligibleAtMs),
+  );
+  return Number(res) === 1;
 }
 
 export async function pendingCandidateCount(r: Redis, chain: string): Promise<number> {

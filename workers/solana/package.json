@@ -14,9 +14,11 @@
     "test:d1": "tsx scripts/wsStall.test.ts",
     "test:d4": "tsx scripts/ammV4Shadow.test.ts",
     "test:d4b": "tsx scripts/ammV4Fetcher.test.ts",
-    "test": "npm run test:a2 && npm run test:a3 && npm run test:c6 && npm run test:c1 && npm run test:d2 && npm run test:d1 && npm run test:d4 && npm run test:d4b",
+    "test:nf3": "tsx scripts/pumpfunFetcher.test.ts",
+    "test": "npm run test:a2 && npm run test:a3 && npm run test:c6 && npm run test:c1 && npm run test:d2 && npm run test:d1 && npm run test:d4 && npm run test:d4b && npm run test:nf3",
     "inspect:redis": "tsx --env-file=../../.env.local scripts/redisInspect.ts",
-    "cleanup:redis": "tsx --env-file=../../.env.local scripts/redisCleanup.ts"
+    "cleanup:redis": "tsx --env-file=../../.env.local scripts/redisCleanup.ts",
+    "reconcile:deadletter": "tsx --env-file=../../.env.local scripts/reconcileDeadLetter.ts"
   },
   "dependencies": {
     "@preflight/schema": "*",

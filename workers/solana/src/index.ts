@@ -49,8 +49,9 @@ import { startSolPriceOracle }      from "./infra/solPriceOracle";
 import {
   enqueueCandidate, claimDueCandidates, reclaimExpiredCandidates,
   markCandidateDone, markCandidateFailed, decodeCandidate, discoveryQueueStats,
+  queueActionFor, quarantineUnsupported,
   DISC_LEASE_MS, DISC_DRAIN_BATCH, DISC_DRAIN_CONCURRENCY, DISC_DRAIN_INTERVAL_MS,
-  type DiscoveryProgram, type DiscoveryCandidate,
+  type DiscoveryProgram, type DiscoveryCandidate, type CandidateOutcome,
 } from "./discovery/discoveryQueue";
 import {
   CHAIN, INDEXER_VERSION, POLL_INTERVAL_MS, KEY_PAIRS,
@@ -72,7 +73,7 @@ function sleep(ms: number): Promise<void> {
 // și nu marchează nimic „văzut" până Redis nu confirmă.
 
 // ── Stats ────────────────────────────────────────────────────────────────────
-const stats = { events: 0, cpmmTotal: 0, clmmTotal: 0, pumpfunTotal: 0, deduped: 0, candidates: 0, fetched: 0, inserted: 0, launchesInserted: 0, dead: 0, errors: 0 };
+const stats = { events: 0, cpmmTotal: 0, clmmTotal: 0, pumpfunTotal: 0, deduped: 0, candidates: 0, fetched: 0, inserted: 0, launchesInserted: 0, dead: 0, invalid: 0, unsupported: 0, errors: 0 };
 
 function logStats(): void {
   console.log(
@@ -84,6 +85,8 @@ function logStats(): void {
     + " inserted=" + stats.inserted
     + " launchesInserted=" + stats.launchesInserted
     + " dead=" + stats.dead
+    + " invalid=" + stats.invalid
+    + " unsupported=" + stats.unsupported
     + " cpmmTotal=" + stats.cpmmTotal
     + " clmmTotal=" + stats.clmmTotal
     + " pumpfunTotal=" + stats.pumpfunTotal
@@ -164,29 +167,51 @@ async function healthLoop(nodeVersion: string, subscriptionsStartedAt: number): 
 }
 
 // ── Procesare candidat (dispatch pe program) ──────────────────────────────────
-// Întoarce:
-//   "written" — record scris durabil (inserted/exists) → ack + avansează PROCESSED slot
-//   "retry"   — fetch null / write "error" / excepție → markFailed (backoff → dead-letter la MAX).
-//               Fix varu (blocker): `null` NU mai e ACK tăcut. Fetcher-ii ÎNGHIT erorile RPC intern
-//               și întorc `null` ȘI la RPC-exhaustion (nu doar la „ne-candidat") → un ACK ar pierde
-//               pool-ul la un outage RPC susținut (>~22s), exact bug-ul C6. Acum re-încearcă; un
-//               ne-candidat real ajunge în dead-letter după MAX (health DEGRADED) — mai onest decât
-//               pierdere tăcută. (Rafinare ulterioară: fetcher discriminat INVALID vs UNAVAILABLE →
-//               doar INVALID = ack fără processedSlot.)
+// Întoarce un `CandidateOutcome`; `queueActionFor` (pur) mapează la acțiunea pe coadă (vezi drain):
+//   written     — record scris durabil → ack + avansează PROCESSED slot
+//   retry       — write "error" / excepție / fetch UNAVAILABLE → markFailed (backoff → dead-letter la MAX)
+//   invalid     — NF3: tx ADUS dar sigur nu-i o creare (0 ix / guard-uri picate / tx eșuată) → ACK (nu-i pierdere)
+//   unsupported — NF3: instrucțiune pump.fun cu layout NECUNOSCUT (≠14/16) → quarantine durabil + ACK
+//                 (posibilă variantă nouă = lansare reală; nu o arunca, păstrează dovada). NU dead-letter.
+// Înainte, `null` conflă „RPC n-a livrat" cu „nu-i candidat" ȘI cu „variantă nouă" → dead-letter fals ca
+// „pierdere reală" (health DEGRADED blocat) SAU variante reale aruncate tăcut.
 async function processCandidate(
   connection: ReturnType<typeof getConnection>,
   candidate:  DiscoveryCandidate,
-): Promise<"written" | "retry"> {
+): Promise<CandidateOutcome> {
   const { program, slot, signature } = candidate;
   stats.fetched++;
   try {
     if (program === "pumpfun") {
-      const result = await fetchPumpfunCreate(connection, signature);
-      if (!result) return "retry";
+      const fetched = await fetchPumpfunCreate(connection, signature);
+      if (fetched.status === "unavailable") return { kind: "retry" }; // RPC n-a livrat → tranzitoriu
 
+      if (fetched.status === "unsupported") {
+        // Instrucțiune pump.fun găsită dar neparsată → posibilă variantă nouă (account count-ul NU e versiunea).
+        // NU o arunca ca invalid — o marcăm `unsupported` → drain-ul o pune în quarantine durabil.
+        console.warn(
+          "[SOLANA][PUMPFUN][UNSUPPORTED] sig=" + signature.slice(0, 12)
+          + " reason=" + fetched.reason
+          + " accountCounts=" + fetched.accountCounts.join(",")
+          + " (posibilă variantă nouă → quarantine) slot=" + slot,
+        );
+        return { kind: "unsupported", accountCounts: fetched.accountCounts, reason: fetched.reason };
+      }
+
+      if (fetched.status === "invalid") {
+        // Sigur nu-i o creare de indexat: NO_CREATE (0 ix pump.fun / layout 14/16 dar guard-uri picate) sau
+        // FAILED_TX (tx eșuată). → ACK (nu-i pierdere recuperabilă).
+        console.log(
+          "[SOLANA][PUMPFUN][INVALID] sig=" + signature.slice(0, 12)
+          + " reason=" + fetched.reason + " slot=" + slot,
+        );
+        return { kind: "invalid" };
+      }
+
+      const result  = fetched.result;
       const launch  = buildLaunchRecord(result, slot, signature);
       const outcome = await writeLaunchRecord(launch);
-      if (outcome === "error") return "retry";
+      if (outcome === "error") return { kind: "retry" };
 
       if (outcome === "inserted") {
         stats.launchesInserted++;
@@ -203,14 +228,14 @@ async function processCandidate(
           console.error("[SOLANA][LAUNCH][META] enrichment error:", err.message);
         });
       }
-      return "written";
+      return { kind: "written" };
     }
 
     // raydium_cpmm | raydium_clmm
     const result = program === "raydium_cpmm"
       ? await fetchCpmmInit(connection, signature)
       : await fetchClmmCreate(connection, signature);
-    if (!result) return "retry";
+    if (!result) return { kind: "retry" };
 
     const pool = buildSolanaPool(
       result.poolAddress,
@@ -223,7 +248,7 @@ async function processCandidate(
     );
 
     const outcome = await writeSolanaPool(pool);
-    if (outcome === "error") return "retry";
+    if (outcome === "error") return { kind: "retry" };
 
     if (outcome === "inserted") {
       stats.inserted++;
@@ -251,14 +276,14 @@ async function processCandidate(
         console.error("[SOLANA][META] enrichment error:", err.message);
       });
     }
-    return "written";
+    return { kind: "written" };
   } catch (err) {
     stats.errors++;
     console.error(
       "[SOLANA][DISC-QUEUE] process error " + program + " sig=" + signature.slice(0, 12) + ":",
       (err as Error).message,
     );
-    return "retry";
+    return { kind: "retry" };
   }
 }
 
@@ -292,8 +317,10 @@ async function drainDiscoveryQueue(
         continue;
       }
 
-      const res = await processCandidate(connection, candidate);
-      if (res === "retry") {
+      const res    = await processCandidate(connection, candidate);
+      const action = queueActionFor(res); // policy PURĂ (testabilă)
+
+      if (action === "fail") {
         const outcome = await markCandidateFailed(redis, CHAIN, member);
         if (outcome === "dead") {
           stats.dead++;
@@ -306,7 +333,32 @@ async function drainDiscoveryQueue(
         continue;
       }
 
-      // "written" → ack + avansează PROCESSED slot (record durabil prezent).
+      if (action === "ack") {
+        // NF3: sigur nu-i o creare → ACK (scoate din coadă), FĂRĂ processedSlot, FĂRĂ dead. Nu poluează health.
+        stats.invalid++;
+        await markCandidateDone(redis, CHAIN, member);
+        continue;
+      }
+
+      if (action === "quarantine_ack" && res.kind === "unsupported") {
+        // NF3: variantă necunoscută → păstrează dovada în quarantine durabil ÎNAINTE de ACK. Dacă scrierea
+        // în quarantine EȘUEAZĂ, NU face ACK — lasă membrul în processing → lease expiră → reclaim → retry.
+        // Altfel (ACK după HSET eșuat) am pierde exact dovada pe care voiam s-o protejăm.
+        try {
+          await quarantineUnsupported(redis, CHAIN, candidate, res.accountCounts, res.reason);
+        } catch (err) {
+          console.error(
+            "[SOLANA][DISC-QUEUE] quarantine write FAILED — lăsat în processing pt. reclaim: "
+            + (err as Error).message,
+          );
+          continue; // fără ACK
+        }
+        stats.unsupported++;
+        await markCandidateDone(redis, CHAIN, member);
+        continue;
+      }
+
+      // "ack_advance" (written) → ack + avansează PROCESSED slot (record durabil prezent).
       await markCandidateDone(redis, CHAIN, member);
       await advanceProcessedSlot(candidate.slot).catch((err: Error) => {
         console.error("[SOLANA][DISC-QUEUE] advanceProcessedSlot error:", err.message);

@@ -14,6 +14,7 @@ import {
   enqueueCandidate, claimDueCandidates, reclaimExpiredCandidates,
   markCandidateDone, markCandidateFailed, discoveryQueueStats,
   deadCandidateCount, pendingCandidateCount, processingCandidateCount,
+  requeueDeadCandidate,
   DISC_MAX_ATTEMPTS, DISC_BACKOFF_BASE_MS, DISC_BACKOFF_MAX_MS,
   type DiscoveryCandidate,
 } from "../src/discovery/discoveryQueue";
@@ -172,6 +173,15 @@ async function main(): Promise<void> {
   check("B14. scos din pending la dead", (await pendingCandidateCount(r, CHAIN)) === 0);
   check("B15. scos din processing la dead", (await processingCandidateCount(r, CHAIN)) === 0);
   check("B16. enqueue refuză dead (TERMINAL)", (await enqueueCandidate(r, CHAIN, cf, 1000)) === false);
+
+  // NF3: requeueDeadCandidate ATOMIC (dead → pending). `mf` e în dead-set după B12-B16.
+  const attemptsK = `preflight:indexer:disc:attempts:${CHAIN}`;
+  await r.hset(attemptsK, mf, "5"); // repunem attempts ca să verificăm că requeue le curăță
+  check("B16a. requeueDeadCandidate → true (era în dead)", (await requeueDeadCandidate(r, CHAIN, mf, 1000)) === true);
+  check("B16b. dead gol după requeue",     (await deadCandidateCount(r, CHAIN)) === 0);
+  check("B16c. pending are membrul",       (await pendingCandidateCount(r, CHAIN)) === 1);
+  check("B16d. attempts șters la requeue", (await r.hget(attemptsK, mf)) === null);
+  check("B16e. requeue repetat → false (idempotent, nu mai e în dead)", (await requeueDeadCandidate(r, CHAIN, mf, 1000)) === false);
 
   // stats: oldestPendingAgeMs
   await r.del(...keys);

@@ -44,6 +44,28 @@ export interface PumpfunCreateResult {
   instructionShape:         "CREATE_V2" | "CREATE_LEGACY";
 }
 
+/**
+ * NF3: rezultat DISCRIMINAT — separă cele TREI destine ale unui candidat, pe care înainte `null` le conflă
+ * (→ retry → dead-letter → health DEGRADED blocat pe fals-pozitive ȘI pe variante reale pierdute):
+ *   - `ok`          — Create/CreateV2 valid parsat → scrie.
+ *   - `invalid`     — tx ADUS, dar sigur nu-i o creare de indexat: `NO_CREATE` (0 instrucțiuni pump.fun =
+ *                     fals-pozitiv de log, SAU layout recunoscut 14/16 dar guard-urile stricte au picat) sau
+ *                     `FAILED_TX` (tx eșuată). → ACK (nu-i pierdere recuperabilă).
+ *   - `unsupported` — instrucțiune pump.fun cu account count NECUNOSCUT (≠14/16) → poate fi o VARIANTĂ
+ *                     CreateV2 nouă = lansare REALĂ pe care parserul n-o înțelege încă. NU o arunca ca invalid;
+ *                     `accountCounts` (doar cele necunoscute) → quarantine durabil + ACK (dovada pt. parserul următor).
+ *   - `unavailable` — `getParsedTransaction` a întors null după toate retry-urile (RPC nu servește) → retry
+ *                     (dead-letter pe MAX = semnal onest că RPC chiar n-a livrat, nu că nu-i candidat).
+ */
+export type PumpfunFetchOutcome =
+  | { status: "ok";          result: PumpfunCreateResult }
+  | { status: "invalid";     reason: "NO_PUMPFUN_IX" | "FAILED_TX" }
+  | { status: "unsupported"; reason: "UNKNOWN_ACCOUNT_COUNT" | "KNOWN_LAYOUT_GUARDS_FAILED"; accountCounts: number[] }
+  | { status: "unavailable" };
+
+/** Shape-urile de conturi cunoscute (CreateV2=16, Create legacy=14). Un count în afara lor = variantă nouă. */
+const KNOWN_CREATE_ACCOUNT_COUNTS = [14, 16];
+
 // ── Pre-filter (ieftin, inainte de fetch) ────────────────────────────────────
 
 const PUMPFUN_CREATE_NAMES = ["CreateV2", "Create"];
@@ -122,13 +144,14 @@ function parseCreateLegacy(accounts: string[]): PumpfunCreateResult | null {
 const FETCH_RETRY_DELAYS_MS = [2_000, 5_000, 15_000];
 
 export async function fetchPumpfunCreate(
-  connection: Connection,
-  signature:  string,
-): Promise<PumpfunCreateResult | null> {
+  connection:    Connection,
+  signature:     string,
+  retryDelaysMs: number[] = FETCH_RETRY_DELAYS_MS,
+): Promise<PumpfunFetchOutcome> {
   let tx = null;
 
-  for (let attempt = 0; attempt < FETCH_RETRY_DELAYS_MS.length; attempt++) {
-    await new Promise(r => setTimeout(r, FETCH_RETRY_DELAYS_MS[attempt]));
+  for (let attempt = 0; attempt < retryDelaysMs.length; attempt++) {
+    await new Promise(r => setTimeout(r, retryDelaysMs[attempt]));
     try {
       tx = await connection.getParsedTransaction(signature, {
         maxSupportedTransactionVersion: 0,
@@ -148,12 +171,14 @@ export async function fetchPumpfunCreate(
     }
   }
 
-  if (!tx) return null;
+  if (!tx) return { status: "unavailable" };                          // n-am putut aduce → tranzitoriu (retry)
+  if (tx.meta?.err) return { status: "invalid", reason: "FAILED_TX" }; // tx eșuată → nu-i o creare validă (ACK)
 
   const outer = tx.transaction.message.instructions;
   const inner = (tx.meta?.innerInstructions ?? []).flatMap(i => i.instructions);
   const allIx = [...outer, ...inner];
 
+  const pumpfunAccountCounts: number[] = [];
   for (const ix of allIx) {
     if (ix.programId.toBase58() !== PUMPFUN_PROGRAM) continue;
     if (!("accounts" in ix)) continue;
@@ -161,10 +186,24 @@ export async function fetchPumpfunCreate(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const accs: { toBase58(): string }[] = (ix as any).accounts;
     const strs = accs.map(a => a.toBase58());
+    pumpfunAccountCounts.push(strs.length);
 
     const result = parseCreateV2(strs) ?? parseCreateLegacy(strs);
-    if (result) return result;
+    if (result) return { status: "ok", result };
   }
 
-  return null;
+  // Nicio instrucțiune pump.fun n-a parsat un Create valid.
+  //   - 0 instrucțiuni pump.fun în tx → `invalid` NO_PUMPFUN_IX (fals-pozitiv de log; programul n-a fost
+  //     invocat cu o instrucțiune) → ACK sigur.
+  //   - EXISTĂ o instrucțiune pump.fun dar n-a parsat → `unsupported` → quarantine. Account count-ul NU e
+  //     versiunea protocolului: un layout de 16 conturi cu PDA/ordine/fee schimbate poate fi o versiune NOUĂ
+  //     care păstrează 16 → NU-l arunca ca invalid. `KNOWN_LAYOUT_GUARDS_FAILED` (14/16 dar guard-uri picate)
+  //     vs `UNKNOWN_ACCOUNT_COUNT` (≠14/16) — ambele = necunoscute, păstrăm dovada.
+  if (pumpfunAccountCounts.length === 0) return { status: "invalid", reason: "NO_PUMPFUN_IX" };
+  const hasUnknownCount = pumpfunAccountCounts.some(c => !KNOWN_CREATE_ACCOUNT_COUNTS.includes(c));
+  return {
+    status: "unsupported",
+    reason: hasUnknownCount ? "UNKNOWN_ACCOUNT_COUNT" : "KNOWN_LAYOUT_GUARDS_FAILED",
+    accountCounts: pumpfunAccountCounts,
+  };
 }
