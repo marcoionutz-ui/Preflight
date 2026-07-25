@@ -13,7 +13,8 @@
     "test:d2": "tsx scripts/programFreshness.test.ts",
     "test:d1": "tsx scripts/wsStall.test.ts",
     "test:d4": "tsx scripts/ammV4Shadow.test.ts",
-    "test": "npm run test:a2 && npm run test:a3 && npm run test:c6 && npm run test:c1 && npm run test:d2 && npm run test:d1 && npm run test:d4",
+    "test:d4b": "tsx scripts/ammV4Fetcher.test.ts",
+    "test": "npm run test:a2 && npm run test:a3 && npm run test:c6 && npm run test:c1 && npm run test:d2 && npm run test:d1 && npm run test:d4 && npm run test:d4b",
     "inspect:redis": "tsx --env-file=../../.env.local scripts/redisInspect.ts",
     "cleanup:redis": "tsx --env-file=../../.env.local scripts/redisCleanup.ts"
   },

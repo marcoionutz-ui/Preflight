@@ -332,9 +332,20 @@ export function handleAmmV4Shadow(
     .finally(() => { inFlight--; });
 }
 
-/** Logează stats acumulate (apelat periodic din health loop). */
+/** Logează stats acumulate (apelat periodic din health loop). Loghează DOAR când s-a schimbat ceva —
+ *  altfel, la sursă rară (ex. AMM V4, ~2 pool-uri/zi), fiecare health tick ar repeta același snapshot
+ *  și ar umple Railway-ul de ecou. */
+let lastStatsFingerprint = "";
 export function logAmmV4Stats(): void {
   if (stats.candidateLogs === 0) return;
+  const fingerprint = JSON.stringify({
+    ...stats,
+    tags: [...tagStats.entries()],
+    accountCounts: [...accountCountStats.entries()],
+  });
+  if (fingerprint === lastStatsFingerprint) return;
+  lastStatsFingerprint = fingerprint;
+
   const tags = [...tagStats.entries()].sort((a, b) => b[1] - a[1]).map(([t, c]) => t + "=" + c).join(",") || "-";
   const accs = [...accountCountStats.entries()].sort((a, b) => b[1] - a[1]).map(([n, c]) => n + "=" + c).join(",") || "-";
   console.log(
