@@ -170,9 +170,11 @@ async function healthLoop(nodeVersion: string, subscriptionsStartedAt: number): 
 // Întoarce un `CandidateOutcome`; `queueActionFor` (pur) mapează la acțiunea pe coadă (vezi drain):
 //   written     — record scris durabil → ack + avansează PROCESSED slot
 //   retry       — write "error" / excepție / fetch UNAVAILABLE → markFailed (backoff → dead-letter la MAX)
-//   invalid     — NF3: tx ADUS dar sigur nu-i o creare (0 ix / guard-uri picate / tx eșuată) → ACK (nu-i pierdere)
-//   unsupported — NF3: instrucțiune pump.fun cu layout NECUNOSCUT (≠14/16) → quarantine durabil + ACK
-//                 (posibilă variantă nouă = lansare reală; nu o arunca, păstrează dovada). NU dead-letter.
+//   invalid     — NF3: tx ADUS dar sigur nu-i o creare → ACK: FAILED_TX / NO_PUMPFUN_IX / NO_CREATE_IX
+//                 (doar buy/sell/extend, niciun discriminator de creare + logul nu zice Create).
+//   unsupported — NF3.1: quarantine durabil + ACK (posibilă variantă nouă = lansare reală; păstrează dovada,
+//                 NU dead-letter): discriminator de creare CUNOSCUT dar layout picat (KNOWN_LAYOUT_GUARDS_FAILED)
+//                 SAU log Create* cu discriminator NECUNOSCUT = viitor create_v3 (UNKNOWN_CREATE_DISCRIMINATOR).
 // Înainte, `null` conflă „RPC n-a livrat" cu „nu-i candidat" ȘI cu „variantă nouă" → dead-letter fals ca
 // „pierdere reală" (health DEGRADED blocat) SAU variante reale aruncate tăcut.
 async function processCandidate(
@@ -199,8 +201,8 @@ async function processCandidate(
       }
 
       if (fetched.status === "invalid") {
-        // Sigur nu-i o creare de indexat: NO_CREATE (0 ix pump.fun / layout 14/16 dar guard-uri picate) sau
-        // FAILED_TX (tx eșuată). → ACK (nu-i pierdere recuperabilă).
+        // Sigur nu-i o creare de indexat: NO_PUMPFUN_IX (0 ix pump.fun) / NO_CREATE_IX (doar buy/sell/extend,
+        // niciun discriminator de creare + logul nu zice Create) / FAILED_TX (tx eșuată). → ACK.
         console.log(
           "[SOLANA][PUMPFUN][INVALID] sig=" + signature.slice(0, 12)
           + " reason=" + fetched.reason + " slot=" + slot,
@@ -220,7 +222,7 @@ async function processCandidate(
           + " mint=" + result.mint.slice(0, 8) + "..."
           + " bondingCurve=" + result.bondingCurveAddress.slice(0, 8) + "..."
           + " creator=" + result.creatorAddress.slice(0, 8) + "..."
-          + " shape=" + result.instructionShape
+          + " shape=" + result.instructionShape + " accounts=" + result.instructionAccountCount
           + " slot=" + slot,
         );
         // Enrichment async — non-blocking, delayed (30s/2m/10m), logging in launchWriter
