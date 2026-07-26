@@ -34,9 +34,11 @@ import { buildHealth, writeHealth } from "./infra/health";
 import { recordProgramLog, snapshotProgramFreshness, computeProgramHealth, hasCriticalEvidence } from "./infra/programFreshness";
 import { isWsStalled } from "./infra/wsWatchdog";
 import { startLogSubscriptions, DISCOVERY_PROGRAM_HEALTH } from "./discovery/logSubscriber";
-import { handleAmmV4Shadow, logAmmV4Stats } from "./discovery/ammV4Shadow";
+import { handleAmmV4Shadow, logAmmV4Stats, isScopedAmmV4InitLog } from "./discovery/ammV4Shadow";
+import { fetchAmmV4Init } from "./discovery/ammV4Fetcher";
 import { isCpmmInitLog, fetchCpmmInit } from "./discovery/txFetcher";
 import { buildSolanaPool, writeSolanaPool, enrichSolanaPool } from "./discovery/pairWriter";
+import type { PreflightSolanaProgram } from "@preflight/schema";
 import { runCpmmBackfill }          from "./discovery/backfillCpmm";
 import { handleClmmShadow, logClmmStats } from "./discovery/clmmShadow";
 import { handleSwapShadow, logSwapStats } from "./discovery/swapShadow";
@@ -73,7 +75,7 @@ function sleep(ms: number): Promise<void> {
 // și nu marchează nimic „văzut" până Redis nu confirmă.
 
 // ── Stats ────────────────────────────────────────────────────────────────────
-const stats = { events: 0, cpmmTotal: 0, clmmTotal: 0, pumpfunTotal: 0, deduped: 0, candidates: 0, fetched: 0, inserted: 0, launchesInserted: 0, dead: 0, invalid: 0, unsupported: 0, errors: 0 };
+const stats = { events: 0, cpmmTotal: 0, clmmTotal: 0, ammV4Total: 0, pumpfunTotal: 0, deduped: 0, candidates: 0, fetched: 0, inserted: 0, launchesInserted: 0, dead: 0, invalid: 0, unsupported: 0, errors: 0 };
 
 function logStats(): void {
   console.log(
@@ -89,6 +91,7 @@ function logStats(): void {
     + " unsupported=" + stats.unsupported
     + " cpmmTotal=" + stats.cpmmTotal
     + " clmmTotal=" + stats.clmmTotal
+    + " ammV4Total=" + stats.ammV4Total
     + " pumpfunTotal=" + stats.pumpfunTotal
     + " errors=" + stats.errors,
   );
@@ -166,15 +169,58 @@ async function healthLoop(nodeVersion: string, subscriptionsStartedAt: number): 
   }
 }
 
+// ── Write comun pt. pool-urile Raydium (cpmm/clmm/amm_v4) ─────────────────────
+// `parsed` e param CONST (non-null) → narrowing-ul se păstrează în callback-ul async. (Un `let result`
+// verificat cu `if (!result)` și apoi capturat într-un `.then()` ar da „'result' is possibly null" la tsc.)
+async function writeDiscoveredPool(
+  program:   PreflightSolanaProgram,
+  parsed:    { poolAddress: string; mint0: string; mint1: string },
+  slot:      number,
+  signature: string,
+): Promise<CandidateOutcome> {
+  const pool = buildSolanaPool(parsed.poolAddress, parsed.mint0, parsed.mint1, slot, signature, program, "LIVE");
+
+  const outcome = await writeSolanaPool(pool);
+  if (outcome === "error") return { kind: "retry" };
+
+  if (outcome === "inserted") {
+    stats.inserted++;
+    console.log(
+      "[SOLANA][POOL] " + program + " inserted"
+      + " pool=" + parsed.poolAddress.slice(0, 8) + "..."
+      + " base=" + pool.baseMint.slice(0, 8) + "..."
+      + " quote=" + pool.quoteMint.slice(0, 8) + "..."
+      + " quoteType=" + pool.quoteType
+      + " slot=" + slot,
+    );
+    // Enrichment async — non-blocking, nu întârzie drain-ul
+    Promise.all([
+      resolveTokenMeta(pool.baseMint),
+      resolveTokenMeta(pool.quoteMint),
+    ]).then(([baseMeta, quoteMeta]) => {
+      console.log(
+        "[SOLANA][META] enriched"
+        + " pool=" + parsed.poolAddress.slice(0, 8) + "..."
+        + " base=" + baseMeta.symbol + "(" + baseMeta.source + ")"
+        + " quote=" + quoteMeta.symbol + "(" + quoteMeta.source + ")",
+      );
+      return enrichSolanaPool(pool, baseMeta, quoteMeta);
+    }).catch((err: Error) => {
+      console.error("[SOLANA][META] enrichment error:", err.message);
+    });
+  }
+  return { kind: "written" };
+}
+
 // ── Procesare candidat (dispatch pe program) ──────────────────────────────────
 // Întoarce un `CandidateOutcome`; `queueActionFor` (pur) mapează la acțiunea pe coadă (vezi drain):
 //   written     — record scris durabil → ack + avansează PROCESSED slot
 //   retry       — write "error" / excepție / fetch UNAVAILABLE → markFailed (backoff → dead-letter la MAX)
-//   invalid     — NF3: tx ADUS dar sigur nu-i o creare → ACK: FAILED_TX / NO_PUMPFUN_IX / NO_CREATE_IX
-//                 (doar buy/sell/extend, niciun discriminator de creare + logul nu zice Create).
-//   unsupported — NF3.1: quarantine durabil + ACK (posibilă variantă nouă = lansare reală; păstrează dovada,
-//                 NU dead-letter): discriminator de creare CUNOSCUT dar layout picat (KNOWN_LAYOUT_GUARDS_FAILED)
-//                 SAU log Create* cu discriminator NECUNOSCUT = viitor create_v3 (UNKNOWN_CREATE_DISCRIMINATOR).
+//   invalid     — tx ADUS dar sigur nu-i o creare → ACK. pump.fun: FAILED_TX/NO_PUMPFUN_IX/NO_CREATE_IX;
+//                 AMM V4 (D4c): FAILED_TX; cpmm/clmm: n/a (fetcher-ele întorc doar {…}|null).
+//   unsupported — quarantine durabil + ACK (posibilă variantă nouă = creare reală; păstrează dovada, NU
+//                 dead-letter). pump.fun (NF3.1): KNOWN_LAYOUT_GUARDS_FAILED/UNKNOWN_CREATE_DISCRIMINATOR;
+//                 AMM V4 (D4c): AMBIGUOUS_INIT2/UNKNOWN_INIT2_LAYOUT/KNOWN_LAYOUT_GUARDS_FAILED/INIT2_EVIDENCE_MISMATCH.
 // Înainte, `null` conflă „RPC n-a livrat" cu „nu-i candidat" ȘI cu „variantă nouă" → dead-letter fals ca
 // „pierdere reală" (health DEGRADED blocat) SAU variante reale aruncate tăcut.
 async function processCandidate(
@@ -233,52 +279,41 @@ async function processCandidate(
       return { kind: "written" };
     }
 
-    // raydium_cpmm | raydium_clmm
-    const result = program === "raydium_cpmm"
-      ? await fetchCpmmInit(connection, signature)
-      : await fetchClmmCreate(connection, signature);
-    if (!result) return { kind: "retry" };
-
-    const pool = buildSolanaPool(
-      result.poolAddress,
-      result.mint0,
-      result.mint1,
-      slot,
-      signature,
-      program,
-      "LIVE",
-    );
-
-    const outcome = await writeSolanaPool(pool);
-    if (outcome === "error") return { kind: "retry" };
-
-    if (outcome === "inserted") {
-      stats.inserted++;
-      console.log(
-        "[SOLANA][POOL] " + program + " inserted"
-        + " pool=" + result.poolAddress.slice(0, 8) + "..."
-        + " base=" + pool.baseMint.slice(0, 8) + "..."
-        + " quote=" + pool.quoteMint.slice(0, 8) + "..."
-        + " quoteType=" + pool.quoteType
-        + " slot=" + slot,
-      );
-      // Enrichment async — non-blocking, nu întârzie drain-ul
-      Promise.all([
-        resolveTokenMeta(pool.baseMint),
-        resolveTokenMeta(pool.quoteMint),
-      ]).then(([baseMeta, quoteMeta]) => {
-        console.log(
-          "[SOLANA][META] enriched"
-          + " pool=" + result.poolAddress.slice(0, 8) + "..."
-          + " base=" + baseMeta.symbol + "(" + baseMeta.source + ")"
-          + " quote=" + quoteMeta.symbol + "(" + quoteMeta.source + ")",
+    // ── AMM V4 (D4c): fetch DISCRIMINAT — NU moștenește bug-ul null-polisemic reparat la pump.fun (NF3).
+    // `unavailable`→retry, `invalid`(FAILED_TX)→ACK, `unsupported`(layout nou/ambiguu/guard picat/evidence-mismatch)→
+    // quarantine durabil (dovadă), `ok`→scrie. Fără asta, un upgrade Raydium ar fi mers retry→dead-letter fals.
+    if (program === "raydium_amm_v4") {
+      const fetched = await fetchAmmV4Init(connection, signature);
+      if (fetched.status === "unavailable") return { kind: "retry" };
+      if (fetched.status === "invalid") {
+        console.log("[SOLANA][AMMV4][INVALID] sig=" + signature.slice(0, 12) + " reason=" + fetched.reason + " slot=" + slot);
+        return { kind: "invalid" };
+      }
+      if (fetched.status === "unsupported") {
+        console.warn(
+          "[SOLANA][AMMV4][UNSUPPORTED] sig=" + signature.slice(0, 12)
+          + " reason=" + fetched.reason + " accountCounts=" + fetched.accountCounts.join(",")
+          + " (posibil layout Raydium nou → quarantine) slot=" + slot,
         );
-        return enrichSolanaPool(pool, baseMeta, quoteMeta);
-      }).catch((err: Error) => {
-        console.error("[SOLANA][META] enrichment error:", err.message);
-      });
+        return { kind: "unsupported", accountCounts: fetched.accountCounts, reason: fetched.reason };
+      }
+      return writeDiscoveredPool(program, fetched.result, slot, signature);
     }
-    return { kind: "written" };
+
+    // ── CPMM | CLMM — fetcher-ele întorc {poolAddress,mint0,mint1}|null (null = tranzitoriu → retry).
+    // SWITCH exhaustiv (fix bug latent `non-CPMM → CLMM`): pumpfun + amm_v4 tratate mai sus (return).
+    let result: { poolAddress: string; mint0: string; mint1: string } | null;
+    switch (program) {
+      case "raydium_cpmm": result = await fetchCpmmInit(connection, signature);  break;
+      case "raydium_clmm": result = await fetchClmmCreate(connection, signature); break;
+      default: {
+        const _never: never = program;
+        console.error("[SOLANA][DISC-QUEUE] program necunoscut în processCandidate: " + String(_never));
+        return { kind: "invalid" };
+      }
+    }
+    if (!result) return { kind: "retry" };
+    return writeDiscoveredPool(program, result, slot, signature);
   } catch (err) {
     stats.errors++;
     console.error(
@@ -452,12 +487,17 @@ async function main(): Promise<void> {
 
     stats.events++;
 
-    // ── D4a: AMM V4 shadow diagnostics (raydium_amm_v4) ──────────────────────
-    // AMM V4 e nativ (nu Anchor) și n-are încă pipeline de procesare — înainte cădea prin toate ramurile
-    // fără să facă nimic. Shadow-ul observă discriminatorul + layout-ul real (ZERO Redis writes, bounded)
-    // ca să scriem un fetcher determinist la promovare (D4c). NU intră în coadă / registry / criticalitate.
+    // ── AMM V4 pipeline (D4c — promovat din shadow) ──────────────────────────
+    // Creare DIRECTĂ de pool AMM V4 (Initialize2 nativ, tag 1 / 21 conturi) — sursă RARĂ (1 creare în fereastra
+    // auditată de ~14h, validată Dune D4a.1) dar reală. Shadow-ul rămâne (bounded, self-sampling) pt.
+    // observabilitatea layout-ului. Gate SCOPED pe invocation-stack: enqueue DOAR când Initialize2 e emis
+    // cât timp AMM V4 e pe VÂRFUL stivei ȘI invocarea reușește (evită swap-urile care menționează AMM V4).
+    // Fetcher-ul determinist din drain (fetchAmmV4Init) reconfirmă tag 1 / 21 conturi înainte de registry write.
     if (event.program === "raydium_amm_v4") {
+      stats.ammV4Total++;
       handleAmmV4Shadow(connection, event.signature, event.slot, event.logs);
+      if (!isScopedAmmV4InitLog(event.logs, RAYDIUM_AMM_V4)) return;
+      enqueueDiscovery("raydium_amm_v4", event.signature, event.slot);
       return;
     }
 

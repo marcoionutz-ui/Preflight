@@ -592,10 +592,11 @@ export interface PreflightScannerStats {
 // drift real, consolidat aici pe forma completă din quoteNormalizer.ts.
 export type PreflightSolanaQuoteType = "WSOL" | "STABLE" | "AMBIGUOUS" | "UNKNOWN";
 
-// Ambele programe Raydium suportate azi — verificat identic în
-// priceTracker.ts/swapActivity.ts/observedPool.ts (toate produc doar aceste
-// 2 valori, niciodată un string liber).
-export type PreflightSolanaProgram = "raydium_cpmm" | "raydium_clmm";
+// Programele Raydium care pot fi sursa unui pool în registry. D4c a adăugat `raydium_amm_v4`
+// (creare directă de pool via `Initialize2` → discovery pipeline). NOTĂ: `priceTracker.ts`/
+// `swapActivity.ts`/`observedPool.ts` produc încă doar cpmm/clmm (sunt scoped pe swap-uri, nu pe
+// creare) — widening-ul e sigur (adaugă un caz), nu forțează schimbări acolo.
+export type PreflightSolanaProgram = "raydium_cpmm" | "raydium_clmm" | "raydium_amm_v4";
 
 // Sursă de adevăr: workers/solana/src/discovery/pairWriter.ts's SolanaPool —
 // DAR wire-ul real e o uniune DISCRIMINATĂ a două write path-uri pe aceeași

@@ -23,7 +23,7 @@ import type Redis from "ioredis";
 
 // ── Program candidate (self-contained în member) ────────────────────────────────
 
-export type DiscoveryProgram = "raydium_cpmm" | "raydium_clmm" | "pumpfun";
+export type DiscoveryProgram = "raydium_cpmm" | "raydium_clmm" | "raydium_amm_v4" | "pumpfun";
 
 export interface DiscoveryCandidate {
   program:   DiscoveryProgram;
@@ -49,7 +49,7 @@ export function decodeCandidate(member: string): DiscoveryCandidate | null {
   const slotStr   = member.slice(i1 + 1, i2);
   const signature = member.slice(i2 + 1);
   if (!signature) return null;
-  if (program !== "raydium_cpmm" && program !== "raydium_clmm" && program !== "pumpfun") return null;
+  if (program !== "raydium_cpmm" && program !== "raydium_clmm" && program !== "raydium_amm_v4" && program !== "pumpfun") return null;
   if (!/^\d+$/.test(slotStr)) return null;
   const slot = Number(slotStr);
   if (!Number.isSafeInteger(slot) || slot < 0) return null;
@@ -80,8 +80,11 @@ function pendingKey(chain: string):    string { return `preflight:indexer:disc:p
 function processingKey(chain: string): string { return `preflight:indexer:disc:processing:${chain}`; }
 function attemptsKey(chain: string):   string { return `preflight:indexer:disc:attempts:${chain}`; }
 function deadKey(chain: string):       string { return `preflight:indexer:disc:dead:${chain}`; }
-/** NF3: quarantine durabil pt. instrucțiuni pump.fun cu layout necunoscut (posibilă variantă nouă). HASH:
- *  field = signature, value = JSON {program, slot, accountCounts, detectedAt}. NON-degrading (nu atinge health). */
+/** NF3/D4c: quarantine durabil pt. orice candidat de discovery cu layout necunoscut (pump.fun create nou SAU
+ *  AMM V4 Initialize2 cu layout schimbat — posibilă variantă reală, nu o arunca). Generic peste programe. HASH:
+ *  field = `program|slot|signature` (NU doar signature — aceeași tx poate invoca DOUĂ programe urmărite, ex.
+ *  pumpfun + raydium_amm_v4; keyed doar pe signature, a doua o suprascrie pe prima = pierdere de dovadă),
+ *  value = JSON {program, slot, accountCounts, detectedAt}. NON-degrading (nu atinge health). */
 function unsupportedKey(chain: string): string { return `preflight:indexer:disc:unsupported:${chain}`; }
 
 /** Backoff exponential cu cap (PUR, testabil). Aceeași formulă e replicată în LUA_FAILED. */
@@ -232,7 +235,8 @@ export async function markCandidateFailed(
 
 // ── NF3: quarantine + primitive dead-set (pt. reconcile) ─────────────────────────
 
-/** Scrie un candidat cu layout necunoscut în quarantine durabil (HASH per signature). Idempotent. */
+/** Scrie un candidat cu layout necunoscut în quarantine durabil (HASH field = `program|slot|signature`,
+ *  ca DOUĂ programe pe aceeași tx să NU se suprascrie). Idempotent. */
 export async function quarantineUnsupported(
   r: Redis, chain: string, candidate: DiscoveryCandidate, accountCounts: number[], reason: string, now: number = Date.now(),
 ): Promise<void> {
@@ -244,7 +248,7 @@ export async function quarantineUnsupported(
     reason,
     detectedAt:   new Date(now).toISOString(),
   });
-  await r.hset(unsupportedKey(chain), candidate.signature, payload);
+  await r.hset(unsupportedKey(chain), encodeCandidate(candidate), payload);
 }
 
 export async function quarantineCount(r: Redis, chain: string): Promise<number> {

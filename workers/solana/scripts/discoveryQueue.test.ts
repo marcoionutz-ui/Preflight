@@ -14,7 +14,7 @@ import {
   enqueueCandidate, claimDueCandidates, reclaimExpiredCandidates,
   markCandidateDone, markCandidateFailed, discoveryQueueStats,
   deadCandidateCount, pendingCandidateCount, processingCandidateCount,
-  requeueDeadCandidate,
+  requeueDeadCandidate, quarantineUnsupported, quarantineCount,
   DISC_MAX_ATTEMPTS, DISC_BACKOFF_BASE_MS, DISC_BACKOFF_MAX_MS,
   type DiscoveryCandidate,
 } from "../src/discovery/discoveryQueue";
@@ -42,6 +42,9 @@ async function main(): Promise<void> {
   check("A4. decode roundtrip signature", dec?.signature === "5xSigABCdefGHijkLMnoPQ");
   check("A5. decode pumpfun ok",  decodeCandidate("pumpfun|1|sig")?.program === "pumpfun");
   check("A6. decode clmm ok",     decodeCandidate("raydium_clmm|1|sig")?.program === "raydium_clmm");
+  check("A6b. decode amm_v4 ok (D4c)", decodeCandidate("raydium_amm_v4|1|sig")?.program === "raydium_amm_v4");
+  check("A6c. encode→decode amm_v4 roundtrip (D4c)",
+    decodeCandidate(encodeCandidate({ program: "raydium_amm_v4", slot: 42, signature: "sigAmm" }))?.program === "raydium_amm_v4");
   check("A7. decode program invalid → null", decodeCandidate("evil|1|sig") === null);
   check("A8. decode slot ne-numeric → null", decodeCandidate("pumpfun|abc|sig") === null);
   check("A9. decode fără signature → null",  decodeCandidate("pumpfun|1|") === null);
@@ -209,6 +212,18 @@ return 1`;
   await r.set(CURSOR_TEST_KEY, "12abc"); // valoare stocată coruptă
   await r.eval(LUA_ADV, 1, CURSOR_TEST_KEY, "500");
   check("B23. self-heal peste corupt → 500 (tonumber(GET) or -1)", (await r.get(CURSOR_TEST_KEY)) === "500");
+
+  // ── B24 (D4c): quarantine keyed pe program|slot|signature → două programe pe ACEEAȘI signature NU se suprascriu ──
+  const UNSUPPORTED_KEY = `preflight:indexer:disc:unsupported:${CHAIN}`;
+  await r.del(UNSUPPORTED_KEY);
+  const qPump: DiscoveryCandidate = { program: "pumpfun",        slot: 42, signature: "sigSAME" };
+  const qAmm:  DiscoveryCandidate = { program: "raydium_amm_v4", slot: 42, signature: "sigSAME" };
+  await quarantineUnsupported(r, CHAIN, qPump, [19], "KNOWN_LAYOUT_GUARDS_FAILED");
+  await quarantineUnsupported(r, CHAIN, qAmm,  [20], "UNKNOWN_INIT2_LAYOUT");
+  check("B24a. aceeași signature, două programe → 2 intrări (fără overwrite)", (await quarantineCount(r, CHAIN)) === 2);
+  check("B24b. field pumpfun distinct", (await r.hexists(UNSUPPORTED_KEY, encodeCandidate(qPump))) === 1);
+  check("B24c. field amm_v4 distinct",  (await r.hexists(UNSUPPORTED_KEY, encodeCandidate(qAmm)))  === 1);
+  await r.del(UNSUPPORTED_KEY);
 
   await r.del(...keys, ...emptyKeys, CURSOR_TEST_KEY);
   await r.quit().catch(() => {});

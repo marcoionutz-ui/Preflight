@@ -33,7 +33,7 @@ function main(): void {
 
   // ── D2.config: config-ul real are criticalitatea corectă (legare la producție) ──
   {
-    check("D2.config-a. AMM V4 este NON-critical", critOf("raydium_amm_v4") === false);
+    check("D2.config-a. AMM V4 este critical (D4c: are pipeline live)", critOf("raydium_amm_v4") === true);
     check("D2.config-b. CLMM critical", critOf("raydium_clmm") === true);
     check("D2.config-c. CPMM critical", critOf("raydium_cpmm") === true);
     check("D2.config-d. pumpfun critical", critOf("pumpfun") === true);
@@ -48,7 +48,7 @@ function main(): void {
     const r = computeProgramHealth(snapshotProgramFreshness(), PROGRAMS, { now, startedAt: START, staleMs: STALE, graceMs: GRACE });
     check("D2.1a. staleCount 0 + staleCriticalCount 0", r.staleCount === 0 && r.staleCriticalCount === 0);
     check("D2.1b. lastLogAgeMs ≈ 1000", entry(r, "pumpfun").lastLogAgeMs === 1_000);
-    check("D2.1c. fiecare entry are flag critical", entry(r, "pumpfun").critical === true && entry(r, "raydium_amm_v4").critical === false);
+    check("D2.1c. fiecare entry are flag critical", entry(r, "pumpfun").critical === true && entry(r, "raydium_amm_v4").critical === true);
   }
 
   // ── D2.2 (BUG central): un program CRITIC mort tăcut, restul vii → detectat PARȚIAL ──
@@ -84,8 +84,8 @@ function main(): void {
     check("D2.4a. în grație → nimic stale", r1.staleCount === 0 && r1.staleCriticalCount === 0);
     check("D2.4b. lastLogAgeMs = null", entry(r1, "pumpfun").lastLogAgeMs === null && entry(r1, "pumpfun").lastSlot === null);
     const r2 = computeProgramHealth(snapshotProgramFreshness(), PROGRAMS, { now: START + GRACE + 1, startedAt: START, staleMs: STALE, graceMs: GRACE });
-    check("D2.4c. după grație → staleCount 4 (toate), staleCriticalCount 3 (fără amm_v4)", r2.staleCount === 4 && r2.staleCriticalCount === 3);
-    check("D2.4d. amm_v4 stale în diagnostic dar non-critic", entry(r2, "raydium_amm_v4").stale === true && entry(r2, "raydium_amm_v4").critical === false);
+    check("D2.4c. după grație → staleCount 4, staleCriticalCount 4 (toate critice acum, D4c)", r2.staleCount === 4 && r2.staleCriticalCount === 4);
+    check("D2.4d. amm_v4 stale ȘI critic (D4c)", entry(r2, "raydium_amm_v4").stale === true && entry(r2, "raydium_amm_v4").critical === true);
   }
 
   // ── D2.5: un program viu, restul niciodată ──
@@ -95,7 +95,7 @@ function main(): void {
     recordProgramLog("pumpfun", 10, now - 1_000);
     const r = computeProgramHealth(snapshotProgramFreshness(), PROGRAMS, { now, startedAt: START, staleMs: STALE, graceMs: GRACE });
     check("D2.5a. pumpfun viu → NU stale", entry(r, "pumpfun").stale === false);
-    check("D2.5b. staleCount 3 (clmm+cpmm+amm_v4), staleCriticalCount 2 (clmm+cpmm)", r.staleCount === 3 && r.staleCriticalCount === 2);
+    check("D2.5b. staleCount 3, staleCriticalCount 3 (clmm+cpmm+amm_v4 toate critice, D4c)", r.staleCount === 3 && r.staleCriticalCount === 3);
   }
 
   // ── D2.6: recordProgramLog ține MAX slot + actualizează lastLogAt ──
@@ -126,17 +126,32 @@ function main(): void {
     check("D2.8c. OK + degradedBySignal → DEGRADED", resolveDegradedStatus("OK", { degradedBySignal: true, staleCriticalCount: 0 }) === "DEGRADED");
   }
 
-  // ── D2.9 (ONESTITATE payload): AMM V4 stale (non-critic) → staleCount 1, staleCriticalCount 0, status OK ──
+  // ── D2.9 (D4c): AMM V4 e acum CRITIC → stale → DEGRADED (înainte non-critic → OK) ──
   {
     resetProgramFreshness();
-    const now = START + GRACE + 10_000; // amm_v4 niciodată → stale în diagnostic
+    const now = START + GRACE + 10_000; // amm_v4 niciodată → stale
     recordProgramLog("raydium_clmm", 1, now - 1_000);
     recordProgramLog("raydium_cpmm", 1, now - 1_000);
     recordProgramLog("pumpfun", 1, now - 1_000);
     const r = computeProgramHealth(snapshotProgramFreshness(), PROGRAMS, { now, startedAt: START, staleMs: STALE, graceMs: GRACE });
-    check("D2.9a. amm_v4 stale în diagnostic", entry(r, "raydium_amm_v4").stale === true);
-    check("D2.9b. staleCount 1 (onest cu array) DAR staleCriticalCount 0", r.staleCount === 1 && r.staleCriticalCount === 0);
-    check("D2.9c. status rămâne OK (payload nu se contrazice)", resolveDegradedStatus("OK", { degradedBySignal: false, staleCriticalCount: r.staleCriticalCount }) === "OK");
+    check("D2.9a. amm_v4 stale", entry(r, "raydium_amm_v4").stale === true);
+    check("D2.9b. staleCount 1 + staleCriticalCount 1 (amm_v4 e critic acum)", r.staleCount === 1 && r.staleCriticalCount === 1);
+    check("D2.9c. status → DEGRADED (amm_v4 critic stale)", resolveDegradedStatus("OK", { degradedBySignal: false, staleCriticalCount: r.staleCriticalCount }) === "DEGRADED");
+  }
+
+  // ── D2.9d (ONESTITATE two-counter — cu program non-critic SINTETIC, fiindcă toate cele reale-s critice acum):
+  //    codul ÎNCĂ distinge staleCount (toate) de staleCriticalCount (doar critice) → un diagnostic-only stale
+  //    NU degradează statusul. Regression protection pt. cele două contoare. ──
+  {
+    resetProgramFreshness();
+    const now = START + GRACE + 10_000;
+    recordProgramLog("pumpfun", 1, now - 1_000); // critic viu
+    const synth = [{ program: "pumpfun", critical: true }, { program: "diag_only", critical: false }];
+    const r = computeProgramHealth(snapshotProgramFreshness(), synth, { now, startedAt: START, staleMs: STALE, graceMs: GRACE });
+    check("D2.9d. non-critic (sintetic) stale → staleCount 1 DAR staleCriticalCount 0 (payload onest)",
+      r.staleCount === 1 && r.staleCriticalCount === 0);
+    check("D2.9e. status OK (non-critic stale NU degradează)",
+      resolveDegradedStatus("OK", { degradedBySignal: false, staleCriticalCount: r.staleCriticalCount }) === "OK");
   }
 
   // ── D2.10: critic stale + status de bază BEHIND → rămâne BEHIND ──

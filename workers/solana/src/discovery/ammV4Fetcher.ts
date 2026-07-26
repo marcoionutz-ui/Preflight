@@ -7,18 +7,18 @@
  * Golden fixture (sig `3wbXj5KG4UJq…`): pool=`6rNVp5kn…`, coinMint=`52U1CVjH…`, pcMint=WSOL.
  *
  * Refolosește helper-ele PURE din `ammV4Shadow.ts` (single-source al layout-ului): `AMM_V4_INIT2_*`,
- * `findInitialize2Candidates` (tag 1 ȘI 21 conturi), `AmmV4Instruction`. Structura de fetch/retry oglindește
+ * `decodeTag` (primul byte = tag nativ), `AmmV4Instruction`. Structura de fetch/retry oglindește
  * `fetchCpmmInit` (același stil de tratare a `getParsedTransaction` + backoff).
  *
- * IMPORTANT: ZERO scrieri în Redis. Nu e încă wire-uit în `index.ts`/coadă — asta e D4c (după NF3, ca AMM V4
+ * IMPORTANT: ZERO scrieri în Redis. Wire-uit în `index.ts`/coadă la D4c (după NF3, ca AMM V4
  * să NU moștenească dead-letter-ul INVALID/UNAVAILABLE nerezolvat). Aici doar EXTRAGEM + validăm structural.
  */
 
 import type { Connection } from "@solana/web3.js";
 import { RAYDIUM_AMM_V4 } from "../config/programs";
 import {
-  AMM_V4_INIT2_ACCOUNT_COUNT, AMM_V4_POOL_IDX, AMM_V4_COIN_MINT_IDX, AMM_V4_PC_MINT_IDX,
-  findInitialize2Candidates, type AmmV4Instruction,
+  AMM_V4_INIT2_TAG, AMM_V4_INIT2_ACCOUNT_COUNT, AMM_V4_POOL_IDX, AMM_V4_COIN_MINT_IDX, AMM_V4_PC_MINT_IDX,
+  decodeTag, type AmmV4Instruction,
 } from "./ammV4Shadow";
 
 export interface AmmV4InitResult {
@@ -26,6 +26,28 @@ export interface AmmV4InitResult {
   mint0:       string; // coin mint (accounts[8])
   mint1:       string; // pc mint   (accounts[9])
 }
+
+/**
+ * D4c: rezultat DISCRIMINAT — AMM V4 NU trebuie să moștenească bug-ul pe care NF3 l-a reparat la pump.fun
+ * (un `null` care conflă „RPC n-a livrat" cu „tx eșuată" cu „layout nou" → retry → dead-letter fals → health
+ * DEGRADED blocat). Cele patru destine sunt separate explicit:
+ *   - `ok`          — EXACT o instrucțiune AMM V4 cu tag 1, cu 21 conturi + guard-uri trecute → scrie pool.
+ *   - `invalid`     — tx ADUS dar sigur nu-i o creare reușită: `FAILED_TX` (tx eșuată). → ACK.
+ *   - `unsupported` — NU arunca; quarantine durabil (dovadă pt. parserul următor):
+ *                     `AMBIGUOUS_INIT2` (>1 instrucțiune tag 1 în tx — nu ghicim care-i pool-ul),
+ *                     `UNKNOWN_INIT2_LAYOUT` (o singură tag 1 dar count ≠ 21 = layout Raydium schimbat),
+ *                     `KNOWN_LAYOUT_GUARDS_FAILED` (tag 1 / 21 dar guard-urile de distincție au picat),
+ *                     `INIT2_EVIDENCE_MISMATCH` (gate-ul scoped a văzut un Initialize2 REUȘIT dar tx-ul n-are
+ *                     NICIO instrucțiune tag 1 — dovezile se contrazic; NU ACK fail-open, păstrează suspiciunea).
+ *   - `unavailable` — `getParsedTransaction` a întors null după toate retry-urile (RPC) → retry (onest).
+ * (Clasificarea se face pe TOATE instrucțiunile cu tag 1, nu doar cele cu 21 conturi — altfel un tx cu
+ *  `[tag1/21, tag1/20]` ar fi acceptat ca `ok`, ignorând tăcut a doua tag 1 cu layout necunoscut.)
+ */
+export type AmmV4FetchOutcome =
+  | { status: "ok";          result: AmmV4InitResult }
+  | { status: "invalid";     reason: "FAILED_TX" }
+  | { status: "unsupported"; reason: "AMBIGUOUS_INIT2" | "UNKNOWN_INIT2_LAYOUT" | "KNOWN_LAYOUT_GUARDS_FAILED" | "INIT2_EVIDENCE_MISMATCH"; accountCounts: number[] }
+  | { status: "unavailable" };
 
 /** logsSubscribe poate livra logul înainte ca tx-ul să fie disponibil la RPC (ca la CPMM). */
 const FETCH_RETRY_DELAYS_MS = [0, 2_000, 5_000, 15_000];
@@ -54,16 +76,15 @@ export function parseAmmV4InitAccounts(accounts: readonly string[]): AmmV4InitRe
 }
 
 /**
- * Fetch tranzacția și extrage poolAddress/mint0/mint1 din instrucțiunea AMM V4 `Initialize2` (tag 1 / 21
- * conturi). Retry pe null/eroare RPC; întoarce null dacă tx nu poate fi găsit sau nu conține exact un
- * Initialize2 valid. Nu face retry pentru tx găsit dar cu instrucțiune invalidă (ca `fetchCpmmInit`).
- * retryDelaysMs injectabil pentru teste.
+ * Fetch tranzacția și clasifică DISCRIMINAT rezultatul (D4c — vezi `AmmV4FetchOutcome`). Retry pe null/eroare
+ * RPC (→ `unavailable`). Selecția instrucțiunii de creare e după TAG (1) + count (21), nu se ghicește din
+ * null-uri. retryDelaysMs injectabil pentru teste.
  */
 export async function fetchAmmV4Init(
   connection:    Connection,
   signature:     string,
   retryDelaysMs: number[] = FETCH_RETRY_DELAYS_MS,
-): Promise<AmmV4InitResult | null> {
+): Promise<AmmV4FetchOutcome> {
   let tx = null;
 
   for (let attempt = 0; attempt < retryDelaysMs.length; attempt++) {
@@ -83,8 +104,8 @@ export async function fetchAmmV4Init(
     }
   }
 
-  if (!tx) return null;
-  if (tx.meta?.err) return null; // tx eșuată → nu-i o creare de pool reușită (autonom, nu depinde de gate-ul din index.ts)
+  if (!tx) return { status: "unavailable" };                         // RPC n-a livrat → retry (onest)
+  if (tx.meta?.err) return { status: "invalid", reason: "FAILED_TX" }; // tx eșuată → nu-i creare reușită → ACK
 
   // Instrucțiunile AMM V4 (native → PartiallyDecodedInstruction cu `accounts` + `data`).
   const outer = tx.transaction.message.instructions;
@@ -102,9 +123,32 @@ export async function fetchAmmV4Init(
     ammIxs.push({ dataB58, accounts: accs.map((a) => a.toBase58()) });
   }
 
-  // Exact instrucțiunile Initialize2 reale (tag 1 / 21 conturi). Alte instrucțiuni AMM V4 (swap) sunt ignorate.
-  const init2 = findInitialize2Candidates(ammIxs);
-  if (init2.length !== 1) return null; // 0 = nu-i creare pool; >1 = ambiguu → nu ghicim
+  // Selecție PRIN TAG: TOATE instrucțiunile AMM V4 cu tag 1 (Initialize2), indiferent de count. buy/swap
+  // (alte tag-uri) sunt ignorate. Clasificăm pe MULȚIMEA COMPLETĂ de tag-1 (nu doar cele cu 21 conturi) —
+  // altfel `[tag1/21, tag1/20]` ar trece drept `ok`, ratând tăcut al doilea Initialize2 cu layout necunoscut.
+  const tag1Ixs = ammIxs.filter((ix) => decodeTag(ix.dataB58) === AMM_V4_INIT2_TAG);
 
-  return parseAmmV4InitAccounts(init2[0].accounts);
+  if (tag1Ixs.length === 0) {
+    // Gate-ul scoped a văzut un Initialize2 reușit, dar tx-ul n-are nicio instrucțiune tag 1 → dovezile se
+    // contrazic. NU ACK (fail-open) — quarantine (volumul AMM V4 e mic; mai bine păstrezi un suspect decât
+    // să arunci o posibilă creare reală).
+    return { status: "unsupported", reason: "INIT2_EVIDENCE_MISMATCH", accountCounts: [] };
+  }
+  if (tag1Ixs.length > 1) {
+    // Mai multe Initialize2 în același tx → ambiguu, nu ghicim care-i pool-ul → quarantine.
+    return { status: "unsupported", reason: "AMBIGUOUS_INIT2", accountCounts: tag1Ixs.map((i) => i.accounts.length) };
+  }
+
+  const candidate = tag1Ixs[0];
+  if (candidate.accounts.length !== AMM_V4_INIT2_ACCOUNT_COUNT) {
+    // O singură tag 1 dar count ≠ 21 → layout-ul Raydium s-a schimbat → quarantine (plasa NF3 pt. AMM V4).
+    return { status: "unsupported", reason: "UNKNOWN_INIT2_LAYOUT", accountCounts: [candidate.accounts.length] };
+  }
+
+  const parsed = parseAmmV4InitAccounts(candidate.accounts);
+  if (!parsed) {
+    // tag 1 / 21 dar guard-urile de distincție (pool≠mint, mint0≠mint1) au picat → variantă → quarantine.
+    return { status: "unsupported", reason: "KNOWN_LAYOUT_GUARDS_FAILED", accountCounts: [candidate.accounts.length] };
+  }
+  return { status: "ok", result: parsed };
 }

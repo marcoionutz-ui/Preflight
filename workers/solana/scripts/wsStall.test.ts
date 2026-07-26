@@ -27,10 +27,10 @@ const CLMM = "raydium_clmm", CPMM = "raydium_cpmm", PUMP = "pumpfun", AMM = "ray
 function main(): void {
   console.log("D1 — wsWatchdog (Solana WS hard-stall)");
 
-  // ── D1S.1: toate critice tăcute > stall (non-null) → HARD STALL ──
+  // ── D1S.1: toate cele 4 critice reale tăcute > stall (oglindește producția, D4c: amm_v4 critic) → HARD STALL ──
   {
     const progs = [
-      p(AMM, false, 10_000),      // non-critic, tăcut — irelevant
+      p(AMM, true, STALL + 30_000),  // D4c: amm_v4 e critic acum
       p(CLMM, true, STALL + 1),
       p(CPMM, true, STALL + 5_000),
       p(PUMP, true, STALL + 60_000),
@@ -80,15 +80,15 @@ function main(): void {
     check("D1S.5b. 2 vechi + 1 null, sesiune ÎNAINTE de prag → NU stall (null încă tânăr)", isWsStalled(progs, STALL, STALL - 1) === false);
   }
 
-  // ── D1S.6: doar AMM V4 (non-critic) tăcut, critice proaspete → NU stall ──
+  // ── D1S.6: AMM V4 (critic acum, D4c) tăcut dar restul critice proaspete → NU stall (moarte PARȚIALĂ) ──
   {
     const progs = [
-      p(AMM, false, STALL + 100_000), // non-critic mort de mult
+      p(AMM, true, STALL + 100_000), // critic mort de mult
       p(CLMM, true, 1_000),
       p(CPMM, true, 1_000),
       p(PUMP, true, 1_000),
     ];
-    check("D1S.6. non-critic (amm_v4) mort, critice vii → NU stall", isWsStalled(progs, STALL, OLD_SESSION) === false);
+    check("D1S.6. amm_v4 (critic) mort dar restul critice vii → NU stall (parțial, nu toate)", isWsStalled(progs, STALL, OLD_SESSION) === false);
   }
 
   // ── D1S.7: prag exact — un critic la lastLogAgeMs == stallMs → NU stall (strict >) ──
@@ -124,8 +124,8 @@ function main(): void {
   // ── D1S.9: fără programe critice (toate non-critice) → NU stall ──
   {
     const progs = [
-      p(AMM, false, STALL + 1),
-      p("x", false, STALL + 1),
+      p("diag_a", false, STALL + 1),
+      p("diag_b", false, STALL + 1),
     ];
     check("D1S.9. niciun program critic → NU stall", isWsStalled(progs, STALL, OLD_SESSION) === false);
   }
@@ -136,9 +136,10 @@ function main(): void {
   }
 
   // ── D1S.11: non-critic viu NU blochează stall-ul criticelor → stall ──
+  // (program non-critic SINTETIC — toate cele reale-s critice acum după D4c; funcția suportă încă flag-ul.)
   {
     const progs = [
-      p(AMM, false, 1_000),       // non-critic viu (irelevant)
+      p("diag_only", false, 1_000), // non-critic viu (irelevant pt. stall)
       p(CLMM, true, STALL + 1),
       p(CPMM, true, STALL + 1),
       p(PUMP, true, STALL + 1),

@@ -2,8 +2,9 @@
  * scripts/ammV4Fetcher.test.ts — D4b (fetcher determinist AMM V4 Initialize2).
  *
  * Testează `parseAmmV4InitAccounts` PUR pe GOLDEN FIXTURE-ul real (sig `3wbXj5KG4UJq…`, confirmat de
- * shadow-ul D4a.1: tag 1, 21 conturi) + `fetchAmmV4Init` cu Connection MOCK (outer/inner, filtrare programId,
- * tag/count, ignorare swap, ambiguitate, retry, tx eșuată) — stil `txFetcher.test.ts`.
+ * shadow-ul D4a.1: tag 1, 21 conturi) + `fetchAmmV4Init` cu Connection MOCK — outcome DISCRIMINAT (D4c):
+ * ok / invalid(FAILED_TX) / unsupported(AMBIGUOUS_INIT2|UNKNOWN_INIT2_LAYOUT|KNOWN_LAYOUT_GUARDS_FAILED|
+ * INIT2_EVIDENCE_MISMATCH) / unavailable — ca AMM V4 să NU moștenească bug-ul null-polisemic reparat în NF3.
  */
 
 import { parseAmmV4InitAccounts, fetchAmmV4Init } from "../src/discovery/ammV4Fetcher";
@@ -117,59 +118,78 @@ async function main(): Promise<void> {
   { const a = [...GOLDEN]; a[9] = a[8]; check("D4b.6. mint0 === mint1 → null", parseAmmV4InitAccounts(a) === null); }
   { const a = [...GOLDEN]; a[4] = "";   check("D4b.7. pool gol → null", parseAmmV4InitAccounts(a) === null); }
 
-  // ── fetchAmmV4Init (Connection mock) ──
+  // ── fetchAmmV4Init (Connection mock) — outcome DISCRIMINAT (D4c) ──
   {
-    const conn = mkConn([mkTx([init2Ix()])]);
-    const r = await fetchAmmV4Init(conn, "sig", FAST);
-    check("D4b.8. Initialize2 în OUTER → rezultat corect", r?.poolAddress === POOL && r?.mint0 === MINT0 && r?.mint1 === MINT1);
+    const r = await fetchAmmV4Init(mkConn([mkTx([init2Ix()])]), "sig", FAST);
+    check("D4b.8. Initialize2 în OUTER → ok (pool/mint0/mint1)",
+      r.status === "ok" && r.result.poolAddress === POOL && r.result.mint0 === MINT0 && r.result.mint1 === MINT1);
   }
   {
-    const conn = mkConn([mkTx([mkIx(OTHER, ["a", "b"], "1")], [init2Ix()])]);
-    const r = await fetchAmmV4Init(conn, "sig", FAST);
-    check("D4b.9. Initialize2 în INNER → rezultat corect", r?.poolAddress === POOL);
+    const r = await fetchAmmV4Init(mkConn([mkTx([mkIx(OTHER, ["a", "b"], "1")], [init2Ix()])]), "sig", FAST);
+    check("D4b.9. Initialize2 în INNER → ok", r.status === "ok" && r.result.poolAddress === POOL);
   }
   {
     // swap tag16 ÎNAINTE de Initialize2 → ia Initialize2, ignoră swap-ul
-    const conn = mkConn([mkTx([mkIx(AMM, GOLDEN.slice(0, 14), DATA_TAG16), init2Ix()])]);
-    const r = await fetchAmmV4Init(conn, "sig", FAST);
-    check("D4b.10. swap tag16 înainte de Initialize2 → ia Initialize2", r?.poolAddress === POOL);
+    const r = await fetchAmmV4Init(mkConn([mkTx([mkIx(AMM, GOLDEN.slice(0, 14), DATA_TAG16), init2Ix()])]), "sig", FAST);
+    check("D4b.10. swap tag16 înainte de Initialize2 → ok (ia Initialize2)", r.status === "ok" && r.result.poolAddress === POOL);
   }
   {
-    const conn = mkConn([mkTx([mkIx(AMM, GOLDEN.slice(0, 20), DATA_TAG1)])]); // tag1 dar 20 conturi
-    check("D4b.11. tag1 cu 20 conturi → null", (await fetchAmmV4Init(conn, "sig", FAST)) === null);
+    // tag1 dar 20 conturi → layout schimbat → unsupported UNKNOWN_INIT2_LAYOUT (NU aruncat)
+    const r = await fetchAmmV4Init(mkConn([mkTx([mkIx(AMM, GOLDEN.slice(0, 20), DATA_TAG1)])]), "sig", FAST);
+    check("D4b.11. tag1 cu 20 conturi → unsupported UNKNOWN_INIT2_LAYOUT (count [20])",
+      r.status === "unsupported" && r.reason === "UNKNOWN_INIT2_LAYOUT" && r.accountCounts.join(",") === "20");
   }
   {
-    const conn = mkConn([mkTx([mkIx(AMM, GOLDEN, DATA_TAG16)])]); // tag16 cu 21 conturi
-    check("D4b.12. tag16 cu 21 conturi → null", (await fetchAmmV4Init(conn, "sig", FAST)) === null);
+    // tag16 cu 21 conturi → niciun tag 1 → dovezile se contrazic (gate a văzut init2) → INIT2_EVIDENCE_MISMATCH
+    const r = await fetchAmmV4Init(mkConn([mkTx([mkIx(AMM, GOLDEN, DATA_TAG16)])]), "sig", FAST);
+    check("D4b.12. tag16 cu 21 conturi (niciun tag1) → unsupported INIT2_EVIDENCE_MISMATCH",
+      r.status === "unsupported" && r.reason === "INIT2_EVIDENCE_MISMATCH");
   }
   {
-    const conn = mkConn([mkTx([init2Ix(), init2Ix()])]); // două Initialize2 tag1/21
-    check("D4b.13. două Initialize2 → null (ambiguu)", (await fetchAmmV4Init(conn, "sig", FAST)) === null);
+    // două Initialize2 tag1/21 → ambiguu → unsupported AMBIGUOUS_INIT2 (nu ghicim care-i pool-ul)
+    const r = await fetchAmmV4Init(mkConn([mkTx([init2Ix(), init2Ix()])]), "sig", FAST);
+    check("D4b.13. două Initialize2 → unsupported AMBIGUOUS_INIT2 (count [21,21])",
+      r.status === "unsupported" && r.reason === "AMBIGUOUS_INIT2" && r.accountCounts.join(",") === "21,21");
+  }
+  {
+    // GAURA (varu): tag1/21 VALID + tag1/20 layout necunoscut → NU „ok" (nu ignora al doilea) → AMBIGUOUS [21,20]
+    const unknown20 = mkIx(AMM, GOLDEN.slice(0, 20), DATA_TAG1);
+    const r = await fetchAmmV4Init(mkConn([mkTx([init2Ix(), unknown20])]), "sig", FAST);
+    check("D4b.13c. tag1/21 + tag1/20 → unsupported AMBIGUOUS_INIT2 (count [21,20], NU ok)",
+      r.status === "unsupported" && r.reason === "AMBIGUOUS_INIT2" && r.accountCounts.join(",") === "21,20");
+  }
+  {
+    // tag1/21 dar guard-uri picate (pool===mint0) → unsupported KNOWN_LAYOUT_GUARDS_FAILED
+    const bad = [...GOLDEN]; bad[4] = bad[8];
+    const r = await fetchAmmV4Init(mkConn([mkTx([mkIx(AMM, bad, DATA_TAG1)])]), "sig", FAST);
+    check("D4b.13b. tag1/21 + guard picat → unsupported KNOWN_LAYOUT_GUARDS_FAILED",
+      r.status === "unsupported" && r.reason === "KNOWN_LAYOUT_GUARDS_FAILED" && r.accountCounts.join(",") === "21");
   }
   {
     // ParsedInstruction AMM V4 fără accounts/data → ignorată; + Initialize2 valid alături
-    const conn = mkConn([mkTx([mkParsedIx(AMM), init2Ix()])]);
-    const r = await fetchAmmV4Init(conn, "sig", FAST);
-    check("D4b.14. ParsedInstruction fără accounts/data ignorată → tot ia Initialize2", r?.poolAddress === POOL);
+    const r = await fetchAmmV4Init(mkConn([mkTx([mkParsedIx(AMM), init2Ix()])]), "sig", FAST);
+    check("D4b.14. ParsedInstruction fără accounts/data ignorată → ok", r.status === "ok" && r.result.poolAddress === POOL);
   }
   {
-    const conn = mkConn([null, null, mkTx([init2Ix()])]); // RPC null, null, apoi tx valid
-    const r = await fetchAmmV4Init(conn, "sig", FAST);
-    check("D4b.15. RPC null,null,tx → succes după retry", r?.poolAddress === POOL);
+    const r = await fetchAmmV4Init(mkConn([null, null, mkTx([init2Ix()])]), "sig", FAST); // RPC null,null,tx valid
+    check("D4b.15. RPC null,null,tx → ok după retry", r.status === "ok" && r.result.poolAddress === POOL);
+  }
+  check("D4b.16. RPC null la toate → unavailable", (await fetchAmmV4Init(mkConn([null, null, null, null]), "sig", FAST)).status === "unavailable");
+  {
+    let threw = false; let r: Awaited<ReturnType<typeof fetchAmmV4Init>> | null = null;
+    try { r = await fetchAmmV4Init(mkConn(["throw"]), "sig", FAST); } catch { threw = true; }
+    check("D4b.16b. RPC aruncă mereu → unavailable (fără throw)", threw === false && r?.status === "unavailable");
   }
   {
-    const conn = mkConn(["throw"]); // RPC aruncă la toate încercările
-    let threw = false; let r = null;
-    try { r = await fetchAmmV4Init(conn, "sig", FAST); } catch { threw = true; }
-    check("D4b.16. RPC aruncă mereu → null fără throw", threw === false && r === null);
+    // tx fără nicio instrucțiune AMM V4 → niciun tag 1 → INIT2_EVIDENCE_MISMATCH (nu ACK — gate a văzut init2)
+    const r = await fetchAmmV4Init(mkConn([mkTx([mkIx(OTHER, ["a", "b"], "1")])]), "sig", FAST);
+    check("D4b.17. tx fără AMM V4 → unsupported INIT2_EVIDENCE_MISMATCH",
+      r.status === "unsupported" && r.reason === "INIT2_EVIDENCE_MISMATCH");
   }
   {
-    const conn = mkConn([mkTx([mkIx(OTHER, ["a", "b"], "1")])]); // tx fără AMM V4
-    check("D4b.17. tx fără AMM V4 → null", (await fetchAmmV4Init(conn, "sig", FAST)) === null);
-  }
-  {
-    const conn = mkConn([mkTx([init2Ix()], [], { InstructionError: [0, "x"] })]); // tx eșuată (meta.err)
-    check("D4b.18. tx eșuată (meta.err) → null (chiar cu Initialize2)", (await fetchAmmV4Init(conn, "sig", FAST)) === null);
+    const r = await fetchAmmV4Init(mkConn([mkTx([init2Ix()], [], { InstructionError: [0, "x"] })]), "sig", FAST);
+    check("D4b.18. tx eșuată (meta.err) → invalid FAILED_TX (chiar cu Initialize2)",
+      r.status === "invalid" && r.reason === "FAILED_TX");
   }
 
   console.log("\n" + passed + " passed, " + failed + " failed");

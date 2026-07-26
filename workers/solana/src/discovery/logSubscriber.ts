@@ -27,8 +27,9 @@ export interface LogEvent {
 type LogCallback = (event: LogEvent) => void;
 
 /** D2: definiție program discovery + dacă e health-critical. `healthCritical:false` = subscripția e
- *  urmărită (contribuie la observed slot) dar staleness-ul ei NU degradează statusul, fiindcă n-are
- *  pipeline de procesare (ex. raydium_amm_v4 — pool-urile lui vin prin migrarea pump.fun / backfill). */
+ *  urmărită (contribuie la observed slot) dar staleness-ul ei NU degradează statusul.
+ *  D4c: `raydium_amm_v4` a fost promovat — acum ARE pipeline de procesare (fetchAmmV4Init → registry),
+ *  deci e `healthCritical:true` (tăcerea lui ascunde ratarea creărilor DIRECTE de pool AMM V4). */
 export interface DiscoveryProgramDef {
   name:           string;
   id:             string;
@@ -36,7 +37,7 @@ export interface DiscoveryProgramDef {
 }
 
 const DISCOVERY_PROGRAMS: DiscoveryProgramDef[] = [
-  { name: "raydium_amm_v4", id: RAYDIUM_AMM_V4,  healthCritical: false }, // fără pipeline de procesare → doar diagnostic
+  { name: "raydium_amm_v4", id: RAYDIUM_AMM_V4,  healthCritical: true  }, // D4c: pipeline live (Initialize2 → registry)
   { name: "raydium_clmm",   id: RAYDIUM_CLMM,    healthCritical: true  },
   { name: "raydium_cpmm",   id: RAYDIUM_CPMM,    healthCritical: true  },
   { name: "pumpfun",        id: PUMPFUN_PROGRAM, healthCritical: true  },
