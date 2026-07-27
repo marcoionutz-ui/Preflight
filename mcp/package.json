@@ -6,14 +6,15 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start -p ${PORT:-3000}",
-    "lint": "next lint"
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@preflight/schema": "*",
-    "@preflight/risk-layer": "*",
     "@modelcontextprotocol/sdk": "1.26.0",
-    "@supabase/ssr": "^0.12.0",
-    "@supabase/supabase-js": "^2.109.0",
+    "@preflight/risk-layer": "*",
+    "@preflight/schema": "*",
+    "@supabase/ssr": "^0.12.3",
+    "@supabase/supabase-js": "^2.106.0",
     "dotenv": "^17.4.2",
     "ioredis": "^5.10.1",
     "mcp-handler": "^1.1.0",

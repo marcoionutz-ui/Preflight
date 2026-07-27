@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "tsx --env-file=../../.env.local src/index.ts",
     "start": "tsx src/index.ts",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
     "test:a2": "tsx scripts/txFetcher.test.ts",
     "test:a3": "tsx scripts/mintDecimals.test.ts",
     "test:c6": "tsx scripts/discoveryQueue.test.ts",

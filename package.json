@@ -15,7 +15,9 @@
     "start": "npm run start --workspace=mcp",
     "dev:mcp": "npm run dev --workspace=mcp",
     "dev:worker": "npm run dev --workspace=@preflight/worker-evm",
-    "lint": "npm run lint --workspace=mcp"
+    "lint": "npm run lint --workspace=mcp",
+    "typecheck": "npm run typecheck --workspaces",
+    "test": "npm run test --workspaces --if-present"
   },
   "devDependencies": {
     "typescript": "^5"

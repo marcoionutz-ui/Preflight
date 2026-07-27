@@ -48,18 +48,25 @@ function main(): void {
 
   // ── D1.4 (socket ZOMBIE): ping, apoi zero pong → următorul tick termină ──
   {
-    let awaitingPong = false;
-    let terminated = false, pings = 0;
-    const tick = () => {
-      const t = heartbeatTick(awaitingPong);
-      awaitingPong = t.awaitingPong;
-      if (t.action === "terminate") terminated = true; else pings++;
-    };
-    tick();               // tick 1: ping (awaitingPong → true)
-    check("D1.4a. tick 1 → ping (aștept pong)", pings === 1 && terminated === false);
-    tick();               // tick 2: fără pong între timp → terminate
-    check("D1.4b. tick 2 fără pong → terminate", terminated === true);
-    check("D1.4c. nu a mai trimis un al doilea ping", pings === 1);
+    const first  = heartbeatTick(false);
+    const second = heartbeatTick(first.awaitingPong);
+
+    const pings =
+      Number(first.action === "ping") +
+      Number(second.action === "ping");
+
+    check(
+      "D1.4a. tick 1 → ping (aștept pong)",
+      first.action === "ping" && first.awaitingPong === true,
+    );
+    check(
+      "D1.4b. tick 2 fără pong → terminate",
+      second.action === "terminate",
+    );
+    check(
+      "D1.4c. nu a mai trimis un al doilea ping",
+      pings === 1,
+    );
   }
 
   // ── D1.5 (recuperare): pong întârziat înainte de tick → NU termină ──
