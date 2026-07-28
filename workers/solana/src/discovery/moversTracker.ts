@@ -89,6 +89,90 @@ function getHistoryStatus(
   return "READY";
 }
 
+/** E16: parse JSON care NU arunca — pe corupt intoarce null (apelantul sare intrarea). */
+function parseJsonOrNull<T>(raw: string): T | null {
+  try { return JSON.parse(raw) as T; } catch { return null; }
+}
+
+/** Rezultatul calculului per-pool. `absent` = fara snapshot (normal, tacut); `corrupt` = snapshot
+ *  neparsabil (E16 — sarim pool-ul, NU anulam tot batch-ul de movers). */
+export type PoolMoverOutcome =
+  | { ok: true;  mover: PriceMover; writeback: string | null }
+  | { ok: false; reason: "absent" | "corrupt" };
+
+/**
+ * E16: calculeaza mover-ul pentru UN pool din raw-urile Redis — PUR (fara Redis) → testabil izolat.
+ * Snapshot corupt → `{ok:false, reason:"corrupt"}` (apelantul sare pool-ul, batch-ul continua — un
+ * singur pool corupt nu mai anuleaza tot calculul de movers pana la 2h). Intrarile de history corupte
+ * sunt FILTRATE individual (un sample stricat nu pierde tot pool-ul). `writeback` = snapshot-ul
+ * re-serializat daca `knownPool` a fost corectat (8.0k-a2), altfel null.
+ */
+export function computePoolMover(
+  snapshotRaw:  string | null,
+  historyRaws:  string[],
+  isRegistered: boolean,
+  now:          number,
+): PoolMoverOutcome {
+  if (!snapshotRaw) return { ok: false, reason: "absent" };
+
+  const snap = parseJsonOrNull<PriceSnapshot>(snapshotRaw);
+  if (snap === null) return { ok: false, reason: "corrupt" };
+
+  // E16: intrarile de history corupte sunt sarite INDIVIDUAL (un sample stricat nu pierde tot pool-ul).
+  const history = historyRaws
+    .map(r => parseJsonOrNull<HistoryEntry>(r))
+    .filter((h): h is HistoryEntry => h !== null);
+
+  // 8.0k-a2: re-check knownPool vs registry (corectare stale data) — re-serializam pt. write-back.
+  let writeback: string | null = null;
+  if (isRegistered && !snap.knownPool) {
+    snap.knownPool = true;
+    writeback = JSON.stringify(snap);
+  }
+
+  const sampleCount        = history.length;
+  const currentAgeSec      = (now - snap.lastUpdatedAt) / 1000;
+  const oldestTs           = history.length > 0
+    ? history.reduce((min, h) => h.ts < min ? h.ts : min, history[0].ts)
+    : now;
+  const oldestSampleAgeSec = (now - oldestTs) / 1000;
+
+  const sample5m = findClosestSample(history, now - TARGET_5M_MS, TOLERANCE_5M);
+  const sample1h = findClosestSample(history, now - TARGET_1H_MS, TOLERANCE_1H);
+
+  const priceChange5mPct = (sample5m && sample5m.p !== 0)
+    ? (snap.priceInQuote - sample5m.p) / sample5m.p * 100
+    : null;
+  const priceChange1hPct = (sample1h && sample1h.p !== 0)
+    ? (snap.priceInQuote - sample1h.p) / sample1h.p * 100
+    : null;
+
+  const mover: PriceMover = {
+    chain:              "solana",
+    poolAddress:        snap.poolAddress,
+    program:            snap.program,
+    baseMint:           snap.baseMint,
+    quoteMint:          snap.quoteMint,
+    baseSymbol:         snap.baseSymbol,
+    quoteSymbol:        snap.quoteSymbol,
+    priceInQuote:       snap.priceInQuote,
+    priceUsd:           snap.priceUsd,
+    priceChange5mPct,
+    priceChange1hPct,
+    sampleCount,
+    currentAgeSec:      Math.round(currentAgeSec),
+    oldestSampleAgeSec: Math.round(oldestSampleAgeSec),
+    historyStatus:      getHistoryStatus(sampleCount, oldestSampleAgeSec, currentAgeSec),
+    coverage:           "SAMPLED",
+    source:             "SWAP_VAULT_DELTA",
+    knownPool:          snap.knownPool,
+    lastUpdatedAt:      snap.lastUpdatedAt,
+    computedAt:         now,
+  };
+
+  return { ok: true, mover, writeback };
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /**
@@ -136,62 +220,39 @@ async function calculateAndWriteMovers(now: number): Promise<void> {
 
   const movers: PriceMover[] = [];
 
+  let corruptCount = 0;
+
   for (let i = 0; i < poolAddresses.length; i++) {
-    const snapshotRaw = snapshotRaws[i];
-    if (!snapshotRaw) continue;
+    // E16: un pool corupt NU trebuie sa anuleze tot batch-ul. Inainte, un `JSON.parse` neguardat pe
+    // snapshot/history arunca → propaga din calculateAndWriteMovers → prins de maybeCalculateMovers →
+    // ZERO movers scrise, si recurent la fiecare 60s cat timp intrarea coruptа ramane in fereastra ZSET
+    // de 2h. Acum: calcul PUR per-pool care sare pool-ul corupt (nu arunca), plus o plasa try/catch.
+    let outcome: PoolMoverOutcome;
+    try {
+      outcome = computePoolMover(snapshotRaws[i], historyArrays[i] ?? [], Boolean(registryRaws[i]), now);
+    } catch (err) {
+      // Plasa de siguranta — computePoolMover foloseste parse-uri safe, dar orice throw neasteptat pe un
+      // singur pool ramane izolat, nu doboara batch-ul.
+      corruptCount++;
+      console.warn("[SOLANA][MOVERS] pool skip (throw) idx=" + i + ": " + (err as Error).message);
+      continue;
+    }
 
-    const snap: PriceSnapshot        = JSON.parse(snapshotRaw);
-    const historyRaw: string[]        = historyArrays[i] ?? [];
-    const history: HistoryEntry[]     = historyRaw.map(r => JSON.parse(r) as HistoryEntry);
+    if (!outcome.ok) {
+      if (outcome.reason === "corrupt") corruptCount++;
+      continue;
+    }
 
-    // 8.0k-a2: re-check knownPool vs registry (corectare stale data)
-    const isRegistered = Boolean(registryRaws[i]);
-    if (isRegistered && !snap.knownPool) {
-      snap.knownPool = true;
-      (writebackPipeline as any).set(snapshotKeys[i], JSON.stringify(snap), "KEEPTTL");
+    if (outcome.writeback !== null) {
+      (writebackPipeline as any).set(snapshotKeys[i], outcome.writeback, "KEEPTTL");
       writebackCount++;
     }
 
-    const sampleCount      = history.length;
-    const currentAgeSec    = (now - snap.lastUpdatedAt) / 1000;
-    const oldestTs         = history.length > 0
-      ? history.reduce((min, h) => h.ts < min ? h.ts : min, history[0].ts)
-      : now;
-    const oldestSampleAgeSec = (now - oldestTs) / 1000;
+    movers.push(outcome.mover);
+  }
 
-    const sample5m = findClosestSample(history, now - TARGET_5M_MS, TOLERANCE_5M);
-    const sample1h = findClosestSample(history, now - TARGET_1H_MS, TOLERANCE_1H);
-
-    const priceChange5mPct = (sample5m && sample5m.p !== 0)
-      ? (snap.priceInQuote - sample5m.p) / sample5m.p * 100
-      : null;
-
-    const priceChange1hPct = (sample1h && sample1h.p !== 0)
-      ? (snap.priceInQuote - sample1h.p) / sample1h.p * 100
-      : null;
-
-    movers.push({
-      chain:              "solana",
-      poolAddress:        snap.poolAddress,
-      program:            snap.program,
-      baseMint:           snap.baseMint,
-      quoteMint:          snap.quoteMint,
-      baseSymbol:         snap.baseSymbol,
-      quoteSymbol:        snap.quoteSymbol,
-      priceInQuote:       snap.priceInQuote,
-      priceUsd:           snap.priceUsd,
-      priceChange5mPct,
-      priceChange1hPct,
-      sampleCount,
-      currentAgeSec:      Math.round(currentAgeSec),
-      oldestSampleAgeSec: Math.round(oldestSampleAgeSec),
-      historyStatus:      getHistoryStatus(sampleCount, oldestSampleAgeSec, currentAgeSec),
-      coverage:           "SAMPLED",
-      source:             "SWAP_VAULT_DELTA",
-      knownPool:          snap.knownPool,
-      lastUpdatedAt:      snap.lastUpdatedAt,
-      computedAt:         now,
-    });
+  if (corruptCount > 0) {
+    console.warn("[SOLANA][MOVERS] skipped " + corruptCount + " corrupt/unparsable pool(s) (E16)");
   }
 
   // 8.0k-a2: flush write-backs (corectare snapshot-uri stale, o singura data per pool)
