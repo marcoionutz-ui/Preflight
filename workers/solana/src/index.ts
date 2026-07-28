@@ -33,7 +33,8 @@ import {
 import { buildHealth, writeHealth } from "./infra/health";
 import { recordProgramLog, snapshotProgramFreshness, computeProgramHealth, hasCriticalEvidence } from "./infra/programFreshness";
 import { isWsStalled } from "./infra/wsWatchdog";
-import { startLogSubscriptions, DISCOVERY_PROGRAM_HEALTH } from "./discovery/logSubscriber";
+import { startLogSubscriptions, DISCOVERY_PROGRAM_HEALTH, type LogEvent } from "./discovery/logSubscriber";
+import { runDiscoveryCallback } from "./discovery/discoveryCallback";
 import { handleAmmV4Shadow, logAmmV4Stats, isScopedAmmV4InitLog } from "./discovery/ammV4Shadow";
 import { fetchAmmV4Init } from "./discovery/ammV4Fetcher";
 import { isCpmmInitLog, fetchCpmmInit } from "./discovery/txFetcher";
@@ -75,7 +76,7 @@ function sleep(ms: number): Promise<void> {
 // și nu marchează nimic „văzut" până Redis nu confirmă.
 
 // ── Stats ────────────────────────────────────────────────────────────────────
-const stats = { events: 0, cpmmTotal: 0, clmmTotal: 0, ammV4Total: 0, pumpfunTotal: 0, deduped: 0, candidates: 0, fetched: 0, inserted: 0, launchesInserted: 0, dead: 0, invalid: 0, unsupported: 0, errors: 0 };
+const stats = { events: 0, cpmmTotal: 0, clmmTotal: 0, ammV4Total: 0, pumpfunTotal: 0, deduped: 0, candidates: 0, fetched: 0, inserted: 0, launchesInserted: 0, dead: 0, invalid: 0, unsupported: 0, errors: 0, callbackErrors: 0 };
 
 function logStats(): void {
   console.log(
@@ -93,7 +94,8 @@ function logStats(): void {
     + " clmmTotal=" + stats.clmmTotal
     + " ammV4Total=" + stats.ammV4Total
     + " pumpfunTotal=" + stats.pumpfunTotal
-    + " errors=" + stats.errors,
+    + " errors=" + stats.errors
+    + " callbackErrors=" + stats.callbackErrors,
   );
   logClmmStats();
   logPumpfunStats();
@@ -472,21 +474,10 @@ async function main(): Promise<void> {
 
   // D2: ancoră grația de freshness la momentul PORNIRII subscripțiilor (după backfill), nu la start proces.
   const subscriptionsStartedAt = Date.now();
-  startLogSubscriptions(connection, (event) => {
-    // D2: ORICE callback (chiar tx eșuată) dovedește liveness-ul WS → atât freshness per-program CÂT ȘI
-    // observed slot avansează ÎNAINTE de gate-ul `succeeded`. `observedSlot` = cel mai mare slot cu LOG
-    // WS văzut (nu cu tx REUȘITĂ) — altfel freshness ar zice „subscripția e vie" iar cursorul global
-    // „n-am auzit nimic" (contradicție: STARTING/BEHIND cu programe fresh). NU înseamnă „procesat":
-    // procesarea durabilă e semnalată separat de PROCESSED slot, avansat din drain după ack.
-    recordProgramLog(event.program, event.slot, Date.now());
-    advanceObservedSlot(event.slot).catch((err: Error) => {
-      console.error("[SOLANA][DISCOVERY] advanceObservedSlot error:", err.message);
-    });
-
-    if (!event.succeeded) return; // tx eșuată → subscripția e vie, dar NU intră în pipeline
-
-    stats.events++;
-
+  // E23: dispatch pipeline (cele 4 ramuri de discovery) — funcție locală injectată în boundary-ul de
+  // containment `runDiscoveryCallback` (discovery/discoveryCallback.ts). Închide peste
+  // `connection` / `enqueueDiscovery` / `stats` (locale în main).
+  const dispatchDiscoveryEvent = (event: LogEvent): void => {
     // ── AMM V4 pipeline (D4c — promovat din shadow) ──────────────────────────
     // Creare DIRECTĂ de pool AMM V4 (Initialize2 nativ, tag 1 / 21 conturi) — sursă RARĂ (1 creare în fereastra
     // auditată de ~14h, validată Dune D4a.1) dar reală. Shadow-ul rămâne (bounded, self-sampling) pt.
@@ -533,7 +524,20 @@ async function main(): Promise<void> {
       enqueueDiscovery("raydium_cpmm", event.signature, event.slot);
       return;
     }
-  });
+  };
+
+  // E23: boundary de crash-containment pentru onLogs — TOT callback-ul (liveness INCLUS) rulează în
+  // try; un throw sincron oriunde e prins (callbackErrors++ + log), procesul supraviețuiește. Vezi
+  // discovery/discoveryCallback.ts + scripts/discoveryCallback.test.ts.
+  startLogSubscriptions(connection, (event) =>
+    runDiscoveryCallback(event, {
+      recordProgramLog,
+      advanceObservedSlot,
+      dispatch: dispatchDiscoveryEvent,
+      stats,
+      now: Date.now,
+    }),
+  );
 
   // Drain background — guard per-proces + interval (non-blocant, ca schedulerele C3/C2 din EVM)
   let drainInFlight = false;
