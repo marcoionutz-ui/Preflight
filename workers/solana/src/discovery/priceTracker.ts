@@ -11,8 +11,12 @@
  *
  * Redis keys (b5):
  *   preflight:solana:price:{pool}           — current snapshot (TTL 10m)
- *   preflight:solana:price:history:{pool}   — ring buffer max 60 intrări (TTL 2h)
+ *   preflight:solana:price:history:{pool}   — ring buffer 60 intrări, DOWNSAMPLED >=60s (TTL 2h) — E17
  *   preflight:solana:price:pools            — ZSET index (score = lastUpdatedAt ms)
+ *
+ * E17: history-ul e downsampled la scriere — un punct nou doar dacă cel mai recent are >=60s (vezi
+ * priceHistory.ts). Fără asta, un pool hot umplea toate 60 sloturile în câteva minute → priceChange1hPct
+ * structural imposibil. Snapshot-ul live rămâne pe fiecare swap; doar bufferul e rărit.
  */
 
 import { getRedis }             from "../infra/redis";
@@ -26,6 +30,7 @@ import { resolveMintDecimals }  from "../infra/mintDecimals";
 import { SwapParseResult }      from "./swapParser";
 import { USDC_MINT, USDT_MINT, WSOL_MINT } from "../config/programs";
 import { maybeCalculateMovers }         from "./moversTracker";
+import { APPEND_HISTORY_LUA } from "./priceHistory";
 import { readSolPrice }                 from "../infra/solPriceOracle";
 import { maybeRecordObservedCandidate } from "./observedPool";
 import type {
@@ -39,6 +44,11 @@ export type PriceSnapshot = PreflightSolanaPriceSnapshot;
 // ── Constante ─────────────────────────────────────────────────────────────────
 
 const TTL_SEC = 10 * 60;
+
+// E17 — ring buffer history downsampled: 60 sloturi, spacing minim 60s → 60 puncte ≈ 1h (READY reachable).
+const HISTORY_TTL_SEC         = 2 * 60 * 60; // 2h
+const HISTORY_MAX_INDEX       = 59;          // ltrim 0..59 → 60 intrări
+const HISTORY_MIN_INTERVAL_MS = 60_000;      // scrie un punct nou doar dacă cel mai recent are >=60s
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -157,15 +167,25 @@ export async function recordPriceSnapshot(
     TTL_SEC,
   );
 
-  // b5: ring buffer history (max 60 intrări, TTL 2h) + ZSET index
+  // b5 + E17: ring buffer history (60 intrări, DOWNSAMPLED) + ZSET index — gate + scriere ATOMICE în Lua.
+  // Gate-ul (citește newest → decide) și LPUSH trebuie în ACEEAȘI unitate atomică: altfel două swap-uri
+  // concurente citesc același newest vechi, ambele trec gate-ul și scriu → un pool hot ar re-comprima
+  // history-ul sub burst. Lua rulează totul atomic în Redis (single-threaded): primul swap face append,
+  // următoarele văd deja ts-ul nou și sar. ZADD (index de activitate) e necondiționat. Fără fix, un pool hot
+  // umplea toate 60 sloturile în câteva minute → priceChange1hPct structural imposibil.
   const historyPoint: PreflightSolanaPricePoint = { p: priceInQuote, ts: snapshot.lastUpdatedAt };
-  const historyEntry = JSON.stringify(historyPoint);
-  const pipeline = redis.pipeline();
-  pipeline.lpush(KEY_PRICE_HISTORY(result.pool), historyEntry);
-  pipeline.ltrim(KEY_PRICE_HISTORY(result.pool), 0, 59);
-  pipeline.expire(KEY_PRICE_HISTORY(result.pool), 2 * 60 * 60);
-  pipeline.zadd(KEY_PRICE_POOLS, snapshot.lastUpdatedAt, result.pool);
-  await pipeline.exec();
+  await redis.eval(
+    APPEND_HISTORY_LUA,
+    2,
+    KEY_PRICE_HISTORY(result.pool),
+    KEY_PRICE_POOLS,
+    String(snapshot.lastUpdatedAt),
+    String(HISTORY_MIN_INTERVAL_MS),
+    JSON.stringify(historyPoint),
+    String(HISTORY_MAX_INDEX),
+    String(HISTORY_TTL_SEC),
+    result.pool,
+  );
 
   console.log(
     "[SOLANA][SWAP][" + progLabel + "][PRICE]"
