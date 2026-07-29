@@ -5,7 +5,7 @@
 
 import WebSocket from "ws";
 import type { ChainConfig } from "../config/chains";
-import { getQuoteFlowAsEth, toPoolConventionAmounts } from "./quoteFlow";
+import { getQuoteFlowAsEth, toPoolConventionAmounts, extractBaseQuote, resolveLpNativeAmount } from "./quoteFlow";
 import {
   wsClients, v3PoolMap, v4PoolMap,
   swapSubIds, swapSubSnapshot, pendingSwapSubs,
@@ -14,7 +14,6 @@ import {
   incrementSwapSubReqId,
 } from "../state/stores";
 import { applyScopedSubResponse, clearScopedSubsForChain } from "./scopedSubs";
-import { heartbeatTick } from "./heartbeat";
 import { recordSwap, recordLp } from "../risk/flow";
 import { getWsFlow } from "../risk/flow";
 import { promoteHotCandidate } from "../pipeline/transitions";
@@ -38,45 +37,12 @@ import {
   MIN_LP_REMOVE_ETH, INSTANT_LP_EXIT_PCT,
 } from "../config/constants";
 
-/** D1: intervalul heartbeat (ping + verificare pong). Un ping fără pong într-un interval → socket zombie. */
-const WS_PING_INTERVAL_MS = 30_000;
-
 function int256FromWord(hex64: string): bigint {
   const x = BigInt("0x" + hex64);
   return x >= (1n << 255n) ? x - (1n << 256n) : x;
 }
 
-/**
- * Extrage baseToken + quoteToken dintr-un SourcePool.
- * INDEXER pools au _raw.baseToken / _raw.quoteToken direct (IndexedPair format).
- * Gecko pools au _raw.relationships.{base,quote}_token.data.id cu prefix chain.
- */
-function extractBaseQuote(pool: { discoverySource?: string; _raw?: unknown; tokenAddress?: string }): { baseToken: string; quoteToken: string } {
-  const raw = pool._raw as Record<string, unknown> | undefined;
-  if (!raw) return { baseToken: pool.tokenAddress?.toLowerCase() ?? "", quoteToken: "" };
-
-  // IndexedPair format: baseToken / quoteToken direct pe _raw (indiferent de discoverySource)
-  const indexedBase  = typeof raw.baseToken  === "string" ? raw.baseToken.toLowerCase()  : "";
-  const indexedQuote = typeof raw.quoteToken === "string" ? raw.quoteToken.toLowerCase() : "";
-  if (indexedBase || indexedQuote) {
-    return {
-      baseToken:  indexedBase  || pool.tokenAddress?.toLowerCase() || "",
-      quoteToken: indexedQuote,
-    };
-  }
-
-  // Gecko format: relationships.{base,quote}_token.data.id are prefixul rețelei
-  // Gecko ("{gecko}_0x...", ex. "eth_0x..." / "base_0x...").
-  // A1: strip generic al prefixului "{alnum}_" — înainte se folosea chain.id
-  // ("ethereum"), dar prefixul Gecko e chain.gecko ("eth"), deci pe Ethereum
-  // adresa nu era curățată → quoteMetaFor nu potrivea → flow WS tăcut zero.
-  const stripGeckoPrefix = (id: string | undefined): string =>
-    id?.replace(/^[a-z0-9-]+_/i, "").toLowerCase() ?? "";
-  const rel = raw.relationships as Record<string, unknown> | undefined;
-  const base  = stripGeckoPrefix(((rel?.base_token  as Record<string, unknown>)?.data as Record<string, unknown>)?.id  as string | undefined);
-  const quote = stripGeckoPrefix(((rel?.quote_token as Record<string, unknown>)?.data as Record<string, unknown>)?.id as string | undefined);
-  return { baseToken: base, quoteToken: quote };
-}
+// extractBaseQuote a fost mutată în ./quoteFlow (pură, testabilă izolat — E18).
 
 export function connectChainWebSocket(chain: ChainConfig): void {
   if (!chain.wsUrl) {
@@ -85,30 +51,12 @@ export function connectChainWebSocket(chain: ChainConfig): void {
   }
   console.log(`[CHAIN MODE] ${chain.id.toUpperCase()} — full mode (scan + WS flow)`);
 
-  // D1: `handshakeTimeout` — o conexiune blocată în `CONNECTING` (TCP prins, dar upgrade-ul WS nu se
-  // finalizează niciodată) ar rămâne fără `open` ȘI fără `close` → reconnect-ul nu s-ar declanșa (aceeași
-  // familie ca socketul zombie, dar în faza de conectare). La timeout, `ws` emite `error` → `close` →
-  // reconnect (handlerele existente). Heartbeat-ul de mai jos acoperă socketul deja `OPEN` care devine mut.
-  const wsClient    = new WebSocket(chain.wsUrl, { handshakeTimeout: 30_000 });
+  const wsClient    = new WebSocket(chain.wsUrl);
   wsClients.set(chain.id, wsClient);
 
-  // D1: heartbeat cu detecție de socket ZOMBIE. Fără listener de `pong` + fără `terminate`, un socket
-  // half-open (TCP viu, server mut) rămâne `OPEN` pe veci → `close` nu se emite → reconnect-ul din
-  // `on("close")` nu se declanșează → flow tăcut zero. Acum: dacă ping-ul precedent n-a primit pong într-un
-  // interval → socket mort → `terminate()` (forțează `close` → reconnect). `pong` de la server resetează.
-  let awaitingPong = false;
-  wsClient.on("pong", () => { awaitingPong = false; });
   const pingInterval = setInterval(() => {
-    if (wsClient.readyState !== WebSocket.OPEN) return;
-    const tick = heartbeatTick(awaitingPong);
-    awaitingPong = tick.awaitingPong;
-    if (tick.action === "terminate") {
-      console.warn(`[WS ${chain.id}] no pong to last ping — terminating stale socket (D1 watchdog)`);
-      wsClient.terminate(); // → emite `close` → reconnect (handler existent)
-    } else {
-      wsClient.ping();
-    }
-  }, WS_PING_INTERVAL_MS);
+    if (wsClient.readyState === WebSocket.OPEN) wsClient.ping();
+  }, 30_000);
 
   wsClient.on("open", () => {
     console.log(`[WS] Connected to Alchemy ${chain.id.toUpperCase()}`);
@@ -277,7 +225,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
         const qflow3 = getQuoteFlowAsEth(chain, base3, quote3, amount0, amount1);
         if (qflow3.ok && qflow3.ethAmount > 0) {
           recordLp(chain.id, addr3, true, qflow3.ethAmount);
-          console.log(`[V3 LP ADD ${chain.id}] ${mem3.symbol} +${qflow3.ethAmount.toFixed(3)} ETH quote=${qflow3.quote}`);
+          console.log(`[V3 LP ADD ${chain.id}] ${mem3.symbol} +${qflow3.ethAmount.toFixed(3)} ${chain.id === "bsc" ? "BNB" : "ETH"} quote=${qflow3.quote}`);
         }
         return;
       }
@@ -301,7 +249,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
           recordLp(chain.id, addr3, false, qflow3.ethAmount);
           const poolEth    = poolLiquidity.get(chain.id, addr3)?.reserveEth ?? 0;
           const removedPct = poolEth > 0 ? qflow3.ethAmount / poolEth : 0;
-          console.log(`[V3 LP REMOVE ${chain.id}] ${mem3.symbol} -${qflow3.ethAmount.toFixed(3)} ETH (${(removedPct * 100).toFixed(1)}%) quote=${qflow3.quote}`);
+          console.log(`[V3 LP REMOVE ${chain.id}] ${mem3.symbol} -${qflow3.ethAmount.toFixed(3)} ${chain.id === "bsc" ? "BNB" : "ETH"} (${(removedPct * 100).toFixed(1)}%) quote=${qflow3.quote}`);
         }
         return;
       }
@@ -354,32 +302,42 @@ export function connectChainWebSocket(chain: ChainConfig): void {
       }
 
       // ── LP Mint ──────────────────────────────────────────────────────────
+      // E18: quote-agnostic (ca V3 Mint + swap). Înainte presupunea WETH-quoted (wethIsT0 + /1e18) →
+      // pe stable-quoted (token/USDT pe BSC) alegea rezerva greșită → recordLp cu valoare gunoi.
       if (topic0 === MINT_V2_TOPIC) {
-        const amount0   = BigInt("0x" + raw.slice(0,  64));
-        const amount1   = BigInt("0x" + raw.slice(64, 128));
-        const memLp     = memory.get(chain.id, pairAddress);
-        const tokenAddrLp = memLp?.tokenAddress.replace(`${chain.id}_`, "").toLowerCase() ?? "";
-        const wethIsT0  = chain.weth.toLowerCase() < tokenAddrLp.replace(/^[a-z]+_/, "");
-        const ethAmount = Number(wethIsT0 ? amount0 : amount1) / 1e18;
-        recordLp(chain.id, pairAddress, true, ethAmount);
-        console.log(`[LP ADD] ${memLp?.symbol} +${ethAmount.toFixed(3)} ETH`);
+        const amount0 = BigInt("0x" + raw.slice(0,  64));
+        const amount1 = BigInt("0x" + raw.slice(64, 128));
+        const memLp   = memory.get(chain.id, pairAddress);
+        const pool2Lp = watchedPoolCache.get(chain.id, pairAddress);
+        const lp      = resolveLpNativeAmount(chain, pool2Lp, amount0, amount1);
+        if (lp.ok) {
+          recordLp(chain.id, pairAddress, true, lp.ethAmount);
+          const nativeSymbol = chain.id === "bsc" ? "BNB" : "ETH";
+          console.log(`[LP ADD ${chain.id}] ${memLp?.symbol} +${lp.ethAmount.toFixed(3)} ${nativeSymbol} quote=${lp.quote}`);
+        }
       }
 
       // ── LP Burn ──────────────────────────────────────────────────────────
+      // E18: quote-agnostic (ca V3 Burn + swap). Detecția de rug (LP removed %) era MOARTĂ pe stable-quoted:
+      // valoarea removed era calculată presupunând WETH-quoted (rezerva greșită / 1e18) → prag niciodată atins
+      // corect. Acum reutilizează resolveLpNativeAmount → native-echivalent corect indiferent de quote.
       if (topic0 === BURN_V2_TOPIC) {
-        const amount0     = BigInt("0x" + raw.slice(0,  64));
-        const amount1     = BigInt("0x" + raw.slice(64, 128));
-        const memLp       = memory.get(chain.id, pairAddress);
-        const tokenAddrLp = memLp?.tokenAddress.replace(`${chain.id}_`, "").toLowerCase() ?? "";
-        const wethIsT0    = chain.weth.toLowerCase() < tokenAddrLp.replace(/^[a-z]+_/, "");
-        const ethAmount   = Number(wethIsT0 ? amount0 : amount1) / 1e18;
+        const amount0 = BigInt("0x" + raw.slice(0,  64));
+        const amount1 = BigInt("0x" + raw.slice(64, 128));
+        const memLp   = memory.get(chain.id, pairAddress);
+        const pool2Lp = watchedPoolCache.get(chain.id, pairAddress);
+        const lp      = resolveLpNativeAmount(chain, pool2Lp, amount0, amount1);
+        if (!lp.ok) return;
+        const ethAmount = lp.ethAmount;
         recordLp(chain.id, pairAddress, false, ethAmount);
 
+        // E18 nit varu: valoarea e native-echivalent (BNB pe BSC, altfel ETH) — nu eticheta mereu "ETH".
+        const nativeSymbol = chain.id === "bsc" ? "BNB" : "ETH";
         const poolEth    = poolLiquidity.get(chain.id, pairAddress)?.reserveEth ?? 0;
         const removedPct = poolEth > 0 ? ethAmount / poolEth : 0;
 
         console.log(
-          `[LP REMOVE] ${memLp?.symbol} -${ethAmount.toFixed(3)} ETH`
+          `[LP REMOVE ${chain.id}] ${memLp?.symbol} -${ethAmount.toFixed(3)} ${nativeSymbol} (quote=${lp.quote})`
           + (poolEth > 0 ? ` (${(removedPct * 100).toFixed(1)}% of pool)` : " (no reserve estimate)")
           + ` ⚠️`,
         );
@@ -410,10 +368,10 @@ export function connectChainWebSocket(chain: ChainConfig): void {
                 m.lastExitTime      = Date.now();
               }
 
-              console.log(`[LP EXIT INSTANT] ${trade.symbol} — ${ethAmount.toFixed(3)} ETH (${(removedPct * 100).toFixed(1)}%) removed`);
+              console.log(`[LP EXIT INSTANT] ${trade.symbol} — ${ethAmount.toFixed(3)} ${nativeSymbol} (${(removedPct * 100).toFixed(1)}%) removed`);
               await sendTelegram(
                 `⚡ <b>LP EXIT INSTANT</b> ${trade.symbol} [${chain.id.toUpperCase()}]\n`
-                + `LP removed ${ethAmount.toFixed(3)} ETH (${(removedPct * 100).toFixed(1)}% of pool)\n`
+                + `LP removed ${ethAmount.toFixed(3)} ${nativeSymbol} (${(removedPct * 100).toFixed(1)}% of pool)\n`
                 + `P&L: ${((exitPrice - entry) / entry * 100).toFixed(1)}%`,
               );
             }
