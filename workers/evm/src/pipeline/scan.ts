@@ -6,13 +6,13 @@
 
 import {
   activeWatch, hotCandidates, armedEntries,
-  v3PoolMap, v4PoolMap, routingOnlyPools, wsFlow, lpEvents, poolLiquidity,
+  v3PoolMap, v4PoolMap, routingOnlyPools, wsFlow, lpEvents, poolLiquidity, watchedPoolCache,
   memory, qualifiedSignalsBuffer, marketFollowList, geckoSourceHealth, WatchKind,
   dexscreenerSourceHealth, lastDsBoostedFetchAt, setLastDsBoostedFetchAt,
 } from "../state/stores";
 import { BUDGET, maxWatchForChain } from "../config/mode";
 import { updateMemory, saveMemoryToRedis } from "../state/memory";
-import { trackPool, tokenPools, tokenPoolKey } from "../infra/poolTracker";
+import { trackPool, tokenPools, tokenPoolKey, prunePairFromAuxState } from "../infra/poolTracker";
 import { getRedis } from "../infra/redis";
 import { sendTelegram } from "../infra/telegram";
 import { fetchDiscoveryPools, fetchPoolByAddress } from "../sources/gecko";
@@ -88,6 +88,8 @@ function pruneMemory(): void {
     if (ageMs > 48 * 60 * 60_000 && noRecentTrade) {
       memory.delete(chain, addr);
       poolLiquidity.delete(chain, addr); wsFlow.delete(chain, addr); lpEvents.delete(chain, addr);
+      // E20: prune și starea auxiliară (watchedPoolCache + tokenPools) — altfel cresc nemărginit → leak RSS.
+      prunePairFromAuxState(chain, mem.tokenAddress, addr, watchedPoolCache, tokenPools);
       pruned++;
     }
   }

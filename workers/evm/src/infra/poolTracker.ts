@@ -29,3 +29,28 @@ export function trackPool(tokenAddress: string, pairAddress: string, chain: stri
   tokenPools.set(key, known);
   return isNew && known.size > 1;
 }
+
+/**
+ * E20 (Confirmed · Intern L6/M5-mem): prune al stării AUXILIARE pentru un pair scos din `memory`.
+ * `watchedPoolCache` (SourcePool per pair, `stores.ts`) și `tokenPools` (Set<pair> per token, aici)
+ * creșteau NEMĂRGINIT — `pruneMemory` ștergea doar memory/poolLiquidity/wsFlow/lpEvents, nu și astea →
+ * leak RSS lent. Apelat din blocul de delete al lui `pruneMemory`. Maps INJECTATE → testabil izolat.
+ *   - `watchedCache`: cheiat pe pair (PairMap) → delete direct (pairKey normalizează, ca memory.delete).
+ *   - `tokenPools`: Set<pair> per token → scoate pair-ul (lowercase, cum îl stochează trackPool); dacă
+ *     set-ul rămâne gol → șterge cheia token-ului (altfel un token cu toate pool-urile pruned ar persista).
+ */
+export function prunePairFromAuxState(
+  chain: string,
+  tokenAddress: string,
+  pairAddress: string,
+  watchedCache: { delete(chain: string, address: string): boolean },
+  tokenPoolsMap: Map<string, Set<string>>,
+): void {
+  watchedCache.delete(chain, pairAddress);
+
+  const key = tokenPoolKey(chain, tokenAddress);
+  const set = tokenPoolsMap.get(key);
+  if (!set) return;
+  set.delete(pairAddress.toLowerCase());
+  if (set.size === 0) tokenPoolsMap.delete(key);
+}
