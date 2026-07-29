@@ -55,6 +55,28 @@ export interface SourcePool {
   _raw: unknown;
 }
 
+/**
+ * E19: rezultat DISCRIMINAT al unui fetch de pool după adresă. Distinge „chiar nu există" (`not_found`)
+ * de un eșec TRANZITORIU (`error` — 429/5xx/timeout/network) care NU e dovadă că pair-ul e mort. Callerii
+ * (ex. follow-list refresh, E19) NU trebuie să evicteze o pereche pe un `error`.
+ */
+export type PoolFetchOutcome =
+  | { status: "found"; pool: SourcePool }
+  | { status: "not_found" }
+  | { status: "error" };
+
+/**
+ * E19: mapează un status HTTP la o clasă de outcome, FAIL-CLOSED pe absență. Doar `2xx` = răspuns valid
+ * (`ok`) și doar `404`/`410` = dovadă explicită că pool-ul nu există (`not_found`). ORICE alt non-2xx —
+ * `401/403/408/425/429/5xx` sau `0` (network/timeout) — e `error` TRANZITORIU: nu tratăm auth/config/timeout
+ * drept „pool mort", altfel un burst de astfel de răspunsuri ar evacua fals perechi vii din follow-list.
+ */
+export function classifyPoolFetchHttpStatus(status: number): "ok" | "not_found" | "error" {
+  if (status >= 200 && status < 300) return "ok";
+  if (status === 404 || status === 410) return "not_found";
+  return "error";
+}
+
 export function cleanEvmAddress(addr: string | undefined | null): string | null {
   if (!addr) return null;
   const raw = addr.toLowerCase().trim();

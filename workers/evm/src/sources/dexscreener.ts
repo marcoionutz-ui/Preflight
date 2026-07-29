@@ -6,8 +6,8 @@
  */
 
 import type { ChainConfig } from "../config/chains";
-import type { DexType, SourcePool } from "./normalize";
-import { cleanEvmAddress, isBlockedSymbol } from "./normalize";
+import type { DexType, SourcePool, PoolFetchOutcome } from "./normalize";
+import { cleanEvmAddress, isBlockedSymbol, classifyPoolFetchHttpStatus } from "./normalize";
 import { V3_DEXES } from "../config/constants";
 
 const DS_API    = "https://api.dexscreener.com";
@@ -83,14 +83,34 @@ function normalizeDsPair(raw: any, chain: ChainConfig): SourcePool | null {
  * Fetch pair by pair address — primary DexScreener lookup.
  * Fallback pentru când Gecko fetchPoolByAddress eșuează.
  */
+/**
+ * E19: fetch DS pair după adresă cu STATUS discriminat, FAIL-CLOSED pe absență. Clasificarea HTTP e delegată
+ * la `classifyPoolFetchHttpStatus`: doar `404/410` = `not_found`; orice alt non-2xx (`401/403/408/429/5xx`) sau
+ * `0` (network/timeout, din `dsGetWithStatus`) → `error` TRANZITORIU. `2xx` fără pair → `not_found`; altfel `found`.
+ */
+export async function fetchDsPairByAddressStatus(
+  chain:       ChainConfig,
+  pairAddress: string,
+): Promise<PoolFetchOutcome> {
+  const { status, data } = await dsGetWithStatus(`${DS_LATEST}/pairs/${chain.id}/${pairAddress}`);
+  const httpStatus = classifyPoolFetchHttpStatus(status);
+  if (httpStatus === "error")     return { status: "error" };
+  if (httpStatus === "not_found") return { status: "not_found" };
+  const pair = data?.pairs?.[0] ?? null;
+  if (!pair) return { status: "not_found" };
+  // E19: pair PREZENT dar normalize-null NU e absență — DexScreener a confirmat obiectul, doar payload-ul e
+  // momentan inutilizabil (priceUsd 0, formă neașteptată etc.). Conservator → `error`, nu incrementa missCount.
+  const pool = normalizeDsPair(pair, chain);
+  return pool ? { status: "found", pool } : { status: "error" };
+}
+
+/** Wrapper backward-compat: `SourcePool | null`. */
 export async function fetchDsPairByAddress(
   chain:       ChainConfig,
   pairAddress: string,
 ): Promise<SourcePool | null> {
-  const data = await dsGet(`${DS_LATEST}/pairs/${chain.id}/${pairAddress}`);
-  const pair = data?.pairs?.[0] ?? null;
-  if (!pair) return null;
-  return normalizeDsPair(pair, chain);
+  const out = await fetchDsPairByAddressStatus(chain, pairAddress);
+  return out.status === "found" ? out.pool : null;
 }
 
 /**

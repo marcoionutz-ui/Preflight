@@ -7,12 +7,13 @@
     "start": "tsx src/index.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
     "test:a5": "tsx scripts/quoteFlow.test.ts",
-    "test": "npm run test:a5 && npm run test:c3 && npm run test:d3 && npm run test:d5 && npm run test:d1 && npm run test:e20",
+    "test": "npm run test:a5 && npm run test:c3 && npm run test:d3 && npm run test:d5 && npm run test:d1 && npm run test:e20 && npm run test:e19",
     "test:c3": "tsx scripts/indexedFreshness.test.ts",
     "test:d3": "tsx scripts/subscriptionConfirmation.test.ts",
     "test:d5": "tsx scripts/poolMapRebuild.test.ts",
     "test:d1": "tsx scripts/heartbeat.test.ts",
-    "test:e20": "tsx scripts/pruneState.test.ts"
+    "test:e20": "tsx scripts/pruneState.test.ts",
+    "test:e19": "tsx scripts/followRefresh.test.ts"
   },
   "dependencies": {
     "@preflight/schema": "*",

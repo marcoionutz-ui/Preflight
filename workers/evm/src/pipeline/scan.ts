@@ -15,9 +15,10 @@ import { updateMemory, saveMemoryToRedis } from "../state/memory";
 import { trackPool, tokenPools, tokenPoolKey, prunePairFromAuxState } from "../infra/poolTracker";
 import { getRedis } from "../infra/redis";
 import { sendTelegram } from "../infra/telegram";
-import { fetchDiscoveryPools, fetchPoolByAddress } from "../sources/gecko";
+import { fetchDiscoveryPools, fetchPoolByAddressStatus } from "../sources/gecko";
 import { fetchIndexedDiscoveryPools, getIndexedSourceHealth } from "../sources/indexed";
-import { fetchDsPairByAddress, fetchDsTokenPairs, fetchDsBoostedTokens } from "../sources/dexscreener";
+import { fetchDsPairByAddress, fetchDsPairByAddressStatus, fetchDsTokenPairs, fetchDsBoostedTokens } from "../sources/dexscreener";
+import { resolveFollowMiss } from "./followRefresh";
 import { isBlockedSymbol } from "../sources/normalize";
 import type { SourcePool } from "../sources/normalize";
 import { CHAINS } from "../config/chains";
@@ -981,24 +982,34 @@ export async function runFollowRefresh(): Promise<void> {
     if (!chainCfg) continue;
 
     try {
-      let pool = await fetchPoolByAddress(chainCfg, addr);
+      // E19: fetch cu STATUS discriminat. Un 429/5xx/timeout (`error`) e TRANZITORIU — NU dovadă că pair-ul
+      // e mort. Urmărim `transientError` peste ambele surse: dacă vreuna a eșuat tranzitoriu, nu penalizăm.
+      const geckoOut = await fetchPoolByAddressStatus(chainCfg, addr);
+      let pool: SourcePool | null = geckoOut.status === "found" ? geckoOut.pool : null;
+      let transientError = geckoOut.status === "error";
 
-      // Fallback: DexScreener dacă Gecko direct fetch eșuează
+      // Fallback: DexScreener dacă Gecko nu a întors un pool (miss real SAU eroare tranzitorie)
       if (!pool) {
-        pool = await fetchDsPairByAddress(chainCfg, addr);
-        if (pool) {
+        const dsOut = await fetchDsPairByAddressStatus(chainCfg, addr);
+        if (dsOut.status === "found") {
+          pool = dsOut.pool;
           console.log(`[FOLLOW DS FALLBACK] ${chain}:${addr.slice(0, 12)}... — Gecko miss, DexScreener hit`);
+        } else if (dsOut.status === "error") {
+          transientError = true;
         }
       }
 
       if (!pool) {
-        const missCount = (entry.missCount ?? 0) + 1;
-        if (missCount >= FOLLOW_MAX_MISSES) {
+        // E19: pe eroare tranzitorie → skip (nu atinge missCount, nu evictă). Doar un not_found REAL
+        // avansează missCount și, la prag, evictă. FOLLOW_TTL_MS rămâne backstop-ul pt. perechile moarte.
+        const decision = resolveFollowMiss(entry, transientError, FOLLOW_MAX_MISSES);
+        if (decision.action === "evict") {
           marketFollowList.delete(chain, addr);
-          console.log(`[FOLLOW EVICT] ${chain}:${addr.slice(0, 12)}... — ${missCount} consecutive misses`);
-        } else {
-          marketFollowList.set(chain, addr, { ...entry, lastRefreshedAt: now, missCount });
+          console.log(`[FOLLOW EVICT] ${chain}:${addr.slice(0, 12)}... — ${(entry.missCount ?? 0) + 1} consecutive misses`);
+        } else if (decision.action === "increment") {
+          marketFollowList.set(chain, addr, { ...entry, lastRefreshedAt: now, missCount: decision.missCount });
         }
+        // decision.action === "skip" → lăsăm intrarea neatinsă (missCount și lastRefreshedAt păstrate)
         continue;
       }
 

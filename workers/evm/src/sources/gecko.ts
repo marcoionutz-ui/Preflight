@@ -6,7 +6,7 @@
 
 import type { ChainConfig } from "../config/chains";
 import { GECKO_BASE } from "../config/constants";
-import { normalizePool, type SourcePool } from "./normalize";
+import { normalizePool, classifyPoolFetchHttpStatus, type SourcePool, type PoolFetchOutcome } from "./normalize";
 import { geckoSourceHealth } from "../state/stores";
 
 async function fetchWithTimeout(url: string, ms = 8_000): Promise<Response> {
@@ -68,19 +68,40 @@ export async function fetchDiscoveryPools(chain: ChainConfig): Promise<SourcePoo
   }
 }
 
+/**
+ * E19: fetch pool după adresă cu STATUS discriminat, FAIL-CLOSED pe absență. Clasificarea HTTP e delegată la
+ * `classifyPoolFetchHttpStatus`: doar `404/410` = `not_found`; orice alt non-2xx (`401/403/408/429/5xx`) sau
+ * network/timeout (catch) → `error` TRANZITORIU (NU dovadă că pair-ul e mort). `2xx` fără `data` sau
+ * normalize-null → `not_found`; altfel `found`.
+ */
+export async function fetchPoolByAddressStatus(
+  chain: ChainConfig,
+  pairAddress: string,
+): Promise<PoolFetchOutcome> {
+  try {
+    const res = await fetchWithTimeout(`${GECKO_BASE}/networks/${chain.gecko}/pools/${pairAddress}`);
+    const httpStatus = classifyPoolFetchHttpStatus(res.status);
+    if (httpStatus === "error")     return { status: "error" };
+    if (httpStatus === "not_found") return { status: "not_found" };
+    const json = await res.json() as any;
+    if (!json.data) return { status: "not_found" };
+    // E19: `data` PREZENT dar normalize-null NU e absență — pair-ul a fost confirmat, doar payload-ul e
+    // momentan inutilizabil (priceUsd 0/absent, formă neașteptată, symbol/addr nenormalizabil). Politică
+    // conservatoare → `error` (tranzitoriu), ca să NU incrementăm missCount pe un pair confirmat viu.
+    const pool = normalizePool(json.data, chain);
+    return pool ? { status: "found", pool } : { status: "error" };
+  } catch {
+    return { status: "error" };
+  }
+}
+
+/** Wrapper backward-compat: `SourcePool | null` (found→pool, altfel null). */
 export async function fetchPoolByAddress(
   chain: ChainConfig,
   pairAddress: string,
 ): Promise<SourcePool | null> {
-  try {
-    const res = await fetchWithTimeout(`${GECKO_BASE}/networks/${chain.gecko}/pools/${pairAddress}`);
-    if (!res.ok) return null;
-    const json = await res.json() as any;
-	if (!json.data) return null;
-	return normalizePool(json.data, chain);
-  } catch {
-    return null;
-  }
+  const out = await fetchPoolByAddressStatus(chain, pairAddress);
+  return out.status === "found" ? out.pool : null;
 }
 
 // Re-export pentru backward compat cu codul care folosea fetchWithTimeout direct
