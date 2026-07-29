@@ -9,7 +9,9 @@
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
     "test:e9": "tsx lib/db/redis.test.ts",
-    "test": "npm run test:e9"
+    "test:e14": "tsx lib/mcp/keyFreshness.test.ts",
+    "test:e15": "tsx lib/mcp/dropsConfidence.test.ts",
+    "test": "npm run test:e9 && npm run test:e14 && npm run test:e15"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.26.0",

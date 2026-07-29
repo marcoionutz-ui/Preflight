@@ -166,6 +166,25 @@ export interface RedisContext {
   pfPipeline:  PreflightSignalPipelineEntry[] | null;
   pfQualified: PreflightQualifiedSignal[]    | null;
   pfDrops:          PreflightDrop[] | null;
+  // E15 (varu R4): recent_drops citibilă pe TOATE chain-urile cunoscute (prezentă + JSON array valid). Distinge
+  // „no data / corupt / lipsă pe un chain" de „zero drops". Per-chain în recentDropsReadableByChain.
+  recentDropsReadable:        boolean;
+  recentDropsReadableByChain: Record<string, boolean>;
+  // E14 (varu R4): metadata multichain pt. agregarea ONESTĂ a prospețimii pe cel mai slab chain CUNOSCUT
+  // (knownChains), nu pe max (care ascunde un chain mort). liveChains = heartbeat proaspăt.
+  snapshotSavedAtByChain: Record<string, number>;
+  statesNewestAtByChain:  Record<string, number>;
+  // E14 (varu R4): prezența PER-CHAIN a cheilor agregate (active_watch/hot_candidates/armed_entries/pair_states).
+  // `keyExists.*` e „există pe ≥1 chain" → o cheie lipsă pe un chain cunoscut ar raporta fals prospețime. Tool-ul
+  // cere prezență pe TOATE chain-urile cunoscute (completeOnKnownChains) înainte de a revendica prospețime.
+  keyPresentByChain: {
+    pair_states:    Record<string, boolean>;
+    active_watch:   Record<string, boolean>;
+    hot_candidates: Record<string, boolean>;
+    armed_entries:  Record<string, boolean>;
+  };
+  knownChains:            string[];
+  liveChains:             string[];
   pipelineCoverage: PipelineCoverage | null;
   scannerStats:     ScannerStats | null;
   pfLifecycle:      LifecycleEntry[] | null;

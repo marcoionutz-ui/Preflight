@@ -96,13 +96,17 @@ export async function readAllRedis(): Promise<RedisContext | null> {
 
   // worker_snapshot: {memory, poolReserveEth, savedAt, version} → merge sub-obiectele
   // (savedAt = cel mai recent între chain-uri).
-  const mergeSnapshot = (raws: (string | null)[]): WorkerSnapshot | null => {
+  // E14 (varu R2/B4): pe lângă merge (savedAt=max), ținem savedAt PER-CHAIN. Merged savedAt=max ascunde un
+  // chain activ mort (Base 5s + BSC 8m → agregat 5s → „online" fals). Tool-ul agregă pe cel mai SLAB chain activ.
+  const mergeSnapshot = (raws: (string | null)[]): { snapshot: WorkerSnapshot | null; savedAtByChain: Record<string, number> } => {
     const memory:         Record<string, unknown> = {};
     const poolReserveEth: Record<string, unknown> = {};
+    const savedAtByChain: Record<string, number> = {};
     let savedAt: number | null = null;
     let version: string | null = null;
     let any = false;
-    for (const raw of raws) {
+    for (let i = 0; i < raws.length; i++) {
+      const raw = raws[i];
       if (raw == null) continue;
       const snap = safeJson<WorkerSnapshot | null>(raw, null, "worker_snapshot");
       if (!snap) continue;
@@ -110,33 +114,45 @@ export async function readAllRedis(): Promise<RedisContext | null> {
       Object.assign(memory,         (snap as any).memory ?? {});
       Object.assign(poolReserveEth, (snap as any).poolReserveEth ?? {});
       const sv = (snap as any).savedAt;
-      if (typeof sv === "number" && (savedAt === null || sv > savedAt)) {
-        savedAt = sv;
-        version = (snap as any).version ?? null; // versiunea vine din snapshot-ul cel mai NOU
+      if (typeof sv === "number" && Number.isFinite(sv)) {
+        savedAtByChain[evmChains[i]] = sv;
+        if (savedAt === null || sv > savedAt) {
+          savedAt = sv;
+          version = (snap as any).version ?? null; // versiunea vine din snapshot-ul cel mai NOU
+        }
       } else if (savedAt === null) {
         version = version ?? (snap as any).version ?? null; // fallback: niciun savedAt numeric
       }
     }
-    return any ? ({ memory, poolReserveEth, savedAt, version } as unknown as WorkerSnapshot) : null;
+    return { snapshot: any ? ({ memory, poolReserveEth, savedAt, version } as unknown as WorkerSnapshot) : null, savedAtByChain };
   };
-  const snapshotMerged = mergeSnapshot(snapshotRaws);
+  const { snapshot: snapshotMerged, savedAtByChain: snapshotSavedAtByChain } = mergeSnapshot(snapshotRaws);
 
   // B4b: array-urile sunt acum chain-scoped (o cheie per-chain) → MGET + concat.
   // `any` = a existat vreo cheie (păstrează semantica keyExists / pfX-nullability).
   // B4b: array-urile per-chain sunt newest-first individual, dar concat-ul le
   // grupează pe chain → re-sortăm global DESC pe timestamp, ca să restaurăm
   // "newest-first" pe care consumatorii cu filter+.slice(0,N) o presupun.
-  const mergeChainArrays = <T,>(raws: (string | null)[], label: string, tsOf: (x: T) => number): { merged: T[]; any: boolean } => {
+  const mergeChainArrays = <T,>(raws: (string | null)[], label: string, tsOf: (x: T) => number): { merged: T[]; any: boolean; allReadable: boolean } => {
     const merged: T[] = [];
     let any = false;
+    let allReadable = true;
     for (const raw of raws) {
       if (raw == null) continue;
       any = true;
-      const arr = safeJson<T[]>(raw, [], label);
-      if (Array.isArray(arr)) merged.push(...arr);
+      // E15 (varu R2): validitate PER-PAYLOAD. safeJson dă [] și pe corupt → nu putem distinge din `merged`.
+      // Parse explicit: un chain DEȚINUT cu payload corupt / non-array → allReadable=false (nu „zero drops").
+      try {
+        const p = JSON.parse(raw);
+        if (Array.isArray(p)) merged.push(...(p as T[]));
+        else { allReadable = false; console.warn(`[REDIS PARSE ERROR] key:${label} — not an array, skipping`); }
+      } catch (err) {
+        allReadable = false;
+        console.warn(`[REDIS PARSE ERROR] key:${label} — invalid JSON, skipping`, err instanceof Error ? err.message : err);
+      }
     }
     merged.sort((a, b) => (Number(tsOf(b)) || 0) - (Number(tsOf(a)) || 0));
-    return { merged, any };
+    return { merged, any, allReadable };
   };
   const eventsM    = mergeChainArrays<PipelineEvent>(eventsRaws, "pipeline_events", e => e.ts);
   const dropsM     = mergeChainArrays<PreflightDrop>(dropsRaws, "recent_drops", d => d.droppedAt);
@@ -313,6 +329,55 @@ export async function readAllRedis(): Promise<RedisContext | null> {
     calculatedAt:      now,
   } : null;
 
+  // E14/E15 (varu R4): model KNOWN vs LIVE. knownChains = ORICE amprentă worker (runtime/snapshot/states);
+  // liveChains = heartbeat proaspăt (chainsActive). Un chain cunoscut care a MURIT (heartbeat expirat) NU
+  // dispare din health — altfel worstActive(...) ar vedea doar chain-ul viu și ar raporta fals „fresh".
+  const knownChains: string[] = [];
+  for (let i = 0; i < evmChains.length; i++) {
+    if (workerRuntimeRaws[i] != null || snapshotRaws[i] != null || statesRaws[i] != null) knownChains.push(evmChains[i]);
+  }
+  // states: cel mai nou updatedAt PER-CHAIN (din raw-ul per-chain, înainte de merge) — pt. agregare weakest-link
+  // (o stare Base proaspătă nu trebuie să mascheze stările BSC vechi).
+  const statesNewestAtByChain: Record<string, number> = {};
+  for (let i = 0; i < statesRaws.length; i++) {
+    const raw = statesRaws[i];
+    if (raw == null) continue;
+    const obj = safeJson<Record<string, { updatedAt?: number }>>(raw, {}, "pair_states");
+    let newest = 0;
+    for (const st of Object.values(obj)) { const u = Number(st?.updatedAt); if (Number.isFinite(u)) newest = Math.max(newest, u); }
+    if (newest > 0) {
+      statesNewestAtByChain[evmChains[i]] = newest;
+    } else {
+      // E14 (varu R4): cheie PREZENTĂ dar fără pair-uri (`{}` sănătos — un chain viu care momentan n-are pairs).
+      // Fără proxy, un chain sănătos gol ar lipsi din agregare → statesAgg incomplet → pair_states fals „unknown".
+      // Folosim savedAt-ul worker_snapshot per-chain ca proxy de liveness (cheie absentă rămâne missing: `continue`).
+      const snapAt = snapshotSavedAtByChain[evmChains[i]];
+      if (typeof snapAt === "number" && Number.isFinite(snapAt)) statesNewestAtByChain[evmChains[i]] = snapAt;
+    }
+  }
+  // recent_drops: readability PER-CHAIN — cheie prezentă ȘI JSON array valid. Absent pe un chain CUNOSCUT =
+  // fără acoperire (nu revendicăm „zero drops" global); corupt → false. `mergeChainArrays` sare `raw===null`
+  // și ar lăsa allReadable=true chiar dacă un chain cunoscut n-a scris cheia — de-aia urmărim per-chain aici.
+  const recentDropsReadableByChain: Record<string, boolean> = {};
+  for (let i = 0; i < dropsRaws.length; i++) {
+    const raw = dropsRaws[i];
+    if (raw == null) { recentDropsReadableByChain[evmChains[i]] = false; continue; }
+    try { recentDropsReadableByChain[evmChains[i]] = Array.isArray(JSON.parse(raw)); }
+    catch { recentDropsReadableByChain[evmChains[i]] = false; }
+  }
+  const recentDropsReadable = knownChains.length > 0 && knownChains.every(c => recentDropsReadableByChain[c] === true);
+
+  // E14 (varu R4): prezența PER-CHAIN a cheilor agregate. `keyExists.*` e „există pe ≥1 chain" → o cheie prezentă
+  // pe Base dar LIPSĂ pe BSC (chain cunoscut) ar raporta fals prospețime din snapshot-urile globale fresh. Urmărim
+  // prezența per-chain (ca la recent_drops) → tool-ul cere prezență pe TOATE chain-urile cunoscute înainte de a
+  // revendica prospețime; altfel quality "unknown". (pair_states e guvernată separat de proxy-ul snapshot de mai sus.)
+  const keyPresentByChain = {
+    pair_states:    Object.fromEntries(evmChains.map((c, i) => [c, statesRaws[i] != null])),
+    active_watch:   Object.fromEntries(evmChains.map((c, i) => [c, watchRaws[i]  != null])),
+    hot_candidates: Object.fromEntries(evmChains.map((c, i) => [c, hotRaws[i]    != null])),
+    armed_entries:  Object.fromEntries(evmChains.map((c, i) => [c, armedRaws[i]  != null])),
+  };
+
   return {
     now,
     states:   statesM.merged,
@@ -337,7 +402,21 @@ export async function readAllRedis(): Promise<RedisContext | null> {
     pfMomentum:       momentumM.any ? momentumM.merged : null,
     pfPipeline:       pipelineM.any ? pipelineM.merged : null,
     pfQualified:      qualifiedM.any ? qualifiedM.merged : null,
-    pfDrops: dropsM.any ? dropsM.merged : null,
+    // E15 (varu R4 cleanup): pfDrops non-null DOAR când recent_drops e citibilă pe TOATE chain-urile cunoscute
+    // (recentDropsReadable). Vechiul `dropsM.any && dropsM.allReadable` sărea cheia absentă pe un chain cunoscut
+    // (allReadable ignoră null-urile) → putea da date PARȚIALE (Base valid, BSC cheie lipsă). Acum protejăm și
+    // ceilalți consumatori, nu doar tp_recent_pipeline_drops (care verifică separat recentDropsReadable).
+    pfDrops: recentDropsReadable ? dropsM.merged : null,
+    // E15: readable = TOATE chain-urile cunoscute au recent_drops prezentă ȘI JSON array valid (per-chain).
+    recentDropsReadable,
+    recentDropsReadableByChain,
+    // E14 (varu R4): snapshot savedAt per-chain + states newest per-chain + known/live chains → tool-ul agregă
+    // prospețimea pe cel mai slab chain CUNOSCUT (nu max, care ascunde un chain mort), și expune runtime-heartbeat-missing.
+    snapshotSavedAtByChain,
+    statesNewestAtByChain,
+    keyPresentByChain,
+    knownChains,
+    liveChains: chainsActive,
     pipelineCoverage: coverageM.merged,
     scannerStats:     scannerM.merged,
     pfLifecycle:      lifecycleM.any ? lifecycleM.merged : null,
@@ -364,17 +443,9 @@ export async function readAllRedis(): Promise<RedisContext | null> {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-export function freshnessLabel(ageMs: number | null): "fresh" | "aging" | "stale" | "unknown" {
-  if (ageMs === null) return "unknown";
-  if (ageMs < 45_000) return "fresh";
-  if (ageMs < 90_000) return "aging";
-  return "stale";
-}
-
-export function safeMinAge(entries: number[]): number | null {
-  if (!entries.length) return null;
-  return Date.now() - Math.max(...entries);
-}
+// E14/E15: freshnessLabel + safeMinAge mutate în ./health-freshness (frunză testabilă, cu guard-uri
+// viitor/non-finit) — re-exportate aici pentru compat cu importurile existente din tools.
+export { freshnessLabel, safeMinAge } from "./health-freshness";
 
 export function formatAge(ms: number): string {
   if (ms < 60_000)   return `${Math.round(ms / 1000)}s`;
@@ -594,42 +665,9 @@ export function combineConfidence(
   return freshnessConfidence;
 }
 
-/**
- * Dedupe un array by pairAddress, păstrând cel mai recent entry.
- * Atașează `_eventCount` cu numărul total de intrări pentru același pair.
- * tsField: câmpul timestamp folosit pentru comparație (droppedAt, detectedAt, etc.)
- */
-export function dedupeByPair<T extends { pairAddress?: string | null; chain?: string | null }>(
-  arr:     T[] | null | undefined,
-  tsField: keyof T,
-): Array<T & { _eventCount: number }> {
-  const map = new Map<string, T & { _eventCount: number }>();
-
-  for (const item of arr ?? []) {
-    const rawAddr = item.pairAddress?.trim();
-    if (!rawAddr) continue;
-
-    // B3f: identitatea de dedupe e chain-scoped când itemul are `.chain` — altfel
-    // un drop pe base:0xabc și unul pe arbitrum:0xabc s-ar comprima într-unul.
-    // Fallback la adresă lowercase pt. items fără chain (ex. momentum legacy).
-    const identity = typeof item.chain === "string" && item.chain
-      ? pairKey(item.chain, rawAddr)
-      : rawAddr.toLowerCase();
-
-    const ts       = Number(item[tsField] ?? 0);
-    const existing = map.get(identity);
-
-    if (!existing) {
-      map.set(identity, { ...item, _eventCount: 1 });
-    } else if (ts >= Number(existing[tsField] ?? 0)) {
-      map.set(identity, { ...item, _eventCount: existing._eventCount + 1 });
-    } else {
-      existing._eventCount += 1;
-    }
-  }
-
-  return [...map.values()];
-}
+// dedupeByPair mutat în ./dedupe (leaf testabil, chain-scoped) — re-exportat aici pentru compat cu importurile
+// existente (`import { dedupeByPair } from "../redis-reader"`).
+export { dedupeByPair } from "./dedupe";
 
 export { type MemoryEntry, type PairState };
 

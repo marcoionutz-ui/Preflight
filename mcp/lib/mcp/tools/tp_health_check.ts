@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { readAllRedis, freshnessLabel, safeMinAge, readQuoteOracleHealth, readQuotePriceHealth, readSolanaIndexerStats } from "../redis-reader";
+import { keyFreshness, aggregateKnownFreshness, completeOnKnownChains } from "../health-freshness";
 import { mcpResponse, mcpErr, ERR } from "../errors";
 
 export function registerHealthCheck(server: McpServer, exposePerformance: boolean) {
@@ -25,8 +26,42 @@ Use this first to verify the worker is running before calling other tools.`,
         ]);
         if (!ctx) return mcpErr(ERR.REDIS_DOWN, "Redis not connected");
 
-        const { now, states, watch, hot, armed, snapshot, pipelineCoverage, scannerStats } = ctx;
-        const snapshotAge   = snapshot?.savedAt ? now - snapshot.savedAt : null;
+        const { now, states, watch, hot, armed, snapshot, pipelineCoverage, scannerStats,
+                snapshotSavedAtByChain, statesNewestAtByChain, keyPresentByChain, knownChains, liveChains } = ctx;
+
+        // E14 (varu R4): agregăm prospețimea pe cel mai SLAB chain CUNOSCUT (knownChains = orice amprentă worker),
+        // NU pe max (care ascunde un chain mort) și NICI doar pe liveChains (un chain mort iese din live după ce
+        // heartbeat-ul expiră → ar dispărea din calcul). Un chain cunoscut FĂRĂ snapshot valid → `complete=false`
+        // → quality/agg = "unknown"/stale, nu ignorat.
+        const snapAgg   = aggregateKnownFreshness(now, snapshotSavedAtByChain, knownChains);
+        const statesAgg = aggregateKnownFreshness(now, statesNewestAtByChain,  knownChains);
+        // Vârsta agregată intră în keyFreshness ca `null` când un chain cunoscut lipsește → quality "unknown".
+        const snapAggAge   = snapAgg.complete   ? snapAgg.worstAgeMs   : null;
+        const statesAge    = statesAgg.complete ? statesAgg.worstAgeMs : null;
+        // worker „online"/„fresh" = toate chain-urile cunoscute au snapshot, iar cel mai slab e sub prag.
+        const workerOnline = knownChains.length > 0 && snapAgg.complete && snapAgg.worstAgeMs !== null && snapAgg.worstAgeMs < 5 * 60_000;
+        // E14 (varu R4 naming): cunoscute DAR fără heartbeat runtime proaspăt (120s). NU e „offline" absolut —
+        // workerOnline tolerează snapshot până la 5min, deci un chain poate fi aici ȘI workerOnline=true 2-5min.
+        // Nume explicit pe pragul de 120s ca să nu pară contradictoriu cu workerOnline (care e pe alt prag).
+        const runtimeHeartbeatMissingChains = knownChains.filter(c => !liveChains.includes(c));
+        // E14 (varu R4): completitudinea PER-CHEIE peste chain-urile cunoscute. Cheie lipsă pe un chain cunoscut →
+        // quality "unknown" (nu fals „fresh" din snapshot global). pair_states e guvernată de proxy-ul snapshot din reader.
+        const watchComplete = completeOnKnownChains(keyPresentByChain.active_watch,   knownChains);
+        const hotComplete   = completeOnKnownChains(keyPresentByChain.hot_candidates, knownChains);
+        const armedComplete = completeOnKnownChains(keyPresentByChain.armed_entries,  knownChains);
+
+        // per-chain (peste TOATE chain-urile cunoscute, nu doar live) — vârstă snapshot + quality + live.
+        const perChainWorker: Record<string, { ageSec: number | null; quality: string; live: boolean }> = {};
+        for (const c of knownChains) {
+          const sv    = snapshotSavedAtByChain[c];
+          const ageMs = typeof sv === "number" && Number.isFinite(sv) && now - sv >= 0 ? now - sv : null;
+          perChainWorker[c] = {
+            ageSec:  ageMs !== null ? Math.round(ageMs / 1000) : null,
+            quality: keyFreshness(true, ageMs).quality,
+            live:    liveChains.includes(c),
+          };
+        }
+
         // dexscreener.lastFetchAgeSec/last429AgeSec are baked in at scan
         // time (age-at-write), then cached in Redis for up to 5min — read
         // as-is they under-report age by however stale the snapshot is.
@@ -36,12 +71,6 @@ Use this first to verify the worker is running before calling other tools.`,
           ? Math.max(0, Math.round((now - scannerStats.savedAt) / 1000))
           : 0;
         const stateVals     = Object.values(states);
-        const newestStateAt = stateVals.length ? Math.max(...stateVals.map(s => s.updatedAt)) : null;
-        const statesAge     = newestStateAt ? now - newestStateAt : null;
-
-        function keyInfo(exists: boolean, ageMs: number | null) {
-          return { exists, ageSec: ageMs !== null ? Math.round(ageMs / 1000) : null, quality: freshnessLabel(ageMs) };
-        }
 
         const phases: Record<string, number> = {};
         const flowSummary = { buying: 0, selling: 0, neutral: 0, noData: 0 };
@@ -54,15 +83,28 @@ Use this first to verify the worker is running before calling other tools.`,
         }
 
         const payload = {
-		  workerOnline:  !!snapshot && snapshotAge !== null && snapshotAge < 5 * 60_000,
+		  // E14 (varu R4): online = există chain-uri cunoscute, TOATE au snapshot, iar cel mai SLAB e < 5min.
+		  // Un chain cunoscut mort/lipsă → false (nu ascuns sub savedAt=max).
+		  workerOnline,
 		  workerVersion: snapshot?.version ?? null,
+		  // E14 (varu R4): prospețimea agregată pe cel mai SLAB chain CUNOSCUT (un chain lipsă → "unknown").
+		  // pair_states/worker_snapshot NU mai folosesc newest-wins (Base proaspăt masca BSC stale). watch/hot/
+		  // armed poartă addedAt/... setate O DATĂ → quality = worker liveness agregat; newestEntry separat.
 		  keys: {
-			pair_states:     keyInfo(ctx.keyExists.pair_states,     statesAge),
-			worker_snapshot: keyInfo(ctx.keyExists.worker_snapshot, snapshotAge),
-			active_watch:    keyInfo(ctx.keyExists.active_watch,    safeMinAge(Object.values(watch).map(w => w.addedAt))),
-			hot_candidates:  keyInfo(ctx.keyExists.hot_candidates,  safeMinAge(Object.values(hot).map(h => h.promotedAt))),
-			armed_entries:   keyInfo(ctx.keyExists.armed_entries,   safeMinAge(Object.values(armed).map(a => a.armedAt))),
+			pair_states:     keyFreshness(ctx.keyExists.pair_states,     statesAge),
+			worker_snapshot: keyFreshness(ctx.keyExists.worker_snapshot, snapAggAge),
+			active_watch:    keyFreshness(ctx.keyExists.active_watch,    snapAggAge, safeMinAge(Object.values(watch).map(w => w.addedAt)),   watchComplete),
+			hot_candidates:  keyFreshness(ctx.keyExists.hot_candidates,  snapAggAge, safeMinAge(Object.values(hot).map(h => h.promotedAt)),  hotComplete),
+			armed_entries:   keyFreshness(ctx.keyExists.armed_entries,   snapAggAge, safeMinAge(Object.values(armed).map(a => a.armedAt)),   armedComplete),
 		  },
+		  // E14 (varu R4): transparență multichain. perChainWorker = vârsta+quality snapshot pt. FIECARE chain
+		  // CUNOSCUT + dacă e live. knownChains/liveChains/runtimeHeartbeatMissingChains expuse explicit — un chain
+		  // fără heartbeat runtime (120s) apare acolo, nu dispare. missingSnapshotChains = cunoscute fără snapshot valid.
+		  perChainWorker,
+		  knownChains,
+		  liveChains,
+		  runtimeHeartbeatMissingChains,
+		  missingSnapshotChains: snapAgg.missing,
 		  stats: {
 			totalPairs:    stateVals.length || Object.keys(snapshot?.memory ?? {}).length,
 			activeWatch:   Object.keys(watch).length,
@@ -165,9 +207,11 @@ Use this first to verify the worker is running before calling other tools.`,
 		return mcpResponse({
 		  text: JSON.stringify(payload, null, 2),
 		  freshnessSec: statesAge !== null ? Math.round(statesAge / 1000) : null,
+		  // E14 (varu R4): confidence din prospețimea celui mai SLAB chain CUNOSCUT (nu max). Un chain cunoscut
+		  // lipsă/stale (snapAgg.complete=false → snapAggAge=null) → LOW.
 		  confidence:
-			snapshotAge !== null && snapshotAge < 60_000     ? "HIGH" :
-			snapshotAge !== null && snapshotAge < 3 * 60_000 ? "MEDIUM" :
+			snapAggAge !== null && snapAggAge < 60_000     ? "HIGH" :
+			snapAggAge !== null && snapAggAge < 3 * 60_000 ? "MEDIUM" :
 			"LOW",
 		  dataQuality: {
 			wsFlow: wsFlowQuality,

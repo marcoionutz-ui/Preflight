@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { readAllRedis, dedupeByPair, resolvePairChain } from "../redis-reader";
+import { classifyEmptyDrops, isWorkerFresh } from "../health-freshness";
 import { mcpResponse, mcpErr, ERR } from "../errors";
 
 export function registerRecentPipelineDrops(server: McpServer) {
@@ -25,14 +26,22 @@ Args: limit (default 10, max 30), minutes_back (default 10, max 10)`,
         const ctx = await readAllRedis();
         if (!ctx) return mcpErr(ERR.REDIS_DOWN, "Redis not connected");
 
-        const { now, drops, states } = ctx;
+        const { now, drops, states, snapshotSavedAtByChain, knownChains } = ctx;
+        // E15 (varu R4): worker proaspăt = TOATE chain-urile CUNOSCUTE au snapshot ȘI cel mai slab e <60s (nu max,
+        // și nu doar live — un chain mort iese din live după 120s și ar dispărea din calcul).
+        const workerFresh = isWorkerFresh(now, snapshotSavedAtByChain, knownChains);
         const cutoff     = now - minutes_back * 60_000;
         const rawRecent  = drops.filter(d => d.droppedAt >= cutoff);
         const deduped    = dedupeByPair(rawRecent, "droppedAt")
           .sort((a, b) => (b.droppedAt ?? 0) - (a.droppedAt ?? 0))
           .slice(0, limit);
 
-        if (!deduped.length) return mcpResponse({ text: `No pipeline drops were recorded in the last ${minutes_back} minutes.`, confidence: "HIGH" });
+        // E15: listă goală ≠ „zero drop-uri". HIGH doar dacă datele sunt citibile (cheie prezentă + JSON valid pe
+        // toate chain-urile deținute) ȘI worker-ul e proaspăt. Absent/corupt/worker-stale → LOW + warning.
+        if (!deduped.length) {
+          const rep = classifyEmptyDrops({ dropsReadable: ctx.recentDropsReadable, workerFresh, minutesBack: minutes_back });
+          return mcpResponse({ text: rep.text, confidence: rep.confidence, warnings: rep.warnings });
+        }
 
         const lines: string[] = [];
         lines.push(`RECENT PIPELINE DROPS — last ${minutes_back}m (${deduped.length} pairs):`);
@@ -81,10 +90,16 @@ Args: limit (default 10, max 30), minutes_back (default 10, max 10)`,
           lines.push("");
         }
 
+        // E15 (varu R4): drop-urile listate sunt dovezi reale, DAR fereastra e COMPLETĂ doar dacă worker-ul e
+        // proaspăt ȘI recent_drops e citibilă pe toate chain-urile cunoscute (altfel un payload BSC corupt/absent
+        // sau un chain stale lasă găuri). Fără completitudine → LOW + warning; drop-urile rămân listate.
+        const windowComplete = workerFresh && ctx.recentDropsReadable;
         return mcpResponse({
           text: lines.join("\n").trim(),
-          confidence: "HIGH",
+          confidence: windowComplete ? "HIGH" : "LOW",
           freshnessSec: Math.round((now - (deduped[0]?.droppedAt ?? now)) / 1000),
+          warnings: windowComplete ? undefined
+            : ["Listed drops are recorded evidence, but coverage of the requested window may be incomplete (worker stale or recent-drops unreadable on ≥1 known chain)."],
 		});
       } catch (e) { return mcpErr(ERR.INTERNAL, e instanceof Error ? e.message : String(e)); }
     },
