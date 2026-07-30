@@ -11,6 +11,7 @@
 
 import { createHash, randomBytes } from "crypto";
 import { getRedis }                from "./redis";
+import { timingSafeStrEqual }      from "./constantTime";
 import {
   type AuthCodePayload,
   type ConsumeResult,
@@ -94,5 +95,7 @@ export function verifyCodeVerifier(verifier: string, challenge: string, method: 
   const computed = createHash("sha256")
     .update(verifier)
     .digest("base64url");
-  return computed === challenge;
+  // E7: comparație constant-time a digesturilor PKCE, fără throw
+  // dacă challenge-ul primit are altă lungime.
+  return timingSafeStrEqual(computed, challenge);
 }

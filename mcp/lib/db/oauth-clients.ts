@@ -5,6 +5,7 @@
 
 import { createHash, randomBytes } from "crypto";
 import { supabaseAdmin }           from "./supabase-admin";
+import { timingSafeStrEqual }      from "./constantTime";
 
 export interface OAuthClient {
   id:                    string;
@@ -41,7 +42,10 @@ export function hashSecret(secret: string): string {
 }
 
 export function verifySecret(secret: string, hash: string): boolean {
-  return hashSecret(secret) === hash;
+  // E7: hash-urile sunt comparate prin digesturi de lungime fixă.
+  // Comparația digesturilor este constant-time; hash-uirea rămâne proporțională
+  // cu lungimea intrărilor.
+  return timingSafeStrEqual(hashSecret(secret), hash);
 }
 
 // ── Redirect URI allowlist (item e) ─────────────────────────────────────────
