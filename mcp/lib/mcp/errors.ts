@@ -14,12 +14,16 @@ export function mcpOk(data: unknown): { content: McpContent } {
   };
 }
 
-export function mcpErr(code: string, message: string, extra?: Record<string, unknown>): { content: McpContent } {
+export function mcpErr(code: string, message: string, extra?: Record<string, unknown>): { content: McpContent; isError: true } {
   return {
     content: [{
       type: "text" as const,
       text: JSON.stringify({ ok: false, error: { code, message, ...extra } }),
     }],
+    // `isError` e câmpul standard MCP pentru semnalarea unui tool call eșuat
+    // — fără el, un client vede doar text JSON cu `ok:false` îngropat în el
+    // și poate interpreta apelul ca reușit.
+    isError: true,
   };
 }
 
@@ -70,7 +74,13 @@ export const ERR = {
   EXTERNAL_API:     "EXTERNAL_API",
   INTERNAL:         "INTERNAL",
   UNAUTHORIZED:     "UNAUTHORIZED",
+  INVALID_TOKEN:    "INVALID_TOKEN",
   RATE_LIMITED:     "RATE_LIMITED",
   FORBIDDEN:        "FORBIDDEN",
   QUOTA_EXCEEDED:   "QUOTA_EXCEEDED",
+  // E10 — bounded degradation → fail-closed când Redis nu poate aplica gate-ul.
+  // Distincte semantic de omologii lor „limită reală atinsă": UNAVAILABLE = „nu pot verifica", nu „ai depășit".
+  AUTH_UNAVAILABLE:       "AUTH_UNAVAILABLE",
+  RATE_LIMIT_UNAVAILABLE: "RATE_LIMIT_UNAVAILABLE",
+  QUOTA_UNAVAILABLE:      "QUOTA_UNAVAILABLE",
 } as const;

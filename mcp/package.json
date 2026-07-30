@@ -11,7 +11,8 @@
     "test:e9": "tsx lib/db/redis.test.ts",
     "test:e14": "tsx lib/mcp/keyFreshness.test.ts",
     "test:e15": "tsx lib/mcp/dropsConfidence.test.ts",
-    "test": "npm run test:e9 && npm run test:e14 && npm run test:e15"
+    "test:e10": "tsx lib/mcp/e10.test.ts",
+    "test": "npm run test:e9 && npm run test:e14 && npm run test:e15 && npm run test:e10"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.26.0",

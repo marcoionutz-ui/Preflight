@@ -7,6 +7,7 @@
 import { supabaseAdmin } from "@/lib/db/supabase-admin";
 import { getRedis }      from "@/lib/db/redis";
 import { randomUUID }    from "crypto";
+import { emergencyQuotaAllow, clearDegradedQuota } from "./degraded";
 
 export interface UsageLog {
   client_id:    string;
@@ -82,22 +83,21 @@ function quotaKey(clientId: string): string {
   return `mcp:quota:${clientId}:${ym}`;
 }
 
-export interface QuotaReservation {
-  allowed:  boolean;
-  used:     number;
-  // Whether the Redis counter was actually incremented. False for unlimited
-  // plans, a down Redis, or a script error that fell back to fail-open —
-  // three cases the caller can't tell apart from `allowed: true` alone.
-  // refundQuota() must only run when this is true, otherwise it can
-  // decrement a counter that was never touched.
-  reserved: boolean;
-  // The exact key that was incremented, pinned at reserve time. Not
-  // recomputed at refund time — quotaKey() depends on the current month,
-  // so a request straddling a month boundary (reserved 23:59:59 UTC,
-  // refunded 00:00:01 UTC) would otherwise refund next month's counter
-  // instead of the one it actually charged.
-  key:      string | null;
-}
+/**
+ * E10: rezultat DISCRIMINAT.
+ *   reserved    — contorul Redis a fost incrementat (doar acesta se refundează); `key` e cheia exactă (pinned).
+ *   unlimited   — plan cu quota -1 (nimic de urmărit).
+ *   exceeded    — quota lunară depășită (limită reală) → caller-ul întoarce QUOTA_EXCEEDED.
+ *   degraded    — Redis jos, dar în bugetul mic al ferestrei degraded → permis, NEreconciliat (nu refunda).
+ *   unavailable — Redis jos ȘI bugetul/fereastra degraded epuizat → QUOTA_UNAVAILABLE (eroare MCP isError, nu HTTP 503).
+ * `refundQuota` rulează DOAR pe `reserved` (altfel ar decrementa un contor neatins — degraded/unlimited nu au scris).
+ */
+export type QuotaOutcome =
+  | { status: "reserved";  used: number; key: string }
+  | { status: "unlimited" }
+  | { status: "exceeded";  used: number }
+  | { status: "degraded" }
+  | { status: "unavailable" };
 
 // INCRBY-then-check-then-DECRBY (the previous version of this function) is
 // only atomic per-step, not as a sequence: a concurrent request can read the
@@ -150,20 +150,22 @@ return redis.call("DECRBY", KEYS[1], credits)
  * so only successful calls consume quota (same semantics the old
  * Supabase-summing check had, minus the race).
  *
- * Fails open if Redis is unreachable or the script call throws — an outage
- * shouldn't turn into a hard denial for every paying client. This function
- * is called before middleware.ts's try/catch even starts, so it must never
- * throw itself; the try/catch here is load-bearing, not decorative.
+ * E10 (design înghețat): NU mai fail-open nelimitat. Fără Redis nu putem enforce quota lunară → cădem pe un
+ * buget MICROSCOPIC per client/proces (`emergencyQuotaAllow`: ≤3 requesturi pe o fereastră de 60s), apoi
+ * fail-closed (`unavailable` → QUOTA_UNAVAILABLE, eroare MCP). Cele ≤3 rămân nereconciliate, dar pierderea e strict
+ * mărginită — mult mai bine decât „billing jos → trafic gratuit nelimitat" sau outage total la un reconnect.
+ * Un succes Redis resetează starea degraded a clientului. Nu aruncă niciodată (rulează înainte de try/catch-ul
+ * din middleware).
  */
 export async function reserveQuota(
   clientId:     string,
   credits:      number,
   monthlyQuota: number,
-): Promise<QuotaReservation> {
-  if (monthlyQuota === -1) return { allowed: true, used: 0, reserved: false, key: null };
+): Promise<QuotaOutcome> {
+  if (monthlyQuota === -1) return { status: "unlimited" };
 
   const r = getRedis();
-  if (!r) return { allowed: true, used: 0, reserved: false, key: null };
+  if (!r) return degradedQuota(clientId);
 
   const key = quotaKey(clientId);
 
@@ -177,14 +179,25 @@ export async function reserveQuota(
       String(QUOTA_KEY_TTL_SEC),
     ) as [number, number];
 
-    const allowed = result[0] === 1;
-    // Only allowed reservations actually incremented the counter — the
-    // Lua script returns {0, current} without touching Redis when denied.
-    return { allowed, used: Number(result[1]), reserved: allowed, key: allowed ? key : null };
+    // Redis a răspuns → clientul iese din degraded.
+    clearDegradedQuota(clientId);
+
+    // Lua întoarce {0, current} fără să atingă Redis când e depășit; {1, newTotal} când a incrementat.
+    return result[0] === 1
+      ? { status: "reserved", used: Number(result[1]), key }
+      : { status: "exceeded", used: Number(result[1]) };
   } catch (err) {
-    console.error("[QUOTA] reserve failed open:", err instanceof Error ? err.message : err);
-    return { allowed: true, used: 0, reserved: false, key: null };
+    console.error("[QUOTA] reserve degraded:", err instanceof Error ? err.message : err);
+    return degradedQuota(clientId);
   }
+}
+
+/**
+ * E10: plasa locală bounded pentru quota când Redis nu răspunde. `allow` → `degraded` (permis, NEreconciliat);
+ * buget/fereastră epuizat → `unavailable` (→ QUOTA_UNAVAILABLE, eroare MCP).
+ */
+function degradedQuota(clientId: string): QuotaOutcome {
+  return emergencyQuotaAllow(clientId) === "allow" ? { status: "degraded" } : { status: "unavailable" };
 }
 
 /**

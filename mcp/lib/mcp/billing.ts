@@ -9,6 +9,8 @@
  * Detaliile de billing sunt ascunse în spatele acestei interfețe.
  */
 
+import { toolAuthorized } from "./scopes";
+
 export type BillingRail = "subscription" | "x402" | "internal";
 
 export interface PlanConfig {
@@ -71,8 +73,23 @@ export const PLANS: Record<string, PlanConfig> = {
   },
 };
 
+/**
+ * E10 (design-decision): plan necunoscut/lipsă → `free_trial`, NU `starter`. Un typo sau un plan legacy
+ * nu trebuie să acorde 50k quota + read:all; nici să scoată complet clientul din funcțiune (reject) — îl
+ * degradăm conservator la podeaua sigură. `resolvePlan` semnalează `mismatch` pentru telemetrie zgomotoasă.
+ */
+export function resolvePlan(plan: string | null | undefined): { config: PlanConfig; mismatch: boolean; received: string } {
+  const received = (plan ?? "").trim();
+  const known    = received !== "" && Object.prototype.hasOwnProperty.call(PLANS, received);
+  return {
+    config:   known ? PLANS[received] : PLANS.free_trial,
+    mismatch: !known,
+    received,
+  };
+}
+
 export function getPlanConfig(plan: string): PlanConfig {
-  return PLANS[plan] ?? PLANS.starter;
+  return resolvePlan(plan).config;
 }
 
 // ── Credit weights per tool ───────────────────────────────────────────────────
@@ -100,10 +117,12 @@ export function getToolCredits(toolName: string): number {
 }
 
 /**
- * Verifică dacă un request e permis pentru plan + scope.
- * Rate limiting e gestionat separat în oauth-tokens.ts.
+ * Verifică dacă un request e permis pentru plan + tool. Rate limiting e gestionat separat în oauth-tokens.ts.
+ *
+ * E10: delegă la `toolAuthorized` = tokenul (clientScopes) AND planul rezolvat permit tool-ul. Vechea variantă
+ * avea un OR periculos (`clientScopes.includes(s) || s === toolScope`) care putea autoriza DOAR fiindcă planul
+ * conținea scope-ul cerut, chiar dacă tokenul nu-l avea — sursă unică de adevăr acum, fără capcană pt. viitori callers.
  */
-export function isRequestAllowed(plan: string, clientScopes: string[], toolScope: string): boolean {
-  const config = getPlanConfig(plan);
-  return config.allowed_scopes.some(s => clientScopes.includes(s) || s === toolScope);
+export function isRequestAllowed(plan: string, clientScopes: string[], toolName: string): boolean {
+  return toolAuthorized(toolName, clientScopes, getPlanConfig(plan).allowed_scopes);
 }

@@ -4,21 +4,18 @@
  */
 
 import type { NextRequest }        from "next/server";
-import { validateToken }           from "@/lib/db/oauth-tokens";
-import { checkRateLimit }          from "@/lib/db/oauth-tokens";
-import { getClientById, touchClient } from "@/lib/db/oauth-clients";
+import { validateToken, checkRateLimit } from "@/lib/db/oauth-tokens";
+import { getClientById, touchClient }    from "@/lib/db/oauth-clients";
+import { resolveAuth }                from "./authPolicy";
+import type { AuthResult }            from "./authPolicy";
 
-export interface AuthResult {
-  ok:          boolean;
-  clientId?:   string;
-  scopes?:     string[];
-  plan?:       string;
-  error?:      string;
-  errorCode?:  string;
-  status?:     number;
-  retryAfter?: number;
-}
+export type { AuthResult } from "./authPolicy";
 
+/**
+ * E10: fluxul de decizie e în `authPolicy.resolveAuth` (pur, injectabil, testat izolat). Aici doar legăm
+ * dependențele reale (Redis token/rate-limit, Supabase client) + bypass-ul de dev. Token neverificat din cauza
+ * unui Redis jos → 503 AUTH_UNAVAILABLE (după 1 retry), niciodată 401 fals sau throw necaptat.
+ */
 export async function authenticate(req: NextRequest): Promise<AuthResult> {
   // Dev mode fără key configurat
   if (!process.env.MCP_API_KEY && process.env.NODE_ENV !== "production") {
@@ -26,53 +23,13 @@ export async function authenticate(req: NextRequest): Promise<AuthResult> {
   }
 
   const authHeader = (req.headers.get("authorization") ?? "").trim();
-  if (!authHeader.startsWith("Bearer ")) {
-    return { ok: false, error: "Missing Bearer token", errorCode: "UNAUTHORIZED", status: 401 };
-  }
-
-  const token   = authHeader.slice(7).trim();
-  const payload = await validateToken(token);
-  if (!payload) {
-    return { ok: false, error: "Invalid or expired token", errorCode: "UNAUTHORIZED", status: 401 };
-  }
-
-  const client = await getClientById(payload.client_id);
-  if (!client) {
-    return { ok: false, error: "Client not found or revoked", errorCode: "UNAUTHORIZED", status: 401 };
-  }
-
-  // Exact version match, not a timestamp comparison against issued_at —
-  // issued_at is stamped when the token endpoint finishes, which can be
-  // *after* a concurrent rotation even though this request read the old
-  // secret first (TOCTOU). credential_version pins the secret_rotated_at
-  // this request actually authenticated against, so a stale request always
-  // mismatches the client's current value regardless of timing.
-  if (
-    !payload.credential_version ||
-    payload.credential_version !== client.secret_rotated_at
-  ) {
-    return { ok: false, error: "Token invalidated by credential rotation", errorCode: "UNAUTHORIZED", status: 401 };
-  }
-
-  const rl = await checkRateLimit(
-    client.client_id,
-    client.rate_limit_per_minute,
-    client.rate_limit_per_day,
-  );
-
-  if (!rl.allowed) {
-    return {
-      ok:          false,
-      error:       "Rate limit exceeded",
-      errorCode:   "RATE_LIMITED",
-      status:      429,
-      retryAfter:  rl.retry_after,
-    };
-  }
-
-  touchClient(client.client_id);
-
-  return { ok: true, clientId: client.client_id, scopes: payload.scopes, plan: client.plan };
+  return resolveAuth(authHeader, {
+    validateToken,
+    getClient: getClientById,
+    checkRate: checkRateLimit,
+    touch:     touchClient,
+    sleep:     (ms) => new Promise((res) => setTimeout(res, ms)),
+  });
 }
 
 export function authErrorResponse(auth: AuthResult): Response {

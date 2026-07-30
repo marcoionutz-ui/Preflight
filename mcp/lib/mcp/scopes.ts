@@ -38,3 +38,13 @@ export function hasScope(clientScopes: string[], toolName: string): boolean {
   if (!required) return false; // tool necunoscut — deny by default
   return required.some(s => clientScopes.includes(s));
 }
+
+/**
+ * E10: entitlement pe DOUĂ straturi — tool-ul e permis DOAR dacă ȘI tokenul (scope-urile clientului) ȘI planul
+ * rezolvat (`allowed_scopes`) îl permit. Un plan necunoscut degradat la `free_trial` (allowed_scopes = read:basic)
+ * restrânge astfel efectiv accesul, nu doar quota — chiar dacă tokenul poartă `read:all`. Fără OR-ul periculos:
+ * ambele verificări trec prin `hasScope` (scope ∈ lista acceptată a tool-ului), niciodată „scope == toolScope".
+ */
+export function toolAuthorized(toolName: string, tokenScopes: string[], planScopes: string[]): boolean {
+  return hasScope(tokenScopes, toolName) && hasScope(planScopes, toolName);
+}
