@@ -37,6 +37,32 @@ export interface AuthDeps {
   sleep:         (ms: number) => Promise<void>;
 }
 
+/**
+ * E2: dev auth bypass — opt-in EXPLICIT, fail-closed. Vechiul gate (`!MCP_API_KEY && NODE_ENV !== "production"`)
+ * se DESCHIDEA din simpla ABSENȚĂ a config-ului: un deploy care uita `MCP_API_KEY`, cu `NODE_ENV` nesetat
+ * (`undefined !== "production"` = adevărat), primea acces LIBER cu read:all. Absența config-ului trebuie să
+ * eșueze ÎNCHIS, nu deschis. Acum bypass-ul cere un flag INTENȚIONAT (`MCP_DEV_AUTH_BYPASS` truthy) ȘI
+ * NODE_ENV != "production" — `NODE_ENV` singur nu mai e poartă de securitate (e o convenție de build, nu un
+ * flag de auth, și e nesetat implicit în multe runtime-uri).
+ */
+export function isDevBypassEnabled(flag: string | undefined): boolean {
+  if (typeof flag !== "string") return false;
+  const v = flag.trim().toLowerCase();
+  return v === "1" || v === "true" || v === "yes" || v === "on";
+}
+
+/**
+ * E2: întoarce AuthResult-ul de dev DOAR dacă bypass-ul e activat EXPLICIT ȘI nu suntem în producție; altfel
+ * `null` (auth normală). Guard-ul de producție e case-insensitive + trim (blochează „Production"/„ production ").
+ */
+export function resolveDevBypass(env: { nodeEnv: string | undefined; bypassFlag: string | undefined }): AuthResult | null {
+  // Niciodată în producție — chiar dacă flag-ul e setat din greșeală.
+  if ((env.nodeEnv ?? "").trim().toLowerCase() === "production") return null;
+  // Opt-in explicit — absența unei chei NU mai deschide ușa (fail-closed).
+  if (!isDevBypassEnabled(env.bypassFlag)) return null;
+  return { ok: true, clientId: "dev", scopes: ["read:all"], plan: "internal" };
+}
+
 function unauthorized(code: string, message: string): AuthResult {
   return { ok: false, error: message, errorCode: code, status: 401 };
 }

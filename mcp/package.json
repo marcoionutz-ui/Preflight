@@ -15,7 +15,8 @@
     "test:e11-e13": "tsx lib/mcp/freshness.test.ts",
     "test:e4-e6": "tsx lib/db/oauthAtomic.test.ts",
     "test:e7": "tsx lib/db/constantTime.test.ts",
-    "test": "npm run test:e9 && npm run test:e14 && npm run test:e15 && npm run test:e10 && npm run test:e11-e13 && npm run test:e4-e6 && npm run test:e7"
+    "test:e2": "tsx lib/mcp/e2.test.ts",
+    "test": "npm run test:e9 && npm run test:e14 && npm run test:e15 && npm run test:e10 && npm run test:e11-e13 && npm run test:e4-e6 && npm run test:e7 && npm run test:e2"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.26.0",

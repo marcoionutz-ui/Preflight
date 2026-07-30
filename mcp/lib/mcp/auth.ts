@@ -6,10 +6,13 @@
 import type { NextRequest }        from "next/server";
 import { validateToken, checkRateLimit } from "@/lib/db/oauth-tokens";
 import { getClientById, touchClient }    from "@/lib/db/oauth-clients";
-import { resolveAuth }                from "./authPolicy";
+import { resolveAuth, resolveDevBypass } from "./authPolicy";
 import type { AuthResult }            from "./authPolicy";
 
 export type { AuthResult } from "./authPolicy";
+
+// E2: avertizează o SINGURĂ dată per proces când bypass-ul de dev e activ (nu spam per-request).
+let devBypassWarned = false;
 
 /**
  * E10: fluxul de decizie e în `authPolicy.resolveAuth` (pur, injectabil, testat izolat). Aici doar legăm
@@ -17,9 +20,21 @@ export type { AuthResult } from "./authPolicy";
  * unui Redis jos → 503 AUTH_UNAVAILABLE (după 1 retry), niciodată 401 fals sau throw necaptat.
  */
 export async function authenticate(req: NextRequest): Promise<AuthResult> {
-  // Dev mode fără key configurat
-  if (!process.env.MCP_API_KEY && process.env.NODE_ENV !== "production") {
-    return { ok: true, clientId: "dev", scopes: ["read:all"], plan: "internal" };
+  // E2: dev bypass DOAR pe opt-in EXPLICIT (`MCP_DEV_AUTH_BYPASS`) + non-producție. Absența `MCP_API_KEY` NU mai
+  // deschide ușa (fail-closed) — un deploy care uită cheia primește 401, nu acces liber cu read:all.
+  const devBypass = resolveDevBypass({
+    nodeEnv:    process.env.NODE_ENV,
+    bypassFlag: process.env.MCP_DEV_AUTH_BYPASS,
+  });
+  if (devBypass) {
+    if (!devBypassWarned) {
+      console.warn(
+        "[AUTH] ⚠️ DEV AUTH BYPASS activ (MCP_DEV_AUTH_BYPASS setat, NODE_ENV≠production) — " +
+        "TOATE cererile sunt autorizate ca 'dev' cu read:all. NU seta acest flag în producție.",
+      );
+      devBypassWarned = true;
+    }
+    return devBypass;
   }
 
   const authHeader = (req.headers.get("authorization") ?? "").trim();
