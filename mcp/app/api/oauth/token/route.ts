@@ -9,7 +9,7 @@
 import { NextRequest }                      from "next/server";
 import { verifyClientCredentials, touchClient, getClientById } from "@/lib/db/oauth-clients";
 import { issueToken }                       from "@/lib/db/oauth-tokens";
-import { consumeAuthCode, verifyCodeVerifier } from "@/lib/db/oauth-codes";
+import { peekAuthCode, finalizeAuthCode, verifyCodeVerifier } from "@/lib/db/oauth-codes";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -103,13 +103,19 @@ async function handlePost(req: NextRequest) {
       return jsonError(400, "invalid_request", "code, redirect_uri, and client_id are required");
     }
 
-    // Consumă code din Redis (one-time use)
-    const payload = await consumeAuthCode(code);
-    if (!payload) {
+    // E4: CITEȘTE codul FĂRĂ să-l ștergi. Consumul (compare-and-delete atomic) vine ABIA după ce toată
+    // validarea a trecut — altfel o cerere cu client_id/verifier greșit ardea codul clientului legitim (DoS).
+    const lookup = await peekAuthCode(code);
+    if (lookup.status === "unavailable") {
+      // Redis jos → nu POT verifica codul → 503 (retry), NU invalid_grant (ar minți că e „deja folosit").
+      return jsonError(503, "temporarily_unavailable", "Authorization service temporarily unavailable, please retry");
+    }
+    if (lookup.status === "absent") {
       return jsonError(400, "invalid_grant", "Authorization code expired or already used");
     }
+    const payload = lookup.payload;
 
-    // Verifică client_id match
+    // Verifică client_id match (codul NU e consumat dacă pică — rămâne valid pt. clientul corect)
     if (payload.client_id !== client_id) {
       return jsonError(400, "invalid_grant", "client_id mismatch");
     }
@@ -132,6 +138,16 @@ async function handlePost(req: NextRequest) {
     const client = await getClientById(client_id);
     if (!client) {
       return jsonError(401, "invalid_client", "Client not found or revoked");
+    }
+
+    // E4: TOATĂ validarea a trecut → ABIA ACUM consumă codul, ATOMIC (single-use + anti-replay).
+    // O cerere concurentă care a consumat deja codul între peek și aici → already_used (invalid_grant).
+    const consumed = await finalizeAuthCode(code, lookup.raw);
+    if (consumed === "unavailable") {
+      return jsonError(503, "temporarily_unavailable", "Authorization service temporarily unavailable, please retry");
+    }
+    if (consumed !== "consumed") {
+      return jsonError(400, "invalid_grant", "Authorization code already used");
     }
 
     const token = await issueToken({

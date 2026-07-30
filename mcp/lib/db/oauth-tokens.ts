@@ -7,6 +7,11 @@ import { createHash, randomBytes } from "crypto";
 import { getRedis }                from "./redis";
 import { emergencyRateAllow, clearDegradedRate } from "../mcp/degraded";
 import { parseStoredToken }        from "../mcp/tokenGuard";
+import { RL_CHECK_INCR_LUA, rateLimitFromEval, type RateLimitOutcome } from "./oauthAtomic";
+
+// E6: contractul RateLimitOutcome (ok | limited | unavailable) trăiește acum în leaf-ul `oauthAtomic.ts`
+// (împreună cu scriptul Lua + mapper-ul pur). Re-exportat aici ca să nu se schimbe importurile caller-ilor.
+export type { RateLimitOutcome } from "./oauthAtomic";
 
 const TOKEN_TTL_SEC = 24 * 60 * 60; // 24h
 const RL_MIN_TTL    = 60;            // 1 min window
@@ -24,16 +29,6 @@ export interface TokenPayload {
   // secret_rotated_at on every authenticate() call is race-free instead.
   credential_version: string;
 }
-
-/**
- * E10: rezultat DISCRIMINAT — separă „limita reală atinsă în Redis" (→ 429) de „nu pot aplica limita" (→ 503).
- * `ok` = permis; `limited` = ai depășit limita reală; `unavailable` = Redis jos ȘI plasa locală degraded s-a
- * epuizat (fereastră expirată sau cap local atins).
- */
-export type RateLimitOutcome =
-  | { status: "ok";      remaining_min: number; remaining_day: number }
-  | { status: "limited"; retry_after: number; remaining_min: number; remaining_day: number }
-  | { status: "unavailable" };
 
 /**
  * E10: rezultat DISCRIMINAT pentru validarea tokenului. `unavailable` (Redis jos) NU trebuie confundat cu
@@ -116,41 +111,26 @@ export async function checkRateLimit(
   const dayKey = `mcp:rl:day:${clientId}`;
 
   try {
-    const pipeline = r.pipeline();
-    pipeline.incr(minKey);
-    pipeline.ttl(minKey);
-    pipeline.incr(dayKey);
-    pipeline.ttl(dayKey);
-    const results = await pipeline.exec();
+    // E6: „check-then-increment" ATOMIC într-un singur Lua — evaluează contoarele CURENTE ÎNAINTE de a incrementa.
+    // O cerere respinsă (peste limită) NU mai incrementează nimic → nu mai arde quota de zi pe 429-uri de minut.
+    // Înlocuiește pipeline-ul incr→ttl→(evaluează după), care contoriza fiecare cerere respinsă.
+    const res = await r.eval(
+      RL_CHECK_INCR_LUA,
+      2,
+      minKey, dayKey,
+      String(rate_limit_per_minute),
+      String(rate_limit_per_day),
+      String(RL_MIN_TTL),
+      String(RL_DAY_TTL),
+    );
 
-    // Rezultat gol sau vreo comandă eșuată în pipeline → nu putem avea încredere în contoare → degraded.
-    if (!results || results.some(res => res?.[0])) return degradedRate(clientId, rate_limit_per_minute);
-
-    const countMin = results[0]?.[1] as number ?? 0;
-    const ttlMin   = results[1]?.[1] as number ?? -1;
-    const countDay = results[2]?.[1] as number ?? 0;
-    const ttlDay   = results[3]?.[1] as number ?? -1;
-
-    if (countMin === 1 || ttlMin === -1) await r.expire(minKey, RL_MIN_TTL);
-    if (countDay === 1 || ttlDay === -1) await r.expire(dayKey, RL_DAY_TTL);
+    const outcome = rateLimitFromEval(res, rate_limit_per_minute, rate_limit_per_day);
+    // Rezultat gol/neașteptat din Lua → nu putem avea încredere în contoare → plasa locală degraded.
+    if (!outcome) return degradedRate(clientId, rate_limit_per_minute);
 
     // Redis a răspuns corect → clientul nu mai e în degraded.
     clearDegradedRate(clientId);
-
-    const unlimitedMin = rate_limit_per_minute < 0;
-    const unlimitedDay = rate_limit_per_day    < 0;
-
-    const remaining_min = unlimitedMin ? -1 : Math.max(0, rate_limit_per_minute - countMin);
-    const remaining_day = unlimitedDay ? -1 : Math.max(0, rate_limit_per_day    - countDay);
-
-    if (!unlimitedMin && countMin > rate_limit_per_minute) {
-      return { status: "limited", retry_after: RL_MIN_TTL, remaining_min: 0, remaining_day };
-    }
-    if (!unlimitedDay && countDay > rate_limit_per_day) {
-      return { status: "limited", retry_after: RL_DAY_TTL, remaining_min, remaining_day: 0 };
-    }
-
-    return { status: "ok", remaining_min, remaining_day };
+    return outcome;
   } catch {
     // Redis a respins (down / reconnect) → plasa locală bounded, nu fail-open.
     return degradedRate(clientId, rate_limit_per_minute);

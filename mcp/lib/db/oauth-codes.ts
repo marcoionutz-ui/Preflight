@@ -2,20 +2,29 @@
  * lib/db/oauth-codes.ts
  * Authorization codes — Redis, TTL 5 minute
  * Folosit în Authorization Code flow cu PKCE
+ *
+ * E4: codul NU se mai consumă (GETDEL) ÎNAINTE de validare. `peekAuthCode` doar CITEȘTE (fără ștergere) →
+ * caller-ul validează client_id/redirect_uri/PKCE/client-activ pe payload → DOAR pe succes total `finalizeAuthCode`
+ * face compare-and-delete ATOMIC. Astfel o cerere invalidă (verifier/client greșit) NU mai arde codul clientului
+ * legitim (DoS de consum), iar single-use + anti-replay/concurență sunt garantate de CAD-ul din Lua.
  */
 
 import { createHash, randomBytes } from "crypto";
 import { getRedis }                from "./redis";
+import {
+  type AuthCodePayload,
+  type ConsumeResult,
+  AUTH_CODE_CONSUME_LUA,
+  classifyConsumeResult,
+  parseAuthCode,
+} from "./oauthAtomic";
+
+export type { AuthCodePayload } from "./oauthAtomic";
 
 const CODE_TTL_SEC = 5 * 60; // 5 minute
 
-export interface AuthCodePayload {
-  client_id:             string;
-  scopes:                string[];
-  redirect_uri:          string;
-  code_challenge:        string;
-  code_challenge_method: string;
-  issued_at:             number;
+function codeKey(code: string): string {
+  return `mcp:code:${code}`;
 }
 
 export async function issueAuthCode(payload: AuthCodePayload): Promise<string | null> {
@@ -23,19 +32,57 @@ export async function issueAuthCode(payload: AuthCodePayload): Promise<string | 
   if (!r) return null;
 
   const code = randomBytes(32).toString("hex");
-  await r.set(`mcp:code:${code}`, JSON.stringify(payload), "EX", CODE_TTL_SEC);
+  await r.set(codeKey(code), JSON.stringify(payload), "EX", CODE_TTL_SEC);
   return code;
 }
 
-export async function consumeAuthCode(code: string): Promise<AuthCodePayload | null> {
+/**
+ * E4: rezultat DISCRIMINAT al citirii unui authorization code (nimic șters).
+ *   `found`       → codul există; `payload` validat de formă + `raw` (blob-ul exact, pt. compare-and-delete la finalize).
+ *   `absent`      → cheie inexistentă/expirată SAU blob corupt (necredibil) → clientul primește invalid_grant.
+ *   `unavailable` → Redis jos/respins → NU putem verifica codul → caller-ul întoarce 503, nu invalid_grant (ar minți).
+ */
+export type AuthCodeLookup =
+  | { status: "found"; payload: AuthCodePayload; raw: string }
+  | { status: "absent" }
+  | { status: "unavailable" };
+
+/** E4: citește codul FĂRĂ să-l șteargă. Ștergerea vine abia la `finalizeAuthCode`, după ce validarea a trecut. */
+export async function peekAuthCode(code: string): Promise<AuthCodeLookup> {
   const r = getRedis();
-  if (!r) return null;
+  if (!r) return { status: "unavailable" };
 
-  const raw = await r.getdel(`mcp:code:${code}`);
-  if (!raw) return null;
+  try {
+    const raw = await r.get(codeKey(code));
+    if (!raw) return { status: "absent" };
+    const payload = parseAuthCode(raw);
+    if (!payload) return { status: "absent" }; // blob corupt = necanjabil → tratat ca absent
+    return { status: "found", payload, raw };
+  } catch {
+    return { status: "unavailable" };
+  }
+}
 
-  try { return JSON.parse(raw) as AuthCodePayload; }
-  catch { return null; }
+/**
+ * E4: consumă codul ATOMIC, o singură dată, DOAR după ce toată validarea a trecut. Compare-and-delete pe `raw`
+ * (blob-ul exact citit la peek): șterge doar dacă valoarea curentă e neschimbată.
+ *   `consumed`    → am câștigat cursa → emite token.
+ *   `already_used`→ codul a fost deja consumat între peek și finalize (replay / dublă-trimitere concurentă) → invalid_grant.
+ *   `unavailable` → Redis jos/respins → 503 (nu am putut sigila consumul; NU emite token pe un cod nesigilat).
+ */
+export async function finalizeAuthCode(
+  code: string,
+  raw:  string,
+): Promise<ConsumeResult | "unavailable"> {
+  const r = getRedis();
+  if (!r) return "unavailable";
+
+  try {
+    const res = await r.eval(AUTH_CODE_CONSUME_LUA, 1, codeKey(code), raw);
+    return classifyConsumeResult(res);
+  } catch {
+    return "unavailable";
+  }
 }
 
 export function verifyCodeVerifier(verifier: string, challenge: string, method: string): boolean {
