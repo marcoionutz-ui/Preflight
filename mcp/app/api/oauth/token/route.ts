@@ -10,6 +10,7 @@ import { NextRequest }                      from "next/server";
 import { verifyClientCredentials, touchClient, getClientById } from "@/lib/db/oauth-clients";
 import { issueToken }                       from "@/lib/db/oauth-tokens";
 import { peekAuthCode, finalizeAuthCode, verifyCodeVerifier } from "@/lib/db/oauth-codes";
+import { sanitizeTokenError }               from "@/lib/oauth/tokenError";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -40,12 +41,11 @@ export async function POST(req: NextRequest) {
   try {
     return await handlePost(req);
   } catch (err) {
-    // Orice excepție necaptată (Redis/Supabase) ieșea până acum ca 500 gol,
-    // fără content-type — imposibil de diagnosticat din client. Acum se
-    // vede mesajul real în JSON, fără să scoatem stack trace-ul complet.
-    const message = err instanceof Error ? err.message : "Unknown error";
-    console.error("[OAUTH TOKEN] Unhandled error:", err);
-    return jsonError(500, "server_error", message);
+    // E5: eroarea REALĂ (Redis/Supabase/host/query) rămâne DOAR în log — clientul primește un mesaj generic
+    // stabil, ca să nu scurgem detalii interne prin `error_description`. Status 500 + `server_error` + no-store
+    // (jsonError) se păstrează. Logica de sanitizare + logging e în leaf-ul pur `sanitizeTokenError`.
+    const { status, error, error_description } = sanitizeTokenError(err, console.error);
+    return jsonError(status, error, error_description);
   }
 }
 
