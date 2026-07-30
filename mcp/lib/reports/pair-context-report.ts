@@ -19,6 +19,7 @@ import {
 import type { PairRiskSummary } from "../mcp/types";
 import type { McpConfidence, McpDataQuality } from "../mcp/errors";
 import { normalizeChainId, type SourceAgreement } from "@preflight/schema";
+import { safeAgeSec, safeAgeMs } from "../mcp/freshness";
 
 export interface PairContextReport {
   ok:            boolean;
@@ -64,7 +65,7 @@ function getSourceAgreement(
 
   if (!realSources.length && !isRetained) return "NO_DISCOVERY_DATA";
 
-  const staleSec = lastDiscoveryAt ? Math.round((now - lastDiscoveryAt) / 1_000) : null;
+  const staleSec = safeAgeSec(now, lastDiscoveryAt); // E13: clamp ≥0 (skew nu maschează stale ca negativ)
   const isStale  = staleSec !== null && staleSec > 30 * 60 && !isRetained;
 
   if (isStale) return "STALE_DISCOVERY";
@@ -211,9 +212,10 @@ export async function buildPairContextReport(
     const armedEntry    = armed[lookup] ?? null;
     const pipelineState = getPipelineState(lookup, watch, hot, armed);
 
-    const watchOut = watchEntry ? { ...watchEntry, ageMs: now - watchEntry.addedAt }  : null;
-    const hotOut   = hotEntry   ? { ...hotEntry,   ageMs: now - hotEntry.promotedAt } : null;
-    const armedOut = armedEntry ? { ...armedEntry, ageMs: now - armedEntry.armedAt }  : null;
+    // E13: clamp ageMs la ≥0 (clock skew → 0, nu ms negativi de afișare).
+    const watchOut = watchEntry ? { ...watchEntry, ageMs: safeAgeMs(now, watchEntry.addedAt) }  : null;
+    const hotOut   = hotEntry   ? { ...hotEntry,   ageMs: safeAgeMs(now, hotEntry.promotedAt) } : null;
+    const armedOut = armedEntry ? { ...armedEntry, ageMs: safeAgeMs(now, armedEntry.armedAt) }  : null;
 
     const pairState  = states[lookup]             ?? null;
     const snapMem    = snapshot?.memory?.[lookup] ?? null;
@@ -221,14 +223,17 @@ export async function buildPairContextReport(
 
     if (!pairState && !snapMem) {
       if (pfCtx) {
-        const pfFreshnessSec = pfCtx.updatedAt ? Math.round((now - pfCtx.updatedAt) / 1000) : null;
+        const pfFreshnessSec = safeAgeSec(now, pfCtx.updatedAt); // E13
+        // E13: derivă calitatea MEREU din vârsta CURENTĂ, nu din `pfCtx.contextQuality` stocat — altfel un
+        // updatedAt din viitor dă freshnessSec:null/LOW dar contextQuality:"fresh" (valoare veche), contradictoriu.
+        const pfContextQuality = freshnessLabel(pfFreshnessSec !== null ? pfFreshnessSec * 1000 : null);
         const pfPayload = {
           found: true, pairAddress: addr,
           symbol: pfCtx.symbol,
           chain:  pfCtx.chain,
           preflightContext: pfCtx,
           pipeline: { state: pfCtx.pipelineState ?? "NONE", watch: watchOut, hot: hotOut, armed: armedOut },
-          contextQuality: pfCtx.contextQuality ?? freshnessLabel(pfFreshnessSec !== null ? pfFreshnessSec * 1000 : null),
+          contextQuality: pfContextQuality,
           dataSource: "preflight_pair_context",
           freshnessSec: pfFreshnessSec,
         };
@@ -258,9 +263,10 @@ export async function buildPairContextReport(
     }
 
     const data = pairState ?? snapMem!;
+    // E13: clamp ≥0 — freshnessSec negativ (skew) intra în `combineConfidence` ca `< 45` → fals HIGH.
     const freshnessSec = pairState
-      ? Math.round((now - pairState.updatedAt) / 1000)
-      : snapshot?.savedAt ? Math.round((now - snapshot.savedAt) / 1000) : null;
+      ? safeAgeSec(now, pairState.updatedAt)
+      : safeAgeSec(now, snapshot?.savedAt ?? null);
 
     const mainPayload = {
       found: true, pairAddress: addr,
@@ -295,7 +301,7 @@ export async function buildPairContextReport(
         checkedAt:            pairState.risk.checkedAt,
         checkedAgeSec:        (() => {
           const checkedAtNum = Number(pairState.risk?.checkedAt ?? 0);
-          return checkedAtNum > 0 ? Math.round((Date.now() - checkedAtNum) / 1000) : null;
+          return checkedAtNum > 0 ? safeAgeSec(Date.now(), checkedAtNum) : null; // E13: clamp ≥0
         })(),
       } satisfies PairRiskSummary : null,
       riskCacheStatus: (() => {
@@ -304,7 +310,8 @@ export async function buildPairContextReport(
         if (!r) return "missing";
         const checkedAt = Number(r.checkedAt ?? 0);
         if (!checkedAt) return "unavailable";
-        const ageSec = Math.round((now - checkedAt) / 1000);
+        const ageSec = safeAgeSec(now, checkedAt); // E13
+        if (ageSec === null) return "unavailable"; // ts corupt/viitor → NU „available/cached" fals
         if (ageSec > 6 * 3600) return "stale";
         return "available";
       })(),
@@ -369,7 +376,11 @@ export async function buildPairContextReport(
       pipeline: { state: pipelineState, watch: watchOut, hot: hotOut, armed: armedOut },
       reserveEth,
       preflightContext: pfCtx ?? null,
-      contextQuality: pfCtx?.contextQuality ?? (pairState ? freshnessLabel(now - pairState.updatedAt) : "snapshot_only"),
+      // E13: derivă MEREU calitatea din freshness-ul CURENT ales, nu din `pfCtx.contextQuality` stocat —
+      // altfel un preflight context vechi (LOW/stale acum) purta eticheta "fresh" scrisă la momentul indexării.
+      // Valoarea stocată rămâne expusă separat ca `storedContextQuality` pentru diagnostic, fără a decide honesty.
+      contextQuality: pairState ? freshnessLabel(freshnessSec !== null ? freshnessSec * 1000 : null) : "snapshot_only",
+      storedContextQuality: pfCtx?.contextQuality ?? null,
       dataSource: pfCtx ? "preflight_pair_context" : pairState ? "pair_states" : "worker_snapshot",
       dataReadyForReasoning: (() => {
         const missingCritical: string[] = [];
@@ -392,7 +403,7 @@ export async function buildPairContextReport(
         return {
           lastOutcome:   lc.lastOutcome,
           lastOutcomeAt: lc.lastOutcomeAt,
-          ageSec:        Math.round((now - lc.lastOutcomeAt) / 1000),
+          ageSec:        safeAgeSec(now, lc.lastOutcomeAt), // E13: viitor serios → null, NU „0s = acum"
           fromState:     lc.fromState,
           reason:        lc.reason,
           // Was hardcoded `false` — a pair can have a past lifecycle outcome

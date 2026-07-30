@@ -38,8 +38,6 @@ import {
   enqueueEnrich, claimDueEnrich, reclaimExpiredEnrich,
   markEnrichDone, markEnrichFailed, ENRICH_LEASE_MS,
 } from "./enrichQueue";
-import { insertRecordAndIndex, casUpdateJson } from "./registryWrite";
-import { pricingInputsMatch, shouldApplyComputedPricing } from "./pricingInputs";
 
 // ── Enrichment concurrency guard ──────────────────────────────────────────────
 
@@ -93,7 +91,8 @@ export interface IndexedPair {
 
   // ── Faza 6.11: quote price source tracking ───────────────────────────────
   quotePriceSource?: QuotePriceSource;
-  quotePriceAgeSec?: number;
+  quotePriceAgeSec?: number;    // E11: age-at-enrichment ÎNGHEȚAT (păstrat pt. compat/logging)
+  quotePriceCheckedAt?: number; // E11: timestamp ABSOLUT (ms) al quote price-ului → reader-ul calculează vârsta CURENTĂ
 }
 
 // ── Key helpers ───────────────────────────────────────────────────────────────
@@ -109,7 +108,6 @@ function blockSetKey(chain: string): string {
 function tsSetKey(chain: string): string {
   return `preflight:indexed:pairs:ts:${chain}`;
 }
-
 
 // ── Enrichment ────────────────────────────────────────────────────────────────
 
@@ -151,64 +149,45 @@ async function enrichPairMetadata(
     baseMeta.decimals, quoteMeta?.decimals ?? null,
   );
 
-  if (!r) return { ok: false, reason: "no_redis" };
-
-  // ── Write enriched pair — C1: CAS atomic (nu full-record SET) ──────────────
-  // enrich (C2) și reprice (C3) pot rula concurent pe același blob; un SET necondiționat le-ar face
-  // last-writer-wins. CAS: merge peste starea CURENTĂ; pricing-ul se aplică DOAR dacă e mai nou (nu
-  // regresa un reprice mai proaspăt). Outcome-ul C2 se decide după starea FINALĂ din registry.
-  // Inputurile de pricing pe care enrich le scrie (din metadata SA proaspătă). Dacă enrich schimbă aceste
-  // inputuri, pricing-ul existent din registry a fost calculat din metadata acum-stale → trebuie înlocuit
-  // (chiar dacă are pricedAt mai nou) — vezi shouldApplyComputedPricing.
-  const nextInputs = {
+  // ── Write enriched pair ───────────────────────────────────────────────────
+  const enriched: IndexedPair = {
+    ...pair,
+    // 6.4: metadata
     baseToken,
-    quoteToken:    quoteToken ?? null,
+    quoteToken:    quoteToken   ?? undefined,
     quoteStatus,
-    baseDecimals:  baseMeta.decimals ?? null,
-    quoteDecimals: quoteMeta?.decimals ?? null,
+    baseSymbol:    baseMeta.symbol    ?? undefined,
+    quoteSymbol:   quoteMeta?.symbol  ?? undefined,
+    baseDecimals:  baseMeta.decimals  ?? undefined,
+    quoteDecimals: quoteMeta?.decimals ?? undefined,
+    metadataStatus,
+    // 6.5/6.9b/6.11 + C3: price + reserve + pricing sources + quote source/age + pricedAt
+    ...pricing,
   };
 
-  let finalPriceStatus: string | undefined;
-  const casResult = await casUpdateJson<IndexedPair>(r, jsonKey, (current) => {
-    const base: IndexedPair = {
-      ...current,
-      baseToken,
-      quoteToken:    quoteToken   ?? undefined,
-      quoteStatus,
-      baseSymbol:    baseMeta.symbol    ?? undefined,
-      quoteSymbol:   quoteMeta?.symbol  ?? undefined,
-      baseDecimals:  baseMeta.decimals  ?? undefined,
-      quoteDecimals: quoteMeta?.decimals ?? undefined,
-      metadataStatus,
-    };
-    const next: IndexedPair = shouldApplyComputedPricing(nextInputs, current, pricing.pricedAt)
-      ? { ...base, ...pricing }
-      : base;
-    finalPriceStatus = next.priceStatus;
-    return next;
-  });
+  if (!r) return { ok: false, reason: "no_redis" };
 
-  if (casResult !== "ok") {
-    console.error(`[REGISTRY] enrich CAS(${pair.pairAddress}) ${casResult}`);
-    return { ok: false, reason: `cas_${casResult}` };
+  try {
+    await r.set(jsonKey, JSON.stringify(enriched));
+  } catch (err) {
+    console.error(`[REGISTRY] enrich SET(${pair.pairAddress}) error:`, (err as Error).message);
+    return { ok: false, reason: "set_failed" };
   }
 
   console.log(
     `[INDEXED] enriched ${pair.pairAddress} ` +
     `base:${baseMeta.symbol ?? "?"} quote:${quoteMeta?.symbol ?? "?"} ` +
     `price:$${pricing.priceUsd.toFixed(6)} reserve:$${pricing.reserveUsd.toFixed(0)} ` +
-    `meta:${metadataStatus} price_status:${finalPriceStatus} ` +
+    `meta:${metadataStatus} price_status:${pricing.priceStatus} ` +
     `amm:${pricing.ammVersion ?? "?"} price_src:${pricing.pricingSource ?? "?"} reserve_src:${pricing.reserveSource ?? "?"} ` +
     `quote_price_src:${pricing.quotePriceSource} quote_price_age:${pricing.quotePriceAgeSec ?? "n/a"}s`,
   );
 
   // C2: succes DOAR dacă prețul e servabil (priceStatus OK). Altfel drain-ul reîncearcă / dead-letter,
   // NU marchează DONE un pair încă neservabil (bugul principal din review).
-  // C2: succes DOAR dacă prețul FINAL din registry e servabil (priceStatus OK) — decis după starea
-  // efectiv păstrată (dacă un reprice mai nou e deja OK, enrich e ok chiar dacă pricing-ul lui nu s-a aplicat).
-  return finalPriceStatus === "OK"
+  return pricing.priceStatus === "OK"
     ? { ok: true }
-    : { ok: false, reason: `price_status:${finalPriceStatus}` };
+    : { ok: false, reason: `price_status:${pricing.priceStatus}` };
 }
 
 // ── Pricing core (C3) ──────────────────────────────────────────────────────────
@@ -222,6 +201,7 @@ interface PricingFields {
   reserveSource?:    ReserveSource;
   quotePriceSource:  QuotePriceSource;
   quotePriceAgeSec?: number;
+  quotePriceCheckedAt?: number;
   pricedAt:          number;
 }
 
@@ -269,6 +249,9 @@ async function computePricing(
     quotePriceAgeSec: quotePriceResult
       ? Math.max(0, Math.floor((Date.now() - quotePriceResult.updatedAt) / 1000))
       : undefined,
+    // E11: stochează timestamp-ul ABSOLUT al quote price-ului (nu doar age-at-write înghețat) → reader-ul
+    // calculează `now - quotePriceCheckedAt` = vârsta CURENTĂ, care detectează staleness apărut după enrichment.
+    quotePriceCheckedAt: quotePriceResult?.updatedAt,
     pricedAt: Date.now(),
   };
 }
@@ -308,18 +291,14 @@ async function repricePair(
     pair.baseDecimals ?? null,
     pair.quoteDecimals ?? null,
   );
-  // C1: CAS atomic. Două guard-uri: (1) NU aplica un pricing calculat din metadata care s-a schimbat
-  // între timp (stale inputs — enrich a rescris decimals/quote); CAS oprește overwrite-ul unui blob
-  // stale, dar nu aplicarea unui rezultat din inputuri stale. (2) NU regresa dacă registry-ul are pricing
-  // egal/mai nou (`>=` → două calcule în aceeași ms nu se suprascriu arbitrar).
-  const result = await casUpdateJson<IndexedPair>(r, jsonKey, (current) => {
-    if (!pricingInputsMatch(pair, current)) return null;
-    if ((current.pricedAt ?? 0) >= pricing.pricedAt) return null;
-    return { ...current, ...pricing };
-  });
-  if (result === "ok") return true;
-  if (result !== "noop") console.error(`[REPRICE] CAS(${pair.pairAddress}) ${result}`);
-  return false;
+  const updated: IndexedPair = { ...pair, ...pricing };
+  try {
+    await r.set(jsonKey, JSON.stringify(updated));
+    return true;
+  } catch (err) {
+    console.error(`[REPRICE] SET(${pair.pairAddress}) error:`, (err as Error).message);
+    return false;
+  }
 }
 
 /**
@@ -419,14 +398,13 @@ export async function writePair(
   };
 
   try {
-    // C1: SET NX blob + ambele ZADD ATOMIC (un singur EVAL) — pair-ul e ori complet indexat,
-    // ori deloc; nu mai poate exista în registry dar invizibil în ZSET. Idempotent pe replay.
-    const inserted = await insertRecordAndIndex(r, {
-      jsonKey, blob: JSON.stringify(pair), member: pairAddr,
-      zsetA: blockSetKey(chain), scoreA: decoded.blockNumber,
-      zsetB: tsSetKey(chain),    scoreB: now,
-    });
-    if (!inserted) return "exists";
+    // SET NX — only write if not already present
+    const wrote = await r.set(jsonKey, JSON.stringify(pair), "NX");
+    if (!wrote) return "exists";
+
+    // New pair — add to ZSETs
+    await r.zadd(blockSetKey(chain), decoded.blockNumber, pairAddr);
+    await r.zadd(tsSetKey(chain), now, pairAddr);
 
     // C2: TOATE perechile noi intră DOAR prin coada persistentă de enrichment — un SINGUR execution
     // path (fără enrichment inline), o singură limită de concurență (drain), nimic pierdut la crash.

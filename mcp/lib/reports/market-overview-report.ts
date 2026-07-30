@@ -20,7 +20,7 @@ import {
   readAllRedis, readTrendingMovers, freshnessLabel,
   readSolanaIndexerStats, readSolanaMovers,
 } from "../mcp/redis-reader";
-import { normalizeChainId } from "@preflight/schema";
+import { safeAgeSec } from "../mcp/freshness";
 
 export type ChainCoverageTier = "LIVE" | "CACHED" | "SAMPLED";
 
@@ -43,9 +43,10 @@ const CHAIN_COVERAGE: Record<string, ChainCoverageTier> = {
 
 // Worker stores pair_states with chain:"ethereum", but the external chain
 // code used everywhere else (URLs, MCP tool schemas, ALLOWED_CHAINS) is
-// "eth". A1: delegat la helperul canonic normalizeChainId din @preflight/schema
-// (o singură sursă de adevăr pentru "eth" → "ethereum").
-const toRedisChainId = normalizeChainId;
+// "eth" — same normalization tp_chain_report.ts / tp_market_overview.ts do.
+function toRedisChainId(externalChain: string): string {
+  return externalChain === "eth" ? "ethereum" : externalChain;
+}
 
 export interface MoverSummary {
   symbol:         string;
@@ -117,7 +118,9 @@ export async function buildMarketOverviewReport(topN = 5): Promise<MarketOvervie
       const chainArmed = Object.values(armed).filter((a: any) => (a.chain ?? "").toLowerCase() === chainId).length;
 
       const newestStateAt = stateVals.length ? Math.max(...stateVals.map(s => s.updatedAt)) : null;
-      const freshnessSec  = newestStateAt ? Math.round((now - newestStateAt) / 1000) : null;
+      // E13: clamp la ≥0 — un updatedAt din viitor (clock skew) nu mai dă freshnessSec negativ, care fiind
+      // `< prag` producea fals HIGH confidence + „online".
+      const freshnessSec  = safeAgeSec(now, newestStateAt);
 
       let regime: ChainRegime | null = null;
       if (stateVals.length > 0) {

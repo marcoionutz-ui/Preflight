@@ -50,6 +50,11 @@ const HISTORY_TTL_SEC         = 2 * 60 * 60; // 2h
 const HISTORY_MAX_INDEX       = 59;          // ltrim 0..59 → 60 intrări
 const HISTORY_MIN_INTERVAL_MS = 60_000;      // scrie un punct nou doar dacă cel mai recent are >=60s
 
+// E12 — fereastra de activitate pt. ZSET-ul `price:pools`. Fără prune, ZADD-ul (necondiționat, la fiecare swap)
+// lasă membri vechi pe veci → `trackedPricePools` (zcard→zcount în reader) crește monoton. Trebuie să coincidă
+// cu `PRICE_POOLS_WINDOW_MS` din reader (mcp/lib/mcp/freshness.ts).
+const PRICE_POOLS_WINDOW_MS   = 2 * 60 * 60 * 1000; // 2h
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function programLabel(prog: SwapParseResult["program"]): PreflightSolanaProgram {
@@ -174,7 +179,7 @@ export async function recordPriceSnapshot(
   // următoarele văd deja ts-ul nou și sar. ZADD (index de activitate) e necondiționat. Fără fix, un pool hot
   // umplea toate 60 sloturile în câteva minute → priceChange1hPct structural imposibil.
   const historyPoint: PreflightSolanaPricePoint = { p: priceInQuote, ts: snapshot.lastUpdatedAt };
-  await redis.eval(
+  const appended = await redis.eval(
     APPEND_HISTORY_LUA,
     2,
     KEY_PRICE_HISTORY(result.pool),
@@ -186,6 +191,15 @@ export async function recordPriceSnapshot(
     String(HISTORY_TTL_SEC),
     result.pool,
   );
+
+  // E12: prune pool-urile inactive (>2h) din ZSET-ul de index — altfel `trackedPricePools` crește monoton.
+  // Gated pe `appended` (Lua întoarce 1 doar la ≥60s/pool) → ZREMRANGEBYSCORE rulează cel mult o dată/60s/pool,
+  // nu la fiecare swap. `(` = scor exclusiv: păstrează exact pool-urile actualizate în ultimele 2h.
+  if (appended === 1) {
+    await redis.zremrangebyscore(
+      KEY_PRICE_POOLS, "-inf", "(" + (snapshot.lastUpdatedAt - PRICE_POOLS_WINDOW_MS),
+    );
+  }
 
   console.log(
     "[SOLANA][SWAP][" + progLabel + "][PRICE]"

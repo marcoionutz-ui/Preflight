@@ -25,6 +25,7 @@ import {
   type PreflightSolanaMover, type PreflightSolanaMoversSnapshot,
   type PreflightSolanaHealth, type PreflightSolanaPoolActivity,
 } from "@preflight/schema";
+import { safeAgeSec, quotePriceCurrentAgeSec, pricePoolsWindowStart } from "./freshness";
 
 function safeJson<T>(raw: string | null, fallback: T, key?: string): T {
   if (!raw) return fallback;
@@ -295,12 +296,17 @@ export async function readAllRedis(): Promise<RedisContext | null> {
   // Freshness din SURSE (nu falsifica "fresh"/now): cel mai vechi updatedAt al state-urilor;
   // fallback runtime/snapshot. pfMarket.updatedAt = timestampul datelor; regime.calculatedAt = now.
   const stateUpdatedAts = mcVals.map(v => Number(v?.updatedAt)).filter(Number.isFinite);
-  const marketSourceAt =
+  // E13: NU inventa un timestamp "acum" când nu există niciunul. Ultimul `?? now` transforma absența
+  // completă a unei surse de timp într-un timestamp perfect proaspăt → contextQuality "fresh" fals.
+  // Corect: dacă nici state, nici runtime, nici snapshot.savedAt (finit) nu există → null (necunoscut).
+  const snapshotAt = Number(snapshotMerged?.savedAt);
+  const marketSourceAt: number | null =
     stateUpdatedAts.length   > 0 ? Math.min(...stateUpdatedAts) :
     runtimeUpdatedAts.length > 0 ? Math.min(...runtimeUpdatedAts) :
-    Number(snapshotMerged?.savedAt ?? now);
-  const marketAgeMs = Math.max(0, now - marketSourceAt);
-  const contextQuality = marketAgeMs < 45_000 ? "fresh" : marketAgeMs < 90_000 ? "aging" : "stale";
+    Number.isFinite(snapshotAt) ? snapshotAt : null;
+  // E13: safeAgeSec — sursă absentă/coruptă sau SERIOS în viitor → null → contextQuality "stale" (conservator), nu "fresh".
+  const marketAgeSec = safeAgeSec(now, marketSourceAt);
+  const contextQuality = marketAgeSec === null ? "stale" : marketAgeSec < 45 ? "fresh" : marketAgeSec < 90 ? "aging" : "stale";
   const derivedMarket: PreflightMarketContext | null = marketHasData ? {
     schemaVersion:         SCHEMA_VERSION,
     workerVersion:         snapshotMerged?.version ?? "unknown",
@@ -312,7 +318,7 @@ export async function readAllRedis(): Promise<RedisContext | null> {
     chainsActive,
     momentumEventsLast10m: momentumLast10m,
     contextQuality,
-    updatedAt:             marketSourceAt,
+    updatedAt:             marketSourceAt ?? 0,
   } : null;
   const derivedRegimeObj: MarketRegime | null = marketHasData ? {
     regime:            derivedRegime,
@@ -713,8 +719,10 @@ export async function readQuoteOracleHealth(): Promise<Record<string, Record<str
       }
       try {
         const p = JSON.parse(raw) as { price: number; updatedAt: number };
-        const ageSec = Math.round((now - Number(p.updatedAt ?? 0)) / 1000);
-        result[chain][symbol] = { price: p.price, ageSec, fresh: ageSec >= 0 && ageSec < 300, source: "CHAINLINK" };
+        // E13: clamp la ≥0 — un updatedAt din viitor (clock skew) nu mai dă ageSec negativ. `fresh` cere
+        // updatedAt valid ȘI <300s (ts lipsă/invalid/viitor-serios → safeAgeSec null → NEfresh, nu „0s proaspăt").
+        const ageSec = safeAgeSec(now, Number.isFinite(Number(p.updatedAt)) ? Number(p.updatedAt) : null);
+        result[chain][symbol] = { price: p.price, ageSec: ageSec ?? -1, fresh: ageSec !== null && ageSec < 300, source: "CHAINLINK" };
       } catch {
         result[chain][symbol] = { price: 0, ageSec: -1, fresh: false, source: "MISSING" };
       }
@@ -743,6 +751,7 @@ const QUOTE_SAMPLE_SIZE   = 500;
 export async function readQuotePriceHealth(): Promise<Record<string, QuotePriceChainHealth>> {
   const r = getRedis();
   if (!r) return {};
+  const now = Date.now();
   const result: Record<string, QuotePriceChainHealth> = {};
 
   for (const chain of QUOTE_HEALTH_CHAINS) {
@@ -765,9 +774,11 @@ export async function readQuotePriceHealth(): Promise<Record<string, QuotePriceC
         if (err || !raw) continue;
         try {
           const p = JSON.parse(raw as string) as {
-            quotePriceSource?: string;
-            quotePriceAgeSec?: number;
-            priceStatus?:      string;
+            quotePriceSource?:  string;
+            quotePriceAgeSec?:  number;   // E11: frozen age-at-enrichment (fallback pt. intrări legacy)
+            quotePriceCheckedAt?: number; // E11: timestamp ABSOLUT — vârsta CURENTĂ = now - checkedAt
+            pricedAt?:          number;   // E11: pt. fallback-ul legacy — frozen + timpul scurs de la pricedAt
+            priceStatus?:       string;
           };
           parsed++;
           const src = p.quotePriceSource ?? "UNKNOWN";
@@ -775,8 +786,10 @@ export async function readQuotePriceHealth(): Promise<Record<string, QuotePriceC
           sources[src]       = (sources[src] ?? 0) + 1;
           priceStatuses[ps]  = (priceStatuses[ps] ?? 0) + 1;
           if (src === "UNKNOWN" && ps === "OK") unknownOkCount++;
-          if (typeof p.quotePriceAgeSec === "number") {
-            maxAgeSec = maxAgeSec === null ? p.quotePriceAgeSec : Math.max(maxAgeSec, p.quotePriceAgeSec);
+          // E11: vârsta CURENTĂ (checkedAt absolut, îmbătrânește) — nu age-at-write înghețat care ascundea staleness.
+          const age = quotePriceCurrentAgeSec(p, now);
+          if (age !== null) {
+            maxAgeSec = maxAgeSec === null ? age : Math.max(maxAgeSec, age);
           }
         } catch { /* skip malformed */ }
       }
@@ -785,7 +798,7 @@ export async function readQuotePriceHealth(): Promise<Record<string, QuotePriceC
       const envCount        = sources["ENV_FALLBACK"] ?? 0;
       if (unknownOkCount > 0)                           warnings.push(`${unknownOkCount} OK-priced pairs with UNKNOWN quote source`);
       if (envCount > parsed * 0.1 && parsed > 10)      warnings.push(`${envCount} pairs using ENV_FALLBACK (>${Math.round(envCount / parsed * 100)}%)`);
-      if (maxAgeSec !== null && maxAgeSec > 600)        warnings.push(`max quotePriceAgeSec=${maxAgeSec}s — possible stale prices`);
+      if (maxAgeSec !== null && maxAgeSec > 600)        warnings.push(`max current quote-price age=${maxAgeSec}s — possible stale prices`);
 
       result[chain] = { sampleSize: parsed, sources, priceStatuses, maxAgeSec, warnings };
     } catch { /* ignoră chain errors */ }
@@ -911,7 +924,9 @@ export async function readSolanaIndexerStats(now: number): Promise<SolanaIndexer
     r.get("preflight:indexer:health:solana"),
     r.zcard("preflight:indexed:pairs:solana"),
     r.zcard("preflight:indexed:launches:solana"),
-    r.zcard("preflight:solana:price:pools"),
+    // E12: NU zcard (ZSET-ul price:pools nu se prune-uiește → număr monoton, supra-raportat). Numărăm doar
+    // pool-urile ACTIVE în ultimele 2h (score = lastUpdatedAt ms). Worker-ul prune-uiește restul (ZREMRANGEBYSCORE).
+    r.zcount("preflight:solana:price:pools", pricePoolsWindowStart(now), "+inf"),
     r.get("preflight:trending:movers:solana"),
   ]);
 
@@ -934,9 +949,8 @@ export async function readSolanaIndexerStats(now: number): Promise<SolanaIndexer
       const updatedAtMs  = typeof rawUpdatedAt === "number"
         ? rawUpdatedAt
         : Date.parse(String(rawUpdatedAt ?? ""));
-      const ageSec = Number.isFinite(updatedAtMs)
-        ? Math.max(0, Math.round((now - updatedAtMs) / 1000))
-        : null;
+      // E13: safeAgeSec — updatedAt serios în viitor → null → workerOnline false / status OFFLINE (nu „0s online").
+      const ageSec = safeAgeSec(now, Number.isFinite(updatedAtMs) ? updatedAtMs : null);
 
       // Redis poate conține orice string pe `status` — safeJson validează
       // doar sintaxa JSON, nu forma/enum-ul. Fără asta, o valoare stray
@@ -977,9 +991,8 @@ export async function readSolanaIndexerStats(now: number): Promise<SolanaIndexer
         ? snap.computedAt
         : null;
 
-      moversComputedAgeSec = computedAt !== null
-        ? Math.max(0, Math.round((now - computedAt) / 1000))
-        : null;
+      // E13: safeAgeSec — computedAt serios în viitor → null → moversStatus EMPTY (nu READY fals).
+      moversComputedAgeSec = safeAgeSec(now, computedAt);
       moversCount   = Array.isArray(snap.movers) ? snap.movers.length : 0;
       moversStatus  = moversComputedAgeSec === null
         ? "EMPTY"
@@ -1010,8 +1023,9 @@ export async function readSolanaMovers(now: number, topN = 5): Promise<SolanaMov
     // treacă de verificarea de staleness de mai jos (NaN > 600 e false).
     // Tratăm ca "fără date", la fel ca healthRaw lipsă.
     if (typeof snap.computedAt !== "number" || !Number.isFinite(snap.computedAt)) return null;
-    const computedAgeSec = Math.max(0, Math.round((now - snap.computedAt) / 1000));
-    if (computedAgeSec > 10 * 60) return null;
+    // E13: safeAgeSec — computedAt serios în viitor → null → tratat ca „fără date" (return null), nu READY.
+    const computedAgeSec = safeAgeSec(now, snap.computedAt);
+    if (computedAgeSec === null || computedAgeSec > 10 * 60) return null;
 
     return {
       computedAgeSec,
@@ -1145,12 +1159,10 @@ export async function readSolanaPoolContext(
     Number.isFinite(priceSnapshot.lastUpdatedAt)
       ? priceSnapshot.lastUpdatedAt
       : null;
-  // clamp la 0 — un timestamp accidental în viitor (clock skew, bug de
-  // scriere) nu trebuie să producă vârstă negativă, care ar trece drept
-  // "HIGH" confidence în pair-context-report.ts (`dataAgeSec < 45`).
-  const dataAgeSec = lastUpdatedAt !== null
-    ? Math.max(0, Math.round((now - lastUpdatedAt) / 1000))
-    : null;
+  // E13: safeAgeSec — un timestamp SERIOS în viitor (clock skew, bug de scriere) → null (necunoscut), NU 0.
+  // Vechea variantă (Math.max(0,…)) transforma „30s în viitor" în „0s" → trecea drept HIGH confidence în
+  // pair-context-report.ts (`dataAgeSec < 45`). Acum viitorul → null → NU HIGH.
+  const dataAgeSec = safeAgeSec(now, lastUpdatedAt);
 
   return { poolAddress, registry, priceSnapshot, activity, recentHistory, observedCandidate, dataAgeSec };
 }
