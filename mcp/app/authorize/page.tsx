@@ -38,7 +38,11 @@ export default async function AuthorizePage({ searchParams }: Props) {
     // aplică natural client.scopes.
     scope                 = "",
     code_challenge        = "",
-    code_challenge_method = "S256",
+    // E1: NU mai defaulta la "S256" pe metodă absentă. RFC 7636 §4.3: lipsa lui
+    // code_challenge_method înseamnă "plain", nu S256 — iar Preflight acceptă DOAR
+    // S256, deci un request fără metodă trebuie respins, nu reinterpretat tacit ca
+    // S256. Default gol → /api/oauth/authorize îl respinge (validateAuthorizeChallenge).
+    code_challenge_method = "",
     // Fără default "code" — obligatoriu prin RFC 6749, un request care nu-l
     // trimite deloc trebuie respins, nu tratat tacit ca valid.
     response_type         = "",

@@ -11,6 +11,7 @@ import { verifyClientCredentials, touchClient, getClientById } from "@/lib/db/oa
 import { issueToken }                       from "@/lib/db/oauth-tokens";
 import { peekAuthCode, finalizeAuthCode, verifyCodeVerifier } from "@/lib/db/oauth-codes";
 import { sanitizeTokenError }               from "@/lib/oauth/tokenError";
+import { isValidCodeVerifier }              from "@/lib/oauth/pkce";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -130,6 +131,11 @@ async function handlePost(req: NextRequest) {
     // aici. Nu mai e condiționat de payload.code_challenge fiind truthy.
     if (!code_verifier) {
       return jsonError(400, "invalid_request", "code_verifier is required");
+    }
+    // E1: format RFC 7636 (43–128 caractere unreserved). Un verifier sub minimul de entropie sau cu alfabet
+    // greșit e respins înainte de comparație — invalid_grant (nu s-ar potrivi oricum, dar respingem explicit).
+    if (!isValidCodeVerifier(code_verifier)) {
+      return jsonError(400, "invalid_grant", "code_verifier is malformed (RFC 7636: 43–128 unreserved characters)");
     }
     const valid = verifyCodeVerifier(code_verifier, payload.code_challenge, payload.code_challenge_method);
     if (!valid) return jsonError(400, "invalid_grant", "code_verifier mismatch");

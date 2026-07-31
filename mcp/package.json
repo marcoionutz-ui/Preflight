@@ -18,7 +18,8 @@
     "test:e2": "tsx lib/mcp/e2.test.ts",
     "test:e5": "tsx lib/oauth/tokenError.test.ts",
     "test:nf4": "tsx lib/db/clientLookup.test.ts",
-    "test": "npm run test:e9 && npm run test:e14 && npm run test:e15 && npm run test:e10 && npm run test:e11-e13 && npm run test:e4-e6 && npm run test:e7 && npm run test:e2 && npm run test:e5 && npm run test:nf4"
+    "test:e1": "tsx lib/oauth/pkce.test.ts",
+    "test": "npm run test:e9 && npm run test:e14 && npm run test:e15 && npm run test:e10 && npm run test:e11-e13 && npm run test:e4-e6 && npm run test:e7 && npm run test:e2 && npm run test:e5 && npm run test:nf4 && npm run test:e1"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.26.0",

@@ -7,6 +7,7 @@
 import { NextRequest }              from "next/server";
 import { verifyClientCredentials, isAllowedRedirectUri } from "@/lib/db/oauth-clients";
 import { issueAuthCode }            from "@/lib/db/oauth-codes";
+import { validateAuthorizeChallenge } from "@/lib/oauth/pkce";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -34,7 +35,10 @@ export async function POST(req: NextRequest) {
   const state                 = params.get("state")                 ?? "";
   const scope                 = params.get("scope")                 ?? "";
   const code_challenge        = params.get("code_challenge")        ?? "";
-  const code_challenge_method = params.get("code_challenge_method") ?? "S256";
+  // E1: NU defaulta la "S256" pe metodă absentă. RFC 7636 §4.3: lipsa metodei = "plain";
+  // Preflight acceptă doar S256, deci absența trebuie RESPINSĂ (validateAuthorizeChallenge),
+  // nu reinterpretată tacit ca S256. Default gol → cade pe ramura de respingere.
+  const code_challenge_method = params.get("code_challenge_method") ?? "";
   // Fără default "code" — response_type e obligatoriu (RFC 6749); un request
   // care nu-l trimite deloc trebuie respins explicit, nu tratat tacit ca și
   // cum ar fi fost "code".
@@ -47,8 +51,12 @@ export async function POST(req: NextRequest) {
   if (response_type !== "code") {
     return errorPage(`Unsupported response_type: ${response_type}. Only "code" is supported.`);
   }
-  if (!code_challenge || code_challenge_method !== "S256") {
-    return errorPage("PKCE is required: code_challenge (S256) must be present.");
+  // E1: PKCE obligatoriu + validare de FORMAT RFC 7636 (nu doar „prezent + S256"). Un challenge malformat
+  // (lungime/alfabet greșit) e respins ACUM, ca să nu emitem un cod legat de un challenge pe care niciun
+  // verifier nu-l poate satisface. Metoda trebuie să fie EXACT „S256" (plain/altă variantă = downgrade blocat).
+  const pkce = validateAuthorizeChallenge(code_challenge, code_challenge_method);
+  if (!pkce.ok) {
+    return errorPage(pkce.reason);
   }
 
   // Verifică credentials în Supabase
