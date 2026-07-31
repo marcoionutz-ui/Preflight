@@ -6,6 +6,9 @@
 import { createHash, randomBytes } from "crypto";
 import { supabaseAdmin }           from "./supabase-admin";
 import { timingSafeStrEqual }      from "./constantTime";
+import { classifyClientLookup, type ClientLookup } from "./clientLookup";
+
+export type { ClientLookup } from "./clientLookup";
 
 export interface OAuthClient {
   id:                    string;
@@ -42,9 +45,8 @@ export function hashSecret(secret: string): string {
 }
 
 export function verifySecret(secret: string, hash: string): boolean {
-  // E7: hash-urile sunt comparate prin digesturi de lungime fixă.
-  // Comparația digesturilor este constant-time; hash-uirea rămâne proporțională
-  // cu lungimea intrărilor.
+  // E7: comparație în timp constant — `===` pe hash-ul hex iese la primul byte diferit (timing leak al hash-ului
+  // stocat). timingSafeStrEqual hash-uiește ambele → constant-time indiferent de lungime, fără throw.
   return timingSafeStrEqual(hashSecret(secret), hash);
 }
 
@@ -62,16 +64,35 @@ export function isAllowedRedirectUri(client: OAuthClient, redirectUri: string): 
 
 // ── Lookup ────────────────────────────────────────────────────────────────────
 
-export async function getClientById(clientId: string): Promise<OAuthClient | null> {
-  const { data, error } = await supabaseAdmin
-    .from("oauth_clients")
-    .select("*")
-    .eq("client_id", clientId)
-    .eq("status", "active")
-    .single();
+/**
+ * NF4: citire DISCRIMINATĂ a clientului — `found | not_found | unavailable`. `.maybeSingle()` (NU `.single()`):
+ * 0 rânduri → `data:null, error:null` (= not_found), iar o eroare reală de backend → `error` setat (= unavailable).
+ * `resolveAuth` mapează `unavailable` la 503 AUTH_UNAVAILABLE (nu 401 fals). Sursa autoritativă pt. auth.
+ */
+export async function lookupClientById(clientId: string): Promise<ClientLookup> {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from("oauth_clients")
+      .select("*")
+      .eq("client_id", clientId)
+      .eq("status", "active")
+      .maybeSingle();
 
-  if (error || !data) return null;
-  return data as OAuthClient;
+    return classifyClientLookup(data as OAuthClient | null, error);
+  } catch (err) {
+    // Excepție aruncată (rețea / client Supabase) → tot „nu pot verifica", nu „inexistent".
+    return { status: "unavailable", reason: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * Backward-compat: `OAuthClient | null` pt. caller-ii care nu disting (verifyClientCredentials, add/removeRedirectUri,
+ * token/route). Deleagă la `lookupClientById`; `not_found` ȘI `unavailable` → `null` (comportament neschimbat pt. ei).
+ * Path-ul de auth Bearer (`resolveAuth`) folosește `lookupClientById` direct, ca să distingă 401 de 503.
+ */
+export async function getClientById(clientId: string): Promise<OAuthClient | null> {
+  const r = await lookupClientById(clientId);
+  return r.status === "found" ? r.client : null;
 }
 
 export async function verifyClientCredentials(

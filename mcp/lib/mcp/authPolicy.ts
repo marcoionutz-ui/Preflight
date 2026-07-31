@@ -13,7 +13,7 @@
  */
 
 import type { TokenValidation, RateLimitOutcome } from "../db/oauth-tokens";
-import type { OAuthClient } from "../db/oauth-clients";
+import type { ClientLookup } from "../db/clientLookup";
 
 export const AUTH_RETRY_MS       = 75;  // un singur retry rapid pe „unavailable" înainte de 503
 export const UNAVAILABLE_RETRY_S = 2;   // Retry-After (secunde) pe 503
@@ -31,7 +31,8 @@ export interface AuthResult {
 
 export interface AuthDeps {
   validateToken: (token: string) => Promise<TokenValidation>;
-  getClient:     (clientId: string) => Promise<OAuthClient | null>;
+  // NF4: rezultat DISCRIMINAT — `not_found` (401 onest) vs `unavailable` (503, la fel ca Redis jos), nu ambele null.
+  getClient:     (clientId: string) => Promise<ClientLookup>;
   checkRate:     (clientId: string, rpm: number, rpd: number) => Promise<RateLimitOutcome>;
   touch:         (clientId: string) => void;
   sleep:         (ms: number) => Promise<void>;
@@ -90,11 +91,21 @@ export async function resolveAuth(authHeader: string, deps: AuthDeps): Promise<A
     return unauthorized("INVALID_TOKEN", "Invalid or expired token");
   }
 
-  // 2. Client + rotație de secret (domeniu Supabase, nu Redis — 401 pe absență/rotație rămâne corect).
-  const client = await deps.getClient(v.payload.client_id);
-  if (!client) {
+  // 2. Client + rotație de secret. NF4: distinge „client inexistent/revocat" (401 onest) de „Supabase indisponibil"
+  //    (503 AUTH_UNAVAILABLE — la fel ca Redis jos la token: 1 retry scurt, apoi 503, NICIODATĂ 401 fals). Rotația
+  //    de secret (credential_version ≠ secret_rotated_at) rămâne 401 (verificare reușită, token invalidat).
+  let cl = await deps.getClient(v.payload.client_id);
+  if (cl.status === "unavailable") {
+    await deps.sleep(AUTH_RETRY_MS);
+    cl = await deps.getClient(v.payload.client_id);
+  }
+  if (cl.status === "unavailable") {
+    return unavailable("AUTH_UNAVAILABLE", "Authentication backend temporarily unavailable");
+  }
+  if (cl.status === "not_found") {
     return unauthorized("UNAUTHORIZED", "Client not found or revoked");
   }
+  const client = cl.client;
   if (!v.payload.credential_version || v.payload.credential_version !== client.secret_rotated_at) {
     return unauthorized("UNAUTHORIZED", "Token invalidated by credential rotation");
   }

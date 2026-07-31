@@ -5,7 +5,7 @@
 
 import type { NextRequest }        from "next/server";
 import { validateToken, checkRateLimit } from "@/lib/db/oauth-tokens";
-import { getClientById, touchClient }    from "@/lib/db/oauth-clients";
+import { lookupClientById, touchClient }  from "@/lib/db/oauth-clients";
 import { resolveAuth, resolveDevBypass } from "./authPolicy";
 import type { AuthResult }            from "./authPolicy";
 
@@ -40,7 +40,7 @@ export async function authenticate(req: NextRequest): Promise<AuthResult> {
   const authHeader = (req.headers.get("authorization") ?? "").trim();
   return resolveAuth(authHeader, {
     validateToken,
-    getClient: getClientById,
+    getClient: lookupClientById, // NF4: discriminat found|not_found|unavailable
     checkRate: checkRateLimit,
     touch:     touchClient,
     sleep:     (ms) => new Promise((res) => setTimeout(res, ms)),

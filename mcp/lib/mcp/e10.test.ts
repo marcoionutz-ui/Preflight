@@ -37,7 +37,8 @@ const RATE_OK: RateLimitOutcome = { status: "ok", remaining_min: 59, remaining_d
 function makeDeps(over: Partial<AuthDeps>): AuthDeps {
   return {
     validateToken: async () => VALID,
-    getClient:     async () => CLIENT,
+    // NF4: getClient întoarce ClientLookup discriminat.
+    getClient:     async () => ({ status: "found", client: CLIENT }),
     checkRate:     async () => RATE_OK,
     touch:         () => {},
     sleep:         async () => {},
@@ -167,14 +168,36 @@ console.log("\nE10 — resolveAuth (fail-closed onest, deps injectate)");
   check("15. ⭐ 429 RATE_LIMITED ≠ 503 RATE_LIMIT_UNAVAILABLE", limited.status === 429 && unavail.status === 503 && limited.errorCode !== unavail.errorCode);
 }
 {
-  const r = await resolveAuth("Bearer tok", makeDeps({ getClient: async () => null }));
-  check("16. client inexistent → 401", r.status === 401 && r.ok === false);
+  // NF4: client chiar inexistent/revocat → 401 (onest: verificarea a reușit, răspunsul e „nu").
+  const r = await resolveAuth("Bearer tok", makeDeps({ getClient: async () => ({ status: "not_found" }) }));
+  check("16. client inexistent (not_found) → 401", r.status === 401 && r.ok === false);
 }
 {
   // Rotație de secret: credential_version ≠ secret_rotated_at → 401.
   const stale: TokenValidation = { status: "valid", payload: { client_id: "c1", scopes: ["read:all"], issued_at: 0, credential_version: "OLD" } };
   const r = await resolveAuth("Bearer tok", makeDeps({ validateToken: async () => stale }));
   check("17. token invalidat de rotație → 401", r.status === 401);
+}
+{
+  // ⭐ NF4: Supabase indisponibil → 503 AUTH_UNAVAILABLE (NU 401 fals), după 1 retry.
+  let calls = 0;
+  const r = await resolveAuth("Bearer tok", makeDeps({ getClient: async () => { calls++; return { status: "unavailable", reason: "supabase down" }; } }));
+  check("NF4a. ⭐ client lookup unavailable → status 503", r.status === 503);
+  check("NF4b. ⭐ cod AUTH_UNAVAILABLE (nu UNAUTHORIZED/401)", r.errorCode === "AUTH_UNAVAILABLE");
+  check("NF4c. a încercat de 2 ori (1 retry pe unavailable)", calls === 2);
+  check("NF4d. are Retry-After", typeof r.retryAfter === "number" && (r.retryAfter as number) > 0);
+}
+{
+  // ⭐ NF4: retry-ul recuperează (unavailable → found) → ok, nu 503.
+  let calls = 0;
+  const r = await resolveAuth("Bearer tok", makeDeps({ getClient: async () => (++calls === 1 ? { status: "unavailable", reason: "blip" } : { status: "found", client: CLIENT }) }));
+  check("NF4e. ⭐ retry recuperează (unavailable→found) → ok", r.ok === true && calls === 2);
+}
+{
+  // ⭐ NF4: not_found (401) ≠ unavailable (503) — coduri distincte, nu conflate ca înainte.
+  const notFound = await resolveAuth("Bearer tok", makeDeps({ getClient: async () => ({ status: "not_found" }) }));
+  const unavail  = await resolveAuth("Bearer tok", makeDeps({ getClient: async () => ({ status: "unavailable", reason: "x" }) }));
+  check("NF4f. ⭐ 401 not_found ≠ 503 unavailable (nu mai sunt ambele 401)", notFound.status === 401 && unavail.status === 503);
 }
 
 console.log("\nE10 — parseStoredToken (payload malformat → invalid, NU valid-null→500)");
