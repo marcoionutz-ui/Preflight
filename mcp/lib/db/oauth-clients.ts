@@ -7,6 +7,7 @@ import { createHash, randomBytes } from "crypto";
 import { supabaseAdmin }           from "./supabase-admin";
 import { timingSafeStrEqual }      from "./constantTime";
 import { classifyClientLookup, type ClientLookup } from "./clientLookup";
+import { buildOAuthClientInsertRow, hasValidCredentialVersion } from "./oauthClientInsert";
 
 export type { ClientLookup } from "./clientLookup";
 
@@ -171,19 +172,35 @@ export async function createOAuthClient({
   // a doua citire era servită din cache-ul primei (null), nu ajungea la
   // Supabase, deci dashboard-ul credea că "nu s-a putut încărca" deși
   // insert-ul reușise. Eliminăm al doilea request în loc să luptăm cu cache-ul.
+  // E3: secret_rotated_at setat EXPLICIT (= timestamp-ul creării — secretul tocmai a fost mintat), NU lăsat pe
+  // seama unui DEFAULT al coloanei DB care poate lipsi. Fără el, rândul are secret_rotated_at NULL → tokenul emis
+  // pinuiește credential_version=null → authenticate() respinge (401) TOATE tokenurile clientului nou. Vezi
+  // lib/db/oauthClientInsert.ts pentru lanțul complet.
+  const nowIso = new Date().toISOString();
   const { data, error } = await supabaseAdmin
     .from("oauth_clients")
-    .insert({
+    .insert(buildOAuthClientInsertRow({
       client_id, secret_hash, name, plan, scopes: finalScopes,
       rate_limit_per_minute, rate_limit_per_day,
       notes:   notes ?? null,
       user_id: user_id ?? null,
-    })
+    }, nowIso))
     .select("*")
     .single();
 
   if (error || !data) {
     console.error("[OAUTH] Failed to create client:", error?.message);
+    return null;
+  }
+
+  // E3 (fail-closed): dacă rândul întors tot n-are un secret_rotated_at valid (coloană fără DEFAULT, trigger DB,
+  // drop tăcut), NU întoarce un client rupt ale cărui tokenuri ar pica toate la auth — semnalează eroarea în loc
+  // să creezi tăcut ceva inutilizabil.
+  if (!hasValidCredentialVersion(data)) {
+    console.error(
+      "[OAUTH] Created client is missing a valid secret_rotated_at — refusing to return a client whose tokens " +
+      "would all fail authentication. Check the oauth_clients.secret_rotated_at column default.",
+    );
     return null;
   }
 

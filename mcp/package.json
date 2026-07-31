@@ -19,7 +19,8 @@
     "test:e5": "tsx lib/oauth/tokenError.test.ts",
     "test:nf4": "tsx lib/db/clientLookup.test.ts",
     "test:e1": "tsx lib/oauth/pkce.test.ts",
-    "test": "npm run test:e9 && npm run test:e14 && npm run test:e15 && npm run test:e10 && npm run test:e11-e13 && npm run test:e4-e6 && npm run test:e7 && npm run test:e2 && npm run test:e5 && npm run test:nf4 && npm run test:e1"
+    "test:e3": "tsx lib/db/oauthClientInsert.test.ts",
+    "test": "npm run test:e9 && npm run test:e14 && npm run test:e15 && npm run test:e10 && npm run test:e11-e13 && npm run test:e4-e6 && npm run test:e7 && npm run test:e2 && npm run test:e5 && npm run test:nf4 && npm run test:e1 && npm run test:e3"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.26.0",
