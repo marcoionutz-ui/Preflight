@@ -229,10 +229,11 @@ export function buildMomentumEventEntry(
   flowBuyVol5m: number,
   flowNetVol5m: number,
   flowBuys5m: number,
+  flowSells5m: number,
   workerVersion: string,
 ): PreflightMomentumEvent {
   const flowStatus = event.hasWsFlow
-    ? deriveFlowStatus("BUYING", flowHasData, flowBuys5m, 0)
+    ? deriveFlowStatus("BUYING", flowHasData, flowBuys5m, flowSells5m)
     : "NO_DATA";
 
   const obsCtx: ObservationContext = {
@@ -247,6 +248,9 @@ export function buildMomentumEventEntry(
     confidence:        event.hasWsFlow ? "MEDIUM" : "LOW",
     m5Pct:             event.m5Pct,
     h24Pct:            event.h24Pct,
+    // E34: counts reale buy/sell pt. mesajul one-sided — sells5m vine REAL din wsFlowReal (scan.ts), NU hardcodat
+    // 0 (altfel 5 buy / 2 sell ar raporta fals „buying-only"). Aceeași valoare merge și în deriveFlowStatus.
+    flowCounts:        { buys5m: flowBuys5m, sells5m: flowSells5m },
   };
 
   return {
@@ -334,6 +338,8 @@ export function buildSignalPipelineEntry(params: {
     pipelineState,
     confidence,
     priceVsEntryPct,
+    // E34: counts reale buy/sell pt. mesajul one-sided (tipizat, nu mai `(ctx as any).flow`).
+    flowCounts:         { buys5m: flow.buys5m, sells5m: flow.sells5m },
   };
 
   return {
@@ -397,6 +403,8 @@ export function buildQualifiedSignalEntry(params: {
     opportunitySignals: opSignals,
     pipelineState:     "QUALIFIED",
     confidence,
+    // E34: counts reale buy/sell pt. mesajul one-sided (tipizat, nu mai `(ctx as any).flow`).
+    flowCounts:        { buys5m: flow.buys5m, sells5m: flow.sells5m },
   };
 
   return {

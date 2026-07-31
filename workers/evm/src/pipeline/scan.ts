@@ -512,6 +512,7 @@ async function processPool(
       (wsFlowReal as any).buyVol5m ?? 0,
       (wsFlowReal as any).netVol5m ?? 0,
       wsFlowReal.buys5m ?? 0,
+      wsFlowReal.sells5m ?? 0,   // E34: sell-count REAL → observația WATCHING nu mai fabrică „buying-only"
       WORKER_VERSION,
     );
 

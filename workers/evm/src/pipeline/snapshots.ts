@@ -258,6 +258,8 @@ function buildPairContextMap(): Record<string, PreflightPairContext> {
       riskFlags: rf3, opportunitySignals: [], pipelineState, confidence: "MEDIUM",
       priceVsEntryPct: (entryPrice && mem3?.currentPrice)
         ? Number(((mem3.currentPrice - entryPrice) / entryPrice * 100).toFixed(2)) : null,
+      // E34: counts reale buy/sell pt. mesajul one-sided (tipizat, nu mai `(ctx as any).flow`).
+      flowCounts: { buys5m: buys3.length, sells5m: sells3.length },
     };
     const lifecycle = getLifecycle(chain, addr);
 

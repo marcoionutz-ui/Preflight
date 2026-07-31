@@ -30,6 +30,10 @@ export interface ObservationContext {
   seenCount?:       number;
   m5Pct?:           number;
   h24Pct?:          number;
+  // E34: counts reale buy/sell (fereastra 5m), propagate din call-site-uri (preflight-redis / snapshots).
+  // TIPIZAT — înlocuiește vechiul acces untyped (cast) la un `ctx.flow` care NU exista pe ObservationContext și
+  // pe care niciun call-site nu-l trimitea → ramura one-sided primea mereu 0/0 și pica pe fallback-ul „stale".
+  flowCounts?:      { buys5m: number; sells5m: number };
 }
 
 export function buildWorkerObservation(ctx: ObservationContext): string {
@@ -57,11 +61,11 @@ export function buildWorkerObservation(ctx: ObservationContext): string {
     parts.push("Strong sustained buying flow.");
   } else if (ctx.flowStatus === "BUYING") {
     parts.push("Buying flow active.");
-  } else if (ctx.flowStatus === "ONE_SIDED") {
-    parts.push("One-sided buy flow — sell side absent.");
   } else if (ctx.flowStatus === "WEAK") {
     parts.push("Flow weak or fading.");
   }
+  // E34: `ONE_SIDED` NU mai emite aici o propoziție separată — direcția one-sided e produsă O SINGURĂ DATĂ,
+  // counts-driven, în blocul dedicat de mai jos (altfel buy-only ieșea dublat: aici + în secțiunea de risk).
 
   // ── Liquidity ─────────────────────────────────────────────────────────────
   if (ctx.liquidityStatus === "THIN") {
@@ -85,16 +89,24 @@ export function buildWorkerObservation(ctx: ObservationContext): string {
   if (ctx.riskFlags.includes("LP_RISK")) {
     parts.push("LP activity detected — monitor for removal.");
   }
-  if (ctx.riskFlags.includes("ONE_SIDED_FLOW") && !ctx.riskFlags.includes("DISTRIBUTION_RISK")) {
-    const buys5m  = (ctx as any).flow?.buys5m  ?? 0;
-    const sells5m = (ctx as any).flow?.sells5m ?? 0;
-
-    if (buys5m >= 3 && sells5m === 0) {
+  // ── One-sided flow — O SINGURĂ propoziție, counts-driven ──────────────────────
+  // E34: sursă UNICĂ pentru mesajul one-sided. Se declanșează fie din `flowStatus === "ONE_SIDED"`
+  // (buy-dominant, prin definiția lui `deriveFlowStatus`: pressure BUYING + sells5m===0 + buys5m>3),
+  // fie din riskFlag-ul `ONE_SIDED_FLOW` (setat de `deriveRiskFlags` când o parte e 0 + liq confirmată →
+  // acoperă și cazul sell-only, pe care flowStatus nu-l marchează). Direcția vine din `flowCounts` TIPIZAT
+  // (fără cast untyped). `DISTRIBUTION_RISK` are prioritate (emite deja propoziția lui mai sus) → nu dublăm.
+  // Fără counts → „counts unavailable", NU „stale": freshness-ul flow-ului nu e cunoscut la nivelul ăsta.
+  const oneSided =
+    (ctx.flowStatus === "ONE_SIDED" || ctx.riskFlags.includes("ONE_SIDED_FLOW"))
+    && !ctx.riskFlags.includes("DISTRIBUTION_RISK");
+  if (oneSided) {
+    const c = ctx.flowCounts;
+    if (c && c.buys5m >= 3 && c.sells5m === 0) {
       parts.push("No sell pressure observed — buying-only flow in current window.");
-    } else if (sells5m >= 3 && buys5m === 0) {
+    } else if (c && c.sells5m >= 3 && c.buys5m === 0) {
       parts.push("Sell-only flow observed — buying support absent in current window.");
     } else {
-      parts.push("One-sided flow observed, but current flow counts are incomplete or stale.");
+      parts.push("One-sided flow observed; current buy/sell counts unavailable.");
     }
   }
   if (ctx.riskFlags.includes("STALE_RUNNER")) {
@@ -121,7 +133,7 @@ export function buildWorkerObservation(ctx: ObservationContext): string {
   if (ctx.pipelineState === "HOT" || ctx.pipelineState === "ARMED") {
     parts.push("Awaiting 30s price confirmation.");
   } else if (ctx.pipelineState === "QUALIFIED") {
-    parts.push("Passed all filters.");
+    parts.push("All configured qualification checks were observed.");
   } else if (ctx.pipelineState === "DROPPED") {
     parts.push("Removed from pipeline.");
   }
@@ -130,7 +142,7 @@ export function buildWorkerObservation(ctx: ObservationContext): string {
   if (ctx.confidence === "LOW") {
     parts.push("Low confidence — limited data.");
   } else if (ctx.confidence === "HIGH" && ctx.flowStatus === "STRONG") {
-    parts.push("High confidence signal.");
+    parts.push("High data confidence for the observed state.");
   }
 
   return parts.length > 0
