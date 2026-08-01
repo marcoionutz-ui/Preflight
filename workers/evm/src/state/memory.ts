@@ -20,7 +20,9 @@ export function updatePoolLiquidity(addr: string, pool: SourcePool): void {
   const reserveUsd = pool.reserveUsd;
   if (reserveUsd > 0) {
     const nativeSymbol  = getNativeSymbolForChain(pool.chain);
-    const nativePrice   = getNativePrice(nativeSymbol) || getNativePrice("ETH") || 1;
+    // E25 (fail-closed): fără preț nativ valid NU inventăm un curs (nici ETH-pentru-BNB, nici $1) → skip.
+    const nativePrice   = getNativePrice(nativeSymbol);
+    if (nativePrice === null) return;
     const reserveNative = reserveUsd / 2 / nativePrice;
 
     poolLiquidity.set(pool.chain, addr, {
@@ -211,7 +213,9 @@ export async function loadMemoryFromRedis(): Promise<void> {
           const setChain     = normalizeChainId(rawChain);
           const setAddress   = normalizePairAddress(setChain, address);
           const nativeSymbol = getNativeSymbolForChain(setChain);
-          const nativePrice  = getNativePrice(nativeSymbol) || getNativePrice("ETH") || 1;
+          // E25 (fail-closed): fără preț nativ valid nu putem recompune reserveUsd corect → sărim entry-ul.
+          const nativePrice  = getNativePrice(nativeSymbol);
+          if (nativePrice === null) continue;
 
           poolLiquidity.set(setChain, setAddress, {
             reserveUsd:    nativeReserve * 2 * nativePrice,

@@ -86,7 +86,7 @@ async function safeFollowRefresh(): Promise<void> {
   await refreshEthPrice();
   await loadMemoryFromRedis();
 
-  setInterval(refreshEthPrice,    60 * 60_000);
+  setInterval(refreshEthPrice,    5 * 60_000);   // E25: 5 min (era orar). TTL 15 min = 3× → tolerăm 2 ratări.
   setInterval(saveMemoryToRedis,  60_000);
 
   safeScan();

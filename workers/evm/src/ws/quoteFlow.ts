@@ -107,10 +107,15 @@ export function getQuoteFlowAsEth(
   // legacy name: ethAmount is native-equivalent (ETH or BNB depending on chain/quote).
   // usdAmount is the canonical cross-chain volume field.
   const nativeSymbol = chain.id === "bsc" ? "BNB" : "ETH";
-  const ethAmount    = quoteMeta.kind === "native" ? quoteAmount : quoteAmount / getNativePrice(nativeSymbol);
-  const usdAmount    = quoteMeta.kind === "stable"
-    ? quoteAmount
-    : quoteAmount * getNativePrice(nativeSymbol);
+  // E25 (fail-closed): preț nativ absent/stale → NU înregistrăm flow-ul cu evaluare incompletă.
+  // AMBELE câmpuri depind de preț (native: usdAmount = amt × preț; stable: ethAmount = amt ÷ preț),
+  // deci fără un preț valid rezultatul ar fi NaN/Infinity/inventat → ok:false.
+  const nativePrice = getNativePrice(nativeSymbol);
+  if (nativePrice === null) {
+    return { ok: false, ethAmount: 0, usdAmount: 0, isBuy: false, quote: quoteMeta.symbol };
+  }
+  const ethAmount = quoteMeta.kind === "native" ? quoteAmount : quoteAmount / nativePrice;
+  const usdAmount = quoteMeta.kind === "stable" ? quoteAmount : quoteAmount * nativePrice;
 
   return { ok: true, ethAmount, usdAmount, isBuy: amt > 0n, quote: quoteMeta.symbol };
 }

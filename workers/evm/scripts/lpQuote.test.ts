@@ -5,9 +5,15 @@
  * swap si ca V3 Mint/Burn) calculeaza corect valoarea native-echivalenta a unui eveniment LP INDIFERENT de
  * quote (native SAU stable, cu decimalele corecte). Plus CONTRAST cu logica veche hardcodata (`weth<token` +
  * `/1e18`) care pe stable-quoted alegea rezerva gresita si/sau nu convertea USD→native → prag de rug niciodata
- * evaluat corect. `getNativePrice` are fallback determinist (BNB=600, ETH=2500) → test offline.
+ * evaluat corect. E25: prețul nativ nu mai are default hardcodat → seed-uim explicit BNB=600 / ETH=2500
+ * (timestamp proaspăt), altfel resolveLpNativeAmount ar degrada la ok:false (fail-closed) → test offline.
  */
 import { resolveLpNativeAmount, extractBaseQuote, stableMetaFor } from "../src/ws/quoteFlow";
+import { __setNativePriceForTest } from "../src/infra/nativePrice";
+
+// E25: seed determinist (înlocuiește vechiul fallback hardcodat) — BNB=600, ETH=2500.
+__setNativePriceForTest("BNB", 600);
+__setNativePriceForTest("ETH", 2500);
 
 let passed = 0, failed = 0;
 function check(name: string, cond: boolean): void {

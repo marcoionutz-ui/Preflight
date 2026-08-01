@@ -1,4 +1,10 @@
 import { getQuoteFlowAsEth, toPoolConventionAmounts } from "../src/ws/quoteFlow";
+import { __setNativePriceForTest } from "../src/infra/nativePrice";
+
+// E25: prețul nativ nu mai are default hardcodat → seed-uim explicit (timestamp proaspăt).
+// Fără asta getQuoteFlowAsEth ar întoarce ok:false (fail-closed) pe quote-urile care cer preț.
+__setNativePriceForTest("ETH", 2500);
+__setNativePriceForTest("BNB", 600);
 
 const chain: any = {
   id: "base", gecko: "base",
