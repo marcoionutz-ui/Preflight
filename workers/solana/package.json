@@ -20,7 +20,8 @@
     "test:e16": "tsx scripts/moversTracker.test.ts",
     "test:e17": "tsx scripts/priceHistory.test.ts",
     "test:e30": "tsx scripts/redactUrl.test.ts",
-    "test": "npm run test:a2 && npm run test:a3 && npm run test:c6 && npm run test:c1 && npm run test:d2 && npm run test:d1 && npm run test:d4 && npm run test:d4b && npm run test:nf3 && npm run test:e23 && npm run test:e21 && npm run test:e16 && npm run test:e17 && npm run test:e30",
+    "test:e39": "tsx scripts/symbolPlaceholder.test.ts",
+    "test": "npm run test:a2 && npm run test:a3 && npm run test:c6 && npm run test:c1 && npm run test:d2 && npm run test:d1 && npm run test:d4 && npm run test:d4b && npm run test:nf3 && npm run test:e23 && npm run test:e21 && npm run test:e16 && npm run test:e17 && npm run test:e30 && npm run test:e39",
     "inspect:redis": "tsx --env-file=../../.env.local scripts/redisInspect.ts",
     "cleanup:redis": "tsx --env-file=../../.env.local scripts/redisCleanup.ts",
     "reconcile:deadletter": "tsx --env-file=../../.env.local scripts/reconcileDeadLetter.ts"

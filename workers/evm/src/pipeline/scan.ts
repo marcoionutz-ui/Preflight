@@ -44,6 +44,7 @@ import { recordLifecycleOutcome } from "../state/lifecycle";
 import { triggerRiskCheck } from "../risk/riskChecker";
 import { requestImmediateScopedSubscribe } from "../ws/subscriptions";
 import { planPoolMapRebuild } from "./poolMapRebuild";
+import { countsTowardVerticalBudget } from "./verticalBudget";
 import { writeAllSnapshots } from "./snapshots";
 import { subscribeV3Scoped, subscribeV4Scoped, subscribeV2Scoped, cleanupActiveWatch } from "../ws/subscriptions";
 import type { Redis } from "ioredis";
@@ -580,7 +581,7 @@ async function processPool(
     }
 
     if (isVerticalWatch(momentumEvent.verdict)) {
-      const currentVertical = [...activeWatch.values()].filter(w => w.kind === "VERTICAL").length;
+      const currentVertical = [...activeWatch.values()].filter(w => countsTowardVerticalBudget(w.kind)).length;
       if (activeWatch.has(pool.chain, pairAddr)) {
         counters.fomoAlready++;
       } else if (currentVertical >= MAX_VERTICAL_WATCH) {

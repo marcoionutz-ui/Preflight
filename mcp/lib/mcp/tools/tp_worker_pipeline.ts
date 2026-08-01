@@ -176,7 +176,6 @@ Args: chain (filter: 'base', 'arbitrum', 'bsc', or 'eth')`,
                   watching:   pipelineEntries.filter((e: any) => e.pipelineState === "WATCHING").length,
                   hot:        pipelineEntries.filter((e: any) => e.pipelineState === "HOT").length,
                   armed:      pipelineEntries.filter((e: any) => e.pipelineState === "ARMED").length,
-                  confirming: pipelineEntries.filter((e: any) => e.pipelineState === "HOT").length,
                   qualified:  pfQualified?.filter(q => filterChain(q.chain)).length ?? 0,
                 }
               : { watching: activeWatch.length, hot: hotCandidates.length, armed: armedEntries.length },

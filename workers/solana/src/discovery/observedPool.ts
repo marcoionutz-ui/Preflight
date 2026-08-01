@@ -37,6 +37,7 @@ import type { PriceSnapshot } from "./priceTracker";
 import type { PreflightSolanaQuoteType, PreflightObservedSolanaPool, PreflightObservedCandidate } from "@preflight/schema";
 import { linkLaunchToPool } from "./launchWriter";
 import { insertRecordAndIndex } from "./registryWrite";
+import { isPlaceholderSymbol } from "./symbolPlaceholder";
 
 // ── Constante ─────────────────────────────────────────────────────────────────
 
@@ -156,8 +157,10 @@ export async function maybeRecordObservedCandidate(
         }
       }
 
-      // Actualizăm symbol dacă am primit unul mai bun (din metadata enrichment)
-      if (snapshot.baseSymbol !== snapshot.baseMint.slice(0, 7) + "...") {
+      // Actualizăm symbol dacă am primit unul mai bun (din metadata enrichment) — NU un placeholder.
+      // E39: guard-ul vechi compara cu `slice(0,7)+"..."`, un format care nu se scrie niciodată (producer-ul
+      // scrie `slice(0,8)`) → se potrivea mereu → suprascria un simbol bun cu un placeholder ulterior.
+      if (!isPlaceholderSymbol(snapshot.baseSymbol, snapshot.baseMint)) {
         candidate.baseSymbol = snapshot.baseSymbol;
       }
     }

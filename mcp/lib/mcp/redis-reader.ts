@@ -26,6 +26,7 @@ import {
   type PreflightSolanaHealth, type PreflightSolanaPoolActivity,
 } from "@preflight/schema";
 import { safeAgeSec, quotePriceCurrentAgeSec, pricePoolsWindowStart } from "./freshness";
+import { adjustMoverReadTime } from "./moverReadTime";
 
 function safeJson<T>(raw: string | null, fallback: T, key?: string): T {
   if (!raw) return fallback;
@@ -1032,20 +1033,29 @@ export async function readSolanaMovers(now: number, topN = 5): Promise<SolanaMov
       totalTracked: snap.totalTracked ?? 0,
       coverage:     "SAMPLED",
       source:       "SWAP_VAULT_DELTA",
-      items: (snap.movers ?? []).slice(0, topN).map((m: Partial<PreflightSolanaMover>) => ({
-        poolAddress:      String(m.poolAddress ?? ""),
-        program:          m.program ?? "unknown",
-        baseSymbol:       String(m.baseSymbol  ?? "?"),
-        quoteSymbol:      String(m.quoteSymbol ?? "?"),
-        priceInQuote:     Number(m.priceInQuote ?? 0),
-        priceUsd:         typeof m.priceUsd         === "number" ? m.priceUsd         : null,
-        priceChange5mPct: typeof m.priceChange5mPct === "number" ? m.priceChange5mPct : null,
-        priceChange1hPct: typeof m.priceChange1hPct === "number" ? m.priceChange1hPct : null,
-        sampleCount:      Number(m.sampleCount   ?? 0),
-        historyStatus:    m.historyStatus ?? "UNKNOWN",
-        knownPool:        Boolean(m.knownPool),
-        currentAgeSec:    Number(m.currentAgeSec ?? 0),
-      })),
+      items: (snap.movers ?? []).slice(0, topN).map((m: Partial<PreflightSolanaMover>) => {
+        // E38: currentAgeSec/historyStatus au fost calculate la compute-time; adaugă offset-ul read-time
+        // (computedAgeSec) și re-derivă STALE dacă vârsta efectivă trece pragul de 10m.
+        const adjusted = adjustMoverReadTime(
+          Number(m.currentAgeSec ?? 0),
+          m.historyStatus ?? "UNKNOWN",
+          computedAgeSec,
+        );
+        return {
+          poolAddress:      String(m.poolAddress ?? ""),
+          program:          m.program ?? "unknown",
+          baseSymbol:       String(m.baseSymbol  ?? "?"),
+          quoteSymbol:      String(m.quoteSymbol ?? "?"),
+          priceInQuote:     Number(m.priceInQuote ?? 0),
+          priceUsd:         typeof m.priceUsd         === "number" ? m.priceUsd         : null,
+          priceChange5mPct: typeof m.priceChange5mPct === "number" ? m.priceChange5mPct : null,
+          priceChange1hPct: typeof m.priceChange1hPct === "number" ? m.priceChange1hPct : null,
+          sampleCount:      Number(m.sampleCount   ?? 0),
+          historyStatus:    adjusted.historyStatus,
+          knownPool:        Boolean(m.knownPool),
+          currentAgeSec:    adjusted.currentAgeSec,
+        };
+      }),
     };
   } catch { return null; }
 }

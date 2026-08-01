@@ -11,6 +11,7 @@ import { updateMemory } from "../../state/memory";
 import { fetchPoolByAddress } from "../../sources/gecko";
 import { CHAINS } from "../../config/chains";
 import { requestImmediateScopedSubscribe } from "../../ws/subscriptions";
+import { countsTowardVerticalBudget } from "../verticalBudget";
 
 let processing = false;
 
@@ -22,7 +23,7 @@ export async function verticalCandidatesLoop(): Promise<void> {
     const now = Date.now();
 
     for (const [{ chain, address: pairAddr }, info] of activeWatch.entries()) {
-      if (info.kind !== "VERTICAL" && info.kind !== "CONFIRMED_MOMENTUM") continue;
+      if (!countsTowardVerticalBudget(info.kind)) continue;
 
       const ageMs = now - info.addedAt;
       if (ageMs < 15_000) continue;

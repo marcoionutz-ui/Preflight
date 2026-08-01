@@ -33,6 +33,7 @@ import { maybeCalculateMovers }         from "./moversTracker";
 import { APPEND_HISTORY_LUA } from "./priceHistory";
 import { readSolPrice }                 from "../infra/solPriceOracle";
 import { maybeRecordObservedCandidate } from "./observedPool";
+import { placeholderSymbol }            from "./symbolPlaceholder";
 import type {
   PreflightSolanaPriceSnapshot, PreflightSolanaPricePoint, PreflightSolanaProgram,
 } from "@preflight/schema";
@@ -149,8 +150,8 @@ export async function recordPriceSnapshot(
     program:       programLabel(result.program),
     baseMint:      result.baseMint,
     quoteMint:     result.quoteMint,
-    baseSymbol:    baseMeta.symbol  ?? result.baseMint.slice(0, 8),
-    quoteSymbol:   quoteMeta.symbol ?? result.quoteMint.slice(0, 8),
+    baseSymbol:    baseMeta.symbol  ?? placeholderSymbol(result.baseMint),
+    quoteSymbol:   quoteMeta.symbol ?? placeholderSymbol(result.quoteMint),
     priceInQuote,
     priceUsd,
     usdSource,
