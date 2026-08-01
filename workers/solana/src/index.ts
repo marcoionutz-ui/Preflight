@@ -25,6 +25,7 @@
 
 import type Redis from "ioredis";
 import { getSolanaRpcUrl, getSolanaWsUrl, getSlot, getVersion, getConnection } from "./infra/rpc";
+import { redactRpcUrl } from "./infra/redactUrl";
 import { getRedis }                 from "./infra/redis";
 import {
   readObservedSlot, advanceObservedSlot,
@@ -413,8 +414,10 @@ async function drainDiscoveryQueue(
 async function main(): Promise<void> {
   console.log("[SOLANA] indexer-solana " + INDEXER_VERSION + " starting");
   console.log("[SOLANA] chain=" + CHAIN);
-  console.log("[SOLANA] rpc=" + getSolanaRpcUrl().slice(0, 50) + "...");
-  console.log("[SOLANA] ws=" + getSolanaWsUrl().slice(0, 50) + "...");
+  // E30: loghează DOAR host-ul, nu `.slice(0,50)` din URL-ul brut — cheia providerului (Helius query,
+  // QuickNode/Alchemy path) putea încăpea în primele 50 de caractere → scursă în loguri.
+  console.log("[SOLANA] rpc=" + redactRpcUrl(getSolanaRpcUrl()));
+  console.log("[SOLANA] ws=" + redactRpcUrl(getSolanaWsUrl()));
   console.log(
     "[SOLANA] programs:"
     + " raydium_amm=" + RAYDIUM_AMM_V4.slice(0, 8) + "..."
