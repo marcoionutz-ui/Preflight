@@ -5,6 +5,7 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { pairAddressSchema } from "./pairAddressSchema";
 import { readAllRedis } from "../redis-reader";
 import { getRedis } from "@/lib/db/redis";
 import { mcpResponse, mcpErr, ERR } from "../errors";
@@ -28,7 +29,7 @@ and want Preflight to contextualize it.
 Does not guarantee pipeline promotion — pair must still pass watch gates.
 Returns current status if pair is already being monitored.`,
       inputSchema: {
-        pair_address: z.string().min(10).describe("Pool/pair contract address or V4 pool ID"),
+        pair_address: pairAddressSchema.describe("Pool/pair contract address or V4 pool ID"),
         chain:        z.enum(["base", "arbitrum", "bsc", "eth"]).describe("Chain: 'base', 'arbitrum', 'bsc', or 'eth'"),
         reason:       z.string().max(160).optional().describe("Optional: why you're watching this pair"),
       },

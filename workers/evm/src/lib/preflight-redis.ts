@@ -172,12 +172,17 @@ export interface PreflightWriteInput {
 
   // Per-pair context map
   pairContextMap:   Record<string, PreflightPairContext>;
+
+  // E24: TTL (sec) pentru snapshot-urile rescrise la FIECARE scan (signal_pipeline / qualified_signals /
+  // pair_context). Trebuie ≥ 2× intervalul de scan (vezi snapshotTtl.ts) ca să nu flap-uie în DEV.
+  // momentum_events / recent_drops au TTL propriu, intenționat mai lung (600).
+  ttlSec:           number;
 }
 
 export async function writePreflightRedis(r: Redis, input: PreflightWriteInput): Promise<void> {
   const {
     now,
-    momentumEventsBuffer, signalPipeline, qualifiedSignals, recentDrops,
+    momentumEventsBuffer, signalPipeline, qualifiedSignals, recentDrops, ttlSec,
   } = input;
 
   const recent10m = (ts: number) => now - ts < 10 * 60_000;
@@ -195,10 +200,11 @@ export async function writePreflightRedis(r: Redis, input: PreflightWriteInput):
   for (const { key, value } of partitionArrayByChain(REDIS_KEYS.momentumEvents, recentMomentum, MAX_EVENTS)) pipeline.set(key, value, "EX", 600);
 
   // ── preflight:signal_pipeline ────────────────────────────────────────────
-  for (const { key, value } of partitionArrayByChain(REDIS_KEYS.signalPipeline, signalPipeline, MAX_PIPELINE)) pipeline.set(key, value, "EX", 120);
+  // E24: TTL derivat (≥ 2× scanInterval), NU 120 hardcodat — se rescrie la fiecare scan.
+  for (const { key, value } of partitionArrayByChain(REDIS_KEYS.signalPipeline, signalPipeline, MAX_PIPELINE)) pipeline.set(key, value, "EX", ttlSec);
 
   // ── preflight:qualified_signals ──────────────────────────────────────────
-  for (const { key, value } of partitionArrayByChain(REDIS_KEYS.qualifiedSignals, qualifiedSignals, MAX_QUALIFIED)) pipeline.set(key, value, "EX", 120);
+  for (const { key, value } of partitionArrayByChain(REDIS_KEYS.qualifiedSignals, qualifiedSignals, MAX_QUALIFIED)) pipeline.set(key, value, "EX", ttlSec);
 
   // ── preflight:recent_drops ───────────────────────────────────────────────
   for (const { key, value } of partitionArrayByChain(REDIS_KEYS.recentDrops, recentDrops.filter(d => recent10m(d.droppedAt)), MAX_DROPS)) pipeline.set(key, value, "EX", 600);
@@ -210,7 +216,7 @@ export async function writePreflightRedis(r: Redis, input: PreflightWriteInput):
       // Faza B2/B3: cheia derivă din DATELE contextului (ctx.chain + ctx.pairAddress),
       // NU din cheia internă a mapului. În B3 cheia mapului devine deja `${chain}:${addr}`,
       // iar `pairContext(ctx.chain, mapKey)` ar produce `pair_context:base:base:0xabc`.
-      pipeline.set(REDIS_KEYS.pairContext(ctx.chain, ctx.pairAddress), JSON.stringify(ctx), "EX", 120);
+      pipeline.set(REDIS_KEYS.pairContext(ctx.chain, ctx.pairAddress), JSON.stringify(ctx), "EX", ttlSec);
     }
   }
 

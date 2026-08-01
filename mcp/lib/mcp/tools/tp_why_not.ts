@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { pairAddressSchema } from "./pairAddressSchema";
 import { readAllRedis, getPipelineState, resolvePairChain, chainsForAddressInArrays, findLastEventForPair, findLastDropForPair, formatVol } from "../redis-reader";
 import { mcpResponse, mcpErr, ERR } from "../errors";
 import { pairKey } from "@preflight/schema";
@@ -19,7 +20,7 @@ Absence of a signal is information. This tool tells you:
 
 Args: pair_address (0x... EVM address or V4 pool ID)`,
       inputSchema: {
-        pair_address: z.string().min(10).describe("EVM pair address (0x...) or V4 pool ID"),
+        pair_address: pairAddressSchema.describe("EVM pair address (0x...) or V4 pool ID"),
         chain:        z.enum(["base", "arbitrum", "bsc", "eth"]).optional().describe("Optional chain hint — needed only if the same address exists on multiple chains"),
       },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },

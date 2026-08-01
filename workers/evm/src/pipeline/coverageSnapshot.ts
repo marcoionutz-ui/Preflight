@@ -31,7 +31,9 @@ const moverScore = (pc: { m5: number; h1: number; h24: number }) => Math.max(
 // real caller, via snapshots.ts) already returns Record<string,
 // PairStateSnapshot>, so this was type laziness, not a genuine
 // unknown-shape need.
-export async function writeCoverageSnapshot(r: Redis, states: Record<string, PairStateSnapshot>): Promise<void> {
+// E24: `ttlSec` derivat (≥ 2× scanInterval, vezi snapshotTtl.ts) — pipeline_coverage se rescrie la fiecare scan,
+// deci NU mai poate fi 120 hardcodat (== interval în DEV → flap).
+export async function writeCoverageSnapshot(r: Redis, states: Record<string, PairStateSnapshot>, ttlSec: number): Promise<void> {
   const now    = Date.now();
   const chains: Record<string, PreflightChainCoverage> = {};
 
@@ -154,7 +156,7 @@ export async function writeCoverageSnapshot(r: Redis, states: Record<string, Pai
       savedAt:       now,
       chains:        { [chainId]: chains[chainId] },
     };
-    pipe.set(REDIS_KEYS.pipelineCoverage(chainId), JSON.stringify(snapshot), "EX", 120);
+    pipe.set(REDIS_KEYS.pipelineCoverage(chainId), JSON.stringify(snapshot), "EX", ttlSec);
   }
   await pipe.exec();
 }

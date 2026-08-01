@@ -21,7 +21,8 @@
     "test:e1": "tsx lib/oauth/pkce.test.ts",
     "test:e3": "tsx lib/db/oauthClientInsert.test.ts",
     "test:e38": "tsx lib/mcp/moverReadTime.test.ts",
-    "test": "npm run test:e9 && npm run test:e14 && npm run test:e15 && npm run test:e10 && npm run test:e11-e13 && npm run test:e4-e6 && npm run test:e7 && npm run test:e2 && npm run test:e5 && npm run test:nf4 && npm run test:e1 && npm run test:e3 && npm run test:e38"
+    "test:e37": "tsx lib/mcp/tools/pairAddressSchema.test.ts",
+    "test": "npm run test:e9 && npm run test:e14 && npm run test:e15 && npm run test:e10 && npm run test:e11-e13 && npm run test:e4-e6 && npm run test:e7 && npm run test:e2 && npm run test:e5 && npm run test:nf4 && npm run test:e1 && npm run test:e3 && npm run test:e38 && npm run test:e37"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.26.0",

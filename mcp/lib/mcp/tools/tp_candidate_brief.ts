@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { pairAddressSchema } from "./pairAddressSchema";
 import { readAllRedis, getPipelineState, resolvePairChain, findLastEventForPair, formatEth, formatVol, formatPct, wsFlowQuality, combineConfidence } from "../redis-reader";
 import type { PairState } from "../types";
 import { mcpErr, mcpResponse, ERR } from "../errors";
@@ -71,7 +72,7 @@ Use this after tp_situation_report identifies a HOT or ARMED candidate.
 
 Args: pair_address (0x... EVM address or V4 pool ID)`,
       inputSchema: {
-        pair_address: z.string().min(10).describe("EVM pair address (0x...) or V4 pool ID"),
+        pair_address: pairAddressSchema.describe("EVM pair address (0x...) or V4 pool ID"),
         chain:        z.enum(["base", "arbitrum", "bsc", "eth"]).optional().describe("Optional chain hint — needed only if the same address exists on multiple chains"),
       },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },

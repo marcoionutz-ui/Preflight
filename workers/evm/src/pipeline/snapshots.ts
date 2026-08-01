@@ -25,23 +25,29 @@ import { WORKER_VERSION } from "../config/constants";
 import { getLifecycle, getRecentLifecycles } from "../state/lifecycle";
 import { CHAINS } from "../config/chains";
 import { partitionArrayByChain } from "../lib/redisArrays";
+import { BUDGET } from "../config/mode";
+import { snapshotTtlSec } from "./snapshotTtl";
 import { writeCoverageSnapshot } from "./coverageSnapshot";
 import { writeTrendingSnapshots } from "../trending/trendingSnapshots";
 import { calculateMovers } from "../trending/trendingMovers";
 import { REDIS_KEYS, SCHEMA_VERSION, pairKey, splitPairKey, type PreflightDrop, type PreflightEvmChain } from "@preflight/schema";
 
+// E24: TTL-ul snapshot-urilor per-chain e derivat din intervalul de scan (≥ 2× interval, floor 120s), NU hardcodat
+// la 120s — altfel în DEV (scan 120s) cheia expiră exact la intervalul de rescriere → flap fals „chain mort".
+const SNAPSHOT_TTL_SEC = snapshotTtlSec(BUDGET.scanIntervalMs);
+
 export async function writeAllSnapshots(r: Redis): Promise<void> {
   // ── pair_states / active_watch / hot / armed — B4: chei per-chain ─────────
   // Blob-urile sunt keyed pe pairKey (B3) → partiționăm pe chain-ul din cheie și
-  // scriem o cheie per-chain (EX 120). Un worker per-chain va scrie doar cheia lui;
-  // MCP agregă. Scriem și {} pt. chain-urile din CHAINS fără pairs (semnal liveness).
+  // scriem o cheie per-chain (E24: EX ≥ 2× scanInterval, ca să nu flap-uie când un scan întârzie). Un worker
+  // per-chain va scrie doar cheia lui; MCP agregă. Scriem și {} pt. chain-urile din CHAINS fără pairs (liveness).
   const states = await buildPairStates();
-  await writeSnapshotByChain(r, REDIS_KEYS.pairStates, states, 120);
+  await writeSnapshotByChain(r, REDIS_KEYS.pairStates, states, SNAPSHOT_TTL_SEC);
   console.log(`[REDIS] Wrote ${Object.keys(states).length} pair states (per-chain)`);
 
-  await writeSnapshotByChain(r, REDIS_KEYS.activeWatch,   buildWatchSnapshot(), 120);
-  await writeSnapshotByChain(r, REDIS_KEYS.hotCandidates, buildHotSnapshot(),   120);
-  await writeSnapshotByChain(r, REDIS_KEYS.armedEntries,  buildArmedSnapshot(), 120);
+  await writeSnapshotByChain(r, REDIS_KEYS.activeWatch,   buildWatchSnapshot(), SNAPSHOT_TTL_SEC);
+  await writeSnapshotByChain(r, REDIS_KEYS.hotCandidates, buildHotSnapshot(),   SNAPSHOT_TTL_SEC);
+  await writeSnapshotByChain(r, REDIS_KEYS.armedEntries,  buildArmedSnapshot(), SNAPSHOT_TTL_SEC);
 
   // ── worker runtime heartbeat + drops ──────────────────────────────────────
   // B4d-2: market_context/market_regime NU se mai scriu — MCP le derivă la read-time din
@@ -56,7 +62,7 @@ export async function writeAllSnapshots(r: Redis): Promise<void> {
       chain:       c.id,
       wsConnected: ws?.readyState === WebSocket.OPEN,
       updatedAt:   runtimeNow,
-    }), "EX", 120);
+    }), "EX", SNAPSHOT_TTL_SEC);
   }
   await runtimePipe.exec();
   await writeDropsAndEvents(r);
@@ -75,6 +81,7 @@ export async function writeAllSnapshots(r: Redis): Promise<void> {
       signalPipeline,
       qualifiedSignals: qualifiedSignalsBuffer,
       recentDrops:      preflightDrops,
+      ttlSec:           SNAPSHOT_TTL_SEC,
     });
   } catch (e) {
     console.error("[PREFLIGHT REDIS] Write failed:", e instanceof Error ? e.message : e);
@@ -92,7 +99,7 @@ export async function writeAllSnapshots(r: Redis): Promise<void> {
 
 // ── preflight:pipeline_coverage ───────────────────────────────────────────
   try {
-    await writeCoverageSnapshot(r, states);
+    await writeCoverageSnapshot(r, states, SNAPSHOT_TTL_SEC);
   } catch (e) {
     console.error("[COVERAGE] Write failed:", e instanceof Error ? e.message : e);
   }
