@@ -1,7 +1,7 @@
 /**
  * state/memory.ts
  * Pair memory — trackează istoricul fiecărei perechi văzute.
- * Load/save din Redis și Supabase.
+ * Load/save din Redis.
  */
 
 import { detectPhase } from "../lib/engines/phaseDetector";
@@ -10,7 +10,6 @@ import type { SourcePool } from "../sources/normalize";
 import { memory, poolLiquidity } from "./stores";
 import { tokenPoolKey, tokenPools } from "../infra/poolTracker";
 import { getRedis } from "../infra/redis";
-import { supabase } from "../infra/supabase";
 import { getNativePrice, getNativeSymbolForChain } from "../infra/nativePrice";
 import { WORKER_VERSION } from "../config/constants";
 import { CHAINS } from "../config/chains";
@@ -102,67 +101,6 @@ export function updateMemory(pool: SourcePool, price: number): PairMemoryEntry {
   memory.set(pool.chain, addr, existing);
   updatePoolLiquidity(addr, pool);
   return existing;
-}
-
-export async function loadPairStats(): Promise<void> {
-  const { data: trades } = await supabase
-    .from("shadow_trades")
-    .select("pair_address, symbol, token_address, chain, entry_price, exit_reason, exited_at, created_at, current_price")
-    .gte("timestamp", Date.now() - 24 * 3600_000);
-
-  if (!trades) return;
-
-  const ownedChains = new Set<string>(CHAINS.map(c => c.id));
-
-  for (const t of trades) {
-    const rawChain   = String(t.chain ?? "").trim();
-    const rawAddress = String(t.pair_address ?? "").trim();
-    if (!rawChain || !rawAddress) continue;  // fără chain nu putem cheia intrarea (B3e)
-    const chain = normalizeChainId(rawChain);
-    if (!ownedChains.has(chain)) continue;  // B5a: ownership — restaurăm DOAR chain-urile runtime-ului (CHAINS); un worker per-chain nu adoptă stats din alte chain-uri
-    const addr  = normalizePairAddress(chain, rawAddress);
-
-    if (!memory.has(chain, addr)) {
-      const ep = Number(t.entry_price);
-      const cp = Number(t.current_price || t.entry_price);
-      memory.set(chain, addr, {
-        pairAddress: addr, symbol: t.symbol?.trim() ?? "?",
-        tokenAddress: t.token_address ?? "",
-        chain,
-        firstSeen: new Date(t.created_at).getTime(),
-        lastSeen:  new Date(t.created_at).getTime(),
-        seenCount: 0, priceAtFirstSeen: ep,
-        highPrice: cp, lowPrice: ep, currentPrice: cp,
-        totalEntries: 0, lastEntryTime: 0, lastEntryPrice: ep,
-        wins24h: 0, losses24h: 0, badExits24h: 0, consecutiveLosses: 0,
-        lastExitReason: null, lastExitTime: null, phase: "TRENDING",
-      });
-    }
-
-    const mem = memory.get(chain, addr)!;
-    mem.totalEntries  += 1;
-    mem.lastEntryTime  = Math.max(mem.lastEntryTime, new Date(t.created_at).getTime());
-    mem.lastEntryPrice = Number(t.entry_price);
-
-    if (t.exit_reason === "TP1 hit") {
-      mem.wins24h += 1; mem.consecutiveLosses = 0;
-      mem.lastExitReason = "TP1 hit"; mem.lastExitTime = t.exited_at;
-    } else if (t.exit_reason === "SL hit") {
-      mem.losses24h += 1; mem.consecutiveLosses += 1;
-      mem.lastExitReason = "SL hit"; mem.lastExitTime = t.exited_at;
-    } else if (
-      t.exit_reason === "MAX HOLD" ||
-      t.exit_reason === "SELL PRESSURE" ||
-      t.exit_reason === "LP REMOVED" ||
-      t.exit_reason === "RUGPULL"
-    ) {
-      mem.badExits24h += 1;
-      mem.lastExitReason = t.exit_reason;
-      mem.lastExitTime   = t.exited_at;
-    }
-  }
-
-  console.log(`[MEMORY] Loaded ${memory.size} pairs from last 24h`);
 }
 
 export async function saveMemoryToRedis(): Promise<void> {

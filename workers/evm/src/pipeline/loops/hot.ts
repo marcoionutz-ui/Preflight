@@ -1,7 +1,6 @@
 /**
  * pipeline/loops/hot.ts
  * HOT candidates loop — decide intrarea finală în shadow trade.
- * Monitor open trades — verifică exit conditions.
  */
 
 import { hotCandidates, v4PoolMap, v3PoolMap, routingOnlyPools, memory, qualifiedSignalsBuffer } from "../../state/stores";
@@ -13,17 +12,13 @@ import { getLiquidityContext } from "../../risk/liquidity";
 import { quickEdgeScore } from "../../risk/scoring";
 import { getEntryGate } from "../../risk/gates";
 import { fetchPoolByAddress } from "../../sources/gecko";
-import { supabase } from "../../infra/supabase";
 import { CHAINS } from "../../config/chains";
 import { WORKER_VERSION, MAX_QUALIFIED_BUFFER } from "../../config/constants";
 import { isBlockedSymbol } from "../../sources/normalize";
 import { buildQualifiedSignalEntry } from "../../lib/preflight-redis";
 import type { FlowSignal } from "../../lib/engines/flowTypes";
-import type { SourcePool } from "../../sources/normalize";
-import { updateOutcomes } from "../../shadow/trades";
 
 let processingHot     = false;
-let monitoringTrades  = false;
 
 export async function hotCandidatesLoop(): Promise<void> {
   if (processingHot || !hotCandidates.size) return;
@@ -130,35 +125,5 @@ export async function hotCandidatesLoop(): Promise<void> {
     }
   } finally {
     processingHot = false;
-  }
-}
-
-export async function monitorOpenTrades(): Promise<void> {
-  if (monitoringTrades) return;
-  monitoringTrades = true;
-
-  try {
-    const { data: trades } = await supabase
-      .from("shadow_trades").select("id, chain, pair_address")
-      .is("exited_at", null);
-
-    if (!trades?.length) return;
-
-    const pools: SourcePool[] = [];
-
-    for (const trade of trades) {
-      if (!trade.chain || !trade.pair_address) continue;
-      const chainCfg = CHAINS.find(c => c.id === trade.chain || c.gecko === trade.chain);
-      if (!chainCfg) continue;
-      // D5: același principiu ca în hotCandidatesLoop — routing-only → snapshot proaspăt pt. scoring.
-      const cachedTradePool = v4PoolMap.get(chainCfg.id, trade.pair_address) ?? v3PoolMap.get(chainCfg.id, trade.pair_address);
-      const pool = poolSnapshotForScoring(cachedTradePool, routingOnlyPools.has(chainCfg.id, trade.pair_address))
-        ?? await fetchPoolByAddress(chainCfg, trade.pair_address);
-      if (pool) pools.push(pool);
-    }
-
-    // updateOutcomes disabled — shadow trades are telemetry only.
-  } finally {
-    monitoringTrades = false;
   }
 }

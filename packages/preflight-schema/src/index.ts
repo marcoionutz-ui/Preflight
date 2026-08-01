@@ -273,7 +273,7 @@ export interface PreflightMemoryEntry {
   // every scanned pool ("attentionScore salvat pe TOATE pool-urile —
   // inclusiv NO_MOMENTUM"), read back a few lines later in the same file.
   // Absent only for pairs that haven't been through a scan pass yet
-  // (e.g. just loaded from Supabase via loadPairStats()).
+  // (e.g. newly created before its first scan pass completes).
   attentionScore?:         number;
   monitoringTier?:         MonitoringTier;
   patternTags?:            string[];
