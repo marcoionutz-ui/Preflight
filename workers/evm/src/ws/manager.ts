@@ -6,6 +6,7 @@
 import WebSocket from "ws";
 import type { ChainConfig } from "../config/chains";
 import { getQuoteFlowAsEth, toPoolConventionAmounts, extractBaseQuote, resolveLpNativeAmount } from "./quoteFlow";
+import { createReconnectManager, type BackoffConfig } from "./wsBackoff";
 import {
   wsClients, v3PoolMap, v4PoolMap,
   swapSubIds, swapSubSnapshot, pendingSwapSubs,
@@ -44,14 +45,46 @@ function int256FromWord(hex64: string): bigint {
 
 // extractBaseQuote a fost mutată în ./quoteFlow (pură, testabilă izolat — E18).
 
+// E27: reconnect WS cu backoff exponențial + jitter (era fix 5s → hamerea endpoint-ul pe pană
+// persistentă și reconnecta identic pe toate chain-urile = thundering herd). Logica trăiește în
+// controller-ul PUR `createReconnectManager` (testabil izolat); aici doar îl cablăm cu timere/rand/connect reale.
+const WS_RECONNECT_BACKOFF: BackoffConfig = { baseMs: 1_000, capMs: 30_000, jitterRatio: 0.5 };
+const WS_STABLE_MS = 60_000; // socketul trebuie să reziste 60s neîntrerupt înainte de a reseta backoff-ul
+
+// Registry chainId→ChainConfig: controller-ul lucrează cu chainId; aici recuperăm ChainConfig-ul pt. reconnect.
+const chainRegistry = new Map<string, ChainConfig>();
+const wsReconnect = createReconnectManager({
+  connect: (chainId) => {
+    const chain = chainRegistry.get(chainId);
+    if (chain) connectChainWebSocket(chain);
+  },
+  config:     WS_RECONNECT_BACKOFF,
+  stableMs:   WS_STABLE_MS,
+  setTimer:   (fn, ms) => setTimeout(fn, ms),
+  clearTimer: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
+  rand:       Math.random,
+  log:        (m) => console.log(m),
+});
+
 export function connectChainWebSocket(chain: ChainConfig): void {
   if (!chain.wsUrl) {
     console.log(`[CHAIN MODE] ${chain.id.toUpperCase()} — scan-only, WS/flow disabled`);
     return;
   }
   console.log(`[CHAIN MODE] ${chain.id.toUpperCase()} — full mode (scan + WS flow)`);
+  chainRegistry.set(chain.id, chain); // E27: pt. reconnect-ul din controller (înainte de constructor)
 
-  const wsClient    = new WebSocket(chain.wsUrl);
+  // E27: protejează ȘI conexiunea INIȚIALĂ (index.ts o pornește direct, nu prin controller/runConnect).
+  // Un throw sincron la `new WebSocket` (ex. URL invalid) → programează reconnect prin controller și
+  // iese, în loc să propage excepția și să oprească workerul. Retry-urile vor găsi chain-ul în registry.
+  let wsClient: WebSocket;
+  try {
+    wsClient = new WebSocket(chain.wsUrl);
+  } catch (e) {
+    console.log(`[WS ${chain.id}] Constructor WebSocket a eșuat — programez reconnect`, e);
+    wsReconnect.handleClose(chain.id);
+    return;
+  }
   wsClients.set(chain.id, wsClient);
 
   const pingInterval = setInterval(() => {
@@ -60,6 +93,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
 
   wsClient.on("open", () => {
     console.log(`[WS] Connected to Alchemy ${chain.id.toUpperCase()}`);
+    wsReconnect.handleOpen(chain.id); // E27: reset backoff DOAR după WS_STABLE_MS de conexiune neîntreruptă
     swapSubIds.delete(chain.id);
     swapSubSnapshot.delete(chain.id);
     clearScopedSubsForChain(scopedSubStore, chain.id); // D3: reconnect → stare scoped goală (active+pending+latest)
@@ -387,7 +421,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
   wsClient.on("close", () => {
     clearInterval(pingInterval);
     clearScopedSubsForChain(scopedSubStore, chain.id); // D3: subscripțiile mor cu socketul → stare goală
-    console.log(`[WS ${chain.id}] Disconnected — reconnecting in 5s...`);
-    setTimeout(() => connectChainWebSocket(chain), 5_000);
+    console.log(`[WS ${chain.id}] Disconnected — programez reconnect (backoff + jitter)...`);
+    wsReconnect.handleClose(chain.id); // E27: backoff + jitter + reprogramare protejată/contorizată (wsBackoff.ts)
   });
 }
