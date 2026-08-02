@@ -6,7 +6,7 @@
 import type { SourcePool } from "../sources/normalize";
 import type { PreflightMomentumEvent } from "@preflight/schema";
 import { pushMomentumEvent } from "../state/stores";
-import { supabase } from "../infra/supabase";
+import { getSupabase } from "../infra/supabase";
 import { WORKER_VERSION } from "../config/constants";
 
 export async function recordMomentumEvent(
@@ -15,11 +15,15 @@ export async function recordMomentumEvent(
 ): Promise<void> {
   const symbol = pool.symbol;
 
-  // Actualizează buffer live pentru preflight:momentum_events
+  // Actualizează buffer live pentru preflight:momentum_events (Redis — funcționează ȘI fără Supabase)
   pushMomentumEvent(event);
 
+  // E26: dedupe/persistență Supabase — skip dacă clientul e dezactivat (env lipsă). Redis-ul de sus rămâne intact.
+  const db = getSupabase();
+  if (!db) return;
+
   // Supabase dedupe — skip dacă deja înregistrat în ultima oră
-  const { data: existing } = await supabase
+  const { data: existing } = await db
     .from("fomo_blocks").select("id")
     .eq("pair_address", pool.pairAddress)
     .gte("timestamp", Date.now() - 60 * 60_000)
@@ -28,7 +32,7 @@ export async function recordMomentumEvent(
   if (existing && existing.length > 0) return;
 
   const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
-  await supabase.from("fomo_blocks").insert({
+  await db.from("fomo_blocks").insert({
     id,
     timestamp:                 Date.now(),
     symbol,

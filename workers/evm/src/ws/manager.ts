@@ -29,7 +29,7 @@ import {
   MINT_V3_TOPIC,
   BURN_V3_TOPIC,
 } from "./subscriptions";
-import { supabase } from "../infra/supabase";
+import { getSupabase } from "../infra/supabase";
 import { sendTelegram } from "../infra/telegram";
 import { isBlockedSymbol } from "../sources/normalize";
 import {
@@ -376,8 +376,9 @@ export function connectChainWebSocket(chain: ChainConfig): void {
           + ` ⚠️`,
         );
 
-        if (poolEth && ethAmount >= MIN_LP_REMOVE_ETH && removedPct >= INSTANT_LP_EXIT_PCT) {
-          const { data: openTrades } = await supabase
+        const db = getSupabase(); // E26: null când Supabase e dezactivat (env lipsă) → skip exit-ul instant
+        if (db && poolEth && ethAmount >= MIN_LP_REMOVE_ETH && removedPct >= INSTANT_LP_EXIT_PCT) {
+          const { data: openTrades } = await db
             .from("shadow_trades")
             .select("id, symbol, entry_price, current_price, chain")
             .eq("pair_address", pairAddress)
@@ -388,7 +389,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
             for (const trade of openTrades) {
               const exitPrice = memLp?.currentPrice ?? Number(trade.current_price);
               const entry     = Number(trade.entry_price);
-              await supabase.from("shadow_trades").update({
+              await db.from("shadow_trades").update({
                 exited_at:   Date.now(),
                 exit_price:  exitPrice,
                 exit_reason: "LP REMOVED",

@@ -9,7 +9,7 @@ import type { FlowSignal, LiquiditySignal } from "../lib/engines/flowTypes";
 import { detectSecondWave } from "../lib/engines/secondWave";
 import { getLiquidityContext } from "../risk/liquidity";
 import { getWsFlow, getLpSignal } from "../risk/flow";
-import { supabase } from "../infra/supabase";
+import { getSupabase } from "../infra/supabase";
 import { sendTelegram } from "../infra/telegram";
 import { fetchPoolByAddress } from "../sources/gecko";
 import { memory, v3PoolMap } from "../state/stores";
@@ -28,7 +28,10 @@ export async function saveShadowTrade(
 ): Promise<void> {
   const pairAddr = pool.pairAddress;
 
-  const { data: existing } = await supabase
+  const db = getSupabase(); // E26: fără Supabase (env lipsă) nu persistăm shadow trade-ul → skip
+  if (!db) return;
+
+  const { data: existing } = await db
     .from("shadow_trades")
     .select("id")
     .eq("pair_address", pairAddr)
@@ -87,7 +90,7 @@ export async function saveShadowTrade(
     flow.pressure === "SELLING" ? 1.08 :
     1.15;
 
-  const { error: insertError } = await supabase.from("shadow_trades").insert({
+  const { error: insertError } = await db.from("shadow_trades").insert({
     id, timestamp: Date.now(),
     symbol:         mem.symbol,
     worker_version: WORKER_VERSION,
@@ -127,13 +130,16 @@ export async function saveShadowTrade(
 }
 
 export async function updateOutcomes(pools: SourcePool[]): Promise<void> {
+  const db = getSupabase(); // E26: fără Supabase nu avem ce citi/actualiza → skip întregul ciclu
+  if (!db) return;
+
   const priceMap = new Map<string, number>();
   // B5a: cheie = identitate completă pairKey(chain, addr), nu doar adresa — aceeași
   // adresă pe base+arbitrum nu mai suprascrie prețul celuilalt chain (P0-1).
   for (const p of pools) priceMap.set(pairKey(p.chain, p.pairAddress), p.priceUsd);
 
   // FOMO blocks
-  const { data: blocks } = await supabase
+  const { data: blocks } = await db
     .from("fomo_blocks").select("*")
     .is("outcome_1h_price", null)
     .gte("timestamp", Date.now() - 24 * 3600_000);
@@ -152,7 +158,7 @@ export async function updateOutcomes(pools: SourcePool[]): Promise<void> {
       }
       if (!price || Date.now() - b.timestamp < 60 * 60_000) continue;
       const pct = (price - b.price_at_block) / b.price_at_block * 100;
-      await supabase.from("fomo_blocks").update({
+      await db.from("fomo_blocks").update({
         outcome_1h_price: price, outcome_1h_pct: pct, outcome_1h_ts: Date.now(),
       }).eq("id", b.id);
     }
@@ -160,7 +166,7 @@ export async function updateOutcomes(pools: SourcePool[]): Promise<void> {
 
   // Shadow trades
   const ownedChains = new Set<string>(CHAINS.map(c => c.id));
-  const { data: trades } = await supabase
+  const { data: trades } = await db
     .from("shadow_trades").select("*")
     .is("exited_at", null)
     .in("chain", CHAINS.map(c => c.id));   // B5a: ownership la nivel de query
@@ -233,7 +239,7 @@ export async function updateOutcomes(pools: SourcePool[]): Promise<void> {
       await sendTelegram(`💀 <b>ZOMBIE KILL</b> ${trade.symbol} — held ${holdLabel}, no exit`);
     }
 
-    const { error: updateError } = await supabase
+    const { error: updateError } = await db
       .from("shadow_trades").update(update).eq("id", trade.id);
     if (updateError) {
       console.error(`[DB UPDATE ERROR] ${trade.symbol} — ${updateError.message}`);
