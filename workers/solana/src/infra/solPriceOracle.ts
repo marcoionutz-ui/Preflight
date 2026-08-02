@@ -1,79 +1,71 @@
 /**
  * infra/solPriceOracle.ts
- * 8.0j: SOL/USD price oracle via Jupiter Price API v2.
+ * SOL/USD price oracle — cascadă de surse publice: Coinbase → Kraken → Binance.
  *
- * Fetch la fiecare 30s → Redis cu TTL 5min.
- * Citit de priceTracker.ts pentru WSOL-quoted pools.
+ * Fetch la fiecare 30s → Redis cu TTL 5min. Citit de priceTracker.ts pentru WSOL-quoted pools.
  *
- * Failure silentios: dacă fetch esuează, returneaza null → priceUsd rămâne null
- * până la urmatorul fetch reușit (max 5min window cu prețul vechi din Redis).
+ * E28: înainte era etichetat „Jupiter v2" dar chema DOAR Binance, care dă HTTP 451 pe IP US
+ * (deploy Railway) → SOL price NULL permanent. Acum încercăm sursele în ordine (Coinbase/Kraken
+ * merg pe IP US), prima validă câștigă, iar `source` reflectă sursa REALĂ care a dat prețul.
+ *
+ * Failure silentios: dacă TOATE sursele eșuează, returnează null → priceUsd rămâne null până la
+ * următorul fetch reușit (max 5min window cu prețul vechi din Redis).
  */
 
 import { getRedis }           from "./redis";
 import { KEY_SOL_USD_PRICE }  from "../config/constants";
+import {
+  SOL_PRICE_SOURCES,
+  resolveSolPriceFromSources,
+  validateSolPrice,
+  type SolPriceSourceName,
+} from "./solPriceSources";
 
 // ── Constante ─────────────────────────────────────────────────────────────────
 
 const ORACLE_TTL_SEC     = 5 * 60;   // TTL Redis — prețul vechi e acceptabil 5min
 const ORACLE_INTERVAL_MS = 30_000;  // refresh la 30s
 const FETCH_TIMEOUT_MS   = 8_000;
-// Binance public API — fără auth, stabil, răspuns simplu
-const BINANCE_URL = "https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT";
 
 // ── Tipuri ────────────────────────────────────────────────────────────────────
 
 export interface SolPriceEntry {
   priceUsd:  number;
   fetchedAt: number;
-  source:    "JUPITER_V2";
+  source:    SolPriceSourceName;   // E28: sursa REALĂ (COINBASE/KRAKEN/BINANCE), nu eticheta falsă „JUPITER_V2"
 }
 
-// ── Fetch + cache ─────────────────────────────────────────────────────────────
+// ── Fetch + cache (cascadă din leaf; deps injectabile pentru teste) ───────────
 
-export async function fetchAndCacheSolPrice(): Promise<SolPriceEntry | null> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+interface RedisLike {
+  set(key: string, value: string, mode: "EX", ttl: number): Promise<unknown>;
+}
 
-  try {
-    const res = await fetch(BINANCE_URL, {
-      signal:  controller.signal,
-      headers: { "Accept": "application/json" },
-    });
-    if (!res.ok) {
-      console.warn("[SOLANA][ORACLE] HTTP error:", res.status, res.statusText);
-      return null;
-    }
+export interface FetchAndCacheOpts {
+  fetchImpl?: typeof fetch;   // default: global fetch
+  redis?:     RedisLike;      // default: getRedis()
+  now?:       () => number;   // default: Date.now
+}
 
-    // Binance response: { "symbol": "SOLUSDT", "price": "150.23000000" }
-    const json = await res.json() as any;
-    const priceStr = json?.price;
-    if (!priceStr) {
-      console.warn("[SOLANA][ORACLE] unexpected response shape:", JSON.stringify(json)?.slice(0, 200));
-      return null;
-    }
+export async function fetchAndCacheSolPrice(opts: FetchAndCacheOpts = {}): Promise<SolPriceEntry | null> {
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const now       = opts.now ?? Date.now;
 
-    const priceUsd = Number(priceStr);
-    if (!isFinite(priceUsd) || priceUsd <= 0) {
-      console.warn("[SOLANA][ORACLE] invalid price value:", priceStr);
-      return null;
-    }
-
-    const entry: SolPriceEntry = {
-      priceUsd,
-      fetchedAt: Date.now(),
-      source:    "JUPITER_V2",
-    };
-
-    const redis = getRedis();
-    await redis.set(KEY_SOL_USD_PRICE, JSON.stringify(entry), "EX", ORACLE_TTL_SEC);
-
-    return entry;
-  } catch (err: any) {
-    console.warn("[SOLANA][ORACLE] fetch error:", err?.message ?? String(err));
+  const resolved = await resolveSolPriceFromSources(SOL_PRICE_SOURCES, fetchImpl, FETCH_TIMEOUT_MS);
+  if (!resolved) {
+    console.warn("[SOLANA][ORACLE] toate sursele au eșuat (Coinbase/Kraken/Binance)");
     return null;
-  } finally {
-    clearTimeout(timer);
   }
+
+  const entry: SolPriceEntry = { priceUsd: resolved.price, fetchedAt: now(), source: resolved.source };
+  try {
+    const redis: RedisLike = opts.redis ?? getRedis();
+    await redis.set(KEY_SOL_USD_PRICE, JSON.stringify(entry), "EX", ORACLE_TTL_SEC);
+  } catch (err: any) {
+    // Prețul e valid; doar cache-ul a eșuat → tot îl întoarcem (loggerul din loop îl folosește).
+    console.warn("[SOLANA][ORACLE] Redis set eșuat:", err?.message ?? String(err));
+  }
+  return entry;
 }
 
 // ── Read (folosit de priceTracker per swap) ───────────────────────────────────
@@ -84,9 +76,9 @@ export async function readSolPrice(): Promise<number | null> {
     const raw   = await redis.get(KEY_SOL_USD_PRICE);
     if (!raw) return null;
     const entry = JSON.parse(raw) as SolPriceEntry;
-    return typeof entry.priceUsd === "number" && entry.priceUsd > 0
-      ? entry.priceUsd
-      : null;
+    // E28: validare comună — respinge Infinity/NaN/≤0 (un JSON `{"priceUsd":1e309}` devine Infinity
+    // și trecea de vechiul `typeof number && >0`).
+    return validateSolPrice(entry?.priceUsd);
   } catch {
     return null;
   }
