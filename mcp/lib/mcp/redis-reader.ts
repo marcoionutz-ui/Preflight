@@ -27,6 +27,12 @@ import {
 } from "@preflight/schema";
 import { safeAgeSec, quotePriceCurrentAgeSec, pricePoolsWindowStart } from "./freshness";
 import { adjustMoverReadTime } from "./moverReadTime";
+import { parseWithSchema } from "./safeParse";
+import {
+  SolanaHealthSchema, SolanaMoversSnapshotSchema, SolanaPoolSchema,
+  SolanaLaunchSchema, SolanaPriceSnapshotSchema, SolanaPoolActivitySchema,
+  SolanaPricePointSchema, SolanaObservedCandidateSchema,
+} from "./schemas/solana";
 
 function safeJson<T>(raw: string | null, fallback: T, key?: string): T {
   if (!raw) return fallback;
@@ -939,7 +945,7 @@ export async function readSolanaIndexerStats(now: number): Promise<SolanaIndexer
     // nu trebuie să crape tot chain report-ul, doar să arate Solana OFFLINE).
     // Partial<> — nominal shape e PreflightSolanaHealth, dar tratăm fiecare
     // câmp ca posibil lipsă/malformat (safeJson validează doar sintaxa JSON).
-    const h = safeJson<Partial<PreflightSolanaHealth> | null>(healthRaw, null, "preflight:indexer:health:solana");
+    const h = parseWithSchema<Partial<PreflightSolanaHealth> | null>(healthRaw, SolanaHealthSchema, null, "preflight:indexer:health:solana");
     if (!h) {
       health = { workerOnline: false, slot: null, cursor: null, blocksBehind: null, status: "OFFLINE", indexerVersion: null, ageSec: null };
     } else {
@@ -982,8 +988,8 @@ export async function readSolanaIndexerStats(now: number): Promise<SolanaIndexer
   let moversComputedAgeSec: number | null = null;
 
   if (moversRaw) {
-    const snap = safeJson<{ computedAt?: number; movers?: unknown[] } | null>(
-      moversRaw, null, "preflight:trending:movers:solana",
+    const snap = parseWithSchema<{ computedAt?: number; movers?: unknown[] } | null>(
+      moversRaw, SolanaMoversSnapshotSchema, null, "preflight:trending:movers:solana",
     );
     if (snap) {
       // computedAt lipsă/invalid nu trebuie să dea o vârstă falsă de ~56 ani
@@ -1018,7 +1024,7 @@ export async function readSolanaMovers(now: number, topN = 5): Promise<SolanaMov
     // fiecare câmp ca posibil lipsă/malformat (Redis poate avea date scrise
     // de o versiune veche de worker) — de-a asta coercion-ul manual de mai
     // jos rămâne, chiar tipat; safeJson validează doar sintaxa JSON, nu shape-ul.
-    const snap = safeJson<Partial<PreflightSolanaMoversSnapshot> | null>(raw, null, "preflight:trending:movers:solana");
+    const snap = parseWithSchema<Partial<PreflightSolanaMoversSnapshot> | null>(raw, SolanaMoversSnapshotSchema, null, "preflight:trending:movers:solana");
     if (!snap) return null;
     // computedAt lipsă/invalid → NaN s-ar fi scurs mai departe fără să
     // treacă de verificarea de staleness de mai jos (NaN > 600 e false).
@@ -1089,7 +1095,7 @@ export async function readSolanaRecentActivity(topN = 5): Promise<{
     ]);
 
     const recentPools: SolanaRecentPool[] = poolPairs.map(([addr, ts], i) => {
-      const meta = poolRaws[i] ? safeJson<PreflightSolanaPool | null>(poolRaws[i], null, `preflight:indexed:pair:solana:${addr}`) : null;
+      const meta = poolRaws[i] ? parseWithSchema<PreflightSolanaPool | null>(poolRaws[i], SolanaPoolSchema, null, `preflight:indexed:pair:solana:${addr}`) : null;
       return {
         poolAddress:  addr,
         program:      meta?.program     ?? "unknown",
@@ -1101,7 +1107,7 @@ export async function readSolanaRecentActivity(topN = 5): Promise<{
     });
 
     const recentLaunches: SolanaRecentLaunch[] = launchPairs.map(([mint, ts], i) => {
-      const meta = launchRaws[i] ? safeJson<PreflightSolanaLaunch | null>(launchRaws[i], null, `preflight:indexed:launch:solana:${mint}`) : null;
+      const meta = launchRaws[i] ? parseWithSchema<PreflightSolanaLaunch | null>(launchRaws[i], SolanaLaunchSchema, null, `preflight:indexed:launch:solana:${mint}`) : null;
       return {
         mint,
         symbol:       meta?.symbol ?? null,
@@ -1156,13 +1162,13 @@ export async function readSolanaPoolContext(
     r.get(`preflight:solana:observed_candidate:${poolAddress}`),
   ]);
 
-  const registry      = regRaw  ? safeJson<PreflightSolanaPool | null>(regRaw,  null) : null;
-  const priceSnapshot = snapRaw ? safeJson<PreflightSolanaPriceSnapshot | null>(snapRaw, null) : null;
-  const activity       = actRaw ? safeJson<PreflightSolanaPoolActivity | null>(actRaw, null) : null;
+  const registry      = regRaw  ? parseWithSchema<PreflightSolanaPool | null>(regRaw,  SolanaPoolSchema, null, `preflight:indexed:pair:solana:${poolAddress}`) : null;
+  const priceSnapshot = snapRaw ? parseWithSchema<PreflightSolanaPriceSnapshot | null>(snapRaw, SolanaPriceSnapshotSchema, null, `preflight:solana:price:${poolAddress}`) : null;
+  const activity       = actRaw ? parseWithSchema<PreflightSolanaPoolActivity | null>(actRaw, SolanaPoolActivitySchema, null, `preflight:solana:activity:${poolAddress}`) : null;
   const recentHistory = histRaws
-    .map(h => safeJson<PreflightSolanaPricePoint | null>(h, null))
+    .map(h => parseWithSchema<PreflightSolanaPricePoint | null>(h, SolanaPricePointSchema, null))
     .filter((h): h is PreflightSolanaPricePoint => h !== null);
-  const observedCandidate = candRaw ? safeJson<PreflightObservedCandidate | null>(candRaw, null) : null;
+  const observedCandidate = candRaw ? parseWithSchema<PreflightObservedCandidate | null>(candRaw, SolanaObservedCandidateSchema, null, `preflight:solana:observed_candidate:${poolAddress}`) : null;
 
   const lastUpdatedAt =
     typeof priceSnapshot?.lastUpdatedAt === "number" &&
