@@ -27,27 +27,20 @@ import {
 } from "@preflight/schema";
 import { safeAgeSec, quotePriceCurrentAgeSec, pricePoolsWindowStart } from "./freshness";
 import { adjustMoverReadTime } from "./moverReadTime";
-import { parseWithSchema } from "./safeParse";
+import { parseWithSchema, mergeChainRecords } from "./safeParse";
 import {
   SolanaHealthSchema, SolanaMoversSnapshotSchema, SolanaPoolSchema,
   SolanaLaunchSchema, SolanaPriceSnapshotSchema, SolanaPoolActivitySchema,
   SolanaPricePointSchema, SolanaObservedCandidateSchema,
 } from "./schemas/solana";
+import {
+  PairStatesRecordSchema, WatchRecordSchema, HotRecordSchema, ArmedRecordSchema,
+  WorkerSnapshotSchema, PipelineCoverageSchema, ScannerStatsSchema, WorkerRuntimeSchema,
+} from "./schemas/evm";
 
-function safeJson<T>(raw: string | null, fallback: T, key?: string): T {
-  if (!raw) return fallback;
-  try {
-    return JSON.parse(raw) as T;
-  } catch (err) {
-    if (key) {
-      console.warn(
-        `[REDIS PARSE ERROR] key:${key} — invalid JSON, using fallback`,
-        err instanceof Error ? err.message : err,
-      );
-    }
-    return fallback;
-  }
-}
+// E8a+E8b: `safeJson` (validare sintaxă + cast oarb) a fost înlocuit COMPLET de
+// `parseWithSchema` (./safeParse) — validare de FORMĂ cu Zod la fiecare graniță de parse Redis.
+// Nu mai există niciun call-site pe cast-nevalidat.
 
 // ── Redis read ────────────────────────────────────────────────────────────────
 
@@ -85,22 +78,14 @@ export async function readAllRedis(): Promise<RedisContext | null> {
 
   const now = Date.now();
 
-  // B4: merge cheile per-chain. Keysets-urile sunt pairKey (B3) → chain-disjuncte,
-  // deci Object.assign nu pierde nimic. `any` = a existat vreo cheie (keyExists).
-  const mergeChainObjects = <T,>(raws: (string | null)[], label: string): { merged: Record<string, T>; any: boolean } => {
-    const merged: Record<string, T> = {};
-    let any = false;
-    for (const raw of raws) {
-      if (raw == null) continue;
-      any = true;
-      Object.assign(merged, safeJson<Record<string, T>>(raw, {}, label));
-    }
-    return { merged, any };
-  };
-  const statesM = mergeChainObjects<PairState>(statesRaws, "pair_states");
-  const watchM  = mergeChainObjects<WatchEntry>(watchRaws, "active_watch");
-  const hotM    = mergeChainObjects<HotEntry>(hotRaws, "hot_candidates");
-  const armedM  = mergeChainObjects<ArmedEntry>(armedRaws, "armed_entries");
+  // B4: merge cheile per-chain (keysets pairKey B3 → chain-disjuncte, Object.assign nu pierde nimic).
+  // `mergeChainRecords` (leaf): `any`/`presentByChain` setate DOAR după parse REUȘIT — un payload corupt
+  // (Zod respinge) NU e „cheie prezentă" și nu devine afirmație de piață (fix varu Blocker 1). Fiecare hartă
+  // are schema PROPRIE care validează VALORILE consumate (fix varu Blocker 2).
+  const statesM = mergeChainRecords<PairState>(statesRaws, evmChains, PairStatesRecordSchema, "pair_states");
+  const watchM  = mergeChainRecords<WatchEntry>(watchRaws, evmChains, WatchRecordSchema, "active_watch");
+  const hotM    = mergeChainRecords<HotEntry>(hotRaws, evmChains, HotRecordSchema, "hot_candidates");
+  const armedM  = mergeChainRecords<ArmedEntry>(armedRaws, evmChains, ArmedRecordSchema, "armed_entries");
 
   // worker_snapshot: {memory, poolReserveEth, savedAt, version} → merge sub-obiectele
   // (savedAt = cel mai recent între chain-uri).
@@ -116,7 +101,7 @@ export async function readAllRedis(): Promise<RedisContext | null> {
     for (let i = 0; i < raws.length; i++) {
       const raw = raws[i];
       if (raw == null) continue;
-      const snap = safeJson<WorkerSnapshot | null>(raw, null, "worker_snapshot");
+      const snap = parseWithSchema<WorkerSnapshot | null>(raw, WorkerSnapshotSchema, null, "worker_snapshot");
       if (!snap) continue;
       any = true;
       Object.assign(memory,         (snap as any).memory ?? {});
@@ -148,7 +133,7 @@ export async function readAllRedis(): Promise<RedisContext | null> {
     for (const raw of raws) {
       if (raw == null) continue;
       any = true;
-      // E15 (varu R2): validitate PER-PAYLOAD. safeJson dă [] și pe corupt → nu putem distinge din `merged`.
+      // E15 (varu R2): validitate PER-PAYLOAD. Un fallback la [] pe corupt nu se distinge din `merged`.
       // Parse explicit: un chain DEȚINUT cu payload corupt / non-array → allReadable=false (nu „zero drops").
       try {
         const p = JSON.parse(raw);
@@ -178,7 +163,7 @@ export async function readAllRedis(): Promise<RedisContext | null> {
     let any = false;
     for (const raw of raws) {
       if (raw == null) continue;
-      const snap = safeJson<PipelineCoverage | null>(raw, null, "pf_pipeline_coverage");
+      const snap = parseWithSchema<PipelineCoverage | null>(raw, PipelineCoverageSchema, null, "pf_pipeline_coverage");
       if (!snap) continue;
       any = true;
       Object.assign(chains, (snap as any).chains ?? {});
@@ -210,7 +195,7 @@ export async function readAllRedis(): Promise<RedisContext | null> {
     let any = false;
     for (const raw of raws) {
       if (raw == null) continue;
-      const st = safeJson<ScannerStats | null>(raw, null, "pf_scanner_stats");
+      const st = parseWithSchema<ScannerStats | null>(raw, ScannerStatsSchema, null, "pf_scanner_stats");
       if (!st) continue;
       any = true;
       Object.assign(chains,        (st as any).chains ?? {});
@@ -268,7 +253,7 @@ export async function readAllRedis(): Promise<RedisContext | null> {
     const raw = workerRuntimeRaws[i];
     if (raw == null) continue;
     const keyChain = evmChains[i];
-    const wr = safeJson<Partial<PreflightWorkerRuntime> | null>(raw, null, `worker_runtime:${keyChain}`);
+    const wr = parseWithSchema<Partial<PreflightWorkerRuntime> | null>(raw, WorkerRuntimeSchema, null, `worker_runtime:${keyChain}`);
     if (!wr) continue;
     if (normalizeChainId(String(wr.chain ?? "")) !== keyChain) continue; // refuză chain străin
     const updatedAt = Number(wr.updatedAt);
@@ -355,7 +340,10 @@ export async function readAllRedis(): Promise<RedisContext | null> {
   for (let i = 0; i < statesRaws.length; i++) {
     const raw = statesRaws[i];
     if (raw == null) continue;
-    const obj = safeJson<Record<string, { updatedAt?: number }>>(raw, {}, "pair_states");
+    // E8b (varu Blocker 1): fallback `null` → un payload CORUPT NU e „prezent sănătos", deci NU primește
+    // proxy-ul de liveness din snapshot (altfel un pair_states corupt ar revendica prospețime fals).
+    const obj = parseWithSchema<Record<string, { updatedAt?: number }> | null>(raw, PairStatesRecordSchema, null, "pair_states");
+    if (obj === null) continue;
     let newest = 0;
     for (const st of Object.values(obj)) { const u = Number(st?.updatedAt); if (Number.isFinite(u)) newest = Math.max(newest, u); }
     if (newest > 0) {
@@ -384,11 +372,13 @@ export async function readAllRedis(): Promise<RedisContext | null> {
   // pe Base dar LIPSĂ pe BSC (chain cunoscut) ar raporta fals prospețime din snapshot-urile globale fresh. Urmărim
   // prezența per-chain (ca la recent_drops) → tool-ul cere prezență pe TOATE chain-urile cunoscute înainte de a
   // revendica prospețime; altfel quality "unknown". (pair_states e guvernată separat de proxy-ul snapshot de mai sus.)
+  // E8b (varu Blocker 1): prezența = payload PARSAT cu succes (din mergeChainRecords.presentByChain), NU
+  // `raw != null` — un payload corupt nu revendică prezență/prospețime.
   const keyPresentByChain = {
-    pair_states:    Object.fromEntries(evmChains.map((c, i) => [c, statesRaws[i] != null])),
-    active_watch:   Object.fromEntries(evmChains.map((c, i) => [c, watchRaws[i]  != null])),
-    hot_candidates: Object.fromEntries(evmChains.map((c, i) => [c, hotRaws[i]    != null])),
-    armed_entries:  Object.fromEntries(evmChains.map((c, i) => [c, armedRaws[i]  != null])),
+    pair_states:    statesM.presentByChain,
+    active_watch:   watchM.presentByChain,
+    hot_candidates: hotM.presentByChain,
+    armed_entries:  armedM.presentByChain,
   };
 
   return {
@@ -943,14 +933,14 @@ export async function readSolanaIndexerStats(now: number): Promise<SolanaIndexer
   } else {
     // fallback null => tratat identic cu !healthRaw mai jos (un blob corupt
     // nu trebuie să crape tot chain report-ul, doar să arate Solana OFFLINE).
-    // Partial<> — nominal shape e PreflightSolanaHealth, dar tratăm fiecare
-    // câmp ca posibil lipsă/malformat (safeJson validează doar sintaxa JSON).
+    // Partial<> — nominal shape e PreflightSolanaHealth, dar tratăm fiecare câmp ca
+    // posibil lipsă/malformat (SolanaHealthSchema lasă câmpurile lejere/passthrough).
     const h = parseWithSchema<Partial<PreflightSolanaHealth> | null>(healthRaw, SolanaHealthSchema, null, "preflight:indexer:health:solana");
     if (!h) {
       health = { workerOnline: false, slot: null, cursor: null, blocksBehind: null, status: "OFFLINE", indexerVersion: null, ageSec: null };
     } else {
-      // safeJson garantează JSON valid, nu forma obiectului — dacă updatedAt
-      // lipsește sau e un timestamp invalid, Date.parse/getTime dă NaN, care
+      // SolanaHealthSchema acceptă updatedAt ca number|string (nu-i verifică VALIDITATEA)
+      // — dacă updatedAt lipsește sau e un timestamp invalid, Date.parse/getTime dă NaN, care
       // altfel s-ar fi scurs în ageSec/workerOnline/status fără avertisment.
       const rawUpdatedAt = h.updatedAt;
       const updatedAtMs  = typeof rawUpdatedAt === "number"
@@ -959,8 +949,8 @@ export async function readSolanaIndexerStats(now: number): Promise<SolanaIndexer
       // E13: safeAgeSec — updatedAt serios în viitor → null → workerOnline false / status OFFLINE (nu „0s online").
       const ageSec = safeAgeSec(now, Number.isFinite(updatedAtMs) ? updatedAtMs : null);
 
-      // Redis poate conține orice string pe `status` — safeJson validează
-      // doar sintaxa JSON, nu forma/enum-ul. Fără asta, o valoare stray
+      // Redis poate conține orice string pe `status` — SolanaHealthSchema îl lasă
+      // `z.string()` (passthrough), NU enum. Fără check-ul de aici, o valoare stray
       // (ex: dintr-o versiune veche de worker) s-ar scurge mai departe ca
       // "status" invalid în raport.
       const validStatuses = new Set<SolanaHealthData["status"]>(
@@ -1022,8 +1012,8 @@ export async function readSolanaMovers(now: number, topN = 5): Promise<SolanaMov
     if (!raw) return null;
     // Partial<> — nominal shape e PreflightSolanaMoversSnapshot, dar tratăm
     // fiecare câmp ca posibil lipsă/malformat (Redis poate avea date scrise
-    // de o versiune veche de worker) — de-a asta coercion-ul manual de mai
-    // jos rămâne, chiar tipat; safeJson validează doar sintaxa JSON, nu shape-ul.
+    // de o versiune veche de worker) — de-a asta coercion-ul manual de mai jos
+    // rămâne, chiar tipat; SolanaMoversSnapshotSchema validează forma, nu fiecare câmp intern.
     const snap = parseWithSchema<Partial<PreflightSolanaMoversSnapshot> | null>(raw, SolanaMoversSnapshotSchema, null, "preflight:trending:movers:solana");
     if (!snap) return null;
     // computedAt lipsă/invalid → NaN s-ar fi scurs mai departe fără să
