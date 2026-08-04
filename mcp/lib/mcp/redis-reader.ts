@@ -37,10 +37,17 @@ import {
   PairStatesRecordSchema, WatchRecordSchema, HotRecordSchema, ArmedRecordSchema,
   WorkerSnapshotSchema, PipelineCoverageSchema, ScannerStatsSchema, WorkerRuntimeSchema,
 } from "./schemas/evm";
+import {
+  MoversArraySchema, QuotePriceSchema, QuotePriceHealthEntrySchema, PairContextSchema,
+  resolveValidatedPairContext,
+} from "./schemas/reader";
 
-// E8a+E8b: `safeJson` (validare sintaxă + cast oarb) a fost înlocuit COMPLET de
-// `parseWithSchema` (./safeParse) — validare de FORMĂ cu Zod la fiecare graniță de parse Redis.
-// Nu mai există niciun call-site pe cast-nevalidat.
+// E8a+E8b: `safeJson` (validare sintaxă + cast oarb) a fost înlocuit COMPLET de `parseWithSchema`.
+// E8c: și citirile care foloseau `JSON.parse` BRUT direct (nu treceau prin safeJson — ratate de
+// verificarea de completitudine E8b care numărase doar site-urile safeJson) sunt acum validate cu Zod:
+// readTrendingMovers (MoversArraySchema), readQuotePrices (QuotePriceSchema), readQuotePriceHealth
+// (QuotePriceHealthEntrySchema), readPairContext (PairContextSchema). RĂMAS pt. E8c-2: validarea PE
+// ELEMENT în `mergeChainArrays` (array-urile pipeline validate acum doar la nivel de array, nu element).
 
 // ── Redis read ────────────────────────────────────────────────────────────────
 
@@ -557,24 +564,23 @@ export async function readPairContext(addr: string, chain?: string): Promise<Pai
     // Cu chain (hint din tool) → GET direct pe cheia chain-scoped.
     if (chain) {
       const canonicalChain = normalizeChainId(chain);
-      const raw = await r.get(REDIS_KEYS.pairContext(canonicalChain, addr));
-      return {
-        context:         raw ? JSON.parse(raw) : null,
-        matchedChain:    raw ? canonicalChain : null,
-        ambiguousChains: [],
-      };
+      const key = REDIS_KEYS.pairContext(canonicalChain, addr);
+      const raw = await r.get(key);
+      // E8c: context validat „e OBIECT" (primitiv/array/corupt → null). matchedChain reflectă parse-ul
+      // REUȘIT — un payload prezent dar corupt = not-found (nu revendicăm un chain fără context valid).
+      const ctx = raw ? parseWithSchema<Record<string, unknown> | null>(raw, PairContextSchema, null, key) : null;
+      return { context: ctx, matchedChain: ctx ? canonicalChain : null, ambiguousChains: [] };
     }
     // Fără chain → probăm chain-urile EVM cunoscute printr-un singur MGET
     // (pair_context e scris DOAR de worker-evm pt. perechi EVM).
     const keys = PREFLIGHT_EVM_CHAINS.map(c => REDIS_KEYS.pairContext(c, addr));
     const raws = await r.mget(...keys);
     const hits = raws
-      .map((raw, i) => ({ raw, chain: PREFLIGHT_EVM_CHAINS[i] }))
-      .filter((x): x is { raw: string; chain: typeof PREFLIGHT_EVM_CHAINS[number] } => x.raw !== null);
-
-    if (hits.length === 0) return { context: null, matchedChain: null, ambiguousChains: [] };
-    if (hits.length > 1)   return { context: null, matchedChain: null, ambiguousChains: hits.map(h => h.chain) };
-    return { context: JSON.parse(hits[0].raw), matchedChain: hits[0].chain, ambiguousChains: [] };
+      .map((raw, i) => ({ raw, chain: PREFLIGHT_EVM_CHAINS[i] as string }))
+      .filter((x): x is { raw: string; chain: string } => x.raw !== null);
+    // E8c (varu R2): validează hit-urile ÎNAINTE de a decide ambiguitatea (0/1/>1 pe VALIDE, nu pe orice
+    // raw nenul — un JSON corupt pe alt chain nu mai produce fals AMBIGUOUS_PAIR).
+    return resolveValidatedPairContext(hits);
   } catch {
     return { context: null, matchedChain: null, ambiguousChains: [] };
   }
@@ -714,15 +720,19 @@ export async function readQuoteOracleHealth(): Promise<Record<string, Record<str
         result[chain][symbol] = { price: 0, ageSec: -1, fresh: false, source: "MISSING" };
         continue;
       }
-      try {
-        const p = JSON.parse(raw) as { price: number; updatedAt: number };
-        // E13: clamp la ≥0 — un updatedAt din viitor (clock skew) nu mai dă ageSec negativ. `fresh` cere
-        // updatedAt valid ȘI <300s (ts lipsă/invalid/viitor-serios → safeAgeSec null → NEfresh, nu „0s proaspăt").
-        const ageSec = safeAgeSec(now, Number.isFinite(Number(p.updatedAt)) ? Number(p.updatedAt) : null);
-        result[chain][symbol] = { price: p.price, ageSec: ageSec ?? -1, fresh: ageSec !== null && ageSec < 300, source: "CHAINLINK" };
-      } catch {
+      // E8c: validare de formă — `price` = ANCORĂ (număr). Payload non-obiect / price non-number →
+      // null → tratat ca MISSING (nu preț garbage). `updatedAt` rămâne tolerat (number|string|lipsă).
+      const p = parseWithSchema<{ price: number; updatedAt?: number | string } | null>(
+        raw, QuotePriceSchema, null, `preflight:indexer:quoteprice:${chain}:${symbol}`,
+      );
+      if (p === null) {
         result[chain][symbol] = { price: 0, ageSec: -1, fresh: false, source: "MISSING" };
+        continue;
       }
+      // E13: clamp la ≥0 — un updatedAt din viitor (clock skew) nu mai dă ageSec negativ. `fresh` cere
+      // updatedAt valid ȘI <300s (ts lipsă/invalid/viitor-serios → safeAgeSec null → NEfresh, nu „0s proaspăt").
+      const ageSec = safeAgeSec(now, Number.isFinite(Number(p.updatedAt)) ? Number(p.updatedAt) : null);
+      result[chain][symbol] = { price: p.price, ageSec: ageSec ?? -1, fresh: ageSec !== null && ageSec < 300, source: "CHAINLINK" };
     }
   } catch { /* ignoră Redis errors */ }
   return result;
@@ -769,26 +779,27 @@ export async function readQuotePriceHealth(): Promise<Record<string, QuotePriceC
 
       for (const [err, raw] of results) {
         if (err || !raw) continue;
-        try {
-          const p = JSON.parse(raw as string) as {
-            quotePriceSource?:  string;
-            quotePriceAgeSec?:  number;   // E11: frozen age-at-enrichment (fallback pt. intrări legacy)
-            quotePriceCheckedAt?: number; // E11: timestamp ABSOLUT — vârsta CURENTĂ = now - checkedAt
-            pricedAt?:          number;   // E11: pt. fallback-ul legacy — frozen + timpul scurs de la pricedAt
-            priceStatus?:       string;
-          };
-          parsed++;
-          const src = p.quotePriceSource ?? "UNKNOWN";
-          const ps  = p.priceStatus ?? "MISSING";
-          sources[src]       = (sources[src] ?? 0) + 1;
-          priceStatuses[ps]  = (priceStatuses[ps] ?? 0) + 1;
-          if (src === "UNKNOWN" && ps === "OK") unknownOkCount++;
-          // E11: vârsta CURENTĂ (checkedAt absolut, îmbătrânește) — nu age-at-write înghețat care ascundea staleness.
-          const age = quotePriceCurrentAgeSec(p, now);
-          if (age !== null) {
-            maxAgeSec = maxAgeSec === null ? age : Math.max(maxAgeSec, age);
-          }
-        } catch { /* skip malformed */ }
+        // E8c: validare de formă (câmpuri opționale tipate) — un `quotePriceSource:123`/`priceStatus:{}`
+        // nu se mai scurge în distribuția sources/priceStatuses; payload non-obiect → skip (fost `catch`).
+        const p = parseWithSchema<{
+          quotePriceSource?:    string;
+          quotePriceAgeSec?:    number;   // E11: frozen age-at-enrichment (fallback pt. intrări legacy)
+          quotePriceCheckedAt?: number;   // E11: timestamp ABSOLUT — vârsta CURENTĂ = now - checkedAt
+          pricedAt?:            number;   // E11: pt. fallback-ul legacy — frozen + timpul scurs de la pricedAt
+          priceStatus?:         string;
+        } | null>(raw as string, QuotePriceHealthEntrySchema, null);
+        if (p === null) continue; // payload malformat → skip
+        parsed++;
+        const src = p.quotePriceSource ?? "UNKNOWN";
+        const ps  = p.priceStatus ?? "MISSING";
+        sources[src]       = (sources[src] ?? 0) + 1;
+        priceStatuses[ps]  = (priceStatuses[ps] ?? 0) + 1;
+        if (src === "UNKNOWN" && ps === "OK") unknownOkCount++;
+        // E11: vârsta CURENTĂ (checkedAt absolut, îmbătrânește) — nu age-at-write înghețat care ascundea staleness.
+        const age = quotePriceCurrentAgeSec(p, now);
+        if (age !== null) {
+          maxAgeSec = maxAgeSec === null ? age : Math.max(maxAgeSec, age);
+        }
       }
 
       const warnings: string[] = [];
@@ -833,7 +844,8 @@ export async function readTrendingMovers(chain: string): Promise<MoverEntry[]> {
   try {
     const raw = await r.get(REDIS_KEYS.trendingMovers(chain));
     if (!raw) return [];
-    return JSON.parse(raw) as MoverEntry[];
+    // E8c: ARRAY de MoverEntry validat (enum direction/historyStatus). Payload non-array/malformat → [].
+    return parseWithSchema<MoverEntry[]>(raw, MoversArraySchema, [], REDIS_KEYS.trendingMovers(chain));
   } catch { return []; }
 }
 

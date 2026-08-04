@@ -23,6 +23,10 @@ import {
   PairStatesRecordSchema, WatchRecordSchema, HotRecordSchema, ArmedRecordSchema,
   WorkerSnapshotSchema, PipelineCoverageSchema, ScannerStatsSchema, WorkerRuntimeSchema,
 } from "./schemas/evm";
+import {
+  MoversArraySchema, QuotePriceSchema, QuotePriceHealthEntrySchema, PairContextSchema,
+  resolveValidatedPairContext,
+} from "./schemas/reader";
 
 let passed = 0, failed = 0;
 function check(name: string, cond: boolean): void {
@@ -305,6 +309,74 @@ function main(): void {
   check("78. mixt [valid,corupt,absent] -> any true, present base=true/arbitrum=false, merged doar valid",
     rMixed.any === true && rMixed.presentByChain.base === true &&
     rMixed.presentByChain.arbitrum === false && Object.keys(rMixed.merged).length === 1);
+
+  // --- 7. E8c: scheme reader — CONTRACT CANONIC (varu R2): {} nu e valid; enum-uri; price pozitiv ---
+  const J = (x: unknown): string => JSON.stringify(x);
+  const MOVER = {
+    chain: "base", pairAddress: "0xabc", tokenAddress: null, symbol: "FOO", dexType: "V3",
+    priceUsd: 1.5, reserveUsd: 1000, priceChange5m: 0.1, priceChange1h: null, priceChange24h: -0.2,
+    direction: "UP", historyStatus: "READY", snapshotCount: 3, ts: 1710000000000,
+  };
+  const IDXPAIR = {
+    chain: "base", dexId: "uniswap", pairAddress: "0xabc", token0: "0x0", token1: "0x1",
+    blockNumber: 100, txHash: "0xtx", discoveredAt: 1, quotePriceSource: "CHAINLINK", priceStatus: "OK", pricedAt: 1,
+  };
+  const PCTX = {
+    schemaVersion: "preflight-schema-v2", workerVersion: "1.0", symbol: "FOO", chain: "base",
+    pairAddress: "0xabc", pipelineState: "HOT", phase: "TRENDING", liquidityStatus: "OK", reserveUsd: 1000,
+    flow: { status: "BUYING", buyVol5m: 1, netVol5m: 1, buys5m: 2, sells5m: 1, hasData: true },
+    entryRisk: "MEDIUM", riskFlags: [], opportunitySignals: [], workerObservation: "x", updatedAt: 1,
+  };
+
+  // MoversArraySchema (readTrendingMovers) — chain/dexType/direction/historyStatus enum strict (EVM-only)
+  check("79. movers [valid] -> 1", parseWithSchema<unknown[]>(J([MOVER]), MoversArraySchema, []).length === 1);
+  check("79a. movers [] gol -> [] valid", parseWithSchema<unknown[]>(J([]), MoversArraySchema, [{ x: 1 }]).length === 0);
+  check("79b. * movers root non-array -> fallback", (parseWithSchema<any[]>(J(MOVER), MoversArraySchema, [FB])[0] as any) === FB);
+  check("79c. * movers element fără priceUsd -> fallback", (parseWithSchema<any[]>(J([{ ...MOVER, priceUsd: undefined }]), MoversArraySchema, [FB])[0] as any) === FB);
+  check("79d. * movers direction invalid -> fallback (enum)", (parseWithSchema<any[]>(J([{ ...MOVER, direction: "SIDEWAYS" }]), MoversArraySchema, [FB])[0] as any) === FB);
+  check("79e. * movers chain invalid -> fallback (enum)", (parseWithSchema<any[]>(J([{ ...MOVER, chain: "polygon" }]), MoversArraySchema, [FB])[0] as any) === FB);
+  check("79f. * movers dexType invalid -> fallback (enum)", (parseWithSchema<any[]>(J([{ ...MOVER, dexType: "CPMM" }]), MoversArraySchema, [FB])[0] as any) === FB);
+  check("79g. movers tokenAddress null + câmp extra -> ok", parseWithSchema<unknown[]>(J([{ ...MOVER, extra: 1 }]), MoversArraySchema, []).length === 1);
+
+  // QuotePriceSchema (readQuotePrices) — price POZITIV + updatedAt number
+  check("80. quotePrice {price>0, updatedAt} -> ok", parseWithSchema<any>(J({ price: 1, updatedAt: 123 }), QuotePriceSchema, null)?.price === 1);
+  check("80a. * quotePrice price:0 -> fallback (positive)", parseWithSchema(J({ price: 0, updatedAt: 1 }), QuotePriceSchema, null) === null);
+  check("80b. * quotePrice price negativ -> fallback", parseWithSchema(J({ price: -5, updatedAt: 1 }), QuotePriceSchema, null) === null);
+  check("80c. * quotePrice updatedAt string -> fallback (number)", parseWithSchema(J({ price: 1, updatedAt: "123" }), QuotePriceSchema, null) === null);
+  check("80d. * quotePrice updatedAt lipsă -> fallback", parseWithSchema(J({ price: 1 }), QuotePriceSchema, null) === null);
+  check("80e. * quotePrice price string -> fallback", parseWithSchema(J({ price: "1", updatedAt: 1 }), QuotePriceSchema, null) === null);
+  check("80f. * quotePrice root array -> fallback", parseWithSchema(J([1, 2]), QuotePriceSchema, null) === null);
+
+  // QuotePriceHealthEntrySchema (readQuotePriceHealth) = IndexedPair (ancore core + enum source/status)
+  check("81. quoteHealth IndexedPair valid -> ok", parseWithSchema(J(IDXPAIR), QuotePriceHealthEntrySchema, null) !== null);
+  check("81a. * quoteHealth {} -> fallback (ancore lipsă)", parseWithSchema(J({}), QuotePriceHealthEntrySchema, null) === null);
+  check("81b. * quoteHealth fără chain (ancoră) -> fallback", parseWithSchema(J({ ...IDXPAIR, chain: undefined }), QuotePriceHealthEntrySchema, null) === null);
+  check("81c. * quoteHealth quotePriceSource invalid enum -> fallback", parseWithSchema(J({ ...IDXPAIR, quotePriceSource: "GARBAGE" }), QuotePriceHealthEntrySchema, null) === null);
+  check("81d. * quoteHealth priceStatus invalid enum -> fallback", parseWithSchema(J({ ...IDXPAIR, priceStatus: "WAT" }), QuotePriceHealthEntrySchema, null) === null);
+  check("81e. quoteHealth doar ancore (fără câmpuri price) -> ok", parseWithSchema(J({ chain: "base", dexId: "u", pairAddress: "0x", token0: "0x", token1: "0x", blockNumber: 1, txHash: "0x", discoveredAt: 1 }), QuotePriceHealthEntrySchema, null) !== null);
+
+  // PairContextSchema (readPairContext) — contract COMPLET
+  check("82. pairContext canonic complet -> ok", parseWithSchema(J(PCTX), PairContextSchema, null) !== null);
+  check("82a. * pairContext {} -> fallback (contract complet)", parseWithSchema(J({}), PairContextSchema, null) === null);
+  check("82b. * pairContext fără symbol -> fallback", parseWithSchema(J({ ...PCTX, symbol: undefined }), PairContextSchema, null) === null);
+  check("82c. * pairContext flow fără hasData -> fallback", parseWithSchema(J({ ...PCTX, flow: { status: "BUYING", buyVol5m: 1, netVol5m: 1, buys5m: 1, sells5m: 1 } }), PairContextSchema, null) === null);
+  check("82d. * pairContext entryRisk invalid enum -> fallback", parseWithSchema(J({ ...PCTX, entryRisk: "SUPER" }), PairContextSchema, null) === null);
+  check("82e. * pairContext array -> fallback", parseWithSchema(J([1]), PairContextSchema, null) === null);
+  check("82f. pairContext lifecycle null -> ok (optional nullable)", parseWithSchema(J({ ...PCTX, lifecycle: null }), PairContextSchema, null) !== null);
+
+  // resolveValidatedPairContext (leaf) — ambiguitate decisă DUPĂ validare (varu R2)
+  const CTXRAW = J(PCTX);
+  check("83. leaf 0 hits -> not found", resolveValidatedPairContext([]).context === null && resolveValidatedPairContext([]).matchedChain === null);
+  check("83a. leaf 1 valid -> acel context + matchedChain",
+    (() => { const r = resolveValidatedPairContext([{ raw: CTXRAW, chain: "base" }]); return r.context !== null && r.matchedChain === "base" && r.ambiguousChains.length === 0; })());
+  check("83b. * leaf 1 valid + 1 corupt -> contextul VALID, NU ambiguous",
+    (() => { const r = resolveValidatedPairContext([{ raw: CTXRAW, chain: "base" }, { raw: "not json", chain: "bsc" }]); return r.matchedChain === "base" && r.ambiguousChains.length === 0; })());
+  check("83c. * leaf 1 valid + 1 `{}`-invalid -> contextul VALID, NU ambiguous",
+    (() => { const r = resolveValidatedPairContext([{ raw: "{}", chain: "arbitrum" }, { raw: CTXRAW, chain: "base" }]); return r.matchedChain === "base" && r.ambiguousChains.length === 0; })());
+  check("83d. * leaf 2 valide -> ambiguous",
+    (() => { const r = resolveValidatedPairContext([{ raw: CTXRAW, chain: "base" }, { raw: J({ ...PCTX, chain: "bsc" }), chain: "bsc" }]); return r.context === null && r.ambiguousChains.length === 2; })());
+  check("83e. * leaf toate corupte -> not found",
+    resolveValidatedPairContext([{ raw: "x", chain: "base" }, { raw: "{}", chain: "bsc" }]).context === null);
 
   console.log(`\n${passed} passed, ${failed} failed`);
   if (failed > 0) process.exit(1);
