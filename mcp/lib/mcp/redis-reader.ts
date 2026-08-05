@@ -27,7 +27,7 @@ import {
 } from "@preflight/schema";
 import { safeAgeSec, quotePriceCurrentAgeSec, pricePoolsWindowStart } from "./freshness";
 import { adjustMoverReadTime } from "./moverReadTime";
-import { parseWithSchema, mergeChainRecords } from "./safeParse";
+import { parseWithSchema, mergeChainRecords, mergeChainArrays } from "./safeParse";
 import {
   SolanaHealthSchema, SolanaMoversSnapshotSchema, SolanaPoolSchema,
   SolanaLaunchSchema, SolanaPriceSnapshotSchema, SolanaPoolActivitySchema,
@@ -41,13 +41,16 @@ import {
   MoversArraySchema, QuotePriceSchema, QuotePriceHealthEntrySchema, PairContextSchema,
   resolveValidatedPairContext,
 } from "./schemas/reader";
+import {
+  PipelineEventSchema, DropSchema, MomentumEventSchema,
+  SignalPipelineEntrySchema, QualifiedSignalSchema, LifecycleEntrySchema,
+} from "./schemas/pipeline";
 
 // E8a+E8b: `safeJson` (validare sintaxă + cast oarb) a fost înlocuit COMPLET de `parseWithSchema`.
-// E8c: și citirile care foloseau `JSON.parse` BRUT direct (nu treceau prin safeJson — ratate de
-// verificarea de completitudine E8b care numărase doar site-urile safeJson) sunt acum validate cu Zod:
-// readTrendingMovers (MoversArraySchema), readQuotePrices (QuotePriceSchema), readQuotePriceHealth
-// (QuotePriceHealthEntrySchema), readPairContext (PairContextSchema). RĂMAS pt. E8c-2: validarea PE
-// ELEMENT în `mergeChainArrays` (array-urile pipeline validate acum doar la nivel de array, nu element).
+// E8c-1: citirile care foloseau `JSON.parse` BRUT direct (ratate de completitudinea E8b care numărase
+// doar site-urile safeJson) sunt validate cu Zod: readTrendingMovers/readQuotePrices/readQuotePriceHealth/
+// readPairContext (./schemas/reader). E8c-2: `mergeChainArrays` (./safeParse) validează PE ELEMENT cele 6
+// array-uri pipeline cu ./schemas/pipeline. Nu mai există niciun `JSON.parse` nevalidat pe granițele Redis.
 
 // ── Redis read ────────────────────────────────────────────────────────────────
 
@@ -128,38 +131,16 @@ export async function readAllRedis(): Promise<RedisContext | null> {
   };
   const { snapshot: snapshotMerged, savedAtByChain: snapshotSavedAtByChain } = mergeSnapshot(snapshotRaws);
 
-  // B4b: array-urile sunt acum chain-scoped (o cheie per-chain) → MGET + concat.
-  // `any` = a existat vreo cheie (păstrează semantica keyExists / pfX-nullability).
-  // B4b: array-urile per-chain sunt newest-first individual, dar concat-ul le
-  // grupează pe chain → re-sortăm global DESC pe timestamp, ca să restaurăm
-  // "newest-first" pe care consumatorii cu filter+.slice(0,N) o presupun.
-  const mergeChainArrays = <T,>(raws: (string | null)[], label: string, tsOf: (x: T) => number): { merged: T[]; any: boolean; allReadable: boolean } => {
-    const merged: T[] = [];
-    let any = false;
-    let allReadable = true;
-    for (const raw of raws) {
-      if (raw == null) continue;
-      any = true;
-      // E15 (varu R2): validitate PER-PAYLOAD. Un fallback la [] pe corupt nu se distinge din `merged`.
-      // Parse explicit: un chain DEȚINUT cu payload corupt / non-array → allReadable=false (nu „zero drops").
-      try {
-        const p = JSON.parse(raw);
-        if (Array.isArray(p)) merged.push(...(p as T[]));
-        else { allReadable = false; console.warn(`[REDIS PARSE ERROR] key:${label} — not an array, skipping`); }
-      } catch (err) {
-        allReadable = false;
-        console.warn(`[REDIS PARSE ERROR] key:${label} — invalid JSON, skipping`, err instanceof Error ? err.message : err);
-      }
-    }
-    merged.sort((a, b) => (Number(tsOf(b)) || 0) - (Number(tsOf(a)) || 0));
-    return { merged, any, allReadable };
-  };
-  const eventsM    = mergeChainArrays<PipelineEvent>(eventsRaws, "pipeline_events", e => e.ts);
-  const dropsM     = mergeChainArrays<PreflightDrop>(dropsRaws, "recent_drops", d => d.droppedAt);
-  const momentumM  = mergeChainArrays<PreflightMomentumEvent>(pfMomentumRaws, "pf_momentum", m => m.detectedAt);
-  const pipelineM  = mergeChainArrays<PreflightSignalPipelineEntry>(pfPipelineRaws, "pf_pipeline", p => p.updatedAt);
-  const qualifiedM = mergeChainArrays<PreflightQualifiedSignal>(pfQualifiedRaws, "pf_qualified", q => q.qualifiedAt);
-  const lifecycleM = mergeChainArrays<LifecycleEntry>(pfLifecycleRaws, "pf_lifecycle", l => l.lastOutcomeAt);
+  // B4b: array-urile sunt chain-scoped (o cheie per-chain) → MGET + merge global newest-first.
+  // E8c-2: `mergeChainArrays` (leaf în ./safeParse) validează acum PE ELEMENT cu schema per-tip —
+  // elementele invalide sunt filtrate (un event corupt nu pierde toată lista chain-ului), array/JSON
+  // corupt → allReadable=false. `any` = prezența cheii (semantica E15 / pfX-nullability, neschimbată).
+  const eventsM    = mergeChainArrays<PipelineEvent>(eventsRaws, PipelineEventSchema, e => e.ts, "pipeline_events");
+  const dropsM     = mergeChainArrays<PreflightDrop>(dropsRaws, DropSchema, d => d.droppedAt, "recent_drops");
+  const momentumM  = mergeChainArrays<PreflightMomentumEvent>(pfMomentumRaws, MomentumEventSchema, m => m.detectedAt, "pf_momentum");
+  const pipelineM  = mergeChainArrays<PreflightSignalPipelineEntry>(pfPipelineRaws, SignalPipelineEntrySchema, p => p.updatedAt, "pf_pipeline");
+  const qualifiedM = mergeChainArrays<PreflightQualifiedSignal>(pfQualifiedRaws, QualifiedSignalSchema, q => q.qualifiedAt, "pf_qualified");
+  const lifecycleM = mergeChainArrays<LifecycleEntry>(pfLifecycleRaws, LifecycleEntrySchema, l => l.lastOutcomeAt, "pf_lifecycle");
 
   // B4c: pipeline_coverage chain-scoped → MGET + merge pe sub-obiectul `chains`
   // (keysets chain-disjuncte, o intrare per chain), savedAt=max, version din cel mai nou.
@@ -363,15 +344,13 @@ export async function readAllRedis(): Promise<RedisContext | null> {
       if (typeof snapAt === "number" && Number.isFinite(snapAt)) statesNewestAtByChain[evmChains[i]] = snapAt;
     }
   }
-  // recent_drops: readability PER-CHAIN — cheie prezentă ȘI JSON array valid. Absent pe un chain CUNOSCUT =
-  // fără acoperire (nu revendicăm „zero drops" global); corupt → false. `mergeChainArrays` sare `raw===null`
-  // și ar lăsa allReadable=true chiar dacă un chain cunoscut n-a scris cheia — de-aia urmărim per-chain aici.
+  // recent_drops: readability PER-CHAIN. E8c-2 (varu R2): SINCRONIZAT cu validarea PE ELEMENT — folosim
+  // `dropsM.readableByIndex` (aceeași schemă `DropSchema`), NU un `Array.isArray(JSON.parse)` root-only care
+  // rata drop-urile invalide filtrate → `pfDrops` parțial + `dropsConfidence:HIGH` pe date corupte. Absent pe
+  // un chain CUNOSCUT / JSON-invalid / non-array / orice element invalid → false (nu revendicăm „zero drops").
   const recentDropsReadableByChain: Record<string, boolean> = {};
-  for (let i = 0; i < dropsRaws.length; i++) {
-    const raw = dropsRaws[i];
-    if (raw == null) { recentDropsReadableByChain[evmChains[i]] = false; continue; }
-    try { recentDropsReadableByChain[evmChains[i]] = Array.isArray(JSON.parse(raw)); }
-    catch { recentDropsReadableByChain[evmChains[i]] = false; }
+  for (let i = 0; i < evmChains.length; i++) {
+    recentDropsReadableByChain[evmChains[i]] = dropsM.readableByIndex[i] ?? false;
   }
   const recentDropsReadable = knownChains.length > 0 && knownChains.every(c => recentDropsReadableByChain[c] === true);
 

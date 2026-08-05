@@ -13,7 +13,11 @@
  * Import-heavy (zod + schemele) → rulat cu NODE_PATH către zod (nu leaf-pur, dar deterministic).
  * Verificat sub zod 3.25.76 ȘI 4.4.3 (versiunea hoisted în tree via porto).
  */
-import { parseWithSchema, mergeChainRecords } from "./safeParse";
+import { parseWithSchema, mergeChainRecords, mergeChainArrays } from "./safeParse";
+import {
+  PipelineEventSchema, DropSchema, MomentumEventSchema,
+  SignalPipelineEntrySchema, QualifiedSignalSchema, LifecycleEntrySchema,
+} from "./schemas/pipeline";
 import {
   SolanaHealthSchema, SolanaMoversSnapshotSchema, SolanaPoolSchema,
   SolanaLaunchSchema, SolanaPriceSnapshotSchema, SolanaPoolActivitySchema,
@@ -377,6 +381,68 @@ function main(): void {
     (() => { const r = resolveValidatedPairContext([{ raw: CTXRAW, chain: "base" }, { raw: J({ ...PCTX, chain: "bsc" }), chain: "bsc" }]); return r.context === null && r.ambiguousChains.length === 2; })());
   check("83e. * leaf toate corupte -> not found",
     resolveValidatedPairContext([{ raw: "x", chain: "base" }, { raw: "{}", chain: "bsc" }]).context === null);
+
+  // --- 8. E8c-2: scheme pipeline (contract CANONIC) + mergeChainArrays (validare PE ELEMENT) ---
+  const EVENT = { type: "PROMOTE", symbol: "F", chain: "base", pairAddress: "0x", from: "OBSERVED", to: "HOT", ts: 5 };
+  const DROP = { schemaVersion: "v2", workerVersion: "1", chain: "base", pairAddress: "0x", symbol: "F", droppedAt: 3, wasIn: "HOT", dropReason: "flow", timeInPipelineMs: 100, flowAtDrop: { status: "BUYING", buys5m: 1, sells5m: 0 } };
+  const MOM = { schemaVersion: "v2", workerVersion: "1", symbol: "F", chain: "base", pairAddress: "0x", detectedAt: 4, verdict: "VERTICAL_WATCH", moveType: "VERTICAL", momentumLevel: "HIGH", entryRisk: "MEDIUM", reason: "x", m5Pct: 1, h1Pct: 1, h24Pct: 1, reserveUsd: 1000, dexType: "V3", flow: { hasData: true, status: "BUYING", buyVol5m: 1, netVol5m: 1, buys5m: 1 }, riskFlags: [], pipelineState: "HOT", workerObservation: "obs" };
+  const SIG = { schemaVersion: "v2", workerVersion: "1", symbol: "F", chain: "base", pairAddress: "0x", pipelineState: "WATCHING", watchKind: "MOMENTUM", enteredWatchAt: 1, watchAgeMs: 10, confidence: "HIGH", entryRisk: "LOW", flow: { status: "BUYING", buyVol5m: 1, netVol5m: 1, buys5m: 1, sells5m: 0 }, riskFlags: [], opportunitySignals: [], priceVsEntryPct: null, workerObservation: "obs", updatedAt: 7 };
+  const QUAL = { schemaVersion: "v2", workerVersion: "1", symbol: "F", chain: "base", pairAddress: "0x", qualifiedAt: 6, confidence: "HIGH", entryRisk: "LOW", flow: { status: "BUYING", buyVol5m: 1, netVol5m: 1, buys5m: 1 }, riskFlags: [], opportunitySignals: [], workerObservation: "obs" };
+  const LIFE = { chain: "base", pairAddress: "0x", lastOutcome: "QUALIFIED_EMITTED", lastOutcomeAt: 2, reason: "x", fromState: "ARMED" };
+  const ok = (schema: any, x: unknown): boolean => schema.safeParse(x).success;
+
+  // scheme individuale
+  check("84. PipelineEvent valid OK; fără ts -> fail; reason optional OK",
+    ok(PipelineEventSchema, EVENT) && !ok(PipelineEventSchema, { ...EVENT, ts: undefined }) && ok(PipelineEventSchema, { ...EVENT, reason: undefined }));
+  check("85. Drop valid OK; * wasIn enum invalid -> fail; * fără flowAtDrop -> fail",
+    ok(DropSchema, DROP) && !ok(DropSchema, { ...DROP, wasIn: "BOGUS" }) && !ok(DropSchema, { ...DROP, flowAtDrop: undefined }));
+  check("85a. * Drop flowAtDrop.status enum invalid -> fail; priceAtDrop null OK",
+    !ok(DropSchema, { ...DROP, flowAtDrop: { status: "X", buys5m: 1, sells5m: 0 } }) && ok(DropSchema, { ...DROP, priceAtDrop: null }));
+  check("86. Momentum valid OK; * verdict invalid -> fail; * flow fără hasData -> fail",
+    ok(MomentumEventSchema, MOM) && !ok(MomentumEventSchema, { ...MOM, verdict: "NOPE" }) && !ok(MomentumEventSchema, { ...MOM, flow: { status: "BUYING", buyVol5m: 1, netVol5m: 1, buys5m: 1 } }));
+  check("86a. * Momentum dexType invalid -> fail; * momentumLevel invalid -> fail",
+    !ok(MomentumEventSchema, { ...MOM, dexType: "CPMM" }) && !ok(MomentumEventSchema, { ...MOM, momentumLevel: "MEGA" }));
+  check("87. SignalPipeline valid OK; * confidence invalid -> fail; priceVsEntryPct null OK",
+    ok(SignalPipelineEntrySchema, SIG) && !ok(SignalPipelineEntrySchema, { ...SIG, confidence: "SUPER" }) && ok(SignalPipelineEntrySchema, { ...SIG, priceVsEntryPct: null }));
+  check("87a. * SignalPipeline fără priceVsEntryPct (required nullable) -> fail; * flow fără sells5m -> fail",
+    !ok(SignalPipelineEntrySchema, { ...SIG, priceVsEntryPct: undefined }) && !ok(SignalPipelineEntrySchema, { ...SIG, flow: { status: "BUYING", buyVol5m: 1, netVol5m: 1, buys5m: 1 } }));
+  check("88. Qualified valid OK; * entryRisk invalid -> fail; * fără qualifiedAt -> fail",
+    ok(QualifiedSignalSchema, QUAL) && !ok(QualifiedSignalSchema, { ...QUAL, entryRisk: "MEH" }) && !ok(QualifiedSignalSchema, { ...QUAL, qualifiedAt: undefined }));
+  check("89. Lifecycle valid OK; * lastOutcome invalid -> fail; * fromState invalid -> fail",
+    ok(LifecycleEntrySchema, LIFE) && !ok(LifecycleEntrySchema, { ...LIFE, lastOutcome: "WAT" }) && !ok(LifecycleEntrySchema, { ...LIFE, fromState: "OBSERVED" }));
+
+  // mergeChainArrays — validare PE ELEMENT (filter valide, drop invalide)
+  const mca = (raws: (string | null)[]) => mergeChainArrays<any>(raws, DropSchema, (d: any) => d.droppedAt, "test_drops");
+  check("90. mca [valid, valid] pe 2 chain-uri -> merged 2, any true, allReadable true",
+    (() => { const r = mca([J([DROP]), J([{ ...DROP, droppedAt: 9 }])]); return r.merged.length === 2 && r.any === true && r.allReadable === true; })());
+  check("90a. * mca [valid, INVALID] element -> păstrează validul, drop invalidul, allReadable false",
+    (() => { const r = mca([J([DROP, { ...DROP, wasIn: "BOGUS" }])]); return r.merged.length === 1 && r.allReadable === false; })());
+  check("90b. * mca payload non-array -> skip, allReadable false",
+    (() => { const r = mca([J({ x: 1 })]); return r.merged.length === 0 && r.allReadable === false; })());
+  check("90c. * mca JSON invalid -> allReadable false",
+    (() => { const r = mca(["not json"]); return r.allReadable === false; })());
+  check("90d. mca toate null -> any false, merged 0, allReadable true (cheie absentă ≠ corupt)",
+    (() => { const r = mca([null, null]); return r.any === false && r.merged.length === 0 && r.allReadable === true; })());
+  check("90e. mca [] gol -> any true (cheie prezentă), merged 0, allReadable true",
+    (() => { const r = mca([J([])]); return r.any === true && r.merged.length === 0 && r.allReadable === true; })());
+  check("90f. mca sort newest-first pe tsOf (droppedAt DESC)",
+    (() => { const r = mca([J([{ ...DROP, droppedAt: 1 }, { ...DROP, droppedAt: 9 }, { ...DROP, droppedAt: 5 }])]); return r.merged[0].droppedAt === 9 && r.merged[2].droppedAt === 1; })());
+  check("90g. * mca tot arrayul invalid -> merged 0, any true, allReadable false",
+    (() => { const r = mca([J([{ bad: 1 }, { bad: 2 }])]); return r.merged.length === 0 && r.any === true && r.allReadable === false; })());
+
+  // mergeChainArrays.readableByIndex — drops-honesty sincronizat cu validarea pe element (varu R2)
+  check("91. * readableByIndex [valid, INVALID] -> false (drop invalid) DAR validul rămâne în merged",
+    (() => { const r = mca([J([DROP, { ...DROP, wasIn: "BOGUS" }])]); return r.readableByIndex[0] === false && r.merged.length === 1; })());
+  check("91a. readableByIndex [] gol valid -> true", mca([J([])]).readableByIndex[0] === true);
+  check("91b. readableByIndex [valid] all-valid -> true", mca([J([DROP])]).readableByIndex[0] === true);
+  check("91c. * readableByIndex cheie absentă (null) -> false", mca([null]).readableByIndex[0] === false);
+  check("91d. * readableByIndex JSON invalid -> false", mca(["not json"]).readableByIndex[0] === false);
+  check("91e. * readableByIndex root non-array -> false", mca([J({ x: 1 })]).readableByIndex[0] === false);
+  check("91f. * readableByIndex toate elementele invalide -> false", mca([J([{ bad: 1 }])]).readableByIndex[0] === false);
+  check("91g. readableByIndex aliniat pe index [valid, partial, absent] -> [true,false,false]",
+    (() => { const r = mca([J([DROP]), J([DROP, { ...DROP, dropReason: 123 }]), null]); return r.readableByIndex[0] === true && r.readableByIndex[1] === false && r.readableByIndex[2] === false; })());
+  // NB: redis-reader consumă `recentDropsReadableByChain[c] = dropsM.readableByIndex[i]` → un chain cu drop
+  // invalid dă readable=false → recentDropsReadable=false → pfDrops=null (nu listă parțială cu dropsConfidence HIGH).
 
   console.log(`\n${passed} passed, ${failed} failed`);
   if (failed > 0) process.exit(1);
