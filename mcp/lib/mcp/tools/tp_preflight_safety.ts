@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { readAllRedis } from "../redis-reader";
+import { resolveSafetyContext } from "./safetyResolve";
 import { getRedis } from "@/lib/db/redis";
 import { checkTokenRisk } from "@preflight/risk-layer";
 import type { RiskResult } from "@preflight/risk-layer";
@@ -51,11 +52,6 @@ async function getTokenRiskForSafety(
   }
 
   return result;
-}
-
-function deriveChainFromTokenAddress(raw: string): string | null {
-  const match = raw.match(/^([a-z]+)_0x/i);
-  return match ? match[1].toLowerCase() : null;
 }
 
 function cleanTokenAddress(raw: string): string {
@@ -165,27 +161,20 @@ Args:
 
         const inputLooksLikeV4PoolId = BYTES32_RE.test(addr);
 
-        let rawTokenAddress: string | null = token_address ?? null;
-        let resolvedChain = chain ?? null;
-
-        if (!rawTokenAddress && ctx) {
-          rawTokenAddress = ctx.snapshot?.memory?.[addr]?.tokenAddress ?? null;
-        }
-
-        if (!rawTokenAddress && ctx?.states?.[addr]) {
-          rawTokenAddress = ctx.states[addr].tokenAddress ?? null;
-        }
-
-        if (!resolvedChain && rawTokenAddress) resolvedChain = deriveChainFromTokenAddress(rawTokenAddress);
-        if (!resolvedChain && ctx) {
-          resolvedChain = ctx.hot[addr]?.chain ?? ctx.watch[addr]?.chain ?? ctx.armed[addr]?.chain ?? null;
-        }
-        if (!resolvedChain && ctx?.states?.[addr]?.chain) {
-          resolvedChain = ctx.states[addr].chain;
-        }
-        if (resolvedChain) resolvedChain = resolvedChain.toLowerCase().trim();
-
-        const symbol = ctx?.snapshot?.memory?.[addr]?.symbol ?? ctx?.hot[addr]?.symbol ?? ctx?.watch[addr]?.symbol ?? addr.slice(0, 10);
+        // P1-1: hărțile live (states/watch/hot/armed/snapshot.memory) sunt cheiate pe `pairKey(chain, addr)`,
+        // NU pe adresa brută. `resolveSafetyContext` (leaf) refolosește `resolvePairChain` (ca celelalte
+        // tool-uri) ca să găsească cheia pairKey corectă + chain-ul; vechiul `ctx.states[addr]`/`memory[addr]`
+        // rata MEREU → tool-ul răspundea UNKNOWN_RISK / cerea token_address deși perechea exista în worker.
+        const { rawTokenAddress, resolvedChain, symbol, ambiguousChains } = resolveSafetyContext(
+          addr, chain ?? null, token_address ?? null,
+          {
+            states: ctx?.states ?? {},
+            watch:  ctx?.watch ?? {},
+            hot:    ctx?.hot ?? {},
+            armed:  ctx?.armed ?? {},
+            memory: ctx?.snapshot?.memory ?? {},
+          },
+        );
 
         if (!rawTokenAddress || !resolvedChain) {
           const missing: string[] = [];
@@ -194,7 +183,13 @@ Args:
           } else if (!rawTokenAddress) {
             missing.push("token address not found — pass token_address explicitly");
           }
-          if (!resolvedChain)   missing.push("chain could not be determined — pass chain: 'base', 'arbitrum', 'bsc', or 'eth'");
+          if (!resolvedChain) {
+            missing.push(
+              ambiguousChains.length > 1
+                ? `pair address exists on multiple chains (${ambiguousChains.join(", ")}) — pass chain explicitly`
+                : "chain could not be determined — pass chain: 'base', 'arbitrum', 'bsc', or 'eth'",
+            );
+          }
           return mcpResponse({
             text: [
               `PREFLIGHT SAFETY: ${symbol}`,
