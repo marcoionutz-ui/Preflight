@@ -38,6 +38,11 @@ import {
   enqueueEnrich, claimDueEnrich, reclaimExpiredEnrich,
   markEnrichDone, markEnrichFailed, ENRICH_LEASE_MS,
 } from "./enrichQueue";
+// C1/P1-2/P1-3: scrieri de registry ATOMICE (aceiași helperi ca Solana) — insert Lua totul-sau-nimic +
+// update prin compare-and-swap. Producția EVM îi ignora (SET NX+ZADD secvențial / r.set necondiționat).
+import { insertRecordAndIndex, casUpdateJson, type CasResult } from "./registryWrite";
+import { buildEnrichMutation, buildRepriceMutation, isEnrichServable } from "./registryMerge";
+import type { PricingInputsSnapshot } from "./pricingInputs";
 
 // ── Enrichment concurrency guard ──────────────────────────────────────────────
 
@@ -149,10 +154,12 @@ async function enrichPairMetadata(
     baseMeta.decimals, quoteMeta?.decimals ?? null,
   );
 
-  // ── Write enriched pair ───────────────────────────────────────────────────
-  const enriched: IndexedPair = {
-    ...pair,
-    // 6.4: metadata
+  if (!r) return { ok: false, reason: "no_redis" };
+
+  // ── Write enriched pair (P1-2/P1-3: CAS ATOMIC, nu `r.set` necondiționat) ──────────────────────────
+  // Metadata proaspăt fetch-uită (aplicată mereu de enrich, care e single-flight pe pereche) + snapshotul
+  // inputurilor din care s-a calculat pricing-ul (pt. decizia de invalidare din buildEnrichMutation).
+  const metadata: MetadataFields = {
     baseToken,
     quoteToken:    quoteToken   ?? undefined,
     quoteStatus,
@@ -161,38 +168,64 @@ async function enrichPairMetadata(
     baseDecimals:  baseMeta.decimals  ?? undefined,
     quoteDecimals: quoteMeta?.decimals ?? undefined,
     metadataStatus,
-    // 6.5/6.9b/6.11 + C3: price + reserve + pricing sources + quote source/age + pricedAt
-    ...pricing,
+  };
+  const snapshot: PricingInputsSnapshot = {
+    baseToken,
+    quoteToken,
+    quoteStatus,
+    baseDecimals:  baseMeta.decimals,
+    quoteDecimals: quoteMeta?.decimals ?? null,
   };
 
-  if (!r) return { ok: false, reason: "no_redis" };
-
+  // CAS peste starea CURENTĂ: un reprice concurent nu mai e clobber-uit; pricing-ul se aplică doar dacă
+  // enrich schimbă inputurile SAU e strict mai nou (buildEnrichMutation). "absent" = perechea a dispărut
+  // între GET-ul drain-ului și acum → NU o re-crea (fără resuscitare); orice ≠ "ok" → nu marca DONE, retry.
+  // Capturăm mutația CÂȘTIGĂTOARE (recordul efectiv persistat de CAS). `buildEnrichMutation` poate PĂSTRA
+  // pricing-ul curent din Redis când e mai nou → candidatul `pricing` calculat înaintea cursei NU mai reflectă
+  // ce s-a scris. Log-ul ȘI outcome-ul cozii se decid din `persisted`, nu din candidat (blocker varu P1-3).
+  let persisted: IndexedPair | null = null;
+  let casRes: CasResult;
   try {
-    await r.set(jsonKey, JSON.stringify(enriched));
+    casRes = await casUpdateJson<IndexedPair>(
+      r, jsonKey,
+      (current) => {
+        const next = buildEnrichMutation(current, metadata, pricing, snapshot);
+        persisted = next; // ultima evaluare înainte de CAS reușit = exact ce s-a scris
+        return next;
+      },
+    );
   } catch (err) {
-    console.error(`[REGISTRY] enrich SET(${pair.pairAddress}) error:`, (err as Error).message);
-    return { ok: false, reason: "set_failed" };
+    console.error(`[REGISTRY] enrich CAS(${pair.pairAddress}) error:`, (err as Error).message);
+    return { ok: false, reason: "cas_failed" };
   }
+  if (casRes !== "ok") {
+    return { ok: false, reason: `cas:${casRes}` };
+  }
+  // Fail-closed: pe "ok" `persisted` e mereu setat (buildEnrichMutation nu întoarce null); dacă totuși nu-l
+  // putem determina, NU marca DONE → retry. Cast explicit: `persisted` e scris în callback-ul CAS, iar CFA-ul
+  // TS nu poate ști că rulează sincron (l-ar îngusta la `null`).
+  const written = persisted as IndexedPair | null;
+  if (!written) return { ok: false, reason: "cas_no_record" };
 
   console.log(
     `[INDEXED] enriched ${pair.pairAddress} ` +
     `base:${baseMeta.symbol ?? "?"} quote:${quoteMeta?.symbol ?? "?"} ` +
-    `price:$${pricing.priceUsd.toFixed(6)} reserve:$${pricing.reserveUsd.toFixed(0)} ` +
-    `meta:${metadataStatus} price_status:${pricing.priceStatus} ` +
-    `amm:${pricing.ammVersion ?? "?"} price_src:${pricing.pricingSource ?? "?"} reserve_src:${pricing.reserveSource ?? "?"} ` +
-    `quote_price_src:${pricing.quotePriceSource} quote_price_age:${pricing.quotePriceAgeSec ?? "n/a"}s`,
+    `price:$${(written.priceUsd ?? 0).toFixed(6)} reserve:$${(written.reserveUsd ?? 0).toFixed(0)} ` +
+    `meta:${metadataStatus} price_status:${written.priceStatus ?? "?"} ` +
+    `amm:${written.ammVersion ?? "?"} price_src:${written.pricingSource ?? "?"} reserve_src:${written.reserveSource ?? "?"} ` +
+    `quote_price_src:${written.quotePriceSource ?? "?"} quote_price_age:${written.quotePriceAgeSec ?? "n/a"}s`,
   );
 
-  // C2: succes DOAR dacă prețul e servabil (priceStatus OK). Altfel drain-ul reîncearcă / dead-letter,
-  // NU marchează DONE un pair încă neservabil (bugul principal din review).
-  return pricing.priceStatus === "OK"
+  // C2/P1-3: succes DOAR dacă recordul PERSISTAT e servabil (priceStatus OK). Altfel drain-ul reîncearcă /
+  // dead-letter, NU marchează DONE un pair încă neservabil — indiferent ce priceStatus avea candidatul pierdut.
+  return isEnrichServable(written)
     ? { ok: true }
-    : { ok: false, reason: `price_status:${pricing.priceStatus}` };
+    : { ok: false, reason: `price_status:${written.priceStatus ?? "MISSING"}` };
 }
 
 // ── Pricing core (C3) ──────────────────────────────────────────────────────────
 
-interface PricingFields {
+export interface PricingFields {
   priceUsd:          number;
   reserveUsd:        number;
   priceStatus:       PriceStatus;
@@ -204,6 +237,17 @@ interface PricingFields {
   quotePriceCheckedAt?: number;
   pricedAt:          number;
 }
+
+/**
+ * P1-2/P1-3: câmpurile de metadata pe care enrichment le scrie (fetch-uite proaspăt). Extras ca `buildEnrichMutation`
+ * (registryMerge.ts) să le aplice ATOMIC peste starea curentă, în loc de un `r.set` necondiționat pe snapshot stale.
+ */
+export type MetadataFields = Pick<
+  IndexedPair,
+  | "baseToken" | "quoteToken" | "quoteStatus"
+  | "baseSymbol" | "quoteSymbol" | "baseDecimals" | "quoteDecimals"
+  | "metadataStatus"
+>;
 
 /**
  * Calculează prețul + rezerva unei perechi (quote price Chainlink + reserves/price on-chain).
@@ -291,12 +335,24 @@ async function repricePair(
     pair.baseDecimals ?? null,
     pair.quoteDecimals ?? null,
   );
-  const updated: IndexedPair = { ...pair, ...pricing };
+  // P1-3: CAS ATOMIC în loc de `r.set` necondiționat. `snapshot` = inputurile din care s-a calculat pricing-ul
+  // (citite din `pair` înainte de calcul); dacă enrich le-a schimbat între timp, buildRepriceMutation întoarce
+  // null → NU scriem pricing stale peste metadata nouă (chiar dacă `pricedAt` e mai nou). Merge pe CURRENT.
+  const snapshot: PricingInputsSnapshot = {
+    baseToken,
+    quoteToken:    pair.quoteToken    ?? null,
+    quoteStatus:   pair.quoteStatus,
+    baseDecimals:  pair.baseDecimals  ?? null,
+    quoteDecimals: pair.quoteDecimals ?? null,
+  };
   try {
-    await r.set(jsonKey, JSON.stringify(updated));
-    return true;
+    const res = await casUpdateJson<IndexedPair>(
+      r, jsonKey,
+      (current) => buildRepriceMutation(current, snapshot, pricing),
+    );
+    return res === "ok"; // "noop"/"absent"/"corrupt"/"conflict" → nu s-a scris
   } catch (err) {
-    console.error(`[REPRICE] SET(${pair.pairAddress}) error:`, (err as Error).message);
+    console.error(`[REPRICE] CAS(${pair.pairAddress}) error:`, (err as Error).message);
     return false;
   }
 }
@@ -365,7 +421,8 @@ export type WritePairResult = "inserted" | "exists" | "error";
 
 /**
  * Writes a discovered pair to the registry.
- * Uses SET NX → idempotent on block replay.
+ * P1-2: insert ATOMIC (blob + ambele ZSET-uri într-un singur EVAL Lua, via insertRecordAndIndex) →
+ * idempotent on block replay (EXISTS→0), fără stare parțială record-fără-index la crash.
  * Triggers metadata enrichment fire-and-forget on new inserts.
  *
  * Callers must treat "error" as a signal to abort and not advance cursor.
@@ -398,13 +455,16 @@ export async function writePair(
   };
 
   try {
-    // SET NX — only write if not already present
-    const wrote = await r.set(jsonKey, JSON.stringify(pair), "NX");
-    if (!wrote) return "exists";
-
-    // New pair — add to ZSETs
-    await r.zadd(blockSetKey(chain), decoded.blockNumber, pairAddr);
-    await r.zadd(tsSetKey(chain), now, pairAddr);
+    // P1-2: insert ATOMIC (SET NX blob + ambele ZADD într-un singur EVAL Lua) — exact ca Solana
+    // (`pairWriter.ts`). Înainte era SET NX + `zadd` + `zadd` SECVENȚIAL: un crash/eroare între ele lăsa
+    // recordul în registry dar INVIZIBIL în ZSET-uri (root-cause #3/#7/#11) — permanent, fiindcă replay-ul
+    // dă SET NX "exists". Acum: totul-sau-nimic. Idempotent pe replay (EXISTS→0). false = exista deja.
+    const inserted = await insertRecordAndIndex(r, {
+      jsonKey, blob: JSON.stringify(pair), member: pairAddr,
+      zsetA: blockSetKey(chain), scoreA: decoded.blockNumber,
+      zsetB: tsSetKey(chain),    scoreB: now,
+    });
+    if (!inserted) return "exists";
 
     // C2: TOATE perechile noi intră DOAR prin coada persistentă de enrichment — un SINGUR execution
     // path (fără enrichment inline), o singură limită de concurență (drain), nimic pierdut la crash.
