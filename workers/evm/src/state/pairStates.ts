@@ -7,9 +7,10 @@
 
 import {
   memory, activeWatch, hotCandidates, armedEntries,
-  v3PoolMap, wsFlow, poolLiquidity,
+  v3PoolMap, v4PoolMap, wsFlow, poolLiquidity,
 } from "./stores";
 import { getWsFlow, getLpSignal } from "../risk/flow";
+import { flowCoverageForPool, isV4PoolAddress } from "../ws/v4Hooks";
 import { getLiquidityContext } from "../risk/liquidity";
 import { tokenPools, tokenPoolKey } from "../infra/poolTracker";
 import { getCachedRisksBulk } from "../risk/riskChecker";
@@ -51,21 +52,19 @@ export async function buildPairStates(): Promise<Record<string, PairStateSnapsho
   // Same chain guard as the main loop below — a mem without a valid chain
   // would otherwise get its risk looked up under a fabricated "base" key
   // even though it's excluded from pair_states entirely.
+  // varu (chain identity): `chain` din CHEIA PairMap e AUTORITATEA — nu `mem.chain`, care poate diverge de cheie.
+  // Se aplică peste tot, inclusiv la risk lookup: cheia de risc trebuie derivată din același `chain` ca payload-ul.
   const riskItems = [...memory.entries()]
     .filter(([{ chain }, mem]) => !!mem.tokenAddress && isEvmPreflightChain(chain))
-    // Chain-ul vine din cheia PairMap (source of truth), nu din `mem.chain`.
-    // E `string` canonic; getCachedRisksBulk cere `chain: string`, deci fără
-    // non-null assertion pe chain. `!` rămâne doar pe tokenAddress (filtrul
-    // boolean nu propagă narrowing-ul type-predicate către .map()).
     .map(([{ chain }, mem]) => ({ tokenAddress: mem.tokenAddress!, chain }));
   const riskMap = await getCachedRisksBulk(riskItems);
 
   for (const [{ chain, address: addr }, mem] of memory.entries()) {
-    // Cheia PairMap decodată e AUTORITATEA pt. chain (nu `mem.chain`) — după
-    // migrare cheia = identitatea perechii. Post-B3e sunt egale, dar folosim
-    // consecvent cheia ca să nu depindem de realinierea valorii.
+    // varu (chain identity): `chain` din CHEIA PairMap e AUTORITATEA peste tot —
+    // risk lookup, flow, LP, maps, state key ȘI payload. `mem.chain` poate diverge
+    // de cheie (bug vechi reintrodus în NF1); nu mai e folosit nicăieri aici.
     if (!isEvmPreflightChain(chain)) {
-      console.warn(`[PAIR STATE SKIP] invalid/missing chain for ${addr}: ${chain || "missing"}`);
+      console.warn(`[PAIR STATE SKIP] invalid/missing chain for ${addr}: ${chain ?? "missing"}`);
       continue;
     }
 
@@ -99,13 +98,23 @@ export async function buildPairStates(): Promise<Record<string, PairStateSnapsho
         ? Number(((mem.currentPrice - priceAtFirstSeen) / priceAtFirstSeen * 100).toFixed(2))
         : null;
 
+    // NF1: dexType derivat din v4PoolMap (autoritativ, dexType din indexer/normalize) SAU forma poolId-ului
+    // (bytes32, orice chain) — nu doar din `addr.length === 66`. hooks tri-stare + coverage din SourcePool-ul V4.
+    const v4pool       = v4PoolMap.get(chain, addr);
+    const dexType: "V4" | "V3" | "V2" =
+      (v4pool || isV4PoolAddress(addr)) ? "V4" : v3PoolMap.has(chain, addr) ? "V3" : "V2";
+    const hooks        = v4pool?.hooks; // string | null | undefined (tri-stare)
+    const flowCoverage = flowCoverageForPool(dexType, hooks);
+
     states[pairKey(chain, addr)] = {
       symbol:       mem.symbol,
-      // chain din cheia decodată (source of truth), narrowed la PreflightEvmChain.
+      // `chain` e din cheia PairMap și a fost deja îngustat de isEvmPreflightChain()
+      // mai sus (orice n-a validat a lovit `continue`). E autoritatea — nu mem.chain.
       chain,
       pairAddress:  addr,
       tokenAddress: mem.tokenAddress ?? "",
-      dexType:      addr.length === 66 ? "V4" : v3PoolMap.has(chain, addr) ? "V3" : "V2",
+      dexType,
+      hooks, // NF1: string (custom) | null (vanilla) | undefined (indisponibil)
 	  
 	  discovery: {
         primaryDiscoverySource: mem.primaryDiscoverySource ?? null,
@@ -160,6 +169,7 @@ export async function buildPairStates(): Promise<Record<string, PairStateSnapsho
         buyVol5mUsd:  (flow as any).buyVol5mUsd  ?? null,
         sellVol5mUsd: (flow as any).sellVol5mUsd ?? null,
         netVol5mUsd:  (flow as any).netVol5mUsd  ?? null,
+        flowCoverage, // NF1: FULL / EVENT_ONLY (V4 hook return-delta) / UNKNOWN (V4 hooks indisponibil)
       },
 
       lp: {
@@ -179,15 +189,15 @@ export async function buildPairStates(): Promise<Record<string, PairStateSnapsho
       nativeSymbol:  liq.nativeSymbol,
       liqStatus:     liq.status,
       poolCountSameToken: (() => {
-        const cp = chain;
-        return tokenPools.get(tokenPoolKey(cp, mem.tokenAddress))?.size ?? 1;
+        return tokenPools.get(tokenPoolKey(chain, mem.tokenAddress))?.size ?? 1;
       })(),
 
       hourUtc:   new Date(now).getUTCHours(),
       updatedAt: now,
       risk: (() => {
         if (!mem.tokenAddress) return null;
-        const key = `${chain}:${mem.tokenAddress.toLowerCase()}`;
+        // Cheia de risc derivă din același `chain` (cheia PairMap) ca riskItems de mai sus.
+        const key = `${chain.toLowerCase()}:${mem.tokenAddress.toLowerCase()}`;
         return slimRisk(riskMap.get(key));
       })(),
     };

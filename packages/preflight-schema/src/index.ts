@@ -72,8 +72,31 @@ export type PipelineState =
 export type FlowStatus      = "NO_DATA" | "WEAK" | "BUYING" | "STRONG" | "ONE_SIDED";
 export type LiquidityStatus = "THIN" | "OK" | "CONFIRMED" | "DEEP";
 export type EntryRisk       = "LOW" | "MEDIUM" | "HIGH" | "EXTREME";
+// NF1: onestitatea flow-ului. "EVENT_ONLY" = pool V4 cu hook return-delta → Swap event-ul poate să NU reflecte
+// input/output-ul final (buy/sell + volum posibil incomplete). "UNKNOWN" = V4 dar info hook indisponibilă (nu
+// pretindem FULL fals). "FULL" = V2/V3, vanilla V4, sau hook fără return-delta.
+export type FlowCoverage    = "FULL" | "EVENT_ONLY" | "UNKNOWN";
 export type MomentumLevel   = "NONE" | "LOW" | "MEDIUM" | "HIGH" | "EXTREME";
 export type MoveType        = "ORGANIC" | "VERTICAL" | "LATE" | "SECOND_WAVE" | "NEW_POOL" | "UNKNOWN";
+
+/**
+ * NF1 (varu): câmpul `hooks` din evidence-ul brief-ului — model tri-stare FĂRĂ colaps.
+ * V4 + custom (string)   → { hooks: adresa }
+ * V4 + vanilla (null)    → { hooks: null }
+ * V4 fără info (undefined) SAU non-V4 → {} (PROPRIETATE ABSENTĂ, conditional spread).
+ * Consumatorul spread-uiește rezultatul: `{ ...hooksEvidenceField(dexType, hooks) }`.
+ * Un hook indisponibil NU apare în JSON (nu ca `null`, care ar minți „vanilla confirmat"),
+ * iar non-V4 nu emite deloc câmpul. Sursă unică de adevăr partajată worker↔MCP↔teste.
+ */
+export function hooksEvidenceField(
+  dexType: DexType | undefined,
+  hooks: string | null | undefined,
+): { hooks?: string | null } {
+  if (dexType !== "V4") return {};
+  if (typeof hooks === "string") return { hooks };
+  if (hooks === null) return { hooks: null };
+  return {};
+}
 
 // Sursă de adevăr pentru workers/evm/src/risk/momentum.ts — odată scris în
 // Redis și citit de MCP, valorile astea sunt parte din wire contract, nu
@@ -121,6 +144,9 @@ export interface PreflightPairState {
   // Only ever "V4"|"V3"|"V2" from buildPairStates()'s own ternary — DexType
   // (which also allows "UNKNOWN") is a safe superset, not a guess.
   dexType:       DexType;
+  // NF1: V4 hooks (tri-stare) — `string` custom hook confirmat / `null` vanilla (zero-address) / absent
+  // (undefined) = info indisponibilă. Doar pt. V4; V2/V3 îl lasă absent. Coverage-ul din `flow.flowCoverage`.
+  hooks?:        string | null;
 
   currentPrice:  number;
   priceChange: {
@@ -161,6 +187,8 @@ export interface PreflightPairState {
     buyVol5mUsd:  number | null;
     sellVol5mUsd: number | null;
     netVol5mUsd:  number | null;
+    // NF1: opțional pt. compat cu snapshot-uri vechi; buildPairStates îl scrie mereu ("FULL"/"EVENT_ONLY").
+    flowCoverage?: FlowCoverage;
   };
 
   lp: {

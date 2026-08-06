@@ -8,6 +8,7 @@ import type { ChainConfig } from "../config/chains";
 import { BLOCKED_SYMBOLS } from "../config/constants";
 import { V3_DEXES } from "../config/constants";
 import type { DiscoverySource } from "@preflight/schema";
+import { isV4PoolAddress } from "../ws/v4Hooks";
 
 export type DexType = "V2" | "V3" | "V4" | "UNKNOWN";
 
@@ -22,6 +23,9 @@ export interface SourcePool {
   symbol:       string;
   dexType:      DexType;
   dexId:        string;
+  // NF1: V4 hooks (tri-stare) — `string` custom hook / `null` vanilla (zero-address) / `undefined` indisponibil
+  // (non-V4 sau sursă fără info hook, ex. Gecko). Vezi normalizeHooks + flowCoverageForPool (ws/v4Hooks.ts).
+  hooks?:       string | null;
   // Discovery provenance
   discoverySource?: DiscoverySource;
   // 6.11: quote price transparency (prezent doar pentru INDEXER source)
@@ -108,8 +112,9 @@ export function normalizePool(raw: any, chain: ChainConfig): SourcePool | null {
   const tokenAddress = cleanEvmAddress(tokenId) ?? tokenId.toLowerCase();
   const dexId        = raw.relationships?.dex?.data?.id ?? "";
 
-  // V4: Base chain, non-EVM address (length 66 = 0x + 64 hex)
-  const isV4 = chain.id === "base" && cleanEvmAddress(addr) === null;
+  // V4: poolId = bytes32 (0x + 64 hex) — pe ORICE chain, nu doar Base (fix NF1 varu: înainte `chain.id==="base"`
+  // rata V4 pe arbitrum/ethereum → clasificat V2). Gecko nu furnizează `hooks` → rămâne `undefined` (indisponibil).
+  const isV4 = isV4PoolAddress(addr);
   // V3: standard EVM address + known V3 dex id
   const isV3 = !isV4 && cleanEvmAddress(addr) !== null && V3_DEXES.has(dexId);
   const dexType: DexType = isV4 ? "V4" : isV3 ? "V3" : "V2";

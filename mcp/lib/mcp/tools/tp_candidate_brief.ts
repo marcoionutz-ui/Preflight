@@ -5,6 +5,7 @@ import { readAllRedis, getPipelineState, resolvePairChain, findLastEventForPair,
 import type { PairState } from "../types";
 import { mcpErr, mcpResponse, ERR } from "../errors";
 import type { SourceAgreement } from "@preflight/schema";
+import { hooksEvidenceField } from "@preflight/schema";
 
 function getLpCoverage(dexType: string | null | undefined, hasData: boolean): string {
   const d = (dexType ?? "").toUpperCase();
@@ -157,6 +158,14 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
         if (pairState) {
           lines.push(`  • Reserve: $${Math.round((pairState.reserveUsd ?? 0) / 1000)}K (${pairState.liqStatus ?? "?"})`);
           lines.push(`  • DEX type: ${pairState.dexType ?? "?"} | LP coverage: ${getLpCoverage(pairState.dexType, pairState.lp?.hasData ?? false)}`);
+          // NF1: pt. V4, raportează starea hook-ului (tri-stare) + coverage-ul de flow.
+          if (pairState.dexType === "V4") {
+            const hk = pairState.hooks;
+            const hookDesc = hk === null ? "vanilla (no hook)"
+              : typeof hk === "string" ? `custom hook ${hk.slice(0, 10)}…`
+              : "unknown (hook info unavailable)";
+            lines.push(`  • V4 hooks: ${hookDesc} | flow coverage: ${pairState.flow?.flowCoverage ?? "?"}`);
+          }
           if ((pairState.poolCountSameToken ?? 1) > 1) {
             lines.push(`  ⚠️ ${pairState.poolCountSameToken} pools for same token — fragmentation/clone risk`);
           }
@@ -180,9 +189,19 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
           lines.push(`  • Pressure: ${pairState.flow.pressure}`);
           lines.push(`  • Buy: ${formatVol(pairState.flow.buyVol5mUsd, pairState.flow.buyVol5m)} (${pairState.flow.buys5m} swaps) | Sell: ${formatVol(pairState.flow.sellVol5mUsd, pairState.flow.sellVol5m)} (${pairState.flow.sells5m} swaps)`);
           lines.push(`  • Net: ${formatVol(pairState.flow.netVol5mUsd, pairState.flow.netVol5m)}`);
+          // NF1: pt. pool-uri V4 cu hook return-delta, buy/sell + volumul vin doar din Swap events, care pot
+          // să NU reflecte input/output-ul final → marchează explicit că flow-ul e event-only (posibil incomplet).
+          if (pairState.flow.flowCoverage === "EVENT_ONLY") {
+            lines.push("  • ⚠️ Coverage: EVENT_ONLY (V4 return-delta hook — buy/sell & volume may not reflect final swap)");
+          } else if (pairState.flow.flowCoverage === "UNKNOWN") {
+            lines.push("  • ⚠️ Coverage: UNKNOWN (V4 hook info unavailable — flow may be incomplete)");
+          }
         }
 
         const cautions: string[] = [];
+        // NF1: caveat vizibil chiar și fără swap-uri observate încă (coverage e proprietate a pool-ului).
+        if (pairState?.flow?.flowCoverage === "EVENT_ONLY") cautions.push("V4 return-delta hook — flow is event-only (buy/sell may be incomplete)");
+        else if (pairState?.flow?.flowCoverage === "UNKNOWN" && pairState?.dexType === "V4") cautions.push("V4 hook info unavailable — flow coverage unknown");
         if (exposePerformance && data && data.consecutiveLosses >= 2) cautions.push(`${data.consecutiveLosses} consecutive losses`);
         if (data && (pairState?.poolCountSameToken ?? 1) >= 3) cautions.push(`clone/fragmentation risk (${pairState?.poolCountSameToken} pools)`);
         if (pairState?.lp?.status === "REMOVED") cautions.push("LP currently being removed");
@@ -270,6 +289,11 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
 const hasDirectFlow = !!pairState?.flow?.hasData;
 const confidence    = combineConfidence(dataAgeSec, coveragePct, hasDirectFlow);
 
+// NF1 (varu blocker #2): `hooks` în evidence respectă modelul schemei — custom → adresă,
+// vanilla (zero-address) → null, necunoscut/non-V4 → PROPRIETATE ABSENTĂ (conditional spread).
+// Decizia trăiește în @preflight/schema (hooksEvidenceField), partajată worker↔MCP↔teste.
+const hooksEvidence = hooksEvidenceField(pairState?.dexType, pairState?.hooks);
+
 return mcpResponse({
   text:         lines.join("\n"),
   freshnessSec: dataAgeSec,
@@ -284,6 +308,8 @@ return mcpResponse({
     symbol,
     pairAddress:   addr,
     hasFlowData:   !!pairState?.flow?.hasData,
+    flowCoverage:  pairState?.flow?.flowCoverage ?? null,
+    ...hooksEvidence,
     lpCoverage:    pairState ? getLpCoverage(pairState.dexType, pairState.lp?.hasData ?? false) : "NO_PAIR_STATE",
   },
 });

@@ -8,6 +8,7 @@
 import type { ChainConfig } from "../config/chains";
 import type { DexType, SourcePool, PoolFetchOutcome } from "./normalize";
 import { cleanEvmAddress, isBlockedSymbol, classifyPoolFetchHttpStatus } from "./normalize";
+import { isV4PoolAddress } from "../ws/v4Hooks";
 import { V3_DEXES } from "../config/constants";
 
 const DS_API    = "https://api.dexscreener.com";
@@ -33,7 +34,9 @@ async function dsGetWithStatus(url: string): Promise<{ status: number; data: any
   }
 }
 
-function normalizeDsPair(raw: any, chain: ChainConfig): SourcePool | null {
+// Exportat pentru testele NF1 (v4Hooks.test.ts): exercită normalizatorul REAL DexScreener
+// per chain, dovedind detecția V4 chain-agnostică (nu doar Base) + tri-starea hooks.
+export function normalizeDsPair(raw: any, chain: ChainConfig): SourcePool | null {
   const pairAddressRaw = String(raw?.pairAddress ?? "").toLowerCase();
   if (!pairAddressRaw) return null;
 
@@ -49,7 +52,8 @@ function normalizeDsPair(raw: any, chain: ChainConfig): SourcePool | null {
 
   const dexId = String(raw.dexId ?? "unknown");
 
-  const isV4 = chain.id === "base" && /^0x[a-f0-9]{64}$/.test(pairAddressRaw);
+  // V4: poolId = bytes32 pe ORICE chain (fix NF1 varu: înainte `chain.id==="base"` rata V4 pe restul chain-urilor).
+  const isV4 = isV4PoolAddress(pairAddressRaw);
   const isV3 = !isV4 && cleanEvmAddress(pairAddressRaw) !== null && V3_DEXES.has(dexId);
   const dexType: DexType = isV4 ? "V4" : isV3 ? "V3" : "V2";
 

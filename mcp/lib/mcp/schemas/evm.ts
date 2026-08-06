@@ -53,6 +53,9 @@ const PairStateEntrySchema = z.object({
   pairAddress:       z.string(),
   tokenAddress:      z.string(),
   dexType:           z.enum(DEX_TYPES),
+  // NF1: V4 hooks tri-stare — adresă 0x+40hex (custom) / null (vanilla) / absent (indisponibil). Regex STRICT
+  // (nu orice string): workerul scrie doar normalizeHooks (adresă validă lowercase) sau null.
+  hooks:             z.string().regex(/^0x[0-9a-fA-F]{40}$/).nullable().optional(),
   currentPrice:      z.number(),
   priceChange:       z.object({ m5: z.number(), h1: z.number(), h24: z.number() }).passthrough(),
   phase:             z.enum(PHASES),
@@ -75,6 +78,8 @@ const PairStateEntrySchema = z.object({
     buyVol5mUsd:  z.number().nullable(),
     sellVol5mUsd: z.number().nullable(),
     netVol5mUsd:  z.number().nullable(),
+    // NF1: FULL / EVENT_ONLY (V4 hook return-delta) / UNKNOWN (V4 hooks indisponibil). Opțional (snapshot-uri vechi nu-l au).
+    flowCoverage: z.enum(["FULL", "EVENT_ONLY", "UNKNOWN"]).optional(),
   }).passthrough(),
   lp: z.object({
     status:           z.enum(LP_STATUSES),

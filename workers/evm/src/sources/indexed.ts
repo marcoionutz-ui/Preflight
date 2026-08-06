@@ -20,6 +20,7 @@ import { getRedis } from "../infra/redis";
 import { CHAINS } from "../config/chains";
 import type { ChainConfig } from "../config/chains";
 import type { SourcePool, DexType, QuotePriceSource } from "./normalize";
+import { normalizeHooks } from "../ws/v4Hooks";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -46,6 +47,7 @@ interface IndexedPair {
   token1:       string;
   fee?:         number;
   stable?:      boolean;
+  hooks?:       string;   // NF1: V4 hooks contract (indexer scrie address(0) pt. vanilla; absent pt. non-V4)
   blockNumber:  number;
   txHash:       string;
   discoveredAt: number;
@@ -125,6 +127,7 @@ function toSourcePool(pair: IndexedPair, chainCfg: ChainConfig): SourcePool {
     symbol:            pair.baseSymbol ?? "UNKNOWN",     // 6.4: enriched symbol, fallback to UNKNOWN
     dexType:           dexTypeFromId(pair.dexId),
     dexId:             pair.dexId,
+    hooks:             normalizeHooks(pair.hooks), // NF1: tri-stare (custom addr / null=vanilla / undefined=absent)
     discoverySource:   "INDEXER",
     priceUsd:          pair.priceUsd   ?? 0, // 6.5: enriched price, fallback 0
     priceChange:       { m5: 0, h1: 0, h24: 0 },
