@@ -23,7 +23,7 @@ export function getSupabase(): SupabaseClient | null {
   if (!creds) {
     console.warn(
       "[SUPABASE] env lipsă (NEXT_PUBLIC_SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY) — client DEZACTIVAT; "
-      + "workerul rulează degradat (fără persistență shadow_trades / fomo_blocks)",
+      + "workerul rulează degradat (fără persistență fomo_blocks)",
     );
     _client = null;
     return _client;

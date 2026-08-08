@@ -13,7 +13,7 @@
 import { z } from "zod";
 
 // Enum-uri canonice (branching) — oglindesc uniunile din @preflight/schema.
-const PHASES          = ["NEW", "TRENDING", "PUMPING", "DUMPING", "RECOVERING", "SECOND_WAVE", "ZOMBIE", "DEAD"] as const;
+const PHASES          = ["NEW", "TRENDING", "PUMPING", "DUMPING", "RECOVERING"] as const;
 const PIPELINE_STATES = ["NONE", "OBSERVED", "WATCHING", "HOT", "ARMED", "QUALIFIED", "DROPPED", "REJECTED"] as const;
 const DEX_TYPES       = ["V2", "V3", "V4", "UNKNOWN"] as const;
 const LP_STATUSES     = ["ADDED", "REMOVED", "STABLE"] as const;
@@ -63,12 +63,6 @@ const PairStateEntrySchema = z.object({
   phase:             z.enum(PHASES),
   pipelineState:     z.enum(PIPELINE_STATES),
   seenCount:         z.number(),
-  totalEntries:      z.number(),
-  wins24h:           z.number(),
-  losses24h:         z.number(),
-  badExits24h:       z.number(),
-  consecutiveLosses: z.number(),
-  lastEntryTime:     z.number(),
   flow: z.object({
     pressure:     z.enum(["BUYING", "SELLING", "NEUTRAL"]),
     buys5m:       z.number(),
@@ -130,7 +124,7 @@ const WatchEntrySchema = z.object({
   entryPrice:      z.number().nullable(),
   reason:          z.string().nullable(),
   symbol:          z.string().nullable(),
-  phase:           z.string().nullable(),
+  phase:           z.enum(PHASES).nullable(),
   priceVsEntryPct: z.number().nullable(),
   flowAgeMs:       z.number().nullable(),
   largestBuyEth:   z.number(),
@@ -147,7 +141,7 @@ const HotEntrySchema = z.object({
   ageMs:           z.number(),
   source:          z.string().nullable(),
   symbol:          z.string().nullable(),
-  phase:           z.string().nullable(),
+  phase:           z.enum(PHASES).nullable(),
   flowAgeMs:       z.number().nullable(),
   largestBuyEth:   z.number(),
   avgBuyEth:       z.number(),
@@ -171,7 +165,7 @@ const ArmedEntrySchema = z.object({
   score:        z.number(),
   flowPressure: z.string(),
   symbol:       z.string().nullable(),
-  phase:        z.string().nullable(),
+  phase:        z.enum(PHASES).nullable(),
   chain:        z.string().nullable(),
 }).passthrough();
 export const ArmedRecordSchema = z.object({}).catchall(ArmedEntrySchema);
@@ -189,15 +183,6 @@ const MemoryEntrySchema = z.object({
   highPrice:         z.number(),
   lowPrice:          z.number(),
   currentPrice:      z.number(),
-  totalEntries:      z.number(),
-  lastEntryTime:     z.number(),
-  lastEntryPrice:    z.number(),
-  wins24h:           z.number(),
-  losses24h:         z.number(),
-  badExits24h:       z.number(),
-  consecutiveLosses: z.number(),
-  lastExitReason:    z.string().nullable(),
-  lastExitTime:      z.number().nullable(),
   phase:             z.enum(PHASES),
   // Opționale reale (absente legitim, JSON.stringify le omite) — DAR validate când prezente.
   chain:                  z.string().optional(),

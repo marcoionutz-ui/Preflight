@@ -144,19 +144,12 @@ export async function buildPairStates(): Promise<Record<string, PairStateSnapsho
       monitoringTier:      mem.monitoringTier ?? null,
       patternTags:         mem.patternTags    ?? null,
       seenCount:     mem.seenCount,
-      totalEntries:  mem.totalEntries,
 
       firstSeenAt:        mem.firstSeen  ?? null,
       lastSeenAt:         mem.lastSeen   ?? null,
       pipelineEnteredAt,
       currentStateAgeSec: pipelineEnteredAt ? Math.round((now - pipelineEnteredAt) / 1000) : null,
       priceVsFirstSeenPct,
-
-      wins24h:           mem.wins24h,
-      losses24h:         mem.losses24h,
-      badExits24h:       mem.badExits24h,
-      consecutiveLosses: mem.consecutiveLosses,
-      lastEntryTime:     mem.lastEntryTime,
 
       flow: {
         pressure:     flow.pressure,

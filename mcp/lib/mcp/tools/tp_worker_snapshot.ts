@@ -13,12 +13,12 @@ export function registerWorkerSnapshot(server: McpServer, exposePerformance: boo
       description: `Query the worker's full pair memory with filters and pagination.
 
 Args:
-  phase (optional): TRENDING, SECOND_WAVE, RECOVERING, PUMPING, ZOMBIE, DEAD
+  phase (optional): NEW, TRENDING, PUMPING, DUMPING, RECOVERING
   flow_pressure (optional): BUYING, SELLING, NEUTRAL
   chain (optional): base, arbitrum, bsc, eth
   min_seen_count (default 0), limit (default 20, max 100), offset (default 0)`,
       inputSchema: {
-        phase:          z.string().optional(),
+        phase:          z.enum(["NEW", "TRENDING", "PUMPING", "DUMPING", "RECOVERING"]).optional(),
         flow_pressure:  z.string().optional(),
         chain:          z.enum(["base", "arbitrum", "bsc", "eth"]).optional(),
         min_seen_count: z.number().int().min(0).default(0),
@@ -87,13 +87,6 @@ Args:
               reserveEstimated: reserveEstimatedFlag(states[addr]?.reserveSource), // tri-stare (null=necunoscut)
               liqStatus:  states[addr]?.liqStatus  ?? null,
               flow:       states[addr]?.flow ?? null,
-              history: exposePerformance ? {
-                totalEntries:      data.totalEntries,
-                wins24h:           data.wins24h,
-                losses24h:         data.losses24h,
-                badExits24h:       data.badExits24h,
-                consecutiveLosses: data.consecutiveLosses,
-              } : undefined,
               updatedAt: states[addr]?.updatedAt ?? null,
             }; }),
             snapshotAgeSec: snapshotFreshnessSec,

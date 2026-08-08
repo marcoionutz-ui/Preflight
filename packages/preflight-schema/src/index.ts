@@ -49,10 +49,7 @@ export type Phase =
   | "TRENDING"
   | "PUMPING"
   | "DUMPING"
-  | "RECOVERING"
-  | "SECOND_WAVE"
-  | "ZOMBIE"
-  | "DEAD";
+  | "RECOVERING";
 
 // ── Pipeline states ───────────────────────────────────────────────────────────
 
@@ -202,13 +199,6 @@ export interface PreflightPairState {
   // concept) is a safe superset.
   pipelineState:     PipelineState;
   seenCount:         number;
-  totalEntries:      number;
-
-  wins24h:           number;
-  losses24h:         number;
-  badExits24h:       number;
-  consecutiveLosses: number;
-  lastEntryTime:     number;
 
   flow: {
     // Verified against workers/evm/src/lib/engines/flowTypes.ts's
@@ -293,7 +283,7 @@ export interface PreflightPairState {
 // interface in workers/evm/src/lib/engines/pairMemory.ts (PairMemoryEntry)
 // and workers/evm/src/state/memory.ts (saveMemoryToRedis()). This is a
 // DIFFERENT, smaller contract than PreflightPairState above — worker_snapshot
-// is accounting/history memory (win/loss counters, price extremes, discovery
+// is accounting/history memory (price extremes, discovery
 // provenance), not live pair state. It carries no flow/lp/reserve/risk/
 // pipelineState fields; a pair can legitimately exist only in worker_snapshot
 // and not in pair_states (or vice versa). mcp's MemoryEntry used to
@@ -310,15 +300,6 @@ export interface PreflightMemoryEntry {
   highPrice:         number;
   lowPrice:          number;
   currentPrice:      number;
-  totalEntries:      number;
-  lastEntryTime:     number;
-  lastEntryPrice:    number;
-  wins24h:           number;
-  losses24h:         number;
-  badExits24h:       number;
-  consecutiveLosses: number;
-  lastExitReason:    string | null;
-  lastExitTime:      number | null;
   phase:             Phase;
   // All of the below are optional on the producer's PairMemoryEntry too —
   // legitimately absent for pairs that never had the corresponding event

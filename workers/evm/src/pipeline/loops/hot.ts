@@ -1,6 +1,6 @@
 /**
  * pipeline/loops/hot.ts
- * HOT candidates loop — decide intrarea finală în shadow trade.
+ * HOT candidates loop — decide emiterea semnalului qualified final.
  */
 
 import { hotCandidates, v4PoolMap, v3PoolMap, routingOnlyPools, memory, qualifiedSignalsBuffer } from "../../state/stores";
@@ -64,9 +64,7 @@ export async function hotCandidatesLoop(): Promise<void> {
         continue;
       }
 
-      // Do not gate HOT candidates on shadow_trades.
-      // Preflight is a data layer; shadow trades are telemetry only.
-      // saveShadowTrade() still dedupes persistence after the signal is emitted.
+      // Preflight e un data layer — emitem semnalul qualified (fără gating pe execuție simulată).
 
       // D5: dacă intrarea din hartă e routing-only (păstrată stale pt. rutare WS), NU o folosi la
       // scoring (price/reserve/momentum înghețate) → cere un snapshot proaspăt. Altfel cache-ul e din

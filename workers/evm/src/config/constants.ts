@@ -4,18 +4,15 @@
  * Zero imports din alte module interne.
  */
 
-export const WORKER_VERSION = "v8.0";
+export const WORKER_VERSION = "v9.0"; // U6/NF-E33: bump — win-tracking + faze legacy (DEAD/ZOMBIE/SECOND_WAVE) scoase; snapshot-urile v8.0 (cu faze legacy) sunt ignorate la restore (memory.ts gate)
 
 export const GECKO_BASE = "https://api.geckoterminal.com/api/v2";
 
 // ── Scan ──────────────────────────────────────────────────────────────────────
 export const SCAN_INTERVAL       = 30_000;
 
-// ── Shadow trades ─────────────────────────────────────────────────────────────
-export const MAX_SHADOW_PER_SCAN = 5;
-export const COOLDOWN_MS         = 2 * 60 * 60_000;
-export const SECOND_WAVE_COOLDOWN_MS = 60 * 60_000;
-export const MAX_HOLD_MS         = 4 * 60 * 60_000;
+// ── Qualified signals ─────────────────────────────────────────────────────────
+export const MAX_QUALIFIED_PER_SCAN = 5;
 
 // ── Watch lifecycle ───────────────────────────────────────────────────────────
 export const WATCH_MAX_AGE_MS         = 20 * 60_000;
@@ -57,10 +54,6 @@ export const FOLLOW_MAX_MISSES    = 5;
 // ── Scores ────────────────────────────────────────────────────────────────────
 export const WATCH_MIN_SCORE      = 70;
 export const FOMO_WATCH_MIN_SCORE = 45;
-
-// ── LP ────────────────────────────────────────────────────────────────────────
-export const MIN_LP_REMOVE_ETH   = 0.05;
-export const INSTANT_LP_EXIT_PCT = 0.30;
 
 // ── Flow ──────────────────────────────────────────────────────────────────────
 export const MIN_FLOW_ETH        = 0.001;

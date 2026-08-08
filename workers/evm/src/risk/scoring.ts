@@ -70,7 +70,6 @@ export function quickEdgeScore(
   else if (liq.status === "MISSING")   score -= 30;
 
   // Phase memory
-  if (mem.phase === "SECOND_WAVE") score += 20;
   if (mem.phase === "RECOVERING")  score -= 30;
   if (mem.seenCount > 100) score -= 15;
   
@@ -108,12 +107,9 @@ export function computeEvidenceScore(
     if (lp.status === "REMOVED") score -= 5;
   }
 
-  if (mem.phase === "SECOND_WAVE") score += 2;
   if (mem.phase === "RECOVERING" && mem.seenCount <= 25) score += 1;
   if (mem.phase === "RECOVERING" && mem.seenCount > 50)  score -= 1;
   if (mem.phase === "PUMPING")     score -= 1;
-  if (mem.phase === "DEAD")        score -= 5;
-  if (mem.phase === "ZOMBIE")      score -= 3;
 
   return score;
 }

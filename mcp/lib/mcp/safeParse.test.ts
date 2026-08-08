@@ -152,8 +152,7 @@ function main(): void {
   const VALID_STATE = JSON.stringify({
     symbol: "AAA", chain: "base", pairAddress: "0xp", tokenAddress: "0xt", dexType: "V3",
     currentPrice: 1.5, priceChange: { m5: 0, h1: 0, h24: 0 },
-    phase: "NEW", pipelineState: "NONE", seenCount: 1, totalEntries: 0,
-    wins24h: 0, losses24h: 0, badExits24h: 0, consecutiveLosses: 0, lastEntryTime: 0,
+    phase: "NEW", pipelineState: "NONE", seenCount: 1,
     flow: { pressure: "BUYING", buys5m: 1, sells5m: 0, hasData: true, buyVol5m: 1, sellVol5m: 0, netVol5m: 1, buyVol5mUsd: null, sellVol5mUsd: null, netVol5mUsd: null },
     lp: { status: "STABLE", lpNet5m: 0, hasData: true, lpAdded5m: 0, lpRemoved5m: 0, removedPctOfPool: null },
     reserveUsd: 0, reserveEth: 0, reserveNative: 0, nativeSymbol: "ETH", liqStatus: "WEAK", poolCountSameToken: 1,
@@ -170,9 +169,7 @@ function main(): void {
   });
   const VALID_MEM = JSON.stringify({
     pairAddress: "0xp", symbol: "AAA", tokenAddress: "0xt", firstSeen: 1, lastSeen: 2, seenCount: 1,
-    priceAtFirstSeen: 1, highPrice: 2, lowPrice: 1, currentPrice: 1.5, totalEntries: 0, lastEntryTime: 0,
-    lastEntryPrice: 0, wins24h: 0, losses24h: 0, badExits24h: 0, consecutiveLosses: 0,
-    lastExitReason: null, lastExitTime: null, phase: "NEW",
+    priceAtFirstSeen: 1, highPrice: 2, lowPrice: 1, currentPrice: 1.5, phase: "NEW",
   });
   const VALID_CHAINCOV = JSON.stringify({
     trackedPairs: 1, observedMovers: 0,
@@ -219,6 +216,10 @@ function main(): void {
     parseWithSchema(`{"0xabc":${VALID_STATE.replace('"discoverySources":[]', '"discoverySources":"oops"')}}`, PairStatesRecordSchema, FB) === FB);
   check("48f. * PairState phase:\"BOGUS\" -> fallback (varu: enum, nu z.string)",
     parseWithSchema(`{"0xabc":${VALID_STATE.replace('"phase":"NEW"', '"phase":"BOGUS"')}}`, PairStatesRecordSchema, FB) === FB);
+  check("48f-2. * PairState phase:\"ZOMBIE\" -> fallback (U6/NF-E33: faza legacy scoasă din enum)",
+    parseWithSchema(`{"0xabc":${VALID_STATE.replace('"phase":"NEW"', '"phase":"ZOMBIE"')}}`, PairStatesRecordSchema, FB) === FB);
+  check("48f-3. PairState cu chei win-tracking legacy tot OK (passthrough păstrează cheile ca extras — fwd-compat v8.0)",
+    parseWithSchema<any>(`{"0xabc":${VALID_STATE.replace('"seenCount":1', '"seenCount":1,"wins24h":0,"losses24h":0,"badExits24h":0,"consecutiveLosses":0,"totalEntries":0,"lastEntryTime":0')}}`, PairStatesRecordSchema, FB) !== FB);
   check("48g. * PairState pipelineState:\"BOGUS\" -> fallback (varu: enum)",
     parseWithSchema(`{"0xabc":${VALID_STATE.replace('"pipelineState":"NONE"', '"pipelineState":"BOGUS"')}}`, PairStatesRecordSchema, FB) === FB);
   check("48h. * PairState dexType:\"BOGUS\" -> fallback (varu: enum)",
@@ -254,6 +255,10 @@ function main(): void {
     parseWithSchema(`{"version":"v1","savedAt":1,"memory":{"0x":${VALID_MEM.replace(/}$/, ',"discoverySources":"oops"}')}},"poolReserveEth":{}}`, WorkerSnapshotSchema, FB) === FB);
   check("56. * WorkerSnapshot poolReserveEth valoare ne-number -> fallback",
     parseWithSchema('{"version":"v1","savedAt":1,"memory":{},"poolReserveEth":{"0x":"12.5"}}', WorkerSnapshotSchema, FB) === FB);
+  check("56a. * WorkerSnapshot memory phase legacy (ZOMBIE) -> fallback (U6/NF-E33: enum fără faze legacy și în worker_snapshot)",
+    parseWithSchema(`{"version":"v1","savedAt":1,"memory":{"0x":${VALID_MEM.replace('"phase":"NEW"', '"phase":"ZOMBIE"')}},"poolReserveEth":{}}`, WorkerSnapshotSchema, FB) === FB);
+  check("56b. WorkerSnapshot memory FĂRĂ câmpuri win-tracking -> OK (U6: cele 9 câmpuri scoase din contract)",
+    parseWithSchema<any>(`{"version":"v1","savedAt":1,"memory":{"0x":${VALID_MEM}},"poolReserveEth":{}}`, WorkerSnapshotSchema, FB) !== FB);
 
   // PipelineCoverage — chains value = ChainCoverage CONTRACT COMPLET.
   check("57. PipelineCoverage valid OK",
@@ -367,6 +372,9 @@ function main(): void {
   check("82d. * pairContext entryRisk invalid enum -> fallback", parseWithSchema(J({ ...PCTX, entryRisk: "SUPER" }), PairContextSchema, null) === null);
   check("82e. * pairContext array -> fallback", parseWithSchema(J([1]), PairContextSchema, null) === null);
   check("82f. pairContext lifecycle null -> ok (optional nullable)", parseWithSchema(J({ ...PCTX, lifecycle: null }), PairContextSchema, null) !== null);
+  check("82g. * pairContext phase legacy (ZOMBIE) -> fallback (U6/NF-E33: doar 5 faze + UNKNOWN)", parseWithSchema(J({ ...PCTX, phase: "ZOMBIE" }), PairContextSchema, null) === null);
+  check("82h. * pairContext phase legacy (SECOND_WAVE) -> fallback (U6)", parseWithSchema(J({ ...PCTX, phase: "SECOND_WAVE" }), PairContextSchema, null) === null);
+  check("82i. pairContext phase UNKNOWN -> ok (U6: fallback din snapshots permis)", parseWithSchema(J({ ...PCTX, phase: "UNKNOWN" }), PairContextSchema, null) !== null);
 
   // resolveValidatedPairContext (leaf) — ambiguitate decisă DUPĂ validare (varu R2)
   const CTXRAW = J(PCTX);

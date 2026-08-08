@@ -5,7 +5,7 @@
  * Agentul aduce datele lui (entry, SL, TP).
  * Preflight adaugă: flow live, LP status, priceChange, pipeline state, flags.
  *
- * Stateless față de Supabase/shadow trades.
+ * Stateless față de Supabase.
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";

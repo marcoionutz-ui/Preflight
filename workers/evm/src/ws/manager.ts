@@ -29,13 +29,10 @@ import {
   MINT_V3_TOPIC,
   BURN_V3_TOPIC,
 } from "./subscriptions";
-import { getSupabase } from "../infra/supabase";
-import { sendTelegram } from "../infra/telegram";
 import { isBlockedSymbol } from "../sources/normalize";
 import {
   SWAP_V4_TOPIC, MODIFY_LIQUIDITY_V4_TOPIC,
   V4_POOL_MANAGERS,
-  MIN_LP_REMOVE_ETH, INSTANT_LP_EXIT_PCT,
 } from "../config/constants";
 
 function int256FromWord(hex64: string): bigint {
@@ -375,43 +372,6 @@ export function connectChainWebSocket(chain: ChainConfig): void {
           + (poolEth > 0 ? ` (${(removedPct * 100).toFixed(1)}% of pool)` : " (no reserve estimate)")
           + ` ⚠️`,
         );
-
-        const db = getSupabase(); // E26: null când Supabase e dezactivat (env lipsă) → skip exit-ul instant
-        if (db && poolEth && ethAmount >= MIN_LP_REMOVE_ETH && removedPct >= INSTANT_LP_EXIT_PCT) {
-          const { data: openTrades } = await db
-            .from("shadow_trades")
-            .select("id, symbol, entry_price, current_price, chain")
-            .eq("pair_address", pairAddress)
-            .eq("chain", chain.id)   // B5a: never match cross-chain data only by address (P0-1) — aceeași adresă pe base+arbitrum nu mai închide trade-ul celuilalt chain
-            .is("exited_at", null);
-
-          if (openTrades?.length) {
-            for (const trade of openTrades) {
-              const exitPrice = memLp?.currentPrice ?? Number(trade.current_price);
-              const entry     = Number(trade.entry_price);
-              await db.from("shadow_trades").update({
-                exited_at:   Date.now(),
-                exit_price:  exitPrice,
-                exit_reason: "LP REMOVED",
-              }).eq("id", trade.id);
-
-              const m = memory.get(chain.id, pairAddress);
-              if (m) {
-                m.badExits24h      += 1;
-                m.consecutiveLosses += 1;
-                m.lastExitReason    = "LP REMOVED";
-                m.lastExitTime      = Date.now();
-              }
-
-              console.log(`[LP EXIT INSTANT] ${trade.symbol} — ${ethAmount.toFixed(3)} ${nativeSymbol} (${(removedPct * 100).toFixed(1)}%) removed`);
-              await sendTelegram(
-                `⚡ <b>LP EXIT INSTANT</b> ${trade.symbol} [${chain.id.toUpperCase()}]\n`
-                + `LP removed ${ethAmount.toFixed(3)} ${nativeSymbol} (${(removedPct * 100).toFixed(1)}% of pool)\n`
-                + `P&L: ${((exitPrice - entry) / entry * 100).toFixed(1)}%`,
-              );
-            }
-          }
-        }
       }
 
     } catch (e) { console.log(`[WS ERR ${chain.id}]`, e); }

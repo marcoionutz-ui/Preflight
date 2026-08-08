@@ -145,12 +145,7 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
         }
 
         if (data) {
-          lines.push(exposePerformance
-            ? `  • Phase: ${data.phase} | seen: ${data.seenCount}x | entries: ${data.totalEntries}`
-            : `  • Phase: ${data.phase} | seen: ${data.seenCount}x`);
-          if (exposePerformance && (data.wins24h > 0 || data.losses24h > 0 || data.badExits24h > 0)) {
-            lines.push(`  • History: ${data.wins24h}W / ${data.losses24h}L / ${data.badExits24h} bad exits`);
-          }
+          lines.push(`  • Phase: ${data.phase} | seen: ${data.seenCount}x`);
         }
 
         lines.push("");
@@ -210,7 +205,6 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
         else if (pairState?.flow?.flowCoverage === "UNKNOWN" && pairState?.dexType === "V4") cautions.push("V4 hook info unavailable — flow coverage unknown");
         // NF/U5: rezerva V4 e un estimat (virtual reserves) — poate supraestima lichiditatea.
         if (isEstimatedReserve(pairState?.reserveSource)) cautions.push("V4 reserve is an estimate (virtual reserves — may overstate liquidity, not confirmed TVL)");
-        if (exposePerformance && data && data.consecutiveLosses >= 2) cautions.push(`${data.consecutiveLosses} consecutive losses`);
         if (data && (pairState?.poolCountSameToken ?? 1) >= 3) cautions.push(`clone/fragmentation risk (${pairState?.poolCountSameToken} pools)`);
         if (pairState?.lp?.status === "REMOVED") cautions.push("LP currently being removed");
         const dataAgeSec = pairState ? Math.round((now - pairState.updatedAt) / 1000) : null;

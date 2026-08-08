@@ -176,9 +176,6 @@ function buildSignalPipelineEntries() {
       liqStatus:          liq2.status,
       reserveSource:      liq2.reserveSource, // NF/U5: provenance → liquidityStatus derivat plafonat pt. estimat V4
       poolCountSameToken: poolCount2,
-      consecutiveLosses:  (mem2 as any)?.consecutiveLosses ?? 0,
-      badExits24h:        (mem2 as any)?.badExits24h ?? 0,
-      wins24h:            (mem2 as any)?.wins24h ?? 0,
       phase:              mem2?.phase ?? "UNKNOWN",
       priceVsEntryPct:    (entryPrice && mem2?.currentPrice)
         ? Number(((mem2.currentPrice - entryPrice) / entryPrice * 100).toFixed(2)) : null,
@@ -253,9 +250,6 @@ function buildPairContextMap(): Record<string, PreflightPairContext> {
     const rf3     = deriveRiskFlags(
       (() => { const cp = mem3?.chain ?? ""; return mem3 ? tokenPools.get(tokenPoolKey(cp, mem3.tokenAddress))?.size ?? 1 : 1; })(),
       liq3.status, liq3.reserveUsd,
-      (mem3 as any)?.consecutiveLosses ?? 0,
-      (mem3 as any)?.badExits24h ?? 0,
-      (mem3 as any)?.wins24h ?? 0,
       0, "",
       buys3.length, sells3.length,
     );

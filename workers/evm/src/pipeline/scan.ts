@@ -24,7 +24,7 @@ import type { SourcePool } from "../sources/normalize";
 import { CHAINS } from "../config/chains";
 import type { ChainConfig } from "../config/chains";
 import {
-  WORKER_VERSION, MAX_SHADOW_PER_SCAN, MAX_VERTICAL_WATCH, MAX_LATE_WATCH,
+  WORKER_VERSION, MAX_QUALIFIED_PER_SCAN, MAX_VERTICAL_WATCH, MAX_LATE_WATCH,
   MAX_QUALIFIED_BUFFER, ARM_CONFIRM_MS, ARM_MIN_PRICE_CONFIRM, V3_DEXES,
   MAX_EVENT_WATCH, MAX_SHORT_WATCH, MAX_CONTINUATION_WATCH, MAX_FRESH_WATCH_ATT,
   FOLLOW_TTL_MS, FOLLOW_ADD_SCORE, FOLLOW_REMOVE_SCORE, FOLLOW_REFRESH_LIMIT, FOLLOW_MAX_MISSES,
@@ -85,9 +85,8 @@ function pruneMemory(): void {
   for (const [{ chain, address: addr }, mem] of memory.entries()) {
     // chain din cheia decodată e mereu prezent → nu mai avem nevoie de guard `if(c)`.
     if (activeWatch.has(chain, addr) || hotCandidates.has(chain, addr) || armedEntries.has(chain, addr)) continue;
-    const ageMs         = now - mem.lastSeen;
-    const noRecentTrade = !mem.lastEntryTime || now - mem.lastEntryTime > 48 * 60 * 60_000;
-    if (ageMs > 48 * 60 * 60_000 && noRecentTrade) {
+    const ageMs = now - mem.lastSeen;
+    if (ageMs > 48 * 60 * 60_000) {
       memory.delete(chain, addr);
       poolLiquidity.delete(chain, addr); wsFlow.delete(chain, addr); lpEvents.delete(chain, addr);
       // E20: prune și starea auxiliară (watchedPoolCache + tokenPools) — altfel cresc nemărginit → leak RSS.
@@ -360,7 +359,7 @@ export async function scan(): Promise<void> {
   console.log(`[${ts}] Scanning ${CHAINS.map(c => c.id).join("+")} — ${allPools.length} pools total`);
 
   const counters = {
-    shadowCount: 0, fomoBlockCount: 0, fomoWatchAdded: 0,
+    qualifiedCount: 0, fomoBlockCount: 0, fomoWatchAdded: 0,
     fomoNoSlot: 0, fomoLowScore: 0, fomoNoDex: 0, fomoLowReserve: 0,
     fomoPattern: 0, fomoAlready: 0, vertNoSlot: 0, lateNoSlot: 0,
     v3Seen: 0, v4Seen: 0, noWs: 0, lowScore: 0, maxBlock: 0,
@@ -377,11 +376,8 @@ export async function scan(): Promise<void> {
   const vals     = [...memory.values()];
   const chainStr = Object.entries(chainCounts).map(([k, v]) => `${k}:${v}`).join(" ");
   console.log(
-    `[${ts}] Done — shadows:${counters.shadowCount} [${chainStr || "none"}]`
+    `[${ts}] Done — qualified:${counters.qualifiedCount} [${chainStr || "none"}]`
     + ` | mem:${memory.size} | ws:${wsFlow.size}`
-    + ` | zombies:${vals.filter(m => m.phase === "ZOMBIE").length}`
-    + ` | dead:${vals.filter(m => m.phase === "DEAD").length}`
-    + ` | 2wave:${vals.filter(m => m.phase === "SECOND_WAVE").length}`
     + ` | recovering:${vals.filter(m => m.phase === "RECOVERING").length}`,
   );
 
@@ -408,7 +404,7 @@ export async function scan(): Promise<void> {
     `[NO TRADE SUMMARY] v3:${counters.v3Seen} v4:${counters.v4Seen} watched:${activeWatch.size}`
     + ` noWs:${counters.noWs} buying:${counters.buying} neutral:${counters.neutral} selling:${counters.selling}`
     + ` lowScore:${counters.lowScore} entryGate:${counters.gateCount} maxBlock:${counters.maxBlock}`
-    + ` armed:${counters.armedCount} armFail:${counters.armFail} entered:${counters.shadowCount}`,
+    + ` armed:${counters.armedCount} armFail:${counters.armFail} emitted:${counters.qualifiedCount}`,
   );
 
   await saveMemoryToRedis();
@@ -697,7 +693,7 @@ async function processPool(
   else if (wsFlowReal.pressure === "NEUTRAL")  counters.neutral++;
   else if (wsFlowReal.pressure === "SELLING")  counters.selling++;
 
-  if (counters.shadowCount >= MAX_SHADOW_PER_SCAN) {
+  if (counters.qualifiedCount >= MAX_QUALIFIED_PER_SCAN) {
     counters.maxBlock++;
     return "CONTINUE";
   }
@@ -778,10 +774,10 @@ async function processPool(
   qualifiedSignalsBuffer.unshift(qsScan);
   if (qualifiedSignalsBuffer.length > MAX_QUALIFIED_BUFFER) qualifiedSignalsBuffer.pop();
 
-  // Shadow trades disabled — Preflight reports signals, does not manage simulated positions.
-  // Legacy counter name: shadowCount now counts qualified signals emitted this scan.
+  // Preflight reports signals, does not manage simulated positions.
+  // qualifiedCount = qualified signals emitted this scan (cap: MAX_QUALIFIED_PER_SCAN).
   if (!isFollowRefresh) {
-    counters.shadowCount++;
+    counters.qualifiedCount++;
     chainCounts[pool.chain] = (chainCounts[pool.chain] ?? 0) + 1;
   }
 
@@ -970,7 +966,7 @@ export async function runFollowRefresh(): Promise<void> {
     .slice(0, FOLLOW_REFRESH_LIMIT);
 
   const counters = {
-    shadowCount: 0, fomoBlockCount: 0, fomoWatchAdded: 0,
+    qualifiedCount: 0, fomoBlockCount: 0, fomoWatchAdded: 0,
     fomoNoSlot: 0, fomoLowScore: 0, fomoNoDex: 0, fomoLowReserve: 0,
     fomoPattern: 0, fomoAlready: 0, vertNoSlot: 0, lateNoSlot: 0,
     v3Seen: 0, v4Seen: 0, noWs: 0, lowScore: 0, maxBlock: 0,

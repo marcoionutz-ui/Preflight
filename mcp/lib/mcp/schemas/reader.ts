@@ -101,7 +101,7 @@ export const PairContextSchema = z.object({
   chain:              z.enum(EVM_CHAINS),      // EVM-only (worker-evm îngustează tipul)
   pairAddress:        z.string(),
   pipelineState:      z.enum(PIPELINE_STATES),
-  phase:              z.string(),              // `phase` e `string` în PreflightPairContext (NU enum)
+  phase:              z.enum(["NEW", "TRENDING", "PUMPING", "DUMPING", "RECOVERING", "UNKNOWN"]),  // U6/NF-E33: doar cele 5 faze valide + UNKNOWN (fallback din snapshots) — fazele legacy respinse
   liquidityStatus:    z.enum(LIQ_STATUSES),
   reserveUsd:         z.number(),
   // NF/U5 (R4): proveniența rezervei — `V4_STATE_LIQUIDITY` = estimat. Optional (absent pe pair_context vechi).

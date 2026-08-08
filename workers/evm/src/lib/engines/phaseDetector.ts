@@ -10,46 +10,30 @@ export type { Phase };
 
 export interface PhaseInput {
   seenCount:         number;
-  consecutiveLosses: number;
   m5:                number;
   h24:               number;
   highPrice:         number;
   lowPrice:          number;
   currentPrice:      number;
-  totalEntries:      number;
-  wins24h:           number;
-  losses24h:         number;
-  badExits24h:       number;
 }
 
 export function detectPhase(input: PhaseInput): Phase {
-  const { seenCount, consecutiveLosses, m5, h24,
-          highPrice, lowPrice, currentPrice,
-          totalEntries, wins24h, losses24h, badExits24h } = input;
+  const { seenCount, m5, h24,
+          highPrice, lowPrice, currentPrice } = input;
 
   if (seenCount <= 2) return "NEW";
-
-  // DEAD: 3 SL consecutive SAU 5+ entries cu 0 wins și bleeding activ
-  if (consecutiveLosses >= 3)                                        return "DEAD";
-  if (totalEntries >= 5 && wins24h === 0 && losses24h >= 3)         return "DEAD";
-
-  // ZOMBIE: 5+ entries, 0 wins, dar blocat în bad exits (nu bleeding sever)
-  if (totalEntries >= 5 && wins24h === 0 && losses24h < 3)          return "ZOMBIE";
 
   if (m5 > 15 || h24 > 150)                                          return "PUMPING";
 
   // Dumping: scăzut față de high
   if (highPrice > 0 && currentPrice < highPrice * 0.70) {
-    // Second wave: dumpuit DAR revine cu istoric pozitiv
     const bounce = lowPrice > 0 ? (currentPrice - lowPrice) / lowPrice * 100 : 0;
-    if (bounce >= 8 && wins24h >= 1) return "SECOND_WAVE";
-    if (bounce >= 12)                return "RECOVERING";
+    if (bounce >= 12) return "RECOVERING";
     return "DUMPING";
   }
 
   // Recovering fără să fi dumpuit major
   if (lowPrice > 0 && currentPrice > lowPrice * 1.12) {
-    if (wins24h >= 1) return "SECOND_WAVE";
     return "RECOVERING";
   }
 
@@ -63,9 +47,6 @@ export function phaseColor(phase: Phase): string {
     PUMPING:     "#ffb347",
     DUMPING:     "#ff6b6b",
     RECOVERING:  "#39ff14",
-    SECOND_WAVE: "#00e5ff",
-    ZOMBIE:      "#9c27b0",
-    DEAD:        "#444444",
   };
   return colors[phase];
 }

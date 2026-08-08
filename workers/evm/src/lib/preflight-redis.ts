@@ -88,9 +88,6 @@ function deriveRiskFlags(
   poolCountSameToken: number,
   liqStatus: string,
   reserveUsd: number,
-  consecutiveLosses: number,
-  badExits24h: number,
-  wins24h: number,
   sellRatio: number,
   lpStatus: string,
   buys5m?:     number,
@@ -99,8 +96,6 @@ function deriveRiskFlags(
   const flags: string[] = [];
   if (poolCountSameToken >= 3)                        flags.push("CLONE_FRAGMENTATION");
   if (reserveUsd < 15_000)                            flags.push("THIN_LIQUIDITY");
-  if (consecutiveLosses >= 3)                         flags.push("BAD_HISTORY");
-  if (badExits24h >= 2 && wins24h === 0)              flags.push("BAD_HISTORY");
   if (sellRatio > 0.5 && sellRatio < 1)               flags.push("DISTRIBUTION_RISK");
   const totalSwaps   = (buys5m ?? 0) + (sells5m ?? 0);
   const oneSidedFlow = totalSwaps >= 3 && ((buys5m ?? 0) === 0 || (sells5m ?? 0) === 0);
@@ -318,9 +313,6 @@ export function buildSignalPipelineEntry(params: {
   liqStatus:          string;
   reserveSource?:     ReserveSource | null; // NF/U5: provenance → clasificare derivată plafonată pt. estimat V4
   poolCountSameToken: number;
-  consecutiveLosses:  number;
-  badExits24h:        number;
-  wins24h:            number;
   phase:              string;
   priceVsEntryPct:    number | null;
   workerVersion:      string;
@@ -328,7 +320,7 @@ export function buildSignalPipelineEntry(params: {
   const {
     symbol, chain, pairAddress, pipelineState, watchKind,
     enteredWatchAt, now, flow, reserveUsd, liqStatus, reserveSource,
-    poolCountSameToken, consecutiveLosses, badExits24h, wins24h,
+    poolCountSameToken,
     phase, priceVsEntryPct, workerVersion,
   } = params;
 
@@ -338,9 +330,9 @@ export function buildSignalPipelineEntry(params: {
   const sellRatio   = (flow.buyVol5m + (flow.buyVol5m - flow.netVol5m)) > 0
     ? (flow.buyVol5m - flow.netVol5m) / (flow.buyVol5m + (flow.buyVol5m - flow.netVol5m))
     : 0;
-  const riskFlags = deriveRiskFlags(poolCountSameToken, liqStatus, reserveUsd, consecutiveLosses, badExits24h, wins24h, sellRatio, "", flow.buys5m, flow.sells5m);
+  const riskFlags = deriveRiskFlags(poolCountSameToken, liqStatus, reserveUsd, sellRatio, "", flow.buys5m, flow.sells5m);
   const opSignals   = deriveOpportunitySignals(phase, "ORGANIC", false, false);
-  const entryRisk: EntryRisk = riskFlags.includes("BAD_HISTORY") ? "HIGH" : confidence === "HIGH" ? "MEDIUM" : "MEDIUM";
+  const entryRisk: EntryRisk = "MEDIUM";
 
   const obsCtx: ObservationContext = {
     moveType:          "ORGANIC",

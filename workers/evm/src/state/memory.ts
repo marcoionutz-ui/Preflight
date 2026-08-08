@@ -52,15 +52,11 @@ export function updateMemory(pool: SourcePool, price: number): PairMemoryEntry {
       pairAddress: addr, symbol, tokenAddress,
       firstSeen: now, lastSeen: now, seenCount: 1,
       priceAtFirstSeen: price, highPrice: price, lowPrice: price, currentPrice: price,
-      totalEntries: 0, lastEntryTime: 0, lastEntryPrice: 0,
-      wins24h: 0, losses24h: 0, badExits24h: 0, consecutiveLosses: 0,
-      lastExitReason: null, lastExitTime: null,
 	  priceChange: { m5, h1, h24 },
 	  chain:       pool.chain,
       phase: detectPhase({
-        seenCount: 1, consecutiveLosses: 0, m5, h24,
+        seenCount: 1, m5, h24,
         highPrice: price, lowPrice: price, currentPrice: price,
-        totalEntries: 0, wins24h: 0, losses24h: 0, badExits24h: 0,
       }),
     };
     memory.set(pool.chain, addr, mem);
@@ -80,16 +76,11 @@ export function updateMemory(pool: SourcePool, price: number): PairMemoryEntry {
 
   existing.phase = detectPhase({
     seenCount: existing.seenCount,
-    consecutiveLosses: 0,
     m5,
     h24,
     highPrice: existing.highPrice,
     lowPrice: existing.lowPrice,
     currentPrice: price,
-    totalEntries: 0,
-    wins24h: 0,
-    losses24h: 0,
-    badExits24h: 0,
   });
   
   if (pool.discoverySource) {

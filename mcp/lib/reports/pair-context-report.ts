@@ -320,13 +320,6 @@ export async function buildPairContextReport(
         if (ageSec > 6 * 3600) return "stale";
         return "available";
       })(),
-      history: exposePerformance ? {
-        totalEntries:      data.totalEntries,
-        wins24h:           data.wins24h,
-        losses24h:         data.losses24h,
-        badExits24h:       data.badExits24h,
-        consecutiveLosses: data.consecutiveLosses,
-      } : undefined,
       discovery: (() => {
         const allSources: string[] =
           pairState?.discovery?.discoverySources ??

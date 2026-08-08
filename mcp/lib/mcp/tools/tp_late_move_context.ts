@@ -172,7 +172,7 @@ Args: pair_address (0x... EVM address)`,
         }
 
         // Phase
-        if (data?.phase === "RECOVERING" || data?.phase === "ZOMBIE") {
+        if (data?.phase === "RECOVERING") {
           evidenceScore += 10;
           cautions.push(`Phase ${data.phase} — weak historical continuation`);
         }

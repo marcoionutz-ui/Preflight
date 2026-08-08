@@ -12,7 +12,6 @@ import { computeEvidenceScore } from "./scoring";
 import { v3PoolMap, hotCandidates } from "../state/stores";
 import { tokenPoolKey } from "../infra/poolTracker";
 import { tokenPools } from "../infra/poolTracker";
-import { COOLDOWN_MS, SECOND_WAVE_COOLDOWN_MS } from "../config/constants";
 import type { EntrySource } from "../state/stores";
 
 export function getEntryGate(
@@ -126,7 +125,7 @@ export function getEntryGate(
       return { allowed: false, reason: `HOT but flow not BUYING` };
     }
     return checkEntryGate(
-      mem, flow, 2, SECOND_WAVE_COOLDOWN_MS,
+      mem, flow, 2,
       { allowPumping: entrySource === "VERTICAL" || entrySource === "LATE" || entrySource === "FOMO" },
     );
   }
@@ -134,7 +133,7 @@ export function getEntryGate(
   if (sw.isSecondWave && sw.confidence !== "LOW") {
     if (mem.seenCount < 3)  return { allowed: false, reason: `2W but too new (seen ${mem.seenCount}x, need 3)` };
     if (evidence < 9)       return { allowed: false, reason: `2W but evidence too low (${evidence}/9)` };
-    return checkEntryGate(mem, flow, 3, SECOND_WAVE_COOLDOWN_MS);
+    return checkEntryGate(mem, flow, 3);
   }
 
   const requiredEvidence = 6;
@@ -144,5 +143,5 @@ export function getEntryGate(
   if (isV4 && score < 90)      return { allowed: false, reason: `V4 score too low (${score}/90)` };
   if (isV4 && flow.buys5m < 5) return { allowed: false, reason: `V4 flow weak (${flow.buys5m} buys/5m)` };
 
-  return checkEntryGate(mem, flow, 3, COOLDOWN_MS);
+  return checkEntryGate(mem, flow, 3);
 }
