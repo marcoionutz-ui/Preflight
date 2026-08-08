@@ -17,6 +17,8 @@ const PHASES          = ["NEW", "TRENDING", "PUMPING", "DUMPING", "RECOVERING", 
 const PIPELINE_STATES = ["NONE", "OBSERVED", "WATCHING", "HOT", "ARMED", "QUALIFIED", "DROPPED", "REJECTED"] as const;
 const DEX_TYPES       = ["V2", "V3", "V4", "UNKNOWN"] as const;
 const LP_STATUSES     = ["ADDED", "REMOVED", "STABLE"] as const;
+// NF/U5: proveniența reserveUsd — oglindește ReserveSource din @preflight/schema. `V4_STATE_LIQUIDITY` = estimat.
+const RESERVE_SOURCES = ["V2_RESERVES", "BALANCE_OF", "V4_STATE_LIQUIDITY", "UNKNOWN_V4", "GECKO_REPORTED", "DEXSCREENER_REPORTED", "UNKNOWN"] as const;
 
 // PreflightRiskSnapshot = Omit<RiskResult, "raw"> — contract COMPLET (un `risk:{}` truthy ar face
 // `dataReadyForReasoning` să creadă că riskCache e prezent deși toate câmpurile sunt undefined).
@@ -90,6 +92,7 @@ const PairStateEntrySchema = z.object({
     removedPctOfPool: z.number().nullable(),
   }).passthrough(),
   reserveUsd:          z.number(),
+  reserveSource:       z.enum(RESERVE_SOURCES).nullable().optional(), // NF/U5: provenance (opțional — absent pe snapshot vechi)
   reserveEth:          z.number(),
   reserveNative:       z.number(),
   nativeSymbol:        z.string().nullable(),

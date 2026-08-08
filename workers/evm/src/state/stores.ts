@@ -12,7 +12,7 @@ import type { SourcePool } from "../sources/normalize";
 import { PairMap } from "./PairMap";
 import { createScopedSubStore } from "../ws/scopedSubs";
 import { MAX_MOMENTUM_BUFFER, MAX_QUALIFIED_BUFFER } from "../config/constants";
-import { pairKey, type DiscoverySource, type PreflightMomentumEvent, type PreflightQualifiedSignal } from "@preflight/schema";
+import { pairKey, type DiscoverySource, type PreflightMomentumEvent, type PreflightQualifiedSignal, type ReserveSource } from "@preflight/schema";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -84,10 +84,13 @@ export const armedEntries = new PairMap<{
 
 export const poolLiquidity = new PairMap<{
   reserveUsd:    number;
-  reserveEth:    number; 
+  reserveEth:    number;
   reserveNative: number;
   nativeSymbol:  "ETH" | "BNB";
   updatedAt:     number;
+  // NF/U5: proveniența reserveUsd (din SourcePool). `V4_STATE_LIQUIDITY` = estimat care poate supraestima →
+  // getLiquidityContext clasifică liqStatus mai conservator + MCP pune caveat. Absent pe restore de snapshot vechi.
+  reserveSource?: ReserveSource;
 }>();
 
 // ── WS client state ───────────────────────────────────────────────────────────

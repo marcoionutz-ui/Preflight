@@ -31,8 +31,9 @@ import {
   REDIS_KEYS, SCHEMA_VERSION,
   type PreflightDrop, type PreflightEvmChain,
   type PreflightMomentumEvent, type PreflightSignalPipelineEntry, type PreflightQualifiedSignal,
-  type DexType,
+  type DexType, type ReserveSource,
 } from "@preflight/schema";
+import { deriveLiquidityTier } from "../risk/liquidityClassify";
 
 // Previously a local "preflight-scanner-v1" constant here, distinct from
 // the package's own SCHEMA_VERSION ("preflight-schema-v1") — every
@@ -67,11 +68,14 @@ function deriveFlowStatus(pressure: string, hasData: boolean, buys5m: number, se
   return "WEAK";
 }
 
-function deriveLiquidityStatus(reserveUsd: number, liqStatus: string): LiquidityStatus {
-  if (reserveUsd < 15_000)                       return "THIN";
-  if (reserveUsd > 500_000)                      return "DEEP";
-  if (liqStatus === "CONFIRMED" || reserveUsd > 100_000) return "CONFIRMED";
-  return "OK";
+// NF/U5: logica trăiește în risk/liquidityClassify.ts (deriveLiquidityTier) — leaf pur, partajat + testabil.
+// Wrapper subțire ca să păstrăm numele/exportul folosit de snapshots.ts. Estimat V4 → niciodată CONFIRMED/DEEP.
+function deriveLiquidityStatus(
+  reserveUsd:    number,
+  liqStatus:     string,
+  reserveSource?: ReserveSource | null,
+): LiquidityStatus {
+  return deriveLiquidityTier(reserveUsd, liqStatus, reserveSource);
 }
 
 function deriveConfidence(buys5m: number, sells5m: number, hasData: boolean, ageMs: number): Confidence {
@@ -131,6 +135,9 @@ export interface PreflightPairContext {
   phase:              string;
   liquidityStatus:    LiquidityStatus;
   reserveUsd:         number;
+  // NF/U5 (R4 varu): proveniența rezervei — `V4_STATE_LIQUIDITY` = estimat (poate supraestima). Optional
+  // (absent pe pair_context vechi). Fără el, tp_pair_context servea lichiditate fără caveat din calea nested.
+  reserveSource?:     ReserveSource | null;
   flow: {
     status:   FlowStatus;
     buyVol5m: number;
@@ -237,6 +244,7 @@ export function buildMomentumEventEntry(
   flowBuys5m: number,
   flowSells5m: number,
   workerVersion: string,
+  reserveSource?: ReserveSource | null, // NF/U5: provenance → clasificare derivată plafonată pt. estimat V4
 ): PreflightMomentumEvent {
   const flowStatus = event.hasWsFlow
     ? deriveFlowStatus("BUYING", flowHasData, flowBuys5m, flowSells5m)
@@ -246,7 +254,7 @@ export function buildMomentumEventEntry(
     moveType:          event.moveType,
     momentumLevel:     event.momentumLevel,
     flowStatus,
-    liquidityStatus:   deriveLiquidityStatus(event.reserveUsd, ""),
+    liquidityStatus:   deriveLiquidityStatus(event.reserveUsd, "", reserveSource),
     entryRisk:         event.entryRisk,
     riskFlags:         event.riskFlags,
     opportunitySignals: [],
@@ -308,6 +316,7 @@ export function buildSignalPipelineEntry(params: {
   };
   reserveUsd:         number;
   liqStatus:          string;
+  reserveSource?:     ReserveSource | null; // NF/U5: provenance → clasificare derivată plafonată pt. estimat V4
   poolCountSameToken: number;
   consecutiveLosses:  number;
   badExits24h:        number;
@@ -318,13 +327,13 @@ export function buildSignalPipelineEntry(params: {
 }): PreflightSignalPipelineEntry {
   const {
     symbol, chain, pairAddress, pipelineState, watchKind,
-    enteredWatchAt, now, flow, reserveUsd, liqStatus,
+    enteredWatchAt, now, flow, reserveUsd, liqStatus, reserveSource,
     poolCountSameToken, consecutiveLosses, badExits24h, wins24h,
     phase, priceVsEntryPct, workerVersion,
   } = params;
 
   const flowStatus  = deriveFlowStatus(flow.pressure, flow.hasData, flow.buys5m, flow.sells5m);
-  const liqStatus2  = deriveLiquidityStatus(reserveUsd, liqStatus);
+  const liqStatus2  = deriveLiquidityStatus(reserveUsd, liqStatus, reserveSource);
   const confidence  = deriveConfidence(flow.buys5m, flow.sells5m, flow.hasData, now - enteredWatchAt);
   const sellRatio   = (flow.buyVol5m + (flow.buyVol5m - flow.netVol5m)) > 0
     ? (flow.buyVol5m - flow.netVol5m) / (flow.buyVol5m + (flow.buyVol5m - flow.netVol5m))
@@ -388,11 +397,12 @@ export function buildQualifiedSignalEntry(params: {
   };
   reserveUsd:     number;
   liqStatus:      string;
+  reserveSource?: ReserveSource | null; // NF/U5: provenance → clasificare derivată plafonată pt. estimat V4
   riskFlags:      string[];
   phase:          string;
   workerVersion:  string;
 }): PreflightQualifiedSignal {
-  const { symbol, chain, pairAddress, qualifiedAt, flow, reserveUsd, liqStatus, riskFlags, phase, workerVersion } = params;
+  const { symbol, chain, pairAddress, qualifiedAt, flow, reserveUsd, liqStatus, reserveSource, riskFlags, phase, workerVersion } = params;
 
   const flowStatus = deriveFlowStatus(flow.pressure, flow.hasData, flow.buys5m, flow.sells5m);
   const confidence = deriveConfidence(flow.buys5m, flow.sells5m, flow.hasData, 60_000);
@@ -403,7 +413,7 @@ export function buildQualifiedSignalEntry(params: {
     moveType:          "ORGANIC",
     momentumLevel:     "HIGH",
     flowStatus,
-    liquidityStatus:   deriveLiquidityStatus(reserveUsd, liqStatus),
+    liquidityStatus:   deriveLiquidityStatus(reserveUsd, liqStatus, reserveSource),
     entryRisk,
     riskFlags,
     opportunitySignals: opSignals,

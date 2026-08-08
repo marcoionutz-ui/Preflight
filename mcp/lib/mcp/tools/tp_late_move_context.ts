@@ -22,7 +22,7 @@ import {
   wsFlowQuality,
   combineConfidence,
 } from "../redis-reader";
-import { pairKey } from "@preflight/schema";
+import { pairKey, isEstimatedReserve } from "@preflight/schema";
 import { mcpErr, mcpResponse, ERR } from "../errors";
 
 const FLAP_WINDOW_MS    = 10 * 60_000; // 10 minute
@@ -250,7 +250,10 @@ return mcpResponse({
   confidence,
   dataQuality: {
     wsFlow:    wsFlowQuality(hasDirectFlow, coveragePct),
-    liquidity: pairState?.lp?.hasData ? "confirmed" : pairState ? "estimated" : "unknown",
+    // NF/U5 (R3): reserveUsd V4 estimat NU poate fi „confirmed" din LP events (ar contrazice provenance-ul V4).
+    liquidity: isEstimatedReserve(pairState?.reserveSource) ? "estimated"
+             : pairState?.lp?.hasData ? "confirmed"
+             : pairState ? "estimated" : "unknown",
   },
   evidence: {
     evidenceLevel: level,

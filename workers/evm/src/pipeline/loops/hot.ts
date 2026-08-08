@@ -114,6 +114,7 @@ export async function hotCandidatesLoop(): Promise<void> {
         },
         reserveUsd:    liqCtx.reserveUsd,
         liqStatus:     liqCtx.status,
+        reserveSource: liqCtx.reserveSource, // NF/U5: provenance → liquidityStatus derivat plafonat pt. estimat V4
         riskFlags:     [],
         phase:         mem.phase,
         workerVersion: WORKER_VERSION,

@@ -18,7 +18,7 @@ import {
 } from "../mcp/redis-reader";
 import type { PairRiskSummary } from "../mcp/types";
 import type { McpConfidence, McpDataQuality } from "../mcp/errors";
-import { normalizeChainId, type SourceAgreement } from "@preflight/schema";
+import { normalizeChainId, reserveEstimatedFlag, type SourceAgreement } from "@preflight/schema";
 import { safeAgeSec, safeAgeMs } from "../mcp/freshness";
 
 export interface PairContextReport {
@@ -232,6 +232,11 @@ export async function buildPairContextReport(
           symbol: pfCtx.symbol,
           chain:  pfCtx.chain,
           preflightContext: pfCtx,
+          // NF/U5 (R4): în fallback-ul pe pair_context (fără pair_states) provenance-ul se pierdea complet →
+          // îl expunem explicit la top-level (liquidityStatus din pfCtx e deja plafonat pt. estimat V4).
+          reserveUsd:       (pfCtx as any).reserveUsd ?? null,
+          reserveSource:    (pfCtx as any).reserveSource ?? null,
+          reserveEstimated: reserveEstimatedFlag((pfCtx as any).reserveSource),
           pipeline: { state: pfCtx.pipelineState ?? "NONE", watch: watchOut, hot: hotOut, armed: armedOut },
           contextQuality: pfContextQuality,
           dataSource: "preflight_pair_context",
@@ -349,6 +354,11 @@ export async function buildPairContextReport(
       priceVsFirstSeenPct: pairState?.priceVsFirstSeenPct ?? null,
       dexType:            pairState?.dexType            ?? null,
       reserveUsd:         pairState?.reserveUsd         ?? null,
+      // NF/U5: proveniența rezervei — reserveUsd V4 (V4_STATE_LIQUIDITY) e estimat din virtual reserves
+      // (poate supraestima concentrat), NU TVL confirmat. `reserveEstimated` = flag explicit pt. agent/UI.
+      // NF/U5 (R4): cade pe pfCtx.reserveSource când nu avem pair_states (altfel provenance-ul dispare).
+      reserveSource:      pairState?.reserveSource      ?? (pfCtx as any)?.reserveSource ?? null,
+      reserveEstimated:   reserveEstimatedFlag(pairState?.reserveSource ?? (pfCtx as any)?.reserveSource), // tri-stare
       liqStatus:          pairState?.liqStatus          ?? null,
       poolCountSameToken: pairState?.poolCountSameToken ?? null,
       reserveNative:      pairState?.reserveNative      ?? reserveEth,

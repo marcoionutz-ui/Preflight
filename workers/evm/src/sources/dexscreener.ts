@@ -71,6 +71,7 @@ export function normalizeDsPair(raw: any, chain: ChainConfig): SourcePool | null
       h24: Number(raw.priceChange?.h24 ?? 0),
     },
     reserveUsd:   Number(raw.liquidity?.usd ?? 0),
+    reserveSource: "DEXSCREENER_REPORTED", // NF/U5: liquidity.usd raportat de DexScreener — reală, nu estimat V4
     volumeUsd24h: Number(raw.volume?.h24    ?? 0),
     transactions: {
       buys5m:  Number(raw.txns?.m5?.buys  ?? 0),

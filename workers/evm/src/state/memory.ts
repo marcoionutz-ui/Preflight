@@ -15,6 +15,7 @@ import { WORKER_VERSION } from "../config/constants";
 import { CHAINS } from "../config/chains";
 import { REDIS_KEYS, pairKey, splitPairKey, normalizeChainId, normalizePairAddress } from "@preflight/schema";
 import type { PreflightWorkerSnapshot } from "@preflight/schema";
+import { reserveSourceForRestore } from "../risk/liquidityClassify";
 
 export function updatePoolLiquidity(addr: string, pool: SourcePool): void {
   const reserveUsd = pool.reserveUsd;
@@ -27,10 +28,11 @@ export function updatePoolLiquidity(addr: string, pool: SourcePool): void {
 
     poolLiquidity.set(pool.chain, addr, {
       reserveUsd,
-      reserveEth:    reserveNative, 
+      reserveEth:    reserveNative,
       reserveNative,
       nativeSymbol,
       updatedAt: Date.now(),
+      reserveSource: pool.reserveSource, // NF/U5: propagă proveniența (V4_STATE_LIQUIDITY = estimat)
     });
   }
 }
@@ -223,6 +225,11 @@ export async function loadMemoryFromRedis(): Promise<void> {
             reserveNative: nativeReserve,
             nativeSymbol,
             updatedAt: newestSavedAt || Date.now(),
+            // NF/U5 (R3/R4 varu — restart honesty): snapshot-ul (poolReserveEth) NU persistă reserveSource. Dar o
+            // adresă V4 (poolId bytes32) are ÎNTOTDEAUNA rezervă din virtual reserves → o marcăm CONSERVATOR ca
+            // estimat V4 la restore (ca să NU redevină CONFIRMED până la primul scan). Non-V4 = real → undefined.
+            // Logica trăiește în reserveSourceForRestore (partajat cu testele — nu o copie a ternarului).
+            reserveSource: reserveSourceForRestore(setAddress),
           });
         }
       }

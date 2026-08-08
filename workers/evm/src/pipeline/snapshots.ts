@@ -174,6 +174,7 @@ function buildSignalPipelineEntries() {
       },
       reserveUsd:         liq2.reserveUsd,
       liqStatus:          liq2.status,
+      reserveSource:      liq2.reserveSource, // NF/U5: provenance → liquidityStatus derivat plafonat pt. estimat V4
       poolCountSameToken: poolCount2,
       consecutiveLosses:  (mem2 as any)?.consecutiveLosses ?? 0,
       badExits24h:        (mem2 as any)?.badExits24h ?? 0,
@@ -248,7 +249,7 @@ function buildPairContextMap(): Record<string, PreflightPairContext> {
     const buys3   = events3.filter(e => e.isBuy);
     const sells3  = events3.filter(e => !e.isBuy);
     const fs3     = deriveFlowStatus(flow3.pressure, flow3.hasData, buys3.length, sells3.length);
-    const ls3     = deriveLiquidityStatus(liq3.reserveUsd, liq3.status);
+    const ls3     = deriveLiquidityStatus(liq3.reserveUsd, liq3.status, liq3.reserveSource);
     const rf3     = deriveRiskFlags(
       (() => { const cp = mem3?.chain ?? ""; return mem3 ? tokenPools.get(tokenPoolKey(cp, mem3.tokenAddress))?.size ?? 1 : 1; })(),
       liq3.status, liq3.reserveUsd,
@@ -274,6 +275,7 @@ function buildPairContextMap(): Record<string, PreflightPairContext> {
       schemaVersion: SCHEMA_VERSION, workerVersion: WORKER_VERSION,
       symbol: mem3?.symbol ?? addr.slice(0, 8), chain, pairAddress: addr, pipelineState,
       phase: mem3?.phase ?? "UNKNOWN", liquidityStatus: ls3, reserveUsd: liq3.reserveUsd,
+      reserveSource: liq3.reserveSource, // NF/U5 (R4): provenance în pair_context (nu doar pair_states)
       flow: {
         status: fs3,
         buyVol5m:  (flow3 as any).buyVol5m ?? 0,

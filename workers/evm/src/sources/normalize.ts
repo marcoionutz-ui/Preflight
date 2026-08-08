@@ -7,7 +7,7 @@
 import type { ChainConfig } from "../config/chains";
 import { BLOCKED_SYMBOLS } from "../config/constants";
 import { V3_DEXES } from "../config/constants";
-import type { DiscoverySource } from "@preflight/schema";
+import type { DiscoverySource, ReserveSource } from "@preflight/schema";
 import { isV4PoolAddress } from "../ws/v4Hooks";
 
 export type DexType = "V2" | "V3" | "V4" | "UNKNOWN";
@@ -42,6 +42,10 @@ export interface SourcePool {
 
   // Liquidity
   reserveUsd: number;
+  // NF/U5: proveniența lui `reserveUsd`. Doar `V4_STATE_LIQUIDITY` (din INDEXER) e un ESTIMAT care poate
+  // supraestima (virtual reserves); Gecko/DexScreener raportează lichiditate reală → GECKO_REPORTED/DEXSCREENER_REPORTED;
+  // INDEXER V2/V3 = rezerve reale on-chain. Propagat prin poolLiquidity → getLiquidityContext → pair_states.
+  reserveSource?: ReserveSource;
   volumeUsd24h: number;
 
   // On-chain transactions (Gecko snapshot, nu WS)
@@ -133,6 +137,7 @@ export function normalizePool(raw: any, chain: ChainConfig): SourcePool | null {
       h24: Number(raw.attributes?.price_change_percentage?.h24 ?? 0),
     },
     reserveUsd:   Number(raw.attributes?.reserve_in_usd ?? 0),
+    reserveSource: "GECKO_REPORTED", // NF/U5: reserve_in_usd raportat de Gecko — reală, nu estimat V4
     volumeUsd24h: Number(raw.attributes?.volume_usd?.h24 ?? 0),
     transactions: {
       buys5m:  raw.attributes?.transactions?.m5?.buys  ?? 0,

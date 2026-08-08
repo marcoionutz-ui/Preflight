@@ -21,6 +21,7 @@ import {
   readSolanaIndexerStats, readSolanaMovers,
 } from "../mcp/redis-reader";
 import { safeAgeSec } from "../mcp/freshness";
+import { pairKey, reserveEstimatedFlag, type ReserveSource } from "@preflight/schema";
 
 export type ChainCoverageTier = "LIVE" | "CACHED" | "SAMPLED";
 
@@ -55,6 +56,9 @@ export interface MoverSummary {
   priceChange1h:  number | null;
   priceChange24h: number | null;
   reserveUsd:     number | null;
+  // NF/U5: proveniența rezervei — reserveUsd V4 (V4_STATE_LIQUIDITY) e estimat (virtual reserves, poate supraestima).
+  reserveSource?:    ReserveSource | null;
+  reserveEstimated?: boolean | null; // tri-stare: true/false/null(necunoscut, ex. fără pair_state)
   direction?:     "UP" | "DOWN" | "FLAT";
 }
 
@@ -142,15 +146,21 @@ export async function buildMarketOverviewReport(topN = 5): Promise<MarketOvervie
       }
 
       const moversRaw = await readTrendingMovers(chainId);
-      const movers: MoverSummary[] = moversRaw.slice(0, topN).map(m => ({
-        symbol:         m.symbol,
-        pairAddress:    m.pairAddress,
-        priceChange5m:  m.priceChange5m,
-        priceChange1h:  m.priceChange1h,
-        priceChange24h: m.priceChange24h,
-        reserveUsd:     m.reserveUsd,
-        direction:      m.direction,
-      }));
+      const movers: MoverSummary[] = moversRaw.slice(0, topN).map(m => {
+        // NF/U5: movers nu poartă reserveSource → asociem cu pair_states înainte de output.
+        const ps = (states as Record<string, any>)[pairKey(chainId, m.pairAddress)];
+        return {
+          symbol:         m.symbol,
+          pairAddress:    m.pairAddress,
+          priceChange5m:  m.priceChange5m,
+          priceChange1h:  m.priceChange1h,
+          priceChange24h: m.priceChange24h,
+          reserveUsd:     m.reserveUsd,
+          reserveSource:    ps?.reserveSource ?? null,
+          reserveEstimated: reserveEstimatedFlag(ps?.reserveSource), // tri-stare: null când lipsește pair_state
+          direction:      m.direction,
+        };
+      });
 
       // Same thresholds as tp_market_overview.ts's confidence calc.
       const confidence: ChainOverview["confidence"] =

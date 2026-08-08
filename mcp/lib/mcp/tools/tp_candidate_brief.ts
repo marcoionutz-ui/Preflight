@@ -5,7 +5,7 @@ import { readAllRedis, getPipelineState, resolvePairChain, findLastEventForPair,
 import type { PairState } from "../types";
 import { mcpErr, mcpResponse, ERR } from "../errors";
 import type { SourceAgreement } from "@preflight/schema";
-import { hooksEvidenceField } from "@preflight/schema";
+import { hooksEvidenceField, isEstimatedReserve, reserveEstimatedFlag } from "@preflight/schema";
 
 function getLpCoverage(dexType: string | null | undefined, hasData: boolean): string {
   const d = (dexType ?? "").toUpperCase();
@@ -156,7 +156,13 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
         lines.push("");
         lines.push("LIQUIDITY:");
         if (pairState) {
-          lines.push(`  • Reserve: $${Math.round((pairState.reserveUsd ?? 0) / 1000)}K (${pairState.liqStatus ?? "?"})`);
+          // NF/U5: reserveUsd-ul V4 (V4_STATE_LIQUIDITY) e ESTIMAT din virtual reserves — poate supraestima
+          // pozițiile concentrate → marchează-l ca estimat, nu ca TVL confirmat.
+          const reserveEstimated = isEstimatedReserve(pairState.reserveSource);
+          lines.push(`  • Reserve: $${Math.round((pairState.reserveUsd ?? 0) / 1000)}K (${pairState.liqStatus ?? "?"})${reserveEstimated ? " ⚠️ V4 est." : ""}`);
+          if (reserveEstimated) {
+            lines.push("  • ⚠️ Reserve is a V4 estimate (virtual reserves from active liquidity — may overstate concentrated positions; not confirmed TVL)");
+          }
           lines.push(`  • DEX type: ${pairState.dexType ?? "?"} | LP coverage: ${getLpCoverage(pairState.dexType, pairState.lp?.hasData ?? false)}`);
           // NF1: pt. V4, raportează starea hook-ului (tri-stare) + coverage-ul de flow.
           if (pairState.dexType === "V4") {
@@ -202,6 +208,8 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
         // NF1: caveat vizibil chiar și fără swap-uri observate încă (coverage e proprietate a pool-ului).
         if (pairState?.flow?.flowCoverage === "EVENT_ONLY") cautions.push("V4 return-delta hook — flow is event-only (buy/sell may be incomplete)");
         else if (pairState?.flow?.flowCoverage === "UNKNOWN" && pairState?.dexType === "V4") cautions.push("V4 hook info unavailable — flow coverage unknown");
+        // NF/U5: rezerva V4 e un estimat (virtual reserves) — poate supraestima lichiditatea.
+        if (isEstimatedReserve(pairState?.reserveSource)) cautions.push("V4 reserve is an estimate (virtual reserves — may overstate liquidity, not confirmed TVL)");
         if (exposePerformance && data && data.consecutiveLosses >= 2) cautions.push(`${data.consecutiveLosses} consecutive losses`);
         if (data && (pairState?.poolCountSameToken ?? 1) >= 3) cautions.push(`clone/fragmentation risk (${pairState?.poolCountSameToken} pools)`);
         if (pairState?.lp?.status === "REMOVED") cautions.push("LP currently being removed");
@@ -300,7 +308,10 @@ return mcpResponse({
   confidence,
   dataQuality: {
     wsFlow:    wsFlowQuality(hasDirectFlow, coveragePct),
-    liquidity: pairState?.lp?.hasData ? "confirmed" : pairState?.reserveUsd ? "estimated" : "unknown",
+    // NF/U5 (R3): un reserveUsd V4 estimat NU poate fi „confirmed" din LP events — ar contrazice caveatul din text.
+    liquidity: isEstimatedReserve(pairState?.reserveSource) ? "estimated"
+             : pairState?.lp?.hasData ? "confirmed"
+             : pairState?.reserveUsd ? "estimated" : "unknown",
   },
   evidence: {
     pipelineState: pipeState,
@@ -310,6 +321,9 @@ return mcpResponse({
     hasFlowData:   !!pairState?.flow?.hasData,
     flowCoverage:  pairState?.flow?.flowCoverage ?? null,
     ...hooksEvidence,
+    // NF/U5: proveniența rezervei + flag de estimat, ca agentul să nu trateze un reserveUsd V4 ca TVL confirmat.
+    reserveSource:    pairState?.reserveSource ?? null,
+    reserveEstimated: reserveEstimatedFlag(pairState?.reserveSource), // tri-stare: true/false/null(necunoscut)
     lpCoverage:    pairState ? getLpCoverage(pairState.dexType, pairState.lp?.hasData ?? false) : "NO_PAIR_STATE",
   },
 });

@@ -184,6 +184,7 @@ export async function buildPairStates(): Promise<Record<string, PairStateSnapsho
       },
 
       reserveUsd:    liq.reserveUsd,
+      reserveSource: liq.reserveSource, // NF/U5: provenance (V4_STATE_LIQUIDITY = estimat → caveat MCP)
       reserveEth:    liq.reserveEth,
       reserveNative: liq.reserveNative,
       nativeSymbol:  liq.nativeSymbol,

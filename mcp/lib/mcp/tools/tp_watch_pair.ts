@@ -9,7 +9,7 @@ import { pairAddressSchema } from "./pairAddressSchema";
 import { readAllRedis } from "../redis-reader";
 import { getRedis } from "@/lib/db/redis";
 import { mcpResponse, mcpErr, ERR } from "../errors";
-import { REDIS_KEYS, pairKey, normalizeChainId } from "@preflight/schema";
+import { REDIS_KEYS, pairKey, normalizeChainId, isEstimatedReserve } from "@preflight/schema";
 
 export function registerWatchPair(server: McpServer) {
   server.registerTool(
@@ -104,7 +104,7 @@ Returns current status if pair is already being monitored.`,
         lines.push(`STATUS: queued for monitoring`);
         lines.push(`  chain: ${normalizedChain}${reason ? ` | reason: ${reason}` : ""}`);
         if (hasContext) {
-          lines.push(`  known pair — ${pairState?.symbol ?? "?"} liq:$${Math.round((pairState?.reserveUsd ?? 0) / 1000)}K`);
+          lines.push(`  known pair — ${pairState?.symbol ?? "?"} liq:$${Math.round((pairState?.reserveUsd ?? 0) / 1000)}K${isEstimatedReserve(pairState?.reserveSource) ? " V4est⚠" : ""}`);
         } else {
           lines.push(`  unknown pair — will fetch pool data on next refresh cycle`);
         }

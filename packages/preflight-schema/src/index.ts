@@ -98,6 +98,44 @@ export function hooksEvidenceField(
   return {};
 }
 
+// ── Reserve provenance (NF/U5) ─────────────────────────────────────────────────
+// Sursa din care a fost derivat `reserveUsd`-ul unei perechi (oglindă a
+// ReserveSource din workers/indexer-evm/src/infra/v2Pricing.ts, extinsă cu sursele
+// DEX-reported ale worker-ului). Doar `V4_STATE_LIQUIDITY` e un ESTIMAT din virtual
+// reserves (StateView.getLiquidity × sqrtPrice × 2) — NU TVL real: supraestimează
+// pool-urile cu lichiditate concentrată (o poziție îngustă arată virtual reserves
+// uriașe față de TVL-ul real). Restul sunt rezerve reale on-chain (V2 getReserves,
+// V3 balanceOf) sau lichiditate raportată de sursa DEX (Gecko/DexScreener).
+export type ReserveSource =
+  | "V2_RESERVES"          // V2: getReserves() — reale
+  | "BALANCE_OF"           // V3: balanceOf(pool) pe ambele token-uri — reale
+  | "V4_STATE_LIQUIDITY"   // V4: estimat din active liquidity (virtual reserves ×2) — POATE SUPRAESTIMA
+  | "UNKNOWN_V4"           // V4: preț OK dar fără lichiditate activă → reserveUsd 0
+  | "GECKO_REPORTED"       // Gecko reserve_in_usd — raportat de sursă
+  | "DEXSCREENER_REPORTED" // DexScreener liquidity.usd — raportat de sursă
+  | "UNKNOWN";
+
+/**
+ * NF/U5: `reserveUsd` provine dintr-un ESTIMAT care poate supraestima (V4 virtual
+ * reserves), nu dintr-o rezervă reală/măsurată? Sursă unică de adevăr partajată
+ * worker (clasificare liqStatus) ↔ MCP (caveat de raportare) ↔ teste. Doar
+ * `V4_STATE_LIQUIDITY` califică — restul sunt reale sau raportate de DEX.
+ */
+export function isEstimatedReserve(src: ReserveSource | null | undefined): boolean {
+  return src === "V4_STATE_LIQUIDITY";
+}
+
+/**
+ * NF/U5 (R3, varu): flag TRI-STARE pt. output-urile structurate — `true` = estimat (V4_STATE_LIQUIDITY),
+ * `false` = rezervă reală/raportată cunoscută, `null` = proveniență NECUNOSCUTĂ (source lipsă sau "UNKNOWN").
+ * `false` ar minți „sigur NU e estimat" când de fapt nu știm — deci sursă necunoscută → `null`, nu `false`.
+ * (Markerul textual folosește `isEstimatedReserve`: se afișează DOAR când e sigur estimat; absența ≠ afirmație.)
+ */
+export function reserveEstimatedFlag(src: ReserveSource | null | undefined): boolean | null {
+  if (src == null || src === "UNKNOWN") return null; // proveniență necunoscută → onest necunoscut
+  return isEstimatedReserve(src);
+}
+
 // Sursă de adevăr pentru workers/evm/src/risk/momentum.ts — odată scris în
 // Redis și citit de MCP, valorile astea sunt parte din wire contract, nu
 // doar un detaliu intern de algoritm. Un typo aici (ex. "VERTCAL_WATCH")
@@ -208,6 +246,11 @@ export interface PreflightPairState {
   reserveUsd:         number;
   reserveEth:         number;
   reserveNative:      number;
+  // NF/U5: proveniența lui `reserveUsd` — optional (absent pe snapshot-uri vechi;
+  // buildPairStates îl scrie când e cunoscut). `V4_STATE_LIQUIDITY` = estimat din
+  // virtual reserves (poate supraestima poziții concentrate) → consumatorii MCP pun
+  // caveat, iar liqStatus e clasificat cu prag mai conservator (vezi isEstimatedReserve).
+  reserveSource?:     ReserveSource | null;
   // Verified against workers/evm/src/risk/liquidity.ts's
   // getLiquidityContext() return type — both fields below are its exact
   // literal signature, not a guess.

@@ -20,6 +20,7 @@ import { getRedis } from "../infra/redis";
 import { CHAINS } from "../config/chains";
 import type { ChainConfig } from "../config/chains";
 import type { SourcePool, DexType, QuotePriceSource } from "./normalize";
+import type { ReserveSource } from "@preflight/schema";
 import { normalizeHooks } from "../ws/v4Hooks";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -67,6 +68,9 @@ interface IndexedPair {
   reserveUsd?:  number;
   priceStatus?: string;
   pricedAt?:    number;   // C3: Unix ms al ultimei prețuiri (staleness)
+  // NF/U5: proveniența reserveUsd scrisă de indexer (v2Pricing ReserveSource). `V4_STATE_LIQUIDITY` = estimat
+  // (virtual reserves) care poate supraestima; V2_RESERVES/BALANCE_OF = reale. Propagat mai departe în SourcePool.
+  reserveSource?: ReserveSource;
 
   // Faza 6.11: quote price transparency
   quotePriceSource?: QuotePriceSource;
@@ -119,7 +123,9 @@ function dexTypeFromId(dexId: string): DexType {
   return "V2";
 }
 
-function toSourcePool(pair: IndexedPair, chainCfg: ChainConfig): SourcePool {
+// Exportat pentru testele NF/U5 (reserveProvenance.test.ts): exercită carry-ul REAL al `reserveSource`
+// din IndexedPair → SourcePool (înainte se pierdea aici — proveniența V4_STATE_LIQUIDITY dispărea).
+export function toSourcePool(pair: IndexedPair, chainCfg: ChainConfig): SourcePool {
   return {
     chain:             pair.chain,
     pairAddress:       pair.pairAddress,
@@ -131,7 +137,11 @@ function toSourcePool(pair: IndexedPair, chainCfg: ChainConfig): SourcePool {
     discoverySource:   "INDEXER",
     priceUsd:          pair.priceUsd   ?? 0, // 6.5: enriched price, fallback 0
     priceChange:       { m5: 0, h1: 0, h24: 0 },
-    reserveUsd:        pair.reserveUsd ?? 0, // 6.5: enriched TVL, fallback 0
+    // NF/U5: reserveUsd NU e TVL real pt. V4 — indexerul îl derivă din virtual reserves (reserveSource
+    // V4_STATE_LIQUIDITY), care supraestimează pozițiile concentrate. Propagăm `reserveSource` ca provenance
+    // (înainte se pierdea aici + era etichetat greșit „enriched TVL") → consumatorii pun caveat + gating conservator.
+    reserveUsd:        pair.reserveUsd ?? 0, // enriched reserve (V4 = estimat, vezi reserveSource)
+    reserveSource:     pair.reserveSource,
     volumeUsd24h:      0,
     transactions:      { buys5m: 0, sells5m: 0, buys1h: 0, sells1h: 0 },
     _chain:            chainCfg,

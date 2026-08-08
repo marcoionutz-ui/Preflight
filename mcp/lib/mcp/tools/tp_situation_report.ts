@@ -1,6 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { readAllRedis, formatVol, formatPct, combineConfidence, dedupeByPair } from "../redis-reader";
-import { pairKey, splitPairKey } from "@preflight/schema";
+import { pairKey, splitPairKey, isEstimatedReserve } from "@preflight/schema";
 import { mcpErr, mcpResponse, ERR } from "../errors";
 import type { PairState } from "../types";
 
@@ -147,8 +147,9 @@ Observed movers section shows tokens moving on market that haven't passed pipeli
           Math.abs(s.priceChange?.h24 ?? 0) / 8,
         );
 
+        // NF/U5: marchează reserveUsd derivat din estimat V4 (virtual reserves — poate supraestima).
         const moverLine = (s: PairState) =>
-          `  → ${s.symbol} [${s.chain}] pair:${s.pairAddress} m5:${formatPct(s.priceChange.m5)} h1:${formatPct(s.priceChange.h1)} h24:${formatPct(s.priceChange.h24)} liq:$${Math.round((s.reserveUsd ?? 0) / 1000)}K`;
+          `  → ${s.symbol} [${s.chain}] pair:${s.pairAddress} m5:${formatPct(s.priceChange.m5)} h1:${formatPct(s.priceChange.h1)} h24:${formatPct(s.priceChange.h24)} liq:$${Math.round((s.reserveUsd ?? 0) / 1000)}K${isEstimatedReserve(s.reserveSource) ? " V4est⚠" : ""}`;
 
         const moverBase = stateVals.filter(s =>
           s.pipelineState === "NONE" &&

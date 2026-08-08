@@ -104,6 +104,8 @@ export const PairContextSchema = z.object({
   phase:              z.string(),              // `phase` e `string` în PreflightPairContext (NU enum)
   liquidityStatus:    z.enum(LIQ_STATUSES),
   reserveUsd:         z.number(),
+  // NF/U5 (R4): proveniența rezervei — `V4_STATE_LIQUIDITY` = estimat. Optional (absent pe pair_context vechi).
+  reserveSource:      z.enum(["V2_RESERVES", "BALANCE_OF", "V4_STATE_LIQUIDITY", "UNKNOWN_V4", "GECKO_REPORTED", "DEXSCREENER_REPORTED", "UNKNOWN"]).nullable().optional(),
   flow:               PairContextFlowSchema,
   entryRisk:          z.enum(ENTRY_RISKS),
   riskFlags:          z.array(z.string()),

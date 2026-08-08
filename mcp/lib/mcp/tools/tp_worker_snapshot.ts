@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { readAllRedis } from "../redis-reader";
 import type { PairState, MemoryEntry } from "../types";
-import { splitPairKey, normalizeChainId } from "@preflight/schema";
+import { splitPairKey, normalizeChainId, reserveEstimatedFlag } from "@preflight/schema";
 import { mcpResponse, mcpErr, ERR } from "../errors";
 
 export function registerWorkerSnapshot(server: McpServer, exposePerformance: boolean) {
@@ -82,6 +82,9 @@ Args:
               seenCount: data.seenCount, currentPrice: data.currentPrice,
               dexType:    states[addr]?.dexType    ?? null,
               reserveUsd: states[addr]?.reserveUsd ?? null,
+              // NF/U5: proveniența rezervei — reserveUsd V4 e estimat (virtual reserves, poate supraestima).
+              reserveSource:    states[addr]?.reserveSource ?? null,
+              reserveEstimated: reserveEstimatedFlag(states[addr]?.reserveSource), // tri-stare (null=necunoscut)
               liqStatus:  states[addr]?.liqStatus  ?? null,
               flow:       states[addr]?.flow ?? null,
               history: exposePerformance ? {

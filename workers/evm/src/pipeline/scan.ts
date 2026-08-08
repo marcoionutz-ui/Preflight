@@ -515,6 +515,7 @@ async function processPool(
       wsFlowReal.buys5m ?? 0,
       wsFlowReal.sells5m ?? 0,   // E34: sell-count REAL → observația WATCHING nu mai fabrică „buying-only"
       WORKER_VERSION,
+      pool.reserveSource,        // NF/U5: provenance → liquidityStatus derivat plafonat pt. estimat V4
     );
 
     if (!isFollowRefresh && shouldRecordEvent(momentumEvent.verdict)) {
@@ -771,7 +772,7 @@ async function processPool(
       buys5m:   wsFlowReal.buys5m ?? 0,
       sells5m:  wsFlowReal.sells5m ?? 0,
     },
-    reserveUsd: liqCtx.reserveUsd, liqStatus: liqCtx.status,
+    reserveUsd: liqCtx.reserveUsd, liqStatus: liqCtx.status, reserveSource: liqCtx.reserveSource,
     riskFlags: [], phase: mem.phase, workerVersion: WORKER_VERSION,
   });
   qualifiedSignalsBuffer.unshift(qsScan);

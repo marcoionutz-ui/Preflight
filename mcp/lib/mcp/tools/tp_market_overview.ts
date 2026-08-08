@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { readAllRedis, readTrendingMovers, readSolanaMovers } from "../redis-reader";
-import { normalizeChainId } from "@preflight/schema";
+import { normalizeChainId, reserveEstimatedFlag, pairKey } from "@preflight/schema";
 import type { MemoryEntry } from "../types";
 import { mcpResponse, mcpErr, ERR } from "../errors";
 
@@ -57,20 +57,27 @@ Args: chain (optional), top_n (default 5, max 20)`,
         for (const c of chains) {
           const movers = await readTrendingMovers(c); // EVM only
           if (movers.length) {
-            moversByChain[c] = movers.slice(0, top_n).map(m => ({
-              symbol:         m.symbol,
-              dexType:        m.dexType,
-              pairAddress:    m.pairAddress,
-              tokenAddress:   m.tokenAddress,
-              priceUsd:       m.priceUsd,
-              reserveUsd:     m.reserveUsd,
-              priceChange5m:  m.priceChange5m,
-              priceChange1h:  m.priceChange1h,
-              priceChange24h: m.priceChange24h,
-              direction:      m.direction,
-              historyStatus:  m.historyStatus,
-              snapshotCount:  m.snapshotCount,
-            }));
+            moversByChain[c] = movers.slice(0, top_n).map(m => {
+              // NF/U5: trending movers nu poartă reserveSource în schema lor → asociem cu pair_states
+              // înainte de output ca reserveUsd V4 (estimat) să nu apară drept certitudine.
+              const ps = (states as Record<string, any>)[pairKey(c, m.pairAddress)];
+              return {
+                symbol:         m.symbol,
+                dexType:        m.dexType,
+                pairAddress:    m.pairAddress,
+                tokenAddress:   m.tokenAddress,
+                priceUsd:       m.priceUsd,
+                reserveUsd:     m.reserveUsd,
+                reserveSource:    ps?.reserveSource ?? null,
+                reserveEstimated: reserveEstimatedFlag(ps?.reserveSource), // tri-stare: null când nu avem pair_state
+                priceChange5m:  m.priceChange5m,
+                priceChange1h:  m.priceChange1h,
+                priceChange24h: m.priceChange24h,
+                direction:      m.direction,
+                historyStatus:  m.historyStatus,
+                snapshotCount:  m.snapshotCount,
+              };
+            });
           }
         }
 
@@ -120,6 +127,8 @@ Args: chain (optional), top_n (default 5, max 20)`,
               .map(([, p]) => ({
                 symbol: p.symbol, pairAddress: p.pairAddress, chain: p.chain, phase: p.phase,
                 dexType: p.dexType, reserveUsd: p.reserveUsd,
+                // NF/U5: proveniența rezervei — reserveUsd V4 e estimat (virtual reserves, poate supraestima).
+                reserveSource: p.reserveSource ?? null, reserveEstimated: reserveEstimatedFlag(p.reserveSource),
                 buyVol5m: p.flow.buyVol5m, netVol5m: p.flow.netVol5m, buys5m: p.flow.buys5m,
               })),
             pipeline: {

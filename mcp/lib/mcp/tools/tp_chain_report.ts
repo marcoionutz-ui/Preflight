@@ -9,11 +9,14 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { readAllRedis, formatEth, formatVol, formatPct, combineConfidence, getPipelineState, readSolanaIndexerStats, readSolanaMovers, readSolanaRecentActivity } from "../redis-reader";
-import { normalizeChainId, splitPairKey } from "@preflight/schema";
+import { normalizeChainId, splitPairKey, isEstimatedReserve } from "@preflight/schema";
 import { mcpResponse, mcpErr, ERR } from "../errors";
 
 // Timestamp fallback — events pot folosi ts, detectedAt, sau timestamp
 const eventTs = (e: any): number => e.ts ?? e.detectedAt ?? e.timestamp ?? 0;
+
+// NF/U5: sufix compact pt. reserveUsd derivat dintr-un estimat V4 (virtual reserves — poate supraestima).
+const reserveMark = (rs: unknown): string => isEstimatedReserve(rs as any) ? " V4est⚠" : "";
 
 function getLpCoverage(dexType: string | null | undefined, hasData: boolean): string {
   const d = (dexType ?? "").toUpperCase();
@@ -230,7 +233,7 @@ Args: chain — one of: base, arbitrum, eth, bsc, solana`,
               if (pc) line += `\n     priceChange: m5:${formatPct(pc.m5)} h1:${formatPct(pc.h1)} h24:${formatPct(pc.h24)}`;
               if (pairState) {
                 // fix ChatGPT #2: ?? 0 pe reserveUsd
-                line += `\n     liq:$${Math.round((pairState.reserveUsd ?? 0) / 1000)}K lp:${pairState.lp?.status ?? "?"}(${getLpCoverage(pairState.dexType, pairState.lp?.hasData ?? false)})`;
+                line += `\n     liq:$${Math.round((pairState.reserveUsd ?? 0) / 1000)}K${reserveMark(pairState.reserveSource)} lp:${pairState.lp?.status ?? "?"}(${getLpCoverage(pairState.dexType, pairState.lp?.hasData ?? false)})`;
               }
               return line;
             });
@@ -266,7 +269,7 @@ Args: chain — one of: base, arbitrum, eth, bsc, solana`,
             const addr = splitPairKey(key).address;
             const pc = s.priceChange!;
             let line = `  → ${s.symbol ?? addr.slice(0, 8)} pair:${addr}`;
-            line += `\n     m5:${formatPct(pc.m5)} h1:${formatPct(pc.h1)} h24:${formatPct(pc.h24)} liq:$${Math.round((s.reserveUsd ?? 0) / 1000)}K`;
+            line += `\n     m5:${formatPct(pc.m5)} h1:${formatPct(pc.h1)} h24:${formatPct(pc.h24)} liq:$${Math.round((s.reserveUsd ?? 0) / 1000)}K${reserveMark(s.reserveSource)}`;
             // fix ChatGPT #3: ?? 0 pe formatEth
             line += `\n     flow:${s.flow?.hasData ? `${s.flow.pressure} buys:${s.flow.buys5m} netVol:${formatVol(s.flow.netVol5mUsd, s.flow.netVol5m ?? 0)}` : "NO_WS_DATA"} lp:${s.lp?.status ?? "?"}(${getLpCoverage(s.dexType, s.lp?.hasData ?? false)})`;
             return line;
@@ -289,7 +292,7 @@ Args: chain — one of: base, arbitrum, eth, bsc, solana`,
             // fix ChatGPT #3: ?? 0 pe formatEth
             line += `\n     flow:${pairState!.flow.pressure} buys:${pairState!.flow.buys5m} buyVol:${formatVol(pairState!.flow.buyVol5mUsd, pairState!.flow.buyVol5m ?? 0)} netVol:${formatVol(pairState!.flow.netVol5mUsd, pairState!.flow.netVol5m ?? 0)}`;
             if (pc) line += `\n     priceChange: m5:${formatPct(pc.m5)} h1:${formatPct(pc.h1)} h24:${formatPct(pc.h24)}`;
-            line += `\n     liq:$${Math.round((pairState?.reserveUsd ?? 0) / 1000)}K lp:${pairState?.lp?.status ?? "?"}(${getLpCoverage(pairState?.dexType, pairState?.lp?.hasData ?? false)})`;
+            line += `\n     liq:$${Math.round((pairState?.reserveUsd ?? 0) / 1000)}K${reserveMark(pairState?.reserveSource)} lp:${pairState?.lp?.status ?? "?"}(${getLpCoverage(pairState?.dexType, pairState?.lp?.hasData ?? false)})`;
             return line;
           });
           lines.push(`WATCHING — active flow (${watchingWithFlow.length}):\n${watchLines.join("\n")}`);
