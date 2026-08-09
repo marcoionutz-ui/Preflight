@@ -76,6 +76,16 @@ export const DISC_DRAIN_BATCH     = intEnv("SOLANA_DISC_DRAIN_BATCH", 20);
 export const DISC_DRAIN_CONCURRENCY = intEnv("SOLANA_DISC_DRAIN_CONCURRENCY", 4);
 export const DISC_DRAIN_INTERVAL_MS = intEnv("SOLANA_DISC_DRAIN_INTERVAL_MS", 5_000);
 
+// ── P1-4: config buffer de re-enqueue (durabilitate fereastră WS→enqueue) ────────
+// WS-ul nu oferă replay: dacă `enqueueCandidate` pică (Redis jos), candidatul e pierdut. Buffer-ul
+// în proces (enqueueBuffer.ts) reține candidatul și reîncearcă cu backoff până Redis revine — NU
+// renunță după câteva încercări (bug-ul vechi `attempt(3)`). Cap = plafon de memorie: la depășire,
+// candidatul cel mai nou e dropat + logat ONEST ca pierdere reală (nu tăcut).
+export const DISC_ENQUEUE_BUFFER_CAP        = intEnv("SOLANA_DISC_ENQUEUE_BUFFER_CAP", 10_000);
+export const DISC_ENQUEUE_BACKOFF_BASE_MS   = intEnv("SOLANA_DISC_ENQUEUE_BACKOFF_BASE_MS", 1_000);
+export const DISC_ENQUEUE_BACKOFF_MAX_MS    = intEnv("SOLANA_DISC_ENQUEUE_BACKOFF_MAX_MS", 30_000);
+export const DISC_ENQUEUE_FLUSH_INTERVAL_MS = intEnv("SOLANA_DISC_ENQUEUE_FLUSH_INTERVAL_MS", 1_000);
+
 function pendingKey(chain: string):    string { return `preflight:indexer:disc:pending:${chain}`; }
 function processingKey(chain: string): string { return `preflight:indexer:disc:processing:${chain}`; }
 function attemptsKey(chain: string):   string { return `preflight:indexer:disc:attempts:${chain}`; }

@@ -21,6 +21,8 @@
  * 8.0m:    Debt sweep — registry permanent (no TTL), atomic cursor Lua, health clamp, defensive log match.
  * C6:      Coadă durabilă de discovery — candidatul e enqueue-uit ÎNAINTE de fetch/write; drain cu
  *          retry+dead-letter (crash-safe); OBSERVED vs PROCESSED slot; health onest (dead-letter/backlog).
+ * P1-4:    Buffer durabil de re-enqueue — fereastra WS→enqueue nu mai pierde candidați dacă Redis clipește
+ *          (WS fără replay); retry cu backoff până Redis revine, nu give-up după câteva încercări.
  */
 
 import type Redis from "ioredis";
@@ -55,8 +57,10 @@ import {
   markCandidateDone, markCandidateFailed, decodeCandidate, discoveryQueueStats,
   queueActionFor, quarantineUnsupported,
   DISC_LEASE_MS, DISC_DRAIN_BATCH, DISC_DRAIN_CONCURRENCY, DISC_DRAIN_INTERVAL_MS,
+  DISC_ENQUEUE_BUFFER_CAP, DISC_ENQUEUE_BACKOFF_BASE_MS, DISC_ENQUEUE_BACKOFF_MAX_MS, DISC_ENQUEUE_FLUSH_INTERVAL_MS,
   type DiscoveryProgram, type DiscoveryCandidate, type CandidateOutcome,
 } from "./discovery/discoveryQueue";
+import { EnqueueRetryBuffer } from "./discovery/enqueueBuffer";
 import {
   CHAIN, INDEXER_VERSION, POLL_INTERVAL_MS, KEY_PAIRS,
   PROGRAM_STALE_MS, PROGRAM_STARTUP_GRACE_MS, SOLANA_WS_STALL_MS,
@@ -79,6 +83,9 @@ function sleep(ms: number): Promise<void> {
 // ── Stats ────────────────────────────────────────────────────────────────────
 const stats = { events: 0, cpmmTotal: 0, clmmTotal: 0, ammV4Total: 0, pumpfunTotal: 0, deduped: 0, candidates: 0, fetched: 0, inserted: 0, launchesInserted: 0, dead: 0, invalid: 0, unsupported: 0, errors: 0, callbackErrors: 0 };
 
+// P1-4: referință la buffer-ul de re-enqueue (setat în main) — logStats îi raportează starea.
+let enqueueBufferRef: EnqueueRetryBuffer | null = null;
+
 function logStats(): void {
   console.log(
     "[SOLANA][STATS]"
@@ -98,6 +105,16 @@ function logStats(): void {
     + " errors=" + stats.errors
     + " callbackErrors=" + stats.callbackErrors,
   );
+  // P1-4: starea buffer-ului de re-enqueue — `dropped` = pierdere REALĂ (cap plin), vizibilă în ops.
+  if (enqueueBufferRef) {
+    const b = enqueueBufferRef.stats();
+    console.log(
+      "[SOLANA][DISC-QUEUE][BUFFER]"
+      + " buffered=" + b.buffered
+      + " recovered=" + b.recovered
+      + " dropped=" + b.dropped,
+    );
+  }
   logClmmStats();
   logPumpfunStats();
   logSwapStats();
@@ -459,20 +476,45 @@ async function main(): Promise<void> {
 
   // C6: candidatul e ENQUEUE-uit durabil (nu procesat inline fire-and-forget). Drain-ul
   // background face fetch→write→ack cu retry+dead-letter, crash-safe.
+  //
+  // P1-4: WS-ul nu oferă replay al notificărilor. Vechiul `attempt(3)` reîncerca de 4 ori la 500ms și
+  // apoi RENUNȚA → dacă Redis era jos > ~2s, candidatul era pierdut permanent. Acum: pe primul eșec,
+  // candidatul intră în `enqueueBuffer` care reîncearcă cu backoff până Redis revine (nu renunță cât
+  // timp trăiește procesul). Coada durabilă (pending→processing→dead) preia după primul ACK Redis.
+  const enqueueBuffer = new EnqueueRetryBuffer({
+    enqueue:       (c: DiscoveryCandidate) => enqueueCandidate(redis, CHAIN, c),
+    now:           Date.now,
+    capacity:      DISC_ENQUEUE_BUFFER_CAP,
+    baseBackoffMs: DISC_ENQUEUE_BACKOFF_BASE_MS,
+    maxBackoffMs:  DISC_ENQUEUE_BACKOFF_MAX_MS,
+    onRecovered:   (_c, added) => { if (added) stats.candidates++; else stats.deduped++; },
+    onDropped:     (c, buffered) => {
+      stats.errors++;
+      console.error(
+        "[SOLANA][DISC-QUEUE] enqueue buffer PLIN — candidat PIERDUT (pierdere reală)"
+        + " program=" + c.program + " slot=" + c.slot
+        + " sig=" + c.signature.slice(0, 12) + " buffered=" + buffered,
+      );
+    },
+  });
+  enqueueBufferRef = enqueueBuffer;
+
   const enqueueDiscovery = (program: DiscoveryProgram, signature: string, slot: number): void => {
-    // Fix varu (blocker): stats.candidates DOAR la enqueue confirmat nou (added); redelivery pe care
-    // NX o respinge → deduped. Retry scurt: WS nu oferă replay, deci un enqueue eșuat = candidat
-    // pierdut — câteva reîncercări reduc fereastra. Garanția reală: „durabil DUPĂ ACK Redis".
-    const attempt = (tries: number): void => {
-      enqueueCandidate(redis, CHAIN, { program, slot, signature })
-        .then(added => { if (added) stats.candidates++; else stats.deduped++; })
-        .catch((err: Error) => {
-          if (tries > 0) { setTimeout(() => attempt(tries - 1), 500); return; }
-          stats.errors++;
-          console.error("[SOLANA][DISC-QUEUE] enqueue error (renunț după retries):", err.message);
-        });
-    };
-    attempt(3);
+    // stats.candidates DOAR la enqueue confirmat nou (added); redelivery pe care NX o respinge → deduped.
+    const candidate: DiscoveryCandidate = { program, slot, signature };
+    enqueueCandidate(redis, CHAIN, candidate)
+      .then(added => { if (added) stats.candidates++; else stats.deduped++; })
+      .catch(() => {
+        // P1-4: Redis a respins enqueue-ul → NU renunțăm (WS fără replay). Buffer durabil în proces cu
+        // retry+backoff până Redis revine. `push` întoarce false DOAR la cap plin (dropat + logat de onDropped).
+        const buffered = enqueueBuffer.push(candidate);
+        if (buffered) {
+          console.warn(
+            "[SOLANA][DISC-QUEUE] enqueue eșuat → buffer retry"
+            + " program=" + program + " slot=" + slot + " sig=" + signature.slice(0, 12),
+          );
+        }
+      });
   };
 
   // D2: ancoră grația de freshness la momentul PORNIRII subscripțiilor (după backfill), nu la start proces.
@@ -541,6 +583,18 @@ async function main(): Promise<void> {
       now: Date.now,
     }),
   );
+
+  // P1-4: flush loop pentru buffer-ul de re-enqueue — guard per-proces + interval (non-blocant, ca
+  // drain-ul). Reîncearcă candidații eligibili (backoff) până Redis revine. Sare când buffer-ul e gol.
+  let flushInFlight = false;
+  setInterval(() => {
+    if (flushInFlight) return;
+    if (enqueueBuffer.size === 0) return;
+    flushInFlight = true;
+    enqueueBuffer.flushDue()
+      .catch((err: Error) => console.error("[SOLANA][DISC-QUEUE] enqueue buffer flush error:", err.message))
+      .finally(() => { flushInFlight = false; });
+  }, DISC_ENQUEUE_FLUSH_INTERVAL_MS);
 
   // Drain background — guard per-proces + interval (non-blocant, ca schedulerele C3/C2 din EVM)
   let drainInFlight = false;
