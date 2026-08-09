@@ -16,9 +16,12 @@ import {
   type AuthCodePayload,
   type ConsumeResult,
   AUTH_CODE_CONSUME_LUA,
+  AUTH_CODE_CONSUME_AND_ISSUE_LUA,
   classifyConsumeResult,
+  classifyIssueResult,
   parseAuthCode,
 } from "./oauthAtomic";
+import { mintToken, TOKEN_TTL_SEC, type TokenPayload } from "./oauth-tokens";
 
 export type { AuthCodePayload } from "./oauthAtomic";
 
@@ -83,6 +86,46 @@ export async function finalizeAuthCode(
     return classifyConsumeResult(res);
   } catch {
     return "unavailable";
+  }
+}
+
+/**
+ * U7 (atomic issuance): consumă codul (compare-and-delete pe `raw`) ȘI scrie tokenul într-un SINGUR EVAL atomic.
+ * Înlocuiește secvența `finalizeAuthCode` → `issueToken` din ruta /token: dacă Redis pica ÎNTRE ele, codul rămânea
+ * ars fără token emis, iar clientul trebuia să reia tot flow-ul de /authorize. Acum e all-or-nothing — la eșec
+ * nimic nu se persistă, clientul reia cu ACELAȘI cod.
+ *   `issued`       → cod consumat + token scris atomic.
+ *   `already_used` → codul a dispărut între peek și finalize (replay / dublă-trimitere) → invalid_grant.
+ *   `unavailable`  → Redis jos/respins → 503 (NU emite un token pe un cod nesigilat).
+ */
+export type IssueResult =
+  | { status: "issued"; token: string }
+  | { status: "already_used" }
+  | { status: "unavailable" };
+
+export async function consumeCodeAndIssueToken(
+  code:         string,
+  raw:          string,
+  tokenPayload: TokenPayload,
+): Promise<IssueResult> {
+  const r = getRedis();
+  if (!r) return { status: "unavailable" };
+
+  const { token, key, value } = mintToken(tokenPayload);
+  try {
+    const res = await r.eval(
+      AUTH_CODE_CONSUME_AND_ISSUE_LUA,
+      2,
+      codeKey(code), key,
+      raw, value, String(TOKEN_TTL_SEC),
+    );
+    const verdict = classifyIssueResult(res);
+    if (verdict === "issued")       return { status: "issued", token };
+    // SET NX a eșuat → tokenul NU s-a scris ȘI codul NU s-a șters (all-or-nothing) → 503 retry (nu ardem codul).
+    if (verdict === "write_failed") return { status: "unavailable" };
+    return { status: "already_used" };
+  } catch {
+    return { status: "unavailable" };
   }
 }
 

@@ -4,14 +4,13 @@
  */
 
 import type { NextRequest } from "next/server";
+import { resolveBaseUrl } from "@/lib/oauth/baseUrl";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
-  const host   = req.headers.get("x-forwarded-host") ?? req.headers.get("host") ?? "";
-  const proto  = req.headers.get("x-forwarded-proto") ?? "https";
-  const issuer = `${proto}://${host}`;
+  const issuer = resolveBaseUrl(req.headers, process.env);
 
   return Response.json({
 	  issuer,

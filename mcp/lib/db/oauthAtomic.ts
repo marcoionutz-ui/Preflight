@@ -72,6 +72,40 @@ export function classifyConsumeResult(luaReturn: unknown): ConsumeResult {
   return Number(luaReturn) === 1 ? "consumed" : "already_used";
 }
 
+/**
+ * U7 (atomic issuance): consumă codul ȘI scrie tokenul all-or-nothing. ⚠️ Redis Lua NU face rollback dacă o comandă
+ * eșuează după alta (redis.io/blog/you-dont-need-transaction-rollbacks-in-redis) → ORDINEA contează: scriem tokenul
+ * ÎNTÂI (`SET ... EX ... NX`), verificăm succesul, și DOAR APOI ștergem codul. Dacă SET eșuează (NX-collision, sau o
+ * eroare care abortează scriptul), codul NU e șters → clientul reia cu ACELAȘI cod (nu-l ardem fără token emis).
+ * Concurența e serializată oricum de atomicitatea EVAL (o cerere concurentă vede codul deja șters → 0, fără dublă emitere).
+ *   KEYS[1]=codeKey KEYS[2]=tokenKey ; ARGV[1]=codeRaw ARGV[2]=tokenPayload ARGV[3]=tokenTtlSec.
+ *   1 → token scris + cod consumat; 0 → codul nu mai există; -1 → alt blob (fail-closed); -2 → SET a eșuat, COD PĂSTRAT (retry).
+ * Verdictul → `classifyIssueResult` (NU `classifyConsumeResult` — -2 e retry, nu already_used).
+ */
+export const AUTH_CODE_CONSUME_AND_ISSUE_LUA = `
+local cur = redis.call('GET', KEYS[1])
+if not cur then return 0 end
+if cur ~= ARGV[1] then return -1 end
+local ok = redis.call('SET', KEYS[2], ARGV[2], 'EX', tonumber(ARGV[3]), 'NX')
+if not ok then return -2 end
+redis.call('DEL', KEYS[1])
+return 1
+`;
+
+export type IssueLuaVerdict = "issued" | "already_used" | "write_failed";
+
+/**
+ * Mapează întoarcerea `AUTH_CODE_CONSUME_AND_ISSUE_LUA`. 1→issued (token scris + cod consumat); -2→write_failed
+ * (SET NX a eșuat → COD PĂSTRAT → caller-ul întoarce 503 retry, NU „already used"); 0/-1→already_used (cod dispărut /
+ * blob schimbat → fail-closed).
+ */
+export function classifyIssueResult(luaReturn: unknown): IssueLuaVerdict {
+  const n = Number(luaReturn);
+  if (n === 1)  return "issued";
+  if (n === -2) return "write_failed";
+  return "already_used";
+}
+
 // ── E6: rate limit ─────────────────────────────────────────────────────────────
 
 /**

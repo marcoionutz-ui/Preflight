@@ -8,6 +8,7 @@ import { supabaseAdmin }           from "./supabase-admin";
 import { timingSafeStrEqual }      from "./constantTime";
 import { classifyClientLookup, type ClientLookup } from "./clientLookup";
 import { buildOAuthClientInsertRow, hasValidCredentialVersion } from "./oauthClientInsert";
+import { isSafeRedirectUri } from "../oauth/redirectUri";
 
 export type { ClientLookup } from "./clientLookup";
 
@@ -60,7 +61,9 @@ export function verifySecret(secret: string, hash: string): boolean {
  * allowlist-ul îl închide.
  */
 export function isAllowedRedirectUri(client: OAuthClient, redirectUri: string): boolean {
-  return client.redirect_uris.includes(redirectUri);
+  // U7: exact-match la allowlist ȘI politica de siguranță (defense-in-depth). Un URI legacy nesigur intrat
+  // în allowlist înainte de U7 (http non-loopback / fragment / userinfo) NU mai e acceptat la match.
+  return client.redirect_uris.includes(redirectUri) && isSafeRedirectUri(redirectUri);
 }
 
 // ── Lookup ────────────────────────────────────────────────────────────────────
@@ -216,22 +219,10 @@ export async function createOAuthClient({
  * validare URL de bază (trebuie să fie un URL absolut parsabil) — restul
  * (exact-match la /authorize) se face la citire, nu la scriere.
  */
-// new URL() acceptă și javascript:/data:/file:/vbscript: ca "URL absolut
-// valid" — trebuie blocate explicit chiar dacă permitem scheme custom
-// pentru clienți native (myapp://...). Altfel un owner ar putea (sau ar
-// putea fi păcălit să) adauge un redirect_uri care execută cod la redirect.
-const BLOCKED_PROTOCOLS = new Set(["javascript:", "data:", "file:", "vbscript:"]);
-
 export async function addRedirectUri(clientId: string, redirectUri: string): Promise<OAuthClient | null> {
-  let parsed: URL;
-  try {
-    parsed = new URL(redirectUri); // aruncă dacă nu e un URL absolut valid
-  } catch {
-    return null;
-  }
-  if (BLOCKED_PROTOCOLS.has(parsed.protocol.toLowerCase())) {
-    return null;
-  }
+  // U7: validare centralizată (leaf pur `lib/oauth/redirectUri.ts`) — blochează javascript/data/file/vbscript,
+  // fragmente (#), userinfo (user:pass@) și http non-loopback; permite https + scheme custom native + http loopback.
+  if (!isSafeRedirectUri(redirectUri)) return null;
 
   const client = await getClientById(clientId);
   if (!client) return null;

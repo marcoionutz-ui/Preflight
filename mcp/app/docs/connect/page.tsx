@@ -12,6 +12,7 @@
 
 import { headers } from "next/headers";
 import Link from "next/link";
+import { resolveBaseUrl } from "@/lib/oauth/baseUrl";
 
 export const dynamic = "force-dynamic";
 
@@ -40,10 +41,9 @@ const TOOLS: ToolRow[] = [
 ];
 
 export default async function ConnectDocsPage() {
+  // U7: origine CANONICĂ din PUBLIC_BASE_URL (imun la host-header poisoning); fallback pe headers doar dev/compat.
   const h      = await headers();
-  const host   = h.get("x-forwarded-host") ?? h.get("host") ?? "";
-  const proto  = h.get("x-forwarded-proto") ?? "https";
-  const issuer = `${proto}://${host}`;
+  const issuer = resolveBaseUrl(h, process.env);
   const mcpUrl = `${issuer}/api/mcp`;
 
   const claudeConfig = `{

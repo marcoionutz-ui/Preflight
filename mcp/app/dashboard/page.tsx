@@ -17,6 +17,7 @@ import { createClient as createSupabaseServerClient } from "@/lib/supabase/serve
 import { getClientByUserId, createOAuthClient } from "@/lib/db/oauth-clients";
 import { getPlanConfig } from "@/lib/mcp/billing";
 import DashboardClient from "./dashboard-client";
+import { resolveBaseUrl } from "@/lib/oauth/baseUrl";
 
 export const dynamic = "force-dynamic";
 
@@ -54,10 +55,9 @@ export default async function DashboardPage() {
     client      = created.client;
   }
 
-  const h     = await headers();
-  const host  = h.get("x-forwarded-host") ?? h.get("host") ?? "";
-  const proto = h.get("x-forwarded-proto") ?? "https";
-  const mcpUrl = `${proto}://${host}/api/mcp`;
+  // U7: origine CANONICĂ din PUBLIC_BASE_URL (imun la host-header poisoning); fallback pe headers doar dev/compat.
+  const h      = await headers();
+  const mcpUrl = `${resolveBaseUrl(h, process.env)}/api/mcp`;
 
   const planConfig = getPlanConfig(client.plan);
 

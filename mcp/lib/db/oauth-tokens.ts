@@ -13,7 +13,7 @@ import { RL_CHECK_INCR_LUA, rateLimitFromEval, type RateLimitOutcome } from "./o
 // (împreună cu scriptul Lua + mapper-ul pur). Re-exportat aici ca să nu se schimbe importurile caller-ilor.
 export type { RateLimitOutcome } from "./oauthAtomic";
 
-const TOKEN_TTL_SEC = 24 * 60 * 60; // 24h
+export const TOKEN_TTL_SEC = 24 * 60 * 60; // 24h
 const RL_MIN_TTL    = 60;            // 1 min window
 const RL_DAY_TTL    = 86_400;        // 24h window
 
@@ -56,6 +56,16 @@ export async function issueToken(payload: TokenPayload): Promise<string | null> 
 
   await r.set(`mcp:token:${hash}`, JSON.stringify(payload), "EX", TOKEN_TTL_SEC);
   return token;
+}
+
+/**
+ * U7: pregătește un token nou FĂRĂ a-l scrie. Întoarce tokenul plain (de returnat clientului) + cheia Redis +
+ * valoarea serializată, ca `consumeCodeAndIssueToken` (oauth-codes) să facă scrierea ATOMIC cu consumul codului
+ * (un singur EVAL). `issueToken` de mai sus rămâne pentru client_credentials (scriere directă, fără cod de consumat).
+ */
+export function mintToken(payload: TokenPayload): { token: string; key: string; value: string } {
+  const token = randomBytes(32).toString("hex");
+  return { token, key: `mcp:token:${hashToken(token)}`, value: JSON.stringify(payload) };
 }
 
 // ── Validate ──────────────────────────────────────────────────────────────────

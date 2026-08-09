@@ -9,7 +9,7 @@
 import { NextRequest }                      from "next/server";
 import { verifyClientCredentials, touchClient, getClientById } from "@/lib/db/oauth-clients";
 import { issueToken }                       from "@/lib/db/oauth-tokens";
-import { peekAuthCode, finalizeAuthCode, verifyCodeVerifier } from "@/lib/db/oauth-codes";
+import { peekAuthCode, verifyCodeVerifier, consumeCodeAndIssueToken } from "@/lib/db/oauth-codes";
 import { sanitizeTokenError }               from "@/lib/oauth/tokenError";
 import { isValidCodeVerifier }              from "@/lib/oauth/pkce";
 
@@ -146,30 +146,28 @@ async function handlePost(req: NextRequest) {
       return jsonError(401, "invalid_client", "Client not found or revoked");
     }
 
-    // E4: TOATĂ validarea a trecut → ABIA ACUM consumă codul, ATOMIC (single-use + anti-replay).
-    // O cerere concurentă care a consumat deja codul între peek și aici → already_used (invalid_grant).
-    const consumed = await finalizeAuthCode(code, lookup.raw);
-    if (consumed === "unavailable") {
-      return jsonError(503, "temporarily_unavailable", "Authorization service temporarily unavailable, please retry");
-    }
-    if (consumed !== "consumed") {
-      return jsonError(400, "invalid_grant", "Authorization code already used");
-    }
-
-    const token = await issueToken({
+    // E4 + U7: TOATĂ validarea a trecut → consumă codul ȘI emite tokenul ATOMIC (un singur EVAL: compare-and-delete
+    // pe blob + SET token). Înainte, `finalizeAuthCode` ardea codul, apoi `issueToken` scria separat — dacă Redis
+    // pica între cele două, codul se pierdea fără token. Acum all-or-nothing: la eșec nimic nu se persistă →
+    // clientul reia cu ACELAȘI cod. Anti-replay/concurență = compare-and-delete (o cerere concurentă → already_used).
+    const issued = await consumeCodeAndIssueToken(code, lookup.raw, {
       client_id:          client.client_id,
       scopes:             payload.scopes,
       issued_at:          Date.now(),
       credential_version: client.secret_rotated_at,
     });
-
-    if (!token) return jsonError(500, "server_error", "Failed to issue token — Redis unavailable");
+    if (issued.status === "unavailable") {
+      return jsonError(503, "temporarily_unavailable", "Authorization service temporarily unavailable, please retry");
+    }
+    if (issued.status === "already_used") {
+      return jsonError(400, "invalid_grant", "Authorization code already used");
+    }
 
     touchClient(client.client_id);
 
     return new Response(
       JSON.stringify({
-        access_token: token,
+        access_token: issued.token,
         token_type:   "Bearer",
         expires_in:   86_400,
         scope:        payload.scopes.join(" "),
