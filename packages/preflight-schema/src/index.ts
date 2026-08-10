@@ -678,6 +678,10 @@ interface PreflightSolanaPoolBase {
   discoveredAt:   string;
   indexerVersion: string;
   // Metadata token — populată async după insert, pe ambele write path-uri.
+  // P1-5: enrichment-ul e acum durabil (coadă de re-enrichment). `metadataStatus` (opțional pt.
+  // compat cu record-urile vechi + calea OBSERVED_SWAP care nu trece prin coadă) urmărește starea:
+  // PENDING la insert (writeDiscoveredPool) → ENRICHED la succes → FAILED terminal după 24h.
+  metadataStatus?: "PENDING" | "ENRICHED" | "FAILED";
   baseSymbol?:    string;
   quoteSymbol?:   string;
   baseDecimals?:  number | null;

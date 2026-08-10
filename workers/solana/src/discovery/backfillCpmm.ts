@@ -9,6 +9,11 @@
  *   Marker Redis preflight:indexer:backfill:cpmm:{version} — backfill-ul rulează
  *   o singură dată per versiune. La startup următor e skip automat.
  *
+ * P1-5 (fix cgpt R2): markerul se scrie DOAR dacă niciun writeSolanaPool n-a întors "error". Un "error"
+ *   = insert-ok-dar-enqueue-picat (pool PENDING fără job de enrichment) SAU Redis jos. Backfill-ul n-are
+ *   redelivery ca discovery queue → dacă am scrie markerul, pool-ul ar rămâne veșnic PENDING. Sărind
+ *   markerul, următorul startup re-rulează backfill → insert idempotent ("exists") → RE-enqueue.
+ *
  * Filtre:
  *   memcmp @ offset 0 = Anchor discriminator "account:PoolState"
  *   → returnează DOAR PoolState accounts, nu și config/observation accounts
@@ -29,6 +34,7 @@ import { RAYDIUM_CPMM } from "../config/programs";
 import { getRedis }     from "../infra/redis";
 import { INDEXER_VERSION } from "../config/constants";
 import { buildSolanaPool, writeSolanaPool } from "./pairWriter";
+import { backfillMarkerDecision } from "./backfillMarker";
 
 // Anchor discriminator pentru "account:PoolState"
 // = sha256("account:PoolState").slice(0,8) encodat base58
@@ -141,7 +147,9 @@ export async function runCpmmBackfill(connection: Connection): Promise<void> {
     );
   }
 
-  const stats = { scanned: 0, inserted: 0, existing: 0, skipped: 0, errors: 0 };
+  // P1-5: `writeErrors` = doar writeSolanaPool === "error" (insert-ok-enqueue-picat / Redis jos), SEPARAT de
+  // parse errors (permanente, nu blochează markerul). `errors` rămâne totalul pt. logging retro-compatibil.
+  const stats = { scanned: 0, inserted: 0, existing: 0, skipped: 0, errors: 0, writeErrors: 0 };
 
   for (let i = 0; i < capped; i += BATCH_SIZE) {
     const batch = rawAccounts.slice(i, i + BATCH_SIZE);
@@ -173,9 +181,9 @@ export async function runCpmmBackfill(connection: Connection): Promise<void> {
         const result = await writeSolanaPool(pool);
         if      (result === "inserted") stats.inserted++;
         else if (result === "exists")   stats.existing++;
-        else                            stats.errors++;
+        else                          { stats.errors++; stats.writeErrors++; } // "error": insert-ok-enqueue-picat / Redis jos
       } catch (err) {
-        stats.errors++;
+        stats.errors++; // parse error (PublicKey pe date malformate) — permanent, NU blochează markerul
         console.error("[SOLANA][BACKFILL] parse error pool=" + pubkey.toBase58().slice(0, 8) + ":", (err as Error).message);
       }
     }));
@@ -191,8 +199,21 @@ export async function runCpmmBackfill(connection: Connection): Promise<void> {
     + " inserted=" + stats.inserted
     + " existing=" + stats.existing
     + " skipped=" + stats.skipped
-    + " errors=" + stats.errors,
+    + " errors=" + stats.errors
+    + " writeErrors=" + stats.writeErrors,
   );
+
+  // P1-5 (fix cgpt R2): scrie markerul DOAR dacă niciun writeSolanaPool n-a întors "error". Altfel
+  // pool-urile inserate dar neenqueue-uite ar rămâne veșnic PENDING (backfill n-are redelivery). Sărind
+  // markerul, următorul startup re-rulează → insert "exists" → RE-enqueue (reconciliere durabilă).
+  if (backfillMarkerDecision(stats.writeErrors) === "skip") {
+    console.warn(
+      "[SOLANA][BACKFILL] " + stats.writeErrors + " write error(s) (insert-ok-enqueue-picat / Redis jos)"
+      + " — markerul NU se scrie; backfill-ul se re-rulează la următorul startup pt. reconciliere durabilă"
+      + " (insert idempotent → exists → re-enqueue). Marker vizat: " + markerKey,
+    );
+    return;
+  }
 
   // Scrie marker — folosim markerKey derivat din partial/full
   try {

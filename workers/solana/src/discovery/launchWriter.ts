@@ -2,13 +2,16 @@
  * discovery/launchWriter.ts
  * 8.0g-b5: Scrie pump.fun launch records in Redis.
  * 8.0h-a:  lifecycleStage + graduated + raydiumPools[] + linkLaunchToPool().
+ * P1-5:    Enrichment-ul nu mai e o buclă în memorie (30s/2m/10m apoi FAILED permanent). `writeLaunchRecord`
+ *          ENQUEUE-uiește launch-ul în coada durabilă (enrichQueue) AWAITED, pe „inserted" ȘI pe „exists"
+ *          (idempotent NX) → durabil DUPĂ ACK. `enrichLaunchOnce` e încercarea chemată de scanner (CAS-merge
+ *          peste graduation fields). Terminal FAILED după 24h (din discoveredAt).
  *
  * Namespace separat de pool registry — launch-urile nu sunt pool-uri:
  *   preflight:indexed:launch:solana:{mint}   → JSON
  *   preflight:indexed:launches:solana        → ZSET (score = slot)
  *   preflight:indexed:launches:ts:solana     → ZSET (score = Unix ms)
  *
- * Enrichment Jupiter — delayed (30s / 2m / 10m), exact match only.
  * Nu foloseste buildSolanaPool / writeSolanaPool — semantica diferita.
  */
 
@@ -19,6 +22,7 @@ import {
   CHAIN, INDEXER_VERSION,
   KEY_LAUNCH, KEY_LAUNCHES, KEY_LAUNCHES_TS,
 } from "../config/constants";
+import { enqueueEnrich, enrichAgeVerdict, ENRICH_INITIAL_DELAY_MS, type EnrichOutcome } from "./enrichQueue";
 import type { PumpfunCreateResult } from "./pumpfunFetcher";
 import type {
   PreflightRaydiumPoolLink, PreflightSolanaLaunch, PreflightSolanaProgram,
@@ -74,9 +78,9 @@ export function buildLaunchRecord(
 // ── Write ─────────────────────────────────────────────────────────────────────
 
 /**
- * Scrie launch record in Redis.
- * Returneaza "inserted" | "exists" | "error".
- * Deduplicare via SET NX pe key-ul mint — acelasi pattern ca writeSolanaPool.
+ * Scrie launch record in Redis + ENQUEUE enrichment durabil (AWAITED, pe inserted ȘI exists).
+ * Returneaza "inserted" | "exists" | "error". Dacă enqueue-ul aruncă → "error" (caller-ul reîncearcă;
+ * insert idempotent → "exists" → re-enqueue). Deduplicare via SET NX pe key-ul mint.
  */
 export async function writeLaunchRecord(
   launch: SolanaLaunch,
@@ -93,6 +97,11 @@ export async function writeLaunchRecord(
       zsetA: KEY_LAUNCHES,    scoreA: launch.slot,
       zsetB: KEY_LAUNCHES_TS, scoreB: nowMs,
     });
+
+    // P1-5 (fix cgpt R1): enqueue enrichment DURABIL — AWAITED, pe „inserted" ȘI pe „exists" (idempotent
+    // NX). Throw (Redis jos) → outer catch → "error" → caller-ul NU face ACK, reîncearcă.
+    await enqueueEnrich(redis, CHAIN, "launch", launch.mint, Date.now() + ENRICH_INITIAL_DELAY_MS);
+
     if (!inserted) return "exists";
 
     return "inserted";
@@ -119,7 +128,7 @@ export async function linkLaunchToPool(
   const linkedAt  = new Date().toISOString();
 
   // C1: read-modify-write ATOMIC prin CAS — înainte GET→modify→SET neatomic se putea suprascrie
-  // cu enrichLaunchRecord (ambele scriau blob-ul launch-ului). Acum CAS + retry → merge, nu clobber.
+  // cu enrichment (ambele scriau blob-ul launch-ului). Acum CAS + retry → merge, nu clobber.
   const res = await casUpdateJson<SolanaLaunch>(redis, key, (launch) => {
     // Idempotent — nu adaugam acelasi pool de doua ori
     const existing = launch.raydiumPools ?? [];
@@ -155,74 +164,75 @@ export async function linkLaunchToPool(
   }
 }
 
-// ── Enrichment ─────────────────────────────────────────────────────────────────────────────────
-
-// Delay-uri inainte de fiecare incercare Jupiter:
-//   30s  — tokenii noi apar pe Jupiter dupa ~1m, dar incercam devreme
-//   2m   — retry daca 429 sau nu e inca indexat
-//   10m  — last chance; dupa asta marcam FAILED
-const ENRICH_DELAYS_MS = [30_000, 120_000, 600_000];
+// ── Enrichment (P1-5: durabil prin coadă — o încercare per invocare) ────────────────────────────────
 
 /**
- * Enricheaza launch record cu metadata din Jupiter.
- * Non-blocking — apelat async dupa writeLaunchRecord.
- * Implementeaza retry cu delay si marcheaza metadataStatus ENRICHED/FAILED.
- *
- * IMPORTANT: citeste recordul curent din Redis inainte de fiecare write
- * pentru a pastra graduation fields (raydiumPools[], graduated, lifecycleStage)
- * setate intre timp de linkLaunchToPool — evita race condition stale overwrite.
+ * O SINGURĂ încercare de enrichment pentru un launch. Chemată de scanner-ul cozii durabile (enrichQueue).
+ * CAS-merge peste graduation fields scrise între timp de linkLaunchToPool (nu clobber).
+ *   "enriched" — metadata reală (non-FALLBACK) scrisă CU SUCCES (CAS "ok") → scoate din coadă.
+ *   "failed"   — launch prea vechi (enrichAgeVerdict=terminal) și FAILED scris CU SUCCES → scoate din coadă.
+ *   "retry"    — Jupiter încă nu știe tokenul (nu-i prea vechi) SAU CAS "conflict" (n-am confirmat scrierea).
+ *   "gone"     — launch dispărut/corupt (CAS "absent"/"corrupt") → scoate din coadă.
+ * ⚠️ (fix cgpt R1): CAS "conflict"/"corrupt" NU mai sunt tratate ca „enriched"; jobul iese doar pe scriere
+ *    terminală CONFIRMATĂ ("ok").
  */
-export async function enrichLaunchRecord(launch: SolanaLaunch): Promise<void> {
+export async function enrichLaunchOnce(
+  mint:     string,
+  nowMs:    number,
+  maxAgeMs: number,
+): Promise<EnrichOutcome> {
   const redis = getRedis();
-  const key   = KEY_LAUNCH(launch.mint);
-  const m8    = launch.mint.slice(0, 8) + "...";
+  const key   = KEY_LAUNCH(mint);
+  const m8    = mint.slice(0, 8) + "...";
 
-  console.log("[SOLANA][LAUNCH][META] mint=" + m8 + " status=PENDING");
+  // Existență + short-circuit pe record deja terminal (redelivery) — fără re-resolve inutil.
+  const raw = await redis.get(key);
+  if (raw === null) return "gone";
+  let current: SolanaLaunch;
+  try { current = JSON.parse(raw) as SolanaLaunch; } catch { return "gone"; }
+  if (current.metadataStatus === "ENRICHED") return "enriched";
+  if (current.metadataStatus === "FAILED")   return "failed";
 
-  for (let attempt = 0; attempt < ENRICH_DELAYS_MS.length; attempt++) {
-    // Asteapta inainte de a intreba Jupiter — tokenii tocmai s-au lansat
-    await new Promise(r => setTimeout(r, ENRICH_DELAYS_MS[attempt]));
+  const meta = await resolveTokenMeta(mint);
 
-    const meta = await resolveTokenMeta(launch.mint);
-
-    if (meta.source === "FALLBACK") {
-      if (attempt < ENRICH_DELAYS_MS.length - 1) {
-        // Retry — mai avem incercari
-        continue;
-      }
-      // Ultima incercare — citim starea curenta si marcam FAILED
-      // (pastreaza raydiumPools[] / graduated / lifecycleStage daca linkLaunchToPool a scris intre timp)
-      // C1: CAS atomic — pastreaza graduation fields daca linkLaunchToPool a scris intre timp
-      const res = await casUpdateJson<SolanaLaunch>(redis, key, (current) => ({
-        ...current,
-        symbol:         current.symbol ?? launch.mint.slice(0, 6) + "...",
-        decimals:       current.decimals ?? null,
-        metaSource:     current.metaSource ?? "FALLBACK",
-        metadataStatus: "FAILED",
-      }));
-      if (res === "ok") {
-        console.log("[SOLANA][LAUNCH][META] mint=" + m8 + " source=FALLBACK status=FAILED");
-      } else {
-        console.error("[SOLANA][LAUNCH][META] mint=" + m8 + " write " + res);
-      }
-      return;
-    }
-
-    // Metadata reala gasita — citim starea curenta si facem merge
-    // C1: CAS atomic — merge peste graduation fields scrise intre timp de linkLaunchToPool
-    const res = await casUpdateJson<SolanaLaunch>(redis, key, (current) => ({
-      ...current,
+  if (meta.source !== "FALLBACK") {
+    // Metadata reala gasita — CAS merge peste graduation fields scrise între timp de linkLaunchToPool.
+    const res = await casUpdateJson<SolanaLaunch>(redis, key, (cur) => ({
+      ...cur,
       symbol:         meta.symbol,
       name:           meta.name,
       decimals:       meta.decimals,
       metaSource:     meta.source,
       metadataStatus: "ENRICHED",
     }));
-    if (res === "ok") {
-      console.log("[SOLANA][LAUNCH][META] mint=" + m8 + " source=" + meta.source + " symbol=" + meta.symbol);
-    } else {
-      console.error("[SOLANA][LAUNCH][META] mint=" + m8 + " write " + res);
+    switch (res) {
+      case "ok":       console.log("[SOLANA][LAUNCH][META] mint=" + m8 + " source=" + meta.source + " symbol=" + meta.symbol + " status=ENRICHED"); return "enriched";
+      case "absent":   return "gone";
+      case "corrupt":  return "gone";
+      case "conflict": return "retry"; // prea multe conflicte → n-am confirmat scrierea; reîncearcă
+      case "noop":     return "enriched"; // mutate întoarce mereu obiect → nu apare; safe
     }
-    return;
   }
+
+  // FALLBACK → terminal (FAILED) DACĂ prea vechi, altfel retry. enrichAgeVerdict = pur, boundary exact 24h.
+  const res = await casUpdateJson<SolanaLaunch>(redis, key, (cur) => {
+    if (enrichAgeVerdict(cur.discoveredAt, nowMs, maxAgeMs) === "terminal") {
+      return {
+        ...cur,
+        symbol:         cur.symbol ?? mint.slice(0, 6) + "...",
+        decimals:       cur.decimals ?? null,
+        metaSource:     cur.metaSource ?? "FALLBACK",
+        metadataStatus: "FAILED",
+      };
+    }
+    return null; // încă în fereastra de 24h → noop, rămâne în coadă (backoff)
+  });
+  switch (res) {
+    case "ok":       console.log("[SOLANA][LAUNCH][META] mint=" + m8 + " source=FALLBACK status=FAILED (terminal, age>max)"); return "failed";
+    case "noop":     return "retry"; // în fereastră → reîncearcă mai târziu
+    case "absent":   return "gone";
+    case "corrupt":  return "gone";
+    case "conflict": return "retry";
+  }
+  return "retry"; // unreachable (switch e exhaustiv) — satisface TS
 }

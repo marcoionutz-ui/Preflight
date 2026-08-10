@@ -23,6 +23,8 @@
  *          retry+dead-letter (crash-safe); OBSERVED vs PROCESSED slot; health onest (dead-letter/backlog).
  * P1-4:    Buffer durabil de re-enqueue — fereastra WS→enqueue nu mai pierde candidați dacă Redis clipește
  *          (WS fără replay); retry cu backoff până Redis revine, nu give-up după câteva încercări.
+ * P1-5:    Enrichment metadata DURABIL — coadă de re-enrichment (enrichQueue) în loc de fire-and-forget;
+ *          scanner cu backoff, terminal FAILED după 24h (din record.discoveredAt). Pool-uri + launch-uri.
  */
 
 import type Redis from "ioredis";
@@ -41,7 +43,7 @@ import { runDiscoveryCallback } from "./discovery/discoveryCallback";
 import { handleAmmV4Shadow, logAmmV4Stats, isScopedAmmV4InitLog } from "./discovery/ammV4Shadow";
 import { fetchAmmV4Init } from "./discovery/ammV4Fetcher";
 import { isCpmmInitLog, fetchCpmmInit } from "./discovery/txFetcher";
-import { buildSolanaPool, writeSolanaPool, enrichSolanaPool } from "./discovery/pairWriter";
+import { buildSolanaPool, writeSolanaPool, enrichPoolOnce } from "./discovery/pairWriter";
 import type { PreflightSolanaProgram } from "@preflight/schema";
 import { runCpmmBackfill }          from "./discovery/backfillCpmm";
 import { handleClmmShadow, logClmmStats } from "./discovery/clmmShadow";
@@ -49,7 +51,7 @@ import { handleSwapShadow, logSwapStats } from "./discovery/swapShadow";
 import { isClmmCreateLog, fetchClmmCreate } from "./discovery/clmmFetcher";
 import { handlePumpfunShadow, logPumpfunStats } from "./discovery/pumpfunShadow";
 import { isPumpfunCreateLog, fetchPumpfunCreate } from "./discovery/pumpfunFetcher";
-import { buildLaunchRecord, writeLaunchRecord, enrichLaunchRecord } from "./discovery/launchWriter";
+import { buildLaunchRecord, writeLaunchRecord, enrichLaunchOnce } from "./discovery/launchWriter";
 import { resolveTokenMeta }         from "./infra/tokenMetadata";
 import { startSolPriceOracle }      from "./infra/solPriceOracle";
 import {
@@ -61,6 +63,13 @@ import {
   type DiscoveryProgram, type DiscoveryCandidate, type CandidateOutcome,
 } from "./discovery/discoveryQueue";
 import { EnqueueRetryBuffer } from "./discovery/enqueueBuffer";
+import {
+  claimDueEnrich, reclaimExpiredEnrich,
+  markEnrichDone, markEnrichReschedule, decodeEnrichMember,
+  ENRICH_LEASE_MS, ENRICH_DRAIN_BATCH, ENRICH_DRAIN_CONCURRENCY, ENRICH_DRAIN_INTERVAL_MS,
+  ENRICH_MAX_AGE_MS,
+  type EnrichOutcome,
+} from "./discovery/enrichQueue";
 import {
   CHAIN, INDEXER_VERSION, POLL_INTERVAL_MS, KEY_PAIRS,
   PROGRAM_STALE_MS, PROGRAM_STARTUP_GRACE_MS, SOLANA_WS_STALL_MS,
@@ -213,22 +222,9 @@ async function writeDiscoveredPool(
       + " quoteType=" + pool.quoteType
       + " slot=" + slot,
     );
-    // Enrichment async — non-blocking, nu întârzie drain-ul
-    Promise.all([
-      resolveTokenMeta(pool.baseMint),
-      resolveTokenMeta(pool.quoteMint),
-    ]).then(([baseMeta, quoteMeta]) => {
-      console.log(
-        "[SOLANA][META] enriched"
-        + " pool=" + parsed.poolAddress.slice(0, 8) + "..."
-        + " base=" + baseMeta.symbol + "(" + baseMeta.source + ")"
-        + " quote=" + quoteMeta.symbol + "(" + quoteMeta.source + ")",
-      );
-      return enrichSolanaPool(pool, baseMeta, quoteMeta);
-    }).catch((err: Error) => {
-      console.error("[SOLANA][META] enrichment error:", err.message);
-    });
   }
+  // P1-5: enqueue-ul de enrichment e făcut DURABIL ÎN writeSolanaPool (awaited, pe inserted ȘI exists) —
+  // un enqueue eșuat întoarce "error" mai sus → { kind: "retry" } → discovery NU face ACK. Aici doar ACK.
   return { kind: "written" };
 }
 
@@ -291,11 +287,9 @@ async function processCandidate(
           + " shape=" + result.instructionShape + " accounts=" + result.instructionAccountCount
           + " slot=" + slot,
         );
-        // Enrichment async — non-blocking, delayed (30s/2m/10m), logging in launchWriter
-        enrichLaunchRecord(launch).catch((err: Error) => {
-          console.error("[SOLANA][LAUNCH][META] enrichment error:", err.message);
-        });
       }
+      // P1-5: enqueue-ul de enrichment e făcut DURABIL ÎN writeLaunchRecord (awaited) — un enqueue eșuat
+      // întoarce "error" mai sus → { kind: "retry" } → discovery NU face ACK. Aici doar ACK.
       return { kind: "written" };
     }
 
@@ -424,6 +418,60 @@ async function drainDiscoveryQueue(
   };
 
   const poolSize = Math.min(DISC_DRAIN_CONCURRENCY, members.length);
+  await Promise.all(Array.from({ length: poolSize }, () => worker()));
+}
+
+// ── P1-5: Drain coadă de re-enrichment (background, guard + interval) ──────────
+// Oglindește drainDiscoveryQueue. Fiecare membru e `pool|<addr>` sau `launch|<mint>`; scanner-ul face O
+// încercare (enrichPoolOnce/enrichLaunchOnce). Jobul iese din coadă (markEnrichDone) DOAR pe o scriere
+// terminală CONFIRMATĂ ("enriched"/"failed") sau record dispărut ("gone"); "retry" (token neindexat încă
+// SAU scriere eșuată) → markEnrichReschedule (backoff, rămâne în coadă). Fără dead-set (vezi enrichQueue.ts).
+async function drainEnrichQueue(redis: Redis): Promise<void> {
+  const now = Date.now();
+
+  const reclaimed = await reclaimExpiredEnrich(redis, CHAIN, now);
+  if (reclaimed > 0) {
+    console.log("[SOLANA][ENRICH-QUEUE] reclaimed=" + reclaimed + " (lease expirat → pending)");
+  }
+
+  const members = await claimDueEnrich(redis, CHAIN, now, ENRICH_LEASE_MS, ENRICH_DRAIN_BATCH);
+  if (members.length === 0) return;
+
+  let idx = 0;
+  const worker = async (): Promise<void> => {
+    while (idx < members.length) {
+      const member  = members[idx++];
+      const decoded = decodeEnrichMember(member);
+      if (!decoded) {
+        // membru corupt — scoate-l, nu-l lăsa blocat în processing
+        await markEnrichDone(redis, CHAIN, member);
+        console.error("[SOLANA][ENRICH-QUEUE] membru corupt, scos: " + member.slice(0, 40));
+        continue;
+      }
+
+      let outcome: EnrichOutcome;
+      try {
+        outcome = decoded.kind === "pool"
+          ? await enrichPoolOnce(decoded.id, Date.now(), ENRICH_MAX_AGE_MS)
+          : await enrichLaunchOnce(decoded.id, Date.now(), ENRICH_MAX_AGE_MS);
+      } catch (err) {
+        console.error("[SOLANA][ENRICH-QUEUE] enrich error " + member.slice(0, 40) + ":", (err as Error).message);
+        outcome = "retry"; // eroare tranzitorie → backoff
+      }
+
+      if (outcome === "retry") {
+        // Token încă neindexat pe Jupiter (dar nu prea vechi) SAU o scriere a eșuat → reprogramează cu
+        // backoff. NU scoatem din coadă — jobul iese doar pe terminal CONFIRMAT (markEnrichDone).
+        await markEnrichReschedule(redis, CHAIN, member);
+        continue;
+      }
+
+      // "enriched" | "failed" | "gone" → scriere terminală confirmată (sau record dispărut) → scoate din coadă
+      await markEnrichDone(redis, CHAIN, member);
+    }
+  };
+
+  const poolSize = Math.min(ENRICH_DRAIN_CONCURRENCY, members.length);
   await Promise.all(Array.from({ length: poolSize }, () => worker()));
 }
 
@@ -605,6 +653,16 @@ async function main(): Promise<void> {
       .catch((err: Error) => console.error("[SOLANA][DISC-QUEUE] drain error:", err.message))
       .finally(() => { drainInFlight = false; });
   }, DISC_DRAIN_INTERVAL_MS);
+
+  // P1-5: Drain background al cozii de re-enrichment — guard per-proces + interval (non-blocant).
+  let enrichDrainInFlight = false;
+  setInterval(() => {
+    if (enrichDrainInFlight) return;
+    enrichDrainInFlight = true;
+    drainEnrichQueue(redis)
+      .catch((err: Error) => console.error("[SOLANA][ENRICH-QUEUE] drain error:", err.message))
+      .finally(() => { enrichDrainInFlight = false; });
+  }, ENRICH_DRAIN_INTERVAL_MS);
 
   await healthLoop(nodeVersion, subscriptionsStartedAt);
 }
