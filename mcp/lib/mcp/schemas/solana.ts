@@ -71,11 +71,9 @@ export const SolanaPoolSchema = z.object({
   quoteType:   z.string().nullish(),
 }).passthrough();
 
-// preflight:indexed:launch:solana:{mint} — reader citește symbol + bondingCurveAddress.
-export const SolanaLaunchSchema = z.object({
-  symbol:              z.string().optional(),
-  bondingCurveAddress: z.string().optional(),
-}).passthrough();
+// NF2/U9: SolanaLaunchSchema (zod passthrough cu doar 2 câmpuri opționale) a fost ELIMINAT. Launch-urile
+// se citesc acum EXCLUSIV prin `parseAndNormalizeSolanaLaunch` din @preflight/schema (boundary unic care
+// întoarce union-ul curent sau null), în loc de un cast peste un zod lax → un singur boundary, fără dead code.
 
 // preflight:solana:price:{pool} — reader citește lastUpdatedAt(number) + (downstream) price/knownPool.
 // ANCORE: poolAddress + priceInQuote + lastUpdatedAt (required în PreflightSolanaPriceSnapshot, mereu

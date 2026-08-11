@@ -15,6 +15,9 @@ import {
   PREFLIGHT_EVM_CHAINS,
   normalizeChainId,
   pairKey,
+  // NF2/U9: boundary de normalizare a launch-urilor legacy (înlocuiește `JSON.parse ... as
+  // PreflightSolanaLaunch`). `classify...` întoarce outcome-ul (pt. log pe rejected) + value union|null.
+  classifySolanaLaunchNormalization,
   type PreflightWorkerRuntime, type PreflightEvmChain, type MarketRegime as PreflightMarketRegime,
   type PreflightMarketContext, type PreflightDrop,
   type PreflightMomentumEvent, type PreflightSignalPipelineEntry, type PreflightQualifiedSignal,
@@ -30,7 +33,7 @@ import { adjustMoverReadTime } from "./moverReadTime";
 import { parseWithSchema, mergeChainRecords, mergeChainArrays } from "./safeParse";
 import {
   SolanaHealthSchema, SolanaMoversSnapshotSchema, SolanaPoolSchema,
-  SolanaLaunchSchema, SolanaPriceSnapshotSchema, SolanaPoolActivitySchema,
+  SolanaPriceSnapshotSchema, SolanaPoolActivitySchema,
   SolanaPricePointSchema, SolanaObservedCandidateSchema,
 } from "./schemas/solana";
 import {
@@ -1088,7 +1091,18 @@ export async function readSolanaRecentActivity(topN = 5): Promise<{
     });
 
     const recentLaunches: SolanaRecentLaunch[] = launchPairs.map(([mint, ts], i) => {
-      const meta = launchRaws[i] ? parseWithSchema<PreflightSolanaLaunch | null>(launchRaws[i], SolanaLaunchSchema, null, `preflight:indexed:launch:solana:${mint}`) : null;
+      // NF2/U9: normalizează recordul (legacy sau curent) în union-ul curent — NU mai facem `as
+      // PreflightSolanaLaunch` peste un JSON.parse (cast care supra-promitea pt. cele ~13.980 legacy).
+      // Un record de neîntors (câmp factual lipsă / graduation contradictorie) → null + warn (fail-closed,
+      // ca vechiul parseWithSchema). Un legacy valid → normalizat determinist (PUMPFUN/RAYDIUM), fără invenție.
+      let meta: PreflightSolanaLaunch | null = null;
+      if (launchRaws[i]) {
+        const norm = classifySolanaLaunchNormalization(launchRaws[i]);
+        meta = norm.value;
+        if (norm.outcome === "rejected") {
+          console.warn(`[REDIS NORMALIZE] key:preflight:indexed:launch:solana:${mint} — rejected (${norm.reason}), using null`);
+        }
+      }
       return {
         mint,
         symbol:       meta?.symbol ?? null,

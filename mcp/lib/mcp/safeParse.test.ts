@@ -20,7 +20,7 @@ import {
 } from "./schemas/pipeline";
 import {
   SolanaHealthSchema, SolanaMoversSnapshotSchema, SolanaPoolSchema,
-  SolanaLaunchSchema, SolanaPriceSnapshotSchema, SolanaPoolActivitySchema,
+  SolanaPriceSnapshotSchema, SolanaPoolActivitySchema,
   SolanaPricePointSchema, SolanaObservedCandidateSchema,
 } from "./schemas/solana";
 import {
@@ -130,10 +130,8 @@ function main(): void {
   check("33. Health gol {} OK (fără ancoră — health nu setează found)",
     parseWithSchema<any>('{}', SolanaHealthSchema, FB) !== FB);
 
-  check("34. Launch valid OK",
-    parseWithSchema<any>('{"symbol":"BONK","bondingCurveAddress":"Bc1"}', SolanaLaunchSchema, FB) !== FB);
-  check("35. * Launch symbol=number -> fallback",
-    parseWithSchema('{"symbol":7}', SolanaLaunchSchema, FB) === FB);
+  // 34/35 (Launch zod) ELIMINATE — SolanaLaunchSchema scos (NF2/U9): launch-urile trec acum prin
+  // `parseAndNormalizeSolanaLaunch` (@preflight/schema), testat exhaustiv în normalizeLaunch.test.ts.
 
   check("36. Activity sampledQuoteIn5m string OK (BigInt-as-string)",
     parseWithSchema<any>('{"sampledSwaps5m":3,"sampledQuoteIn5m":"12345678901234567890"}', SolanaPoolActivitySchema, FB) !== FB);

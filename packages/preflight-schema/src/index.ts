@@ -815,6 +815,264 @@ export type PreflightSolanaLaunch =
   | PreflightPumpfunLaunch
   | PreflightGraduatedSolanaLaunch;
 
+// ── NF2 / U9: normalizare launch-uri legacy ─────────────────────────────────
+//
+// CAUZA: `buildLaunchRecord()` legacy (pre-8.0h) scria DOAR câmpurile de bază —
+// niciodată lifecycleStage/graduated/raydiumPools. ~13.980 de launch records din
+// producție NU au discriminanții pe care PreflightSolanaLaunch (union discriminat)
+// îi cere. Atât redis-reader.ts cât și worker-ul (CAS) fac `JSON.parse(...) as
+// PreflightSolanaLaunch` — un cast care SUPRAPROMITE: un record legacy nu satisface
+// niciun membru al union-ului, dar cast-ul pretinde că da, iar un CAS-mutate care-l
+// spread-uiește scrie înapoi un HIBRID (record ENRICHED fără lifecycle).
+//
+// FIX (un singur boundary, folosit în reader + worker): parsează un record
+// legacy/curent și întoarce EXCLUSIV union-ul curent, sau `null` (fail-closed).
+// NU inventează NICIODATĂ fapte de graduation. PUR + fără log (apelanții emit
+// metric/log pe `outcome`). Regula (Marco/varu):
+//   • câmp factual de bază lipsă/greșit tipat → fail-closed (null), niciodată inventat;
+//   • fără dovezi de graduation → PUMPFUN_LAUNCHED / graduated:false / raydiumPools:[];
+//   • dovezi coerente (≥1 link Raydium valid + graduatedAt) → RAYDIUM_POOL_FOUND / true;
+//   • combinație contradictorie sau imposibil de completat factual → fail-closed.
+//
+// Adapter marcat pentru ELIMINARE: după ce telemetria (scriptul de inspecție read-only
+// din U9) confirmă că toate cele ~13.980 se normalizează determinist, o curățenie
+// one-off rescrie recordurile în Redis și adapterul dispare.
+// TODO(NF2): remove after migration.
+
+/**
+ * Forma unui launch legacy pe disc: câmpurile de bază curente, DAR discriminanții
+ * (lifecycleStage/graduated/raydiumPools/graduatedAt) și metadataStatus pot lipsi sau
+ * fi tipați lax — exact ce scria buildLaunchRecord() pre-8.0h. Tip pur documentar:
+ * normalizatorul validează `unknown` structural indiferent (nu se bazează pe acest tip).
+ */
+export interface PreflightSolanaLaunchLegacy {
+  chain?:                  unknown;
+  recordType?:             unknown;
+  launchSource?:           unknown;
+  mint?:                   unknown;
+  bondingCurveAddress?:    unknown;
+  associatedBondingCurve?: unknown;
+  creatorAddress?:         unknown;
+  slot?:                   unknown;
+  signature?:              unknown;
+  discoveredAt?:           unknown;
+  indexerVersion?:         unknown;
+  metadataStatus?:         unknown;
+  symbol?:                 unknown;
+  name?:                   unknown;
+  decimals?:               unknown;
+  metaSource?:             unknown;
+  lifecycleStage?:         unknown;
+  graduated?:              unknown;
+  graduatedAt?:            unknown;
+  raydiumPools?:           unknown;
+}
+
+export type SolanaLaunchNormalizeOutcome =
+  | "current"              // deja un record union curent valid (niciun câmp derivat/vindecat)
+  | "normalized_pumpfun"   // legacy/lax → PUMPFUN_LAUNCHED
+  | "normalized_graduated" // legacy/lax → RAYDIUM_POOL_FOUND (dovezi coerente de graduation)
+  | "rejected";            // fail-closed (câmp factual lipsă/greșit tipat sau graduation contradictorie)
+
+export interface SolanaLaunchNormalizeResult {
+  outcome: SolanaLaunchNormalizeOutcome;
+  /** setat DOAR când outcome === "rejected" — cauza (pt. telemetrie/log). */
+  reason:  string | null;
+  /** union-ul normalizat, sau `null` când e rejected. */
+  value:   PreflightSolanaLaunch | null;
+}
+
+function nf2IsNonEmptyString(x: unknown): x is string {
+  return typeof x === "string" && x.length > 0;
+}
+function nf2IsFiniteNumber(x: unknown): x is number {
+  return typeof x === "number" && Number.isFinite(x);
+}
+const NF2_SOLANA_PROGRAMS: readonly PreflightSolanaProgram[] = [
+  "raydium_cpmm", "raydium_clmm", "raydium_amm_v4",
+];
+function nf2IsSolanaProgram(x: unknown): x is PreflightSolanaProgram {
+  return typeof x === "string" && (NF2_SOLANA_PROGRAMS as readonly string[]).includes(x);
+}
+/**
+ * Un link Raydium e valid DOAR dacă toate câmpurile sunt prezente + bine tipate; altfel `null`.
+ * PĂSTREAZĂ extras-urile forward-compat DIN link (fix cgpt): spread întâi, apoi suprascrie DOAR
+ * canonicele validate — la fel ca recordul principal. Altfel un câmp necunoscut din `raydiumPools[]`
+ * s-ar pierde la următorul CAS + un record altfel neschimbat ar fi clasificat fals drept „current".
+ * Cast `as unknown as` = passthrough deliberat (union-ul închis nu poate exprima extras-urile).
+ */
+function nf2NormalizeRaydiumLink(x: unknown): PreflightRaydiumPoolLink | null {
+  if (typeof x !== "object" || x === null) return null;
+  const o = x as Record<string, unknown>;
+  if (!nf2IsNonEmptyString(o.poolAddress)) return null;
+  if (!nf2IsSolanaProgram(o.program))      return null;
+  if (!nf2IsFiniteNumber(o.slot))          return null;
+  if (!nf2IsNonEmptyString(o.signature))   return null;
+  if (!nf2IsNonEmptyString(o.linkedAt))    return null;
+  return {
+    ...o,
+    poolAddress: o.poolAddress,
+    program:     o.program,
+    slot:        o.slot,
+    signature:   o.signature,
+    linkedAt:    o.linkedAt,
+  } as unknown as PreflightRaydiumPoolLink;
+}
+
+// Cheile CANONICE ale union-ului curent. Tot ce NU-i aici e un câmp forward-compat (unknown extra) —
+// îl PĂSTRĂM neatins la normalizare (fix cgpt #2), suprascriind doar canonicele validate.
+const NF2_CANONICAL_KEYS: readonly string[] = [
+  "chain", "recordType", "launchSource", "mint", "bondingCurveAddress", "associatedBondingCurve",
+  "creatorAddress", "slot", "signature", "discoveredAt", "indexerVersion", "metadataStatus",
+  "symbol", "name", "decimals", "metaSource", "lifecycleStage", "graduated", "graduatedAt", "raydiumPools",
+];
+
+/**
+ * Clasifică + normalizează un record de launch (JSON string SAU obiect deja parsat) în union-ul
+ * curent. PUR + fără log. Întoarce `outcome` (pt. telemetrie) + `value` (union|null). Fail-closed
+ * pe orice câmp factual de bază lipsă/greșit tipat SAU graduation contradictorie — niciodată inventat.
+ */
+export function classifySolanaLaunchNormalization(raw: unknown): SolanaLaunchNormalizeResult {
+  const reject = (reason: string): SolanaLaunchNormalizeResult => ({ outcome: "rejected", reason, value: null });
+
+  // Acceptă un JSON string (reader) SAU un obiect deja parsat (worker CAS).
+  let obj: unknown = raw;
+  if (typeof raw === "string") {
+    try { obj = JSON.parse(raw); } catch { return reject("parse:json"); }
+  }
+  if (typeof obj !== "object" || obj === null || Array.isArray(obj)) return reject("parse:not_object");
+  const o = obj as Record<string, unknown>;
+
+  // ── Câmpuri factuale de bază — lipsă/greșit tipat → fail-closed (niciodată inventat) ──
+  if (!nf2IsNonEmptyString(o.mint))                   return reject("base:mint");
+  const mint = o.mint;
+  if (!nf2IsNonEmptyString(o.bondingCurveAddress))    return reject("base:bondingCurveAddress");
+  const bondingCurveAddress = o.bondingCurveAddress;
+  if (!nf2IsNonEmptyString(o.associatedBondingCurve)) return reject("base:associatedBondingCurve");
+  const associatedBondingCurve = o.associatedBondingCurve;
+  if (!nf2IsNonEmptyString(o.creatorAddress))         return reject("base:creatorAddress");
+  const creatorAddress = o.creatorAddress;
+  if (!nf2IsFiniteNumber(o.slot))                     return reject("base:slot");
+  const slot = o.slot;
+  if (!nf2IsNonEmptyString(o.signature))              return reject("base:signature");
+  const signature = o.signature;
+  if (!nf2IsNonEmptyString(o.discoveredAt))           return reject("base:discoveredAt");
+  const discoveredAt = o.discoveredAt;
+  if (!nf2IsNonEmptyString(o.indexerVersion))         return reject("base:indexerVersion");
+  const indexerVersion = o.indexerVersion;
+
+  // Câmpuri-constantă de identitate: absent → completat din invariantul de namespace (determinist,
+  // NU inventat — orice record sub preflight:indexed:launch:solana:* ESTE un launch pump.fun solana);
+  // prezent-dar-greșit → contradicție → fail-closed.
+  if (o.chain        !== undefined && o.chain        !== "solana")       return reject("base:chain_mismatch");
+  if (o.recordType   !== undefined && o.recordType   !== "TOKEN_LAUNCH") return reject("base:recordType_mismatch");
+  if (o.launchSource !== undefined && o.launchSource !== "PUMPFUN")      return reject("base:launchSource_mismatch");
+
+  // `modified` marchează ORICE vindecare (câmp completat / derivat / dropat / defaultat). Îl folosim pt.
+  // outcome-ul „current" HONEST (fix cgpt #3): un record e „current" DOAR dacă normalizarea n-a schimbat
+  // nimic canonic. Extras-urile forward-compat NU contează ca modificare (le păstrăm neatinse).
+  let modified = false;
+  if (o.chain === undefined)        modified = true; // completat din invariantul de namespace
+  if (o.recordType === undefined)   modified = true;
+  if (o.launchSource === undefined) modified = true;
+
+  // ── Metadata opțională (păstrată DOAR bine tipată; câmp CANONIC prezent-dar-greșit = dropat + modified) ──
+  const symbol     = nf2IsNonEmptyString(o.symbol)     ? o.symbol     : undefined;
+  const name       = nf2IsNonEmptyString(o.name)       ? o.name       : undefined;
+  const metaSource = nf2IsNonEmptyString(o.metaSource) ? o.metaSource : undefined;
+  const decimals   = nf2IsFiniteNumber(o.decimals) ? o.decimals : (o.decimals === null ? null : undefined);
+  if (o.symbol     !== undefined && symbol     === undefined) modified = true;
+  if (o.name       !== undefined && name       === undefined) modified = true;
+  if (o.metaSource !== undefined && metaSource === undefined) modified = true;
+  if (o.decimals   !== undefined && decimals   === undefined) modified = true;
+
+  // ── metadataStatus: păstrează enum-ul valid; altfel derivă din dovezi (niciodată FAILED prin derivare) ──
+  const rawStatus = o.metadataStatus;
+  const validStatus = rawStatus === "PENDING" || rawStatus === "ENRICHED" || rawStatus === "FAILED";
+  const metadataStatus: "PENDING" | "ENRICHED" | "FAILED" =
+    validStatus ? rawStatus
+                : (symbol !== undefined && metaSource !== undefined ? "ENRICHED" : "PENDING");
+  if (!validStatus) modified = true;
+
+  // ── Discriminanți de graduation — PREZENT dar greșit tipat = corupt → fail-closed (fix cgpt #1) ──
+  // NU-i tratăm ca „absenți": `graduated:"true"` / `graduatedAt:123` / `raydiumPools:{}` NU trebuie să
+  // devină tăcut PUMPFUN. Un discriminant prezent-dar-de-tip-greșit e corupție → respins, nu vindecat.
+  if (o.graduated    !== undefined && typeof o.graduated !== "boolean")   return reject("graduation:graduated_type");
+  if (o.graduatedAt  !== undefined && !nf2IsNonEmptyString(o.graduatedAt)) return reject("graduation:graduatedAt_type");
+  if (o.raydiumPools !== undefined && !Array.isArray(o.raydiumPools))      return reject("graduation:raydiumPools_not_array");
+
+  const validLinks: PreflightRaydiumPoolLink[] = [];
+  let invalidLinks = 0;
+  for (const el of (Array.isArray(o.raydiumPools) ? o.raydiumPools : [])) {
+    const link = nf2NormalizeRaydiumLink(el);
+    if (link) validLinks.push(link); else invalidLinks++;
+  }
+  // Un link malformat = corupție (linkLaunchToPool scrie doar link-uri tipate) → fail-closed.
+  if (invalidLinks > 0) return reject("graduation:invalid_pool_link");
+  const hasPools    = validLinks.length > 0;
+  const graduatedAt = nf2IsNonEmptyString(o.graduatedAt) ? o.graduatedAt : undefined;
+  const explicitGraduated = o.graduated === true ? true : (o.graduated === false ? false : undefined);
+  const explicitStage =
+    o.lifecycleStage === "RAYDIUM_POOL_FOUND" ? "RAYDIUM_POOL_FOUND"
+    : (o.lifecycleStage === "PUMPFUN_LAUNCHED" ? "PUMPFUN_LAUNCHED" : undefined);
+  // lifecycleStage prezent dar necunoscut = discriminant corupt → fail-closed.
+  if (o.lifecycleStage !== undefined && explicitStage === undefined) return reject("graduation:lifecycleStage_unknown");
+
+  // ── Construcție PĂSTRÂND extras-urile forward-compat (fix cgpt #2) ──
+  // Pornim de la toate cheile NECANONICE (unknown extras) — neatinse — apoi suprascriem DOAR câmpurile
+  // canonice VALIDATE. Astfel un CAS ulterior nu mai șterge câmpuri forward-compatible din Redis.
+  // Cast `as unknown as <member>` = passthrough deliberat (ca zod `.passthrough()`): canonicele sunt
+  // validate, extras-urile trec neatinse — union-ul închis nu le poate exprima static.
+  const out: Record<string, unknown> = {};
+  for (const k of Object.keys(o)) if (!NF2_CANONICAL_KEYS.includes(k)) out[k] = o[k];
+  out.chain = "solana"; out.recordType = "TOKEN_LAUNCH"; out.launchSource = "PUMPFUN";
+  out.mint = mint; out.bondingCurveAddress = bondingCurveAddress;
+  out.associatedBondingCurve = associatedBondingCurve; out.creatorAddress = creatorAddress;
+  out.slot = slot; out.signature = signature; out.discoveredAt = discoveredAt;
+  out.indexerVersion = indexerVersion; out.metadataStatus = metadataStatus;
+  if (symbol     !== undefined) out.symbol = symbol;
+  if (name       !== undefined) out.name = name;
+  if (decimals   !== undefined) out.decimals = decimals;
+  if (metaSource !== undefined) out.metaSource = metaSource;
+
+  if (hasPools) {
+    // Dovezile indică graduation. Cere graduatedAt; respinge contradicțiile explicite. Nu inventa.
+    if (graduatedAt === undefined)            return reject("graduation:pools_without_graduatedAt");
+    if (explicitGraduated === false)          return reject("graduation:graduated_false_with_pools");
+    if (explicitStage === "PUMPFUN_LAUNCHED") return reject("graduation:stage_pumpfun_with_pools");
+    if (o.lifecycleStage === undefined) modified = true;
+    if (o.graduated === undefined)      modified = true;
+    out.lifecycleStage = "RAYDIUM_POOL_FOUND";
+    out.graduated      = true;
+    out.graduatedAt    = graduatedAt;
+    out.raydiumPools   = validLinks;
+    const value = out as unknown as PreflightGraduatedSolanaLaunch;
+    return { outcome: modified ? "normalized_graduated" : "current", reason: null, value };
+  }
+
+  // Fără pool-uri valide → pre-graduation. Respinge orice PRETENȚIE de graduation (nu inventa pool-uri).
+  if (explicitGraduated === true)             return reject("graduation:graduated_true_no_pools");
+  if (explicitStage === "RAYDIUM_POOL_FOUND") return reject("graduation:stage_graduated_no_pools");
+  if (graduatedAt !== undefined)              return reject("graduation:graduatedAt_no_pools");
+  if (o.lifecycleStage === undefined) modified = true;
+  if (o.graduated === undefined)      modified = true;
+  if (o.raydiumPools === undefined)   modified = true; // completat [] (nu exista înainte)
+  out.lifecycleStage = "PUMPFUN_LAUNCHED";
+  out.graduated      = false;
+  out.raydiumPools   = [];
+  const value = out as unknown as PreflightPumpfunLaunch;
+  return { outcome: modified ? "normalized_pumpfun" : "current", reason: null, value };
+}
+
+/**
+ * Thin wrapper: parsează+normalizează un record de launch în union-ul curent, sau `null` (fail-closed).
+ * Apelanții (reader MCP + mutațiile CAS din worker) folosesc ASTA în loc de `JSON.parse(...) as
+ * PreflightSolanaLaunch`. Pt. telemetrie/log pe cauză, folosește `classifySolanaLaunchNormalization`.
+ */
+export function parseAndNormalizeSolanaLaunch(raw: unknown): PreflightSolanaLaunch | null {
+  return classifySolanaLaunchNormalization(raw).value;
+}
+
 // Sursă de adevăr: workers/solana/src/discovery/priceTracker.ts's PriceSnapshot.
 // Preț aproximativ per pool din vault deltas (SWAP_VAULT_DELTA sampling, nu
 // firehose) — scris pentru ORICE pool cu flow cunoscut, indiferent dacă e

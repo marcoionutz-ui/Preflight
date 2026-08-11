@@ -24,6 +24,9 @@ import {
 } from "../config/constants";
 import { enqueueEnrich, enrichAgeVerdict, ENRICH_INITIAL_DELAY_MS, type EnrichOutcome } from "./enrichQueue";
 import type { PumpfunCreateResult } from "./pumpfunFetcher";
+// NF2/U9: boundary de normalizare — normalizează un record (legacy sau curent) în union-ul curent
+// ÎNAINTE de orice mutație CAS, ca să nu scriem înapoi un hibrid (record legacy spread-uit fără lifecycle).
+import { parseAndNormalizeSolanaLaunch } from "@preflight/schema";
 import type {
   PreflightRaydiumPoolLink, PreflightSolanaLaunch, PreflightSolanaProgram,
 } from "@preflight/schema";
@@ -129,7 +132,12 @@ export async function linkLaunchToPool(
 
   // C1: read-modify-write ATOMIC prin CAS — înainte GET→modify→SET neatomic se putea suprascrie
   // cu enrichment (ambele scriau blob-ul launch-ului). Acum CAS + retry → merge, nu clobber.
-  const res = await casUpdateJson<SolanaLaunch>(redis, key, (launch) => {
+  // NF2/U9: normalizează `raw` (poate fi legacy fără lifecycle) ÎNAINTE de mutație — altfel un
+  // spread al unui record legacy scria înapoi un hibrid graduated. Nenormalizabil → skip + log (nu scriem).
+  let normFailed = false;
+  const res = await casUpdateJson<SolanaLaunch>(redis, key, (raw) => {
+    const launch = parseAndNormalizeSolanaLaunch(raw);
+    if (!launch) { normFailed = true; return null; }
     // Idempotent — nu adaugam acelasi pool de doua ori
     const existing = launch.raydiumPools ?? [];
     if (existing.some(p => p.poolAddress === pool.poolAddress)) return null; // deja legat → no-op
@@ -150,6 +158,11 @@ export async function linkLaunchToPool(
       raydiumPools:   [...existing, link],
     };
   });
+
+  if (normFailed) {
+    console.error("[SOLANA][LAUNCH] linkLaunchToPool skip (record nenormalizabil) mint=" + mint.slice(0, 8));
+    return;
+  }
 
   // "absent" (fara launch pentru acest mint) / "noop" (deja legat) / "corrupt" / "conflict" → silent
   if (res === "ok") {
@@ -186,10 +199,12 @@ export async function enrichLaunchOnce(
   const m8    = mint.slice(0, 8) + "...";
 
   // Existență + short-circuit pe record deja terminal (redelivery) — fără re-resolve inutil.
+  // NF2/U9: normalizează recordul (legacy sau curent) în loc de `JSON.parse ... as SolanaLaunch`.
+  // Nenormalizabil/corupt → "gone" (scoate din coadă). Restul logicii merge pe union-ul curent.
   const raw = await redis.get(key);
   if (raw === null) return "gone";
-  let current: SolanaLaunch;
-  try { current = JSON.parse(raw) as SolanaLaunch; } catch { return "gone"; }
+  const current = parseAndNormalizeSolanaLaunch(raw);
+  if (!current) return "gone";
   if (current.metadataStatus === "ENRICHED") return "enriched";
   if (current.metadataStatus === "FAILED")   return "failed";
 
@@ -197,39 +212,53 @@ export async function enrichLaunchOnce(
 
   if (meta.source !== "FALLBACK") {
     // Metadata reala gasita — CAS merge peste graduation fields scrise între timp de linkLaunchToPool.
-    const res = await casUpdateJson<SolanaLaunch>(redis, key, (cur) => ({
-      ...cur,
-      symbol:         meta.symbol,
-      name:           meta.name,
-      decimals:       meta.decimals,
-      metaSource:     meta.source,
-      metadataStatus: "ENRICHED",
-    }));
+    // NF2/U9: normalizează `raw` ÎNAINTE de spread — un legacy enrichat fără normalizare ar rămâne
+    // hibrid (ENRICHED dar fără lifecycle). Nenormalizabil → skip + retry (scanner-ul reîncearcă; outer-ul
+    // îl va prinde ca "gone" dacă e persistent corupt).
+    let normFailed = false;
+    const res = await casUpdateJson<SolanaLaunch>(redis, key, (rawCur) => {
+      const norm = parseAndNormalizeSolanaLaunch(rawCur);
+      if (!norm) { normFailed = true; return null; }
+      return {
+        ...norm,
+        symbol:         meta.symbol,
+        name:           meta.name,
+        decimals:       meta.decimals,
+        metaSource:     meta.source,
+        metadataStatus: "ENRICHED",
+      };
+    });
+    if (normFailed) { console.error("[SOLANA][LAUNCH][META] skip enrich (record nenormalizabil) mint=" + m8); return "retry"; }
     switch (res) {
       case "ok":       console.log("[SOLANA][LAUNCH][META] mint=" + m8 + " source=" + meta.source + " symbol=" + meta.symbol + " status=ENRICHED"); return "enriched";
       case "absent":   return "gone";
       case "corrupt":  return "gone";
       case "conflict": return "retry"; // prea multe conflicte → n-am confirmat scrierea; reîncearcă
-      case "noop":     return "enriched"; // mutate întoarce mereu obiect → nu apare; safe
+      case "noop":     return "enriched"; // mutate întoarce obiect când norm reușește → nu apare; safe
     }
   }
 
   // FALLBACK → terminal (FAILED) DACĂ prea vechi, altfel retry. enrichAgeVerdict = pur, boundary exact 24h.
-  const res = await casUpdateJson<SolanaLaunch>(redis, key, (cur) => {
-    if (enrichAgeVerdict(cur.discoveredAt, nowMs, maxAgeMs) === "terminal") {
+  // NF2/U9: normalizează `raw` ÎNAINTE — enrichAgeVerdict primește un discoveredAt validat + write-back e union curent.
+  let normFailedFb = false;
+  const res = await casUpdateJson<SolanaLaunch>(redis, key, (rawCur) => {
+    const norm = parseAndNormalizeSolanaLaunch(rawCur);
+    if (!norm) { normFailedFb = true; return null; }
+    if (enrichAgeVerdict(norm.discoveredAt, nowMs, maxAgeMs) === "terminal") {
       return {
-        ...cur,
-        symbol:         cur.symbol ?? mint.slice(0, 6) + "...",
-        decimals:       cur.decimals ?? null,
-        metaSource:     cur.metaSource ?? "FALLBACK",
+        ...norm,
+        symbol:         norm.symbol ?? mint.slice(0, 6) + "...",
+        decimals:       norm.decimals ?? null,
+        metaSource:     norm.metaSource ?? "FALLBACK",
         metadataStatus: "FAILED",
       };
     }
     return null; // încă în fereastra de 24h → noop, rămâne în coadă (backoff)
   });
+  if (normFailedFb) { console.error("[SOLANA][LAUNCH][META] skip FALLBACK-terminal (record nenormalizabil) mint=" + m8); return "retry"; }
   switch (res) {
     case "ok":       console.log("[SOLANA][LAUNCH][META] mint=" + m8 + " source=FALLBACK status=FAILED (terminal, age>max)"); return "failed";
-    case "noop":     return "retry"; // în fereastră → reîncearcă mai târziu
+    case "noop":     return "retry"; // în fereastră (sau norm-fail) → reîncearcă mai târziu
     case "absent":   return "gone";
     case "corrupt":  return "gone";
     case "conflict": return "retry";
