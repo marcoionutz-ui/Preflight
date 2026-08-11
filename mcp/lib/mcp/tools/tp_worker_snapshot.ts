@@ -5,7 +5,7 @@ import type { PairState, MemoryEntry } from "../types";
 import { splitPairKey, normalizeChainId, reserveEstimatedFlag } from "@preflight/schema";
 import { mcpResponse, mcpErr, ERR } from "../errors";
 
-export function registerWorkerSnapshot(server: McpServer, exposePerformance: boolean) {
+export function registerWorkerSnapshot(server: McpServer) {
   server.registerTool(
     "tp_worker_snapshot",
     {
@@ -78,7 +78,7 @@ Args:
             pairs: paginated.map(({ addr, data }) => {
               const ref = splitPairKey(addr);
               return {
-              pairAddress: ref.address, chain: ref.chain || (data as any).chain || null, symbol: data.symbol, phase: data.phase,
+              pairAddress: ref.address, chain: ref.chain || (data as unknown as { chain?: string }).chain || null, symbol: data.symbol, phase: data.phase,
               seenCount: data.seenCount, currentPrice: data.currentPrice,
               dexType:    states[addr]?.dexType    ?? null,
               reserveUsd: states[addr]?.reserveUsd ?? null,

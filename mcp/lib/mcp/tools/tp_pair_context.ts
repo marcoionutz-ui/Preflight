@@ -3,7 +3,7 @@ import { z } from "zod";
 import { buildPairContextReport } from "../../reports/pair-context-report";
 import { mcpResponse, mcpErr } from "../errors";
 
-export function registerPairContext(server: McpServer, exposePerformance: boolean) {
+export function registerPairContext(server: McpServer) {
   server.registerTool(
     "tp_pair_context",
     {
@@ -32,7 +32,7 @@ Args: pair_address (0x... EVM address, V4 pool ID, or Solana pool address), chai
       const report = await buildPairContextReport({
         pairAddress: pair_address,
         chain,
-        exposePerformance,
+
       });
 
       if (!report.ok) {

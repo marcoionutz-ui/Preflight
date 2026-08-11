@@ -104,6 +104,14 @@ export async function readAllRedis(): Promise<RedisContext | null> {
   // (savedAt = cel mai recent între chain-uri).
   // E14 (varu R2/B4): pe lângă merge (savedAt=max), ținem savedAt PER-CHAIN. Merged savedAt=max ascunde un
   // chain activ mort (Base 5s + BSC 8m → agregat 5s → „online" fals). Tool-ul agregă pe cel mai SLAB chain activ.
+  // lint: forma RAW citită din snapshot (passthrough-ul zod păstrează câmpurile, dar tipul
+  // WorkerSnapshot nu le expune direct) — tipizată local ca să înlocuim `(snap as any).câmp`.
+  interface RawSnapshotChain {
+    memory?:         Record<string, unknown>;
+    poolReserveEth?: Record<string, unknown>;
+    savedAt?:        number;
+    version?:        string;
+  }
   const mergeSnapshot = (raws: (string | null)[]): { snapshot: WorkerSnapshot | null; savedAtByChain: Record<string, number> } => {
     const memory:         Record<string, unknown> = {};
     const poolReserveEth: Record<string, unknown> = {};
@@ -114,20 +122,20 @@ export async function readAllRedis(): Promise<RedisContext | null> {
     for (let i = 0; i < raws.length; i++) {
       const raw = raws[i];
       if (raw == null) continue;
-      const snap = parseWithSchema<WorkerSnapshot | null>(raw, WorkerSnapshotSchema, null, "worker_snapshot");
+      const snap = parseWithSchema<RawSnapshotChain | null>(raw, WorkerSnapshotSchema, null, "worker_snapshot");
       if (!snap) continue;
       any = true;
-      Object.assign(memory,         (snap as any).memory ?? {});
-      Object.assign(poolReserveEth, (snap as any).poolReserveEth ?? {});
-      const sv = (snap as any).savedAt;
+      Object.assign(memory,         snap.memory ?? {});
+      Object.assign(poolReserveEth, snap.poolReserveEth ?? {});
+      const sv = snap.savedAt;
       if (typeof sv === "number" && Number.isFinite(sv)) {
         savedAtByChain[evmChains[i]] = sv;
         if (savedAt === null || sv > savedAt) {
           savedAt = sv;
-          version = (snap as any).version ?? null; // versiunea vine din snapshot-ul cel mai NOU
+          version = snap.version ?? null; // versiunea vine din snapshot-ul cel mai NOU
         }
       } else if (savedAt === null) {
-        version = version ?? (snap as any).version ?? null; // fallback: niciun savedAt numeric
+        version = version ?? snap.version ?? null; // fallback: niciun savedAt numeric
       }
     }
     return { snapshot: any ? ({ memory, poolReserveEth, savedAt, version } as unknown as WorkerSnapshot) : null, savedAtByChain };
@@ -147,6 +155,11 @@ export async function readAllRedis(): Promise<RedisContext | null> {
 
   // B4c: pipeline_coverage chain-scoped → MGET + merge pe sub-obiectul `chains`
   // (keysets chain-disjuncte, o intrare per chain), savedAt=max, version din cel mai nou.
+  interface RawCoverageChain {
+    chains?:        Record<string, unknown>;
+    savedAt?:       number;
+    workerVersion?: string;
+  }
   const mergeCoverage = (raws: (string | null)[]): { merged: PipelineCoverage | null; any: boolean } => {
     const chains: Record<string, unknown> = {};
     let savedAt: number | null = null;
@@ -154,16 +167,16 @@ export async function readAllRedis(): Promise<RedisContext | null> {
     let any = false;
     for (const raw of raws) {
       if (raw == null) continue;
-      const snap = parseWithSchema<PipelineCoverage | null>(raw, PipelineCoverageSchema, null, "pf_pipeline_coverage");
+      const snap = parseWithSchema<RawCoverageChain | null>(raw, PipelineCoverageSchema, null, "pf_pipeline_coverage");
       if (!snap) continue;
       any = true;
-      Object.assign(chains, (snap as any).chains ?? {});
-      const sv = (snap as any).savedAt;
+      Object.assign(chains, snap.chains ?? {});
+      const sv = snap.savedAt;
       if (typeof sv === "number" && (savedAt === null || sv > savedAt)) {
         savedAt = sv;
-        version = (snap as any).workerVersion ?? null;
+        version = snap.workerVersion ?? null;
       } else if (savedAt === null) {
-        version = version ?? (snap as any).workerVersion ?? null;
+        version = version ?? snap.workerVersion ?? null;
       }
     }
     return { merged: any ? ({ workerVersion: version, savedAt, chains } as unknown as PipelineCoverage) : null, any };
@@ -176,33 +189,47 @@ export async function readAllRedis(): Promise<RedisContext | null> {
   // mai SEVER (o problemă pe orice chain iese la suprafață); discoverySource = comun sau
   // "mixed"; savedAt = max. null dacă nicio cheie.
   const DEX_SEVERITY: Record<string, number> = { OK: 0, STARTING: 1, DEGRADED: 2, RATE_LIMITED: 3 };
+  interface RawDexscreener {
+    status:          string;
+    lastFetchAgeSec: number | null;
+    last429AgeSec:   number | null;
+    [k: string]:     unknown;   // passthrough — extrasele se păstrează la `...dex`
+  }
+  interface RawScannerChain {
+    chains?:          Record<string, unknown>;
+    sourceByChain?:   Record<string, unknown>;
+    scan?:            { totalFetched?: number; processedPools?: number; durationMs?: number };
+    savedAt?:         number;
+    discoverySource?: string;
+    dexscreener?:     RawDexscreener;
+  }
   const mergeScannerStats = (raws: (string | null)[]): { merged: ScannerStats | null; any: boolean } => {
     const chains: Record<string, unknown> = {};
     const sourceByChain: Record<string, unknown> = {};
     let totalFetched = 0, processedPools = 0, durationMs = 0;
     let savedAt: number | null = null;
     let discoverySource: string | null = null, discoveryMixed = false;
-    let dex: any = null, dexRank = -1, dexSavedAt: number | null = null;
+    let dex: RawDexscreener | null = null, dexRank = -1, dexSavedAt: number | null = null;
     let any = false;
     for (const raw of raws) {
       if (raw == null) continue;
-      const st = parseWithSchema<ScannerStats | null>(raw, ScannerStatsSchema, null, "pf_scanner_stats");
+      const st = parseWithSchema<RawScannerChain | null>(raw, ScannerStatsSchema, null, "pf_scanner_stats");
       if (!st) continue;
       any = true;
-      Object.assign(chains,        (st as any).chains ?? {});
-      Object.assign(sourceByChain, (st as any).sourceByChain ?? {});
-      const sc = (st as any).scan ?? {};
+      Object.assign(chains,        st.chains ?? {});
+      Object.assign(sourceByChain, st.sourceByChain ?? {});
+      const sc = st.scan ?? {};
       totalFetched   += Number(sc.totalFetched   ?? 0);
       processedPools += Number(sc.processedPools ?? 0);
       durationMs      = Math.max(durationMs, Number(sc.durationMs ?? 0));
-      const sv = (st as any).savedAt;
+      const sv = st.savedAt;
       const svNum = typeof sv === "number" ? sv : null;
       if (svNum !== null) savedAt = savedAt === null ? svNum : Math.max(savedAt, svNum);
-      const ds = (st as any).discoverySource;
+      const ds = st.discoverySource;
       if (ds != null) { if (discoverySource === null) discoverySource = ds; else if (discoverySource !== ds) discoveryMixed = true; }
-      const d = (st as any).dexscreener;
+      const d = st.dexscreener;
       if (d) {
-        const rank = DEX_SEVERITY[d.status] ?? 0;
+        const rank = DEX_SEVERITY[d.status ?? ""] ?? 0;
         // la severitate egală, preferă health-ul cel mai PROASPĂT (nu primul în ordinea chain-urilor)
         const shouldReplace = rank > dexRank || (rank === dexRank && svNum !== null && (dexSavedAt === null || svNum > dexSavedAt));
         if (shouldReplace) { dexRank = rank; dex = d; dexSavedAt = svNum; }
@@ -271,7 +298,7 @@ export async function readAllRedis(): Promise<RedisContext | null> {
     sellingPctAll > 20    ? "RISK_OFF" :
     derivedCoverage < 20  ? "DEAD"     :
     "MIXED";
-  const momentumLast10m = momentumM.merged.filter(m => now - (m as any).detectedAt < 10 * 60_000).length;
+  const momentumLast10m = momentumM.merged.filter(m => now - m.detectedAt < 10 * 60_000).length;
   // marketHasData = DOAR pair_states real. Un worker viu fără snapshot de piață NU e "piață
   // moartă" (asta ar fi date indisponibile); heartbeat-ul completează doar chains/WS, nu
   // autorizează derivarea regimului. Un pair_states:{} valid tot dă DEAD (snapshot real, 0 perechi).
@@ -534,7 +561,9 @@ export function chainsForAddressInArrays(
  * ambiguitatea ca să cerem chain explicit.
  */
 export interface PairContextLookup {
-  context:         any | null;
+  // Lint pair-context batch: `context` tipizat `Record<string, unknown> | null` (ca schemas/reader.ts:123);
+  // consumatorul (pair-context-report.ts) îl îngustează la un view local (`PfContextView`) pt. accesele pfCtx.*.
+  context:         Record<string, unknown> | null;
   matchedChain:    string | null;
   ambiguousChains: string[];
 }

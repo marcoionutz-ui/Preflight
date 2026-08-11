@@ -42,7 +42,6 @@ const FB = { __fallback__: true } as const;
 
 // Payload-uri valide „minime dar reale" (au câmpurile-ancoră) — folosite ca bază pentru mutații.
 const VALID_POOL = '{"poolAddress":"Po0l","program":"raydium"}';
-const VALID_PRICE = '{"poolAddress":"P","priceInQuote":1.5,"lastUpdatedAt":1700000000000}';
 const VALID_CAND = '{"poolAddress":"P","program":"raydium","sampleCount":9,"baseSymbol":null}';
 
 function main(): void {
@@ -66,10 +65,19 @@ function main(): void {
 
   const okPool = parseWithSchema<{ program?: string } | typeof FB>(VALID_POOL, SolanaPoolSchema, FB);
   check("8. * payload valid -> date (nu fallback)", okPool !== FB);
-  check("9. * câmpul consumat e păstrat", (okPool as any).program === "raydium");
-  const withExtra = parseWithSchema<any>(
-    '{"poolAddress":"P","program":"orca","futureField":"keep-me"}', SolanaPoolSchema, FB);
-  check("10. * passthrough păstrează câmp necunoscut", withExtra.futureField === "keep-me");
+  check("9. * câmpul consumat e păstrat", (okPool as { program?: string }).program === "raydium");
+  const withExtra = parseWithSchema<
+    { futureField?: string } | typeof FB
+  >(
+    '{"poolAddress":"P","program":"orca","futureField":"keep-me"}',
+    SolanaPoolSchema,
+    FB,
+  );
+
+  check(
+    "10. * passthrough păstrează câmp necunoscut",
+    !("__fallback__" in withExtra) && withExtra.futureField === "keep-me",
+  );
 
   // --- 2. ANCORE: `{}` NU trece prin schemele care setează found=true --------------
   check("11. * Pool `{}` -> fallback (ancoră poolAddress+program)",
@@ -93,22 +101,22 @@ function main(): void {
 
   // Payload-uri VALIDE cu ancorele prezente -> trec (nu fallback) — dovadă că ancora nu dă fals-negativ.
   check("19. Pool valid (ancore prezente) -> date",
-    parseWithSchema<any>(VALID_POOL, SolanaPoolSchema, FB) !== FB);
+    parseWithSchema<unknown>(VALID_POOL, SolanaPoolSchema, FB) !== FB);
   check("20. PriceSnapshot valid (ancore prezente, priceUsd null) -> date",
-    parseWithSchema<any>('{"poolAddress":"P","priceInQuote":1.5,"priceUsd":null,"lastUpdatedAt":1700000000000}',
+    parseWithSchema<unknown>('{"poolAddress":"P","priceInQuote":1.5,"priceUsd":null,"lastUpdatedAt":1700000000000}',
       SolanaPriceSnapshotSchema, FB) !== FB);
   check("21. ObservedCandidate valid (ancore prezente, baseSymbol null) -> date",
-    parseWithSchema<any>(VALID_CAND, SolanaObservedCandidateSchema, FB) !== FB);
+    parseWithSchema<unknown>(VALID_CAND, SolanaObservedCandidateSchema, FB) !== FB);
   check("22. * PriceSnapshot lastUpdatedAt string (ancoră greșit tipată) -> fallback",
     parseWithSchema('{"poolAddress":"P","priceInQuote":1.5,"lastUpdatedAt":"soon"}', SolanaPriceSnapshotSchema, FB) === FB);
 
   // --- 3. MOVERS: element validat prin SolanaMoverSchema ---------------------------
   check("23. Movers valid (mover complet) -> date",
-    parseWithSchema<any>(
+    parseWithSchema<unknown>(
       '{"computedAt":1,"movers":[{"poolAddress":"P","program":"raydium","priceInQuote":2,"sampleCount":5,"currentAgeSec":10,"historyStatus":"READY","knownPool":true}]}',
       SolanaMoversSnapshotSchema, FB) !== FB);
   check("24. Movers cu mover `{}` -> trece (mover n-are ancoră, doar strict-când-prezent)",
-    parseWithSchema<any>('{"computedAt":1,"movers":[{}]}', SolanaMoversSnapshotSchema, FB) !== FB);
+    parseWithSchema<unknown>('{"computedAt":1,"movers":[{}]}', SolanaMoversSnapshotSchema, FB) !== FB);
   check("25. * Movers cu mover priceInQuote greșit tipat (string) -> snapshot fallback",
     parseWithSchema('{"computedAt":1,"movers":[{"priceInQuote":"nope"}]}', SolanaMoversSnapshotSchema, FB) === FB);
   check("26. * Movers cu mover poolAddress greșit tipat (number) -> snapshot fallback",
@@ -122,24 +130,24 @@ function main(): void {
 
   // --- 4. Health / Launch / Activity / PricePoint (neschimbate de review) ----------
   check("30. Health updatedAt number OK",
-    parseWithSchema<any>('{"updatedAt":1700000000000,"status":"OK"}', SolanaHealthSchema, FB) !== FB);
+    parseWithSchema<unknown>('{"updatedAt":1700000000000,"status":"OK"}', SolanaHealthSchema, FB) !== FB);
   check("31. Health updatedAt string OK (legacy)",
-    parseWithSchema<any>('{"updatedAt":"2026-01-01"}', SolanaHealthSchema, FB) !== FB);
+    parseWithSchema<unknown>('{"updatedAt":"2026-01-01"}', SolanaHealthSchema, FB) !== FB);
   check("32. * Health updatedAt boolean -> fallback",
     parseWithSchema('{"updatedAt":true}', SolanaHealthSchema, FB) === FB);
   check("33. Health gol {} OK (fără ancoră — health nu setează found)",
-    parseWithSchema<any>('{}', SolanaHealthSchema, FB) !== FB);
+    parseWithSchema<unknown>('{}', SolanaHealthSchema, FB) !== FB);
 
   // 34/35 (Launch zod) ELIMINATE — SolanaLaunchSchema scos (NF2/U9): launch-urile trec acum prin
   // `parseAndNormalizeSolanaLaunch` (@preflight/schema), testat exhaustiv în normalizeLaunch.test.ts.
 
   check("36. Activity sampledQuoteIn5m string OK (BigInt-as-string)",
-    parseWithSchema<any>('{"sampledSwaps5m":3,"sampledQuoteIn5m":"12345678901234567890"}', SolanaPoolActivitySchema, FB) !== FB);
+    parseWithSchema<unknown>('{"sampledSwaps5m":3,"sampledQuoteIn5m":"12345678901234567890"}', SolanaPoolActivitySchema, FB) !== FB);
   check("37. * Activity sampledQuoteIn5m number -> fallback (trebuie string)",
     parseWithSchema('{"sampledQuoteIn5m":123}', SolanaPoolActivitySchema, FB) === FB);
 
   check("38. PricePoint {p,ts} valid OK",
-    parseWithSchema<any>('{"p":1.23,"ts":1700000000000}', SolanaPricePointSchema, FB) !== FB);
+    parseWithSchema<unknown>('{"p":1.23,"ts":1700000000000}', SolanaPricePointSchema, FB) !== FB);
   check("39. * PricePoint fără p -> fallback (strict)",
     parseWithSchema('{"ts":1700000000000}', SolanaPricePointSchema, FB) === FB);
   check("40. * PricePoint p=string -> fallback",
@@ -186,9 +194,9 @@ function main(): void {
 
   // PairStatesRecord — root `{}` valid; VALOAREA validată pe CONTRACTUL COMPLET.
   check("41. PairStatesRecord {} OK (hartă goală = chain viu fără pairs)",
-    parseWithSchema<any>('{}', PairStatesRecordSchema, FB) !== FB);
+    parseWithSchema<unknown>('{}', PairStatesRecordSchema, FB) !== FB);
   check("42. PairStatesRecord {pairKey: PairState canonic complet} OK",
-    parseWithSchema<any>(`{"0xabc":${VALID_STATE}}`, PairStatesRecordSchema, FB) !== FB);
+    parseWithSchema<unknown>(`{"0xabc":${VALID_STATE}}`, PairStatesRecordSchema, FB) !== FB);
   check("43. * PairStatesRecord intrare {} -> fallback",
     parseWithSchema('{"0xabc":{}}', PairStatesRecordSchema, FB) === FB);
   check("44. * PairState fără phase/symbol/priceChange -> fallback (varu: contract complet)",
@@ -203,7 +211,7 @@ function main(): void {
     parseWithSchema('{"0xabc":5}', PairStatesRecordSchema, FB) === FB);
   // varu R4: câmpurile required lipsă din schemă înainte (patternTags/risk/discovery) + enum-uri.
   check("48a. PairState cu risk complet (obiect) OK",
-    parseWithSchema<any>(`{"0xabc":${VALID_STATE.replace('"risk":null', `"risk":${VALID_RISK}`)}}`, PairStatesRecordSchema, FB) !== FB);
+    parseWithSchema<unknown>(`{"0xabc":${VALID_STATE.replace('"risk":null', `"risk":${VALID_RISK}`)}}`, PairStatesRecordSchema, FB) !== FB);
   check("48b. * PairState risk:{} -> fallback (varu: {} truthy = riskCache fals prezent)",
     parseWithSchema(`{"0xabc":${VALID_STATE.replace('"risk":null', '"risk":{}')}}`, PairStatesRecordSchema, FB) === FB);
   check("48c. * PairState patternTags:\"oops\" -> fallback (varu: trebuie string[]|null)",
@@ -217,7 +225,7 @@ function main(): void {
   check("48f-2. * PairState phase:\"ZOMBIE\" -> fallback (U6/NF-E33: faza legacy scoasă din enum)",
     parseWithSchema(`{"0xabc":${VALID_STATE.replace('"phase":"NEW"', '"phase":"ZOMBIE"')}}`, PairStatesRecordSchema, FB) === FB);
   check("48f-3. PairState cu chei win-tracking legacy tot OK (passthrough păstrează cheile ca extras — fwd-compat v8.0)",
-    parseWithSchema<any>(`{"0xabc":${VALID_STATE.replace('"seenCount":1', '"seenCount":1,"wins24h":0,"losses24h":0,"badExits24h":0,"consecutiveLosses":0,"totalEntries":0,"lastEntryTime":0')}}`, PairStatesRecordSchema, FB) !== FB);
+    parseWithSchema<unknown>(`{"0xabc":${VALID_STATE.replace('"seenCount":1', '"seenCount":1,"wins24h":0,"losses24h":0,"badExits24h":0,"consecutiveLosses":0,"totalEntries":0,"lastEntryTime":0')}}`, PairStatesRecordSchema, FB) !== FB);
   check("48g. * PairState pipelineState:\"BOGUS\" -> fallback (varu: enum)",
     parseWithSchema(`{"0xabc":${VALID_STATE.replace('"pipelineState":"NONE"', '"pipelineState":"BOGUS"')}}`, PairStatesRecordSchema, FB) === FB);
   check("48h. * PairState dexType:\"BOGUS\" -> fallback (varu: enum)",
@@ -229,18 +237,18 @@ function main(): void {
 
   // Watch/Hot/Armed — contract complet; doar ancorele -> fallback.
   check("49. WatchRecord canonic OK; doar {chain,addedAt} -> fallback (varu)",
-    parseWithSchema<any>(`{"0x":${VALID_WATCH}}`, WatchRecordSchema, FB) !== FB &&
+    parseWithSchema<unknown>(`{"0x":${VALID_WATCH}}`, WatchRecordSchema, FB) !== FB &&
     parseWithSchema('{"0x":{"chain":"base","addedAt":1}}', WatchRecordSchema, FB) === FB);
   check("50. HotRecord canonic OK; doar {chain,promotedAt} -> fallback (varu)",
-    parseWithSchema<any>(`{"0x":${VALID_HOT}}`, HotRecordSchema, FB) !== FB &&
+    parseWithSchema<unknown>(`{"0x":${VALID_HOT}}`, HotRecordSchema, FB) !== FB &&
     parseWithSchema('{"0x":{"chain":"base","promotedAt":1}}', HotRecordSchema, FB) === FB);
   check("51. ArmedRecord canonic OK; doar {armedAt,score} -> fallback (varu)",
-    parseWithSchema<any>(`{"0x":${VALID_ARMED}}`, ArmedRecordSchema, FB) !== FB &&
+    parseWithSchema<unknown>(`{"0x":${VALID_ARMED}}`, ArmedRecordSchema, FB) !== FB &&
     parseWithSchema('{"0x":{"armedAt":1,"score":5}}', ArmedRecordSchema, FB) === FB);
 
   // WorkerSnapshot — required complet; memory validată pe CONTRACT COMPLET.
   check("52. WorkerSnapshot complet valid OK",
-    parseWithSchema<any>(`{"version":"v1","savedAt":1,"memory":{"0x":${VALID_MEM}},"poolReserveEth":{"0x":12.5}}`, WorkerSnapshotSchema, FB) !== FB);
+    parseWithSchema<unknown>(`{"version":"v1","savedAt":1,"memory":{"0x":${VALID_MEM}},"poolReserveEth":{"0x":12.5}}`, WorkerSnapshotSchema, FB) !== FB);
   check("53. * WorkerSnapshot doar cu savedAt -> fallback (varu)",
     parseWithSchema('{"savedAt":1}', WorkerSnapshotSchema, FB) === FB);
   check("54. * WorkerSnapshot {} -> fallback",
@@ -248,7 +256,7 @@ function main(): void {
   check("55. * MemoryEntry doar pairAddress+symbol -> fallback (varu: contract complet)",
     parseWithSchema('{"version":"v1","savedAt":1,"memory":{"0x":{"pairAddress":"0x","symbol":"AAA"}},"poolReserveEth":{}}', WorkerSnapshotSchema, FB) === FB);
   check("55a. MemoryEntry canonic + discovery optionals valide OK",
-    parseWithSchema<any>(`{"version":"v1","savedAt":1,"memory":{"0x":${VALID_MEM.replace(/}$/, ',"discoverySources":["INDEXER"],"firstDiscoveredAt":1}')}},"poolReserveEth":{}}`, WorkerSnapshotSchema, FB) !== FB);
+    parseWithSchema<unknown>(`{"version":"v1","savedAt":1,"memory":{"0x":${VALID_MEM.replace(/}$/, ',"discoverySources":["INDEXER"],"firstDiscoveredAt":1}')}},"poolReserveEth":{}}`, WorkerSnapshotSchema, FB) !== FB);
   check("55b. * MemoryEntry.discoverySources:\"oops\" -> fallback (varu: allSources.filter → INTERNAL fals)",
     parseWithSchema(`{"version":"v1","savedAt":1,"memory":{"0x":${VALID_MEM.replace(/}$/, ',"discoverySources":"oops"}')}},"poolReserveEth":{}}`, WorkerSnapshotSchema, FB) === FB);
   check("56. * WorkerSnapshot poolReserveEth valoare ne-number -> fallback",
@@ -256,11 +264,11 @@ function main(): void {
   check("56a. * WorkerSnapshot memory phase legacy (ZOMBIE) -> fallback (U6/NF-E33: enum fără faze legacy și în worker_snapshot)",
     parseWithSchema(`{"version":"v1","savedAt":1,"memory":{"0x":${VALID_MEM.replace('"phase":"NEW"', '"phase":"ZOMBIE"')}},"poolReserveEth":{}}`, WorkerSnapshotSchema, FB) === FB);
   check("56b. WorkerSnapshot memory FĂRĂ câmpuri win-tracking -> OK (U6: cele 9 câmpuri scoase din contract)",
-    parseWithSchema<any>(`{"version":"v1","savedAt":1,"memory":{"0x":${VALID_MEM}},"poolReserveEth":{}}`, WorkerSnapshotSchema, FB) !== FB);
+    parseWithSchema<unknown>(`{"version":"v1","savedAt":1,"memory":{"0x":${VALID_MEM}},"poolReserveEth":{}}`, WorkerSnapshotSchema, FB) !== FB);
 
   // PipelineCoverage — chains value = ChainCoverage CONTRACT COMPLET.
   check("57. PipelineCoverage valid OK",
-    parseWithSchema<any>(`{"workerVersion":"v1","savedAt":1,"chains":{"base":${VALID_CHAINCOV}}}`, PipelineCoverageSchema, FB) !== FB);
+    parseWithSchema<unknown>(`{"workerVersion":"v1","savedAt":1,"chains":{"base":${VALID_CHAINCOV}}}`, PipelineCoverageSchema, FB) !== FB);
   check("58. * PipelineCoverage {} -> fallback",
     parseWithSchema('{}', PipelineCoverageSchema, FB) === FB);
   check("59. * PipelineCoverage chains.base {} -> fallback (varu)",
@@ -275,7 +283,7 @@ function main(): void {
   // ScannerStats — toate câmpurile principale required; valori validate pe CONTRACT COMPLET.
   const VALID_SCANNER = `{"savedAt":1,"discoverySource":"auto","scan":${VALID_SCAN},"chains":{"base":${VALID_GECKO}},"sourceByChain":{"base":${VALID_SRC}},"dexscreener":${VALID_DEX}}`;
   check("63. ScannerStats complet valid OK",
-    parseWithSchema<any>(VALID_SCANNER, ScannerStatsSchema, FB) !== FB);
+    parseWithSchema<unknown>(VALID_SCANNER, ScannerStatsSchema, FB) !== FB);
   check("64. * ScannerStats {} -> fallback",
     parseWithSchema('{}', ScannerStatsSchema, FB) === FB);
   check("65. * Gecko health doar cu status -> fallback (varu: lastResultCount/emptyStreak/… required)",
@@ -293,7 +301,7 @@ function main(): void {
 
   // WorkerRuntime — chain/updatedAt/wsConnected TOATE required.
   check("71. WorkerRuntime valid OK",
-    parseWithSchema<any>('{"chain":"base","updatedAt":1,"wsConnected":true}', WorkerRuntimeSchema, FB) !== FB);
+    parseWithSchema<unknown>('{"chain":"base","updatedAt":1,"wsConnected":true}', WorkerRuntimeSchema, FB) !== FB);
   check("72. * WorkerRuntime fără wsConnected -> fallback (varu)",
     parseWithSchema('{"chain":"base","updatedAt":1}', WorkerRuntimeSchema, FB) === FB);
   check("73. * WorkerRuntime updatedAt string -> fallback",
@@ -301,18 +309,18 @@ function main(): void {
 
   // --- 6. E8b Blocker 1: mergeChainRecords (corupt ≠ prezent; `any` DUPĂ parse reușit) ---
   const CH = ["base", "arbitrum", "ethereum"];
-  const rCorrupt = mergeChainRecords<any>(["[1,2]", null, null], CH, PairStatesRecordSchema, "pair_states");
+  const rCorrupt = mergeChainRecords<Record<string, unknown>>(["[1,2]", null, null], CH, PairStatesRecordSchema, "pair_states");
   check("74. * corrupt pair_states -> keyExists(any) false + keyPresentByChain.base false",
     rCorrupt.any === false && rCorrupt.presentByChain.base === false);
-  const rEmpty = mergeChainRecords<any>(["{}", null, null], CH, PairStatesRecordSchema, "pair_states");
+  const rEmpty = mergeChainRecords<Record<string, unknown>>(["{}", null, null], CH, PairStatesRecordSchema, "pair_states");
   check("75. valid pair_states {} -> keyExists(any) true + present.base true",
     rEmpty.any === true && rEmpty.presentByChain.base === true);
   check("76. absent pair_states -> present.arbitrum false",
     rEmpty.presentByChain.arbitrum === false);
-  const rValid = mergeChainRecords<any>([`{"0xabc":${VALID_STATE}}`, null, null], CH, PairStatesRecordSchema, "pair_states");
+  const rValid = mergeChainRecords<Record<string, unknown>>([`{"0xabc":${VALID_STATE}}`, null, null], CH, PairStatesRecordSchema, "pair_states");
   check("77. valid pair_states cu intrare -> merged are cheia + any true",
-    rValid.any === true && (rValid.merged as any)["0xabc"] !== undefined);
-  const rMixed = mergeChainRecords<any>([`{"0xa":${VALID_STATE}}`, "not json", null], CH, PairStatesRecordSchema, "pair_states");
+    rValid.any === true && rValid.merged["0xabc"] !== undefined);
+  const rMixed = mergeChainRecords<Record<string, unknown>>([`{"0xa":${VALID_STATE}}`, "not json", null], CH, PairStatesRecordSchema, "pair_states");
   check("78. mixt [valid,corupt,absent] -> any true, present base=true/arbitrum=false, merged doar valid",
     rMixed.any === true && rMixed.presentByChain.base === true &&
     rMixed.presentByChain.arbitrum === false && Object.keys(rMixed.merged).length === 1);
@@ -338,15 +346,15 @@ function main(): void {
   // MoversArraySchema (readTrendingMovers) — chain/dexType/direction/historyStatus enum strict (EVM-only)
   check("79. movers [valid] -> 1", parseWithSchema<unknown[]>(J([MOVER]), MoversArraySchema, []).length === 1);
   check("79a. movers [] gol -> [] valid", parseWithSchema<unknown[]>(J([]), MoversArraySchema, [{ x: 1 }]).length === 0);
-  check("79b. * movers root non-array -> fallback", (parseWithSchema<any[]>(J(MOVER), MoversArraySchema, [FB])[0] as any) === FB);
-  check("79c. * movers element fără priceUsd -> fallback", (parseWithSchema<any[]>(J([{ ...MOVER, priceUsd: undefined }]), MoversArraySchema, [FB])[0] as any) === FB);
-  check("79d. * movers direction invalid -> fallback (enum)", (parseWithSchema<any[]>(J([{ ...MOVER, direction: "SIDEWAYS" }]), MoversArraySchema, [FB])[0] as any) === FB);
-  check("79e. * movers chain invalid -> fallback (enum)", (parseWithSchema<any[]>(J([{ ...MOVER, chain: "polygon" }]), MoversArraySchema, [FB])[0] as any) === FB);
-  check("79f. * movers dexType invalid -> fallback (enum)", (parseWithSchema<any[]>(J([{ ...MOVER, dexType: "CPMM" }]), MoversArraySchema, [FB])[0] as any) === FB);
+  check("79b. * movers root non-array -> fallback", (parseWithSchema<unknown[]>(J(MOVER), MoversArraySchema, [FB])[0]) === FB);
+  check("79c. * movers element fără priceUsd -> fallback", (parseWithSchema<unknown[]>(J([{ ...MOVER, priceUsd: undefined }]), MoversArraySchema, [FB])[0]) === FB);
+  check("79d. * movers direction invalid -> fallback (enum)", (parseWithSchema<unknown[]>(J([{ ...MOVER, direction: "SIDEWAYS" }]), MoversArraySchema, [FB])[0]) === FB);
+  check("79e. * movers chain invalid -> fallback (enum)", (parseWithSchema<unknown[]>(J([{ ...MOVER, chain: "polygon" }]), MoversArraySchema, [FB])[0]) === FB);
+  check("79f. * movers dexType invalid -> fallback (enum)", (parseWithSchema<unknown[]>(J([{ ...MOVER, dexType: "CPMM" }]), MoversArraySchema, [FB])[0]) === FB);
   check("79g. movers tokenAddress null + câmp extra -> ok", parseWithSchema<unknown[]>(J([{ ...MOVER, extra: 1 }]), MoversArraySchema, []).length === 1);
 
   // QuotePriceSchema (readQuotePrices) — price POZITIV + updatedAt number
-  check("80. quotePrice {price>0, updatedAt} -> ok", parseWithSchema<any>(J({ price: 1, updatedAt: 123 }), QuotePriceSchema, null)?.price === 1);
+  check("80. quotePrice {price>0, updatedAt} -> ok", parseWithSchema<{ price?: number } | null>(J({ price: 1, updatedAt: 123 }), QuotePriceSchema, null)?.price === 1);
   check("80a. * quotePrice price:0 -> fallback (positive)", parseWithSchema(J({ price: 0, updatedAt: 1 }), QuotePriceSchema, null) === null);
   check("80b. * quotePrice price negativ -> fallback", parseWithSchema(J({ price: -5, updatedAt: 1 }), QuotePriceSchema, null) === null);
   check("80c. * quotePrice updatedAt string -> fallback (number)", parseWithSchema(J({ price: 1, updatedAt: "123" }), QuotePriceSchema, null) === null);
@@ -395,7 +403,7 @@ function main(): void {
   const SIG = { schemaVersion: "v2", workerVersion: "1", symbol: "F", chain: "base", pairAddress: "0x", pipelineState: "WATCHING", watchKind: "MOMENTUM", enteredWatchAt: 1, watchAgeMs: 10, confidence: "HIGH", entryRisk: "LOW", flow: { status: "BUYING", buyVol5m: 1, netVol5m: 1, buys5m: 1, sells5m: 0 }, riskFlags: [], opportunitySignals: [], priceVsEntryPct: null, workerObservation: "obs", updatedAt: 7 };
   const QUAL = { schemaVersion: "v2", workerVersion: "1", symbol: "F", chain: "base", pairAddress: "0x", qualifiedAt: 6, confidence: "HIGH", entryRisk: "LOW", flow: { status: "BUYING", buyVol5m: 1, netVol5m: 1, buys5m: 1 }, riskFlags: [], opportunitySignals: [], workerObservation: "obs" };
   const LIFE = { chain: "base", pairAddress: "0x", lastOutcome: "QUALIFIED_EMITTED", lastOutcomeAt: 2, reason: "x", fromState: "ARMED" };
-  const ok = (schema: any, x: unknown): boolean => schema.safeParse(x).success;
+  const ok = (schema: { safeParse: (x: unknown) => { success: boolean } }, x: unknown): boolean => schema.safeParse(x).success;
 
   // scheme individuale
   check("84. PipelineEvent valid OK; fără ts -> fail; reason optional OK",
@@ -418,7 +426,7 @@ function main(): void {
     ok(LifecycleEntrySchema, LIFE) && !ok(LifecycleEntrySchema, { ...LIFE, lastOutcome: "WAT" }) && !ok(LifecycleEntrySchema, { ...LIFE, fromState: "OBSERVED" }));
 
   // mergeChainArrays — validare PE ELEMENT (filter valide, drop invalide)
-  const mca = (raws: (string | null)[]) => mergeChainArrays<any>(raws, DropSchema, (d: any) => d.droppedAt, "test_drops");
+  const mca = (raws: (string | null)[]) => mergeChainArrays<{ droppedAt: number }>(raws, DropSchema, d => d.droppedAt, "test_drops");
   check("90. mca [valid, valid] pe 2 chain-uri -> merged 2, any true, allReadable true",
     (() => { const r = mca([J([DROP]), J([{ ...DROP, droppedAt: 9 }])]); return r.merged.length === 2 && r.any === true && r.allReadable === true; })());
   check("90a. * mca [valid, INVALID] element -> păstrează validul, drop invalidul, allReadable false",

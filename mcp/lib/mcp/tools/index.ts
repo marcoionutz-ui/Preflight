@@ -23,18 +23,18 @@ import { registerChainReport }      from "./tp_chain_report";
 import { registerNextAction }       from "./tp_agent_brief";
 import { registerWatchPair } from "./tp_watch_pair";
 
-export function registerAllTools(server: McpServer, exposePerformance = false): void {
+export function registerAllTools(server: McpServer): void {
   // Instrumentăm server-ul o singură dată — toate toolurile primesc middleware automat
   const s = createInstrumentedServer(server);
 
-  registerHealthCheck(s, exposePerformance);
-  registerPairContext(s, exposePerformance);
+  registerHealthCheck(s);
+  registerPairContext(s);
   registerWorkerPipeline(s);
-  registerWorkerSnapshot(s, exposePerformance);
+  registerWorkerSnapshot(s);
   registerMarketOverview(s);
   registerSituationReport(s);
-  registerCandidateBrief(s, exposePerformance);
-  registerWhyNot(s, exposePerformance);
+  registerCandidateBrief(s);
+  registerWhyNot(s);
   registerRecentPipelineDrops(s);
   registerPreflightSafety(s);
   registerLateMoveContext(s);

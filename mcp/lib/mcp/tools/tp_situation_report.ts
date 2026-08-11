@@ -113,21 +113,22 @@ Observed movers section shows tokens moving on market that haven't passed pipeli
         // ── HOT candidates con adrese ──────────────────────────────────────
         if (hotCount > 0) {
           const hotList = Object.entries(hot)
-            .sort(([, a]: any, [, b]: any) => a.promotedAt - b.promotedAt)
+            .sort(([, a], [, b]) => a.promotedAt - b.promotedAt)
             .slice(0, 3)
-            .map(([key, h]: any) => {
+            .map(([key, h]) => {
               const addr      = splitPairKey(key).address;
               const ageSec    = Math.round((now - h.promotedAt) / 1000);
               const watchKind = watch[key]?.kind ?? null;
               const psFlow = states[key]?.flow ?? h.flow;
-              return `  → ${h.symbol ?? addr.slice(0, 8)} [${h.chain}] pair:${addr}${watchKind ? ` kind:${watchKind}` : ""} source:${h.source ?? "WS"} age:${ageSec}s flow:${psFlow?.pressure} buys:${psFlow?.buys5m} buyVol:${formatVol((psFlow as any)?.buyVol5mUsd, psFlow?.buyVol5m ?? 0)}`;
+              const psFlowUsd = psFlow as { buyVol5mUsd?: number | null } | undefined;
+              return `  → ${h.symbol ?? addr.slice(0, 8)} [${h.chain}] pair:${addr}${watchKind ? ` kind:${watchKind}` : ""} source:${h.source ?? "WS"} age:${ageSec}s flow:${psFlow?.pressure} buys:${psFlow?.buys5m} buyVol:${formatVol(psFlowUsd?.buyVol5mUsd, psFlow?.buyVol5m ?? 0)}`;
             });
           lines.push(`HOT:\n${hotList.join("\n")}`);
         }
 
 		// ── ARMED — first-class, înainte de noise ─────────────────────────
         if (armedCount > 0) {
-          const armedList = Object.entries(armed).map(([key, a]: any) => {
+          const armedList = Object.entries(armed).map(([key, a]) => {
             const addr     = splitPairKey(key).address;
             const ageSec   = Math.round((now - a.armedAt) / 1000);
             const ps       = states[key] ?? null;
@@ -218,9 +219,9 @@ Observed movers section shows tokens moving on market that haven't passed pipeli
         }
 
         // ── Recent transitions ─────────────────────────────────────────────
-        const recentEvents = events.filter((e: any) => now - e.ts < 3 * 60_000).slice(0, 3);
+        const recentEvents = events.filter(e => now - e.ts < 3 * 60_000).slice(0, 3);
         if (recentEvents.length) {
-          const evLines = recentEvents.map((e: any) => {
+          const evLines = recentEvents.map(e => {
             const ageSec = Math.round((now - e.ts) / 1000);
             return `  ${ageSec}s: ${e.symbol} [${e.chain ?? "?"}] pair:${e.pairAddress ?? "?"} ${e.from}→${e.to}${e.reason ? ` (${e.reason})` : ""}`;
           });

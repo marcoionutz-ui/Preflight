@@ -62,7 +62,7 @@ check("29. const = 2h în ms", PRICE_POOLS_WINDOW_MS === 7_200_000);
 
 // ── Partea B: PROBĂ Redis reală pt. E12 (ZCOUNT/ZREMRANGEBYSCORE boundary) ────────────────
 console.log("\nE12 — boundary ZCOUNT/prune (Redis real; skip curat dacă indisponibil)");
-let redis: any = null;
+let redis: import("ioredis").default | null = null;
 try {
   const { default: Redis } = await import("ioredis");
   // REDIS_URL (CI: serviciul redis:7) → REDIS_PUBLIC_URL (rularea locală a lui Marco) → localhost.

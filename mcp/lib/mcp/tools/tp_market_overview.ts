@@ -60,7 +60,7 @@ Args: chain (optional), top_n (default 5, max 20)`,
             moversByChain[c] = movers.slice(0, top_n).map(m => {
               // NF/U5: trending movers nu poartă reserveSource în schema lor → asociem cu pair_states
               // înainte de output ca reserveUsd V4 (estimat) să nu apară drept certitudine.
-              const ps = (states as Record<string, any>)[pairKey(c, m.pairAddress)];
+              const ps = states[pairKey(c, m.pairAddress)];
               return {
                 symbol:         m.symbol,
                 dexType:        m.dexType,

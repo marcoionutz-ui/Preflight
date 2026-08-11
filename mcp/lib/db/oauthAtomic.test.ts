@@ -84,7 +84,7 @@ check("30. ⭐ retry non-finit (NaN) → null", rateLimitFromEval([0, 5, 5, Numb
 
 // ── Partea B: PROBĂ Redis reală (Lua CAD + rate-limit) ─────────────────────────────────
 console.log("\nE4/E6 — Lua pe Redis real (skip curat dacă indisponibil)");
-let redis: any = null;
+let redis: import("ioredis").default | null = null;
 try {
   const { default: Redis } = await import("ioredis");
   const url = process.env.REDIS_URL || process.env.REDIS_PUBLIC_URL || "redis://127.0.0.1:6379";
@@ -133,9 +133,9 @@ if (redis) {
   // concurență: 20 finalize simultane pe același cod → EXACT 1 câștigă (1), restul 0.
   await redis.set(CODE_KEY, raw);
   const races = await Promise.all(
-    Array.from({ length: 20 }, () => redis.eval(AUTH_CODE_CONSUME_LUA, 1, CODE_KEY, raw)),
+    Array.from({ length: 20 }, () => redis!.eval(AUTH_CODE_CONSUME_LUA, 1, CODE_KEY, raw)),
   );
-  const wins = races.filter((x: any) => Number(x) === 1).length;
+  const wins = races.filter((x: unknown) => Number(x) === 1).length;
   const goneRace = await redis.exists(CODE_KEY);
   check("B5. ⭐ 20 finalize concurente → EXACT 1 consumed", wins === 1 && Number(goneRace) === 0);
   await redis.del(CODE_KEY);
@@ -143,8 +143,8 @@ if (redis) {
   // ── E6: RL_CHECK_INCR_LUA (check-then-increment) ──
   const MIN_KEY = "test:e6:rl:min:cli";
   const DAY_KEY = "test:e6:rl:day:cli";
-  const ev = (limMin: number, limDay: number) =>
-    redis.eval(RL_CHECK_INCR_LUA, 2, MIN_KEY, DAY_KEY, String(limMin), String(limDay), "60", "86400");
+  const ev = (limMin: number, limDay: number): Promise<number[]> =>
+    redis!.eval(RL_CHECK_INCR_LUA, 2, MIN_KEY, DAY_KEY, String(limMin), String(limDay), "60", "86400") as Promise<number[]>;
 
   // limit min=3, day=100: primele 3 permise, a 4-a blocată.
   await redis.del(MIN_KEY, DAY_KEY);
@@ -166,7 +166,7 @@ if (redis) {
   // concurență: limit min=5, 30 cereri simultane → EXACT 5 permise, day == 5 (fără supra-contorizare).
   await redis.del(MIN_KEY, DAY_KEY);
   const burst = await Promise.all(Array.from({ length: 30 }, () => ev(5, 1000)));
-  const allowedCount = burst.filter((x: any) => Number(x[0]) === 1).length;
+  const allowedCount = burst.filter((x: number[]) => Number(x[0]) === 1).length;
   const dayAfterBurst = await redis.get(DAY_KEY);
   check("B11. ⭐ 30 concurente, limit 5 → EXACT 5 permise (atomic)", allowedCount === 5);
   check("B12. ⭐ day == 5 după burst (respinsele nu au contorizat)", Number(dayAfterBurst) === 5);

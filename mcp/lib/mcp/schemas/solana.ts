@@ -22,9 +22,6 @@
  */
 import { z } from "zod";
 
-/** „orice obiect" — pt. elementele de array unde reader-ul coerçează fiecare câmp defensiv. */
-const objectLike = z.object({}).passthrough();
-
 // preflight:indexer:health:solana — reader citește updatedAt(number|string), status, slot-uri, indexerVersion.
 export const SolanaHealthSchema = z.object({
   updatedAt:      z.union([z.number(), z.string()]).optional(),

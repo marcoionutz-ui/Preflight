@@ -117,9 +117,9 @@ export async function buildMarketOverviewReport(topN = 5): Promise<MarketOvervie
       const chainStates = stateEntries.filter(([, s]) => (s.chain ?? "").toLowerCase() === chainId);
       const stateVals   = chainStates.map(([, s]) => s);
 
-      const chainWatch = Object.values(watch).filter((w: any) => w.chain?.toLowerCase() === chainId).length;
-      const chainHot   = Object.values(hot).filter((h: any) => h.chain?.toLowerCase() === chainId).length;
-      const chainArmed = Object.values(armed).filter((a: any) => (a.chain ?? "").toLowerCase() === chainId).length;
+      const chainWatch = Object.values(watch).filter(w => w.chain?.toLowerCase() === chainId).length;
+      const chainHot   = Object.values(hot).filter(h => h.chain?.toLowerCase() === chainId).length;
+      const chainArmed = Object.values(armed).filter(a => (a.chain ?? "").toLowerCase() === chainId).length;
 
       const newestStateAt = stateVals.length ? Math.max(...stateVals.map(s => s.updatedAt)) : null;
       // E13: clamp la ≥0 — un updatedAt din viitor (clock skew) nu mai dă freshnessSec negativ, care fiind
@@ -148,7 +148,7 @@ export async function buildMarketOverviewReport(topN = 5): Promise<MarketOvervie
       const moversRaw = await readTrendingMovers(chainId);
       const movers: MoverSummary[] = moversRaw.slice(0, topN).map(m => {
         // NF/U5: movers nu poartă reserveSource → asociem cu pair_states înainte de output.
-        const ps = (states as Record<string, any>)[pairKey(chainId, m.pairAddress)];
+        const ps = states[pairKey(chainId, m.pairAddress)];
         return {
           symbol:         m.symbol,
           pairAddress:    m.pairAddress,

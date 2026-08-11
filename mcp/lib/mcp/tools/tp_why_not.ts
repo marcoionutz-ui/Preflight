@@ -5,7 +5,7 @@ import { readAllRedis, getPipelineState, resolvePairChain, chainsForAddressInArr
 import { mcpResponse, mcpErr, ERR } from "../errors";
 import { pairKey } from "@preflight/schema";
 
-export function registerWhyNot(server: McpServer, exposePerformance: boolean) {
+export function registerWhyNot(server: McpServer) {
   server.registerTool(
     "tp_why_not",
     {

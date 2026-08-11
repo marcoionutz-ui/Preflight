@@ -42,3 +42,5 @@ jobs:
         run: npm run typecheck
       - name: Test (all workspaces)
         run: npm run test
+      - name: Lint mcp
+        run: npm run lint -w @preflight/mcp

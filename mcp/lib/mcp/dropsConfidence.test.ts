@@ -76,7 +76,7 @@ console.log("\nE15 — dedupeByPair (chain-scoped, integrare directă — varu)"
   );
   check("11a. base:0xabc ×2 → 1 rezultat", out.length === 1);
   check("11b. _eventCount = 2", out[0]._eventCount === 2);
-  check("11c. păstrează cel mai recent (300/new)", out[0].droppedAt === 300 && (out[0] as any).tag === "new");
+  check("11c. păstrează cel mai recent (300/new)", out[0].droppedAt === 300 && (out[0] as { tag?: string }).tag === "new");
 }
 // 12. fără pairAddress → skip.
 check("12. fără pairAddress → skip (0)", dedupeByPair([{ pairAddress: null, chain: "base", droppedAt: 1 }], "droppedAt").length === 0);

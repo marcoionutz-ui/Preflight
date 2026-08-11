@@ -8,15 +8,19 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { readAllRedis, formatEth, formatVol, formatPct, combineConfidence, getPipelineState, readSolanaIndexerStats, readSolanaMovers, readSolanaRecentActivity } from "../redis-reader";
+import { readAllRedis, formatVol, formatPct, combineConfidence, getPipelineState, readSolanaIndexerStats, readSolanaMovers, readSolanaRecentActivity } from "../redis-reader";
 import { normalizeChainId, splitPairKey, isEstimatedReserve } from "@preflight/schema";
 import { mcpResponse, mcpErr, ERR } from "../errors";
 
 // Timestamp fallback — events pot folosi ts, detectedAt, sau timestamp
-const eventTs = (e: any): number => e.ts ?? e.detectedAt ?? e.timestamp ?? 0;
+const eventTs = (e: { ts?: number; detectedAt?: number; timestamp?: number }): number =>
+  e.ts ?? e.detectedAt ?? e.timestamp ?? 0;
 
 // NF/U5: sufix compact pt. reserveUsd derivat dintr-un estimat V4 (virtual reserves — poate supraestima).
-const reserveMark = (rs: unknown): string => isEstimatedReserve(rs as any) ? " V4est⚠" : "";
+// Param tipizat exact ca argumentul acceptat de isEstimatedReserve (ReserveSource | null | undefined) →
+// call-site-urile pasează pairState.reserveSource (deja ReserveSource) fără cast.
+const reserveMark = (rs: Parameters<typeof isEstimatedReserve>[0]): string =>
+  isEstimatedReserve(rs) ? " V4est⚠" : "";
 
 function getLpCoverage(dexType: string | null | undefined, hasData: boolean): string {
   const d = (dexType ?? "").toUpperCase();
@@ -142,7 +146,7 @@ Args: chain — one of: base, arbitrum, eth, bsc, solana`,
           d.chain?.toLowerCase() === chainKey && now - d.droppedAt < 10 * 60_000
         );
         // fix ChatGPT #1: timestamp fallback
-        const chainEvents = events.filter((e: any) =>
+        const chainEvents = events.filter(e =>
           e.chain?.toLowerCase() === chainKey && now - eventTs(e) < 5 * 60_000
         );
 
@@ -229,7 +233,8 @@ Args: chain — one of: base, arbitrum, eth, bsc, solana`,
               line += `\n     source:${h.source ?? "WS"} age:${ageSec}s phase:${h.phase ?? "?"}`;
               // fix ChatGPT #3: ?? 0 pe formatEth
               const flow = pairState?.flow ?? h.flow;
-              line += `\n     flow:${flow?.pressure} | buys:${flow?.buys5m} buyVol:${formatVol((flow as any)?.buyVol5mUsd, flow?.buyVol5m ?? 0)} netVol:${formatVol((flow as any)?.netVol5mUsd, flow?.netVol5m ?? 0)}`;
+              const flowUsd = flow as { buyVol5mUsd?: number | null; netVol5mUsd?: number | null } | undefined;
+              line += `\n     flow:${flow?.pressure} | buys:${flow?.buys5m} buyVol:${formatVol(flowUsd?.buyVol5mUsd, flow?.buyVol5m ?? 0)} netVol:${formatVol(flowUsd?.netVol5mUsd, flow?.netVol5m ?? 0)}`;
               if (pc) line += `\n     priceChange: m5:${formatPct(pc.m5)} h1:${formatPct(pc.h1)} h24:${formatPct(pc.h24)}`;
               if (pairState) {
                 // fix ChatGPT #2: ?? 0 pe reserveUsd
@@ -312,7 +317,7 @@ Args: chain — one of: base, arbitrum, eth, bsc, solana`,
 
         // ── Recent transitions ─────────────────────────────────────────────
         if (chainEvents.length > 0) {
-          const evLines = chainEvents.slice(0, 5).map((e: any) => {
+          const evLines = chainEvents.slice(0, 5).map(e => {
             // fix : eventTs()
             const ageSec = Math.round((now - eventTs(e)) / 1000);
             return `  ${ageSec}s: ${e.symbol} ${e.from}→${e.to}${e.reason ? ` (${e.reason})` : ""}`;

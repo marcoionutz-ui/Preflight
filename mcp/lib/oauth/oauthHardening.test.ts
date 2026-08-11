@@ -97,7 +97,7 @@ check("C8. classifyIssueResult -1 → already_used (fail-closed)", classifyIssue
 // Împachetat în IIFE async: tsx transformă în CJS (fără top-level await). Sumarul final e la capătul IIFE-ului.
 void (async () => {
   console.log("\nU7 — atomic issuance pe Redis real (skip curat dacă indisponibil)");
-  let redis: any = null;
+  let redis: import("ioredis").default | null = null;
   try {
     const { default: Redis } = await import("ioredis");
     const url = process.env.REDIS_URL || process.env.REDIS_PUBLIC_URL || "redis://127.0.0.1:6379";

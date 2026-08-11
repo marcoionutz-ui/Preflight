@@ -2,6 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { readAllRedis } from "../redis-reader";
 import { normalizeChainId, pairKey, splitPairKey } from "@preflight/schema";
+import type { PreflightSignalPipelineEntry } from "@preflight/schema";
 import { mcpResponse, mcpErr, ERR } from "../errors";
 
 export function registerWorkerPipeline(server: McpServer) {
@@ -82,7 +83,7 @@ Args: chain (filter: 'base', 'arbitrum', 'bsc', or 'eth')`,
           }; })
           .sort((a, b) => a.ageSec - b.ageSec);
 		  
-		  const enrichFlowWithUsd = (chain: string | undefined, pairAddress: string | undefined, flow: any) => {
+		  const enrichFlowWithUsd = (chain: string | undefined, pairAddress: string | undefined, flow: PreflightSignalPipelineEntry["flow"] | null | undefined) => {
           const addr = pairAddress?.toLowerCase?.() ?? "";
           // B3f-2: states e keyed pe pairKey → construiește cheia cu chain-ul entry-ului.
           const ps   = (chain && addr) ? states[pairKey(chain, addr)]?.flow ?? null : null;
@@ -117,7 +118,7 @@ Args: chain (filter: 'base', 'arbitrum', 'bsc', or 'eth')`,
           : null;
 
 		  
-		  const armedPipelineEntries = armedEntries.map((a: any) => ({
+		  const armedPipelineEntries = armedEntries.map(a => ({
           symbol:             a.symbol,
           chain:              a.chain,
           pairAddress:        a.pairAddress,
@@ -164,7 +165,10 @@ Args: chain (filter: 'base', 'arbitrum', 'bsc', or 'eth')`,
             ]
           : null;
 				
-       const hasFlow = pipelineEntries?.some((e: any) => e.flow?.hasData || e.flow?.buys5m || e.flow?.buyVol5mUsd) ?? false;
+       const hasFlow = pipelineEntries?.some(e => {
+         const f = e.flow as { hasData?: boolean; buys5m?: number | null; buyVol5mUsd?: number | null } | null | undefined;
+         return f?.hasData || f?.buys5m || f?.buyVol5mUsd;
+       }) ?? false;
 
         return mcpResponse({
           text: JSON.stringify({
@@ -173,9 +177,9 @@ Args: chain (filter: 'base', 'arbitrum', 'bsc', or 'eth')`,
             legacy: { activeWatch, hotCandidates, armedEntries },
             summary: pipelineEntries
               ? {
-                  watching:   pipelineEntries.filter((e: any) => e.pipelineState === "WATCHING").length,
-                  hot:        pipelineEntries.filter((e: any) => e.pipelineState === "HOT").length,
-                  armed:      pipelineEntries.filter((e: any) => e.pipelineState === "ARMED").length,
+                  watching:   pipelineEntries.filter(e => e.pipelineState === "WATCHING").length,
+                  hot:        pipelineEntries.filter(e => e.pipelineState === "HOT").length,
+                  armed:      pipelineEntries.filter(e => e.pipelineState === "ARMED").length,
                   qualified:  pfQualified?.filter(q => filterChain(q.chain)).length ?? 0,
                 }
               : { watching: activeWatch.length, hot: hotCandidates.length, armed: armedEntries.length },

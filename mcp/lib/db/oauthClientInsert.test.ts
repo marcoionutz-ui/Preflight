@@ -61,7 +61,7 @@ check("8. rând cu secret_rotated_at valid → true", hasValidCredentialVersion(
 check("9. ⭐ secret_rotated_at null (DB fără DEFAULT) → false", !hasValidCredentialVersion({ secret_rotated_at: null }));
 check("10. ⭐ secret_rotated_at undefined (coloană lipsă) → false", !hasValidCredentialVersion({ secret_rotated_at: undefined }));
 check("11. ⭐ secret_rotated_at \"\" (gol) → false", !hasValidCredentialVersion({ secret_rotated_at: "" }));
-check("12. secret_rotated_at non-string (număr) → false", !hasValidCredentialVersion({ secret_rotated_at: 123 as any }));
+check("12. secret_rotated_at non-string (număr) → false", !hasValidCredentialVersion({ secret_rotated_at: 123 as unknown as string }));
 check("13. row null → false (nu aruncă)", !hasValidCredentialVersion(null));
 check("14. row undefined → false (nu aruncă)", !hasValidCredentialVersion(undefined));
 check("15. secret_rotated_at ISO real → true", hasValidCredentialVersion({ secret_rotated_at: NOW_ISO }));
@@ -71,7 +71,7 @@ check("16. ⭐ round-trip: buildOAuthClientInsertRow → hasValidCredentialVersi
   hasValidCredentialVersion(buildOAuthClientInsertRow(BASE, NOW_ISO)));
 // dovada că guard-ul chiar prinde regresia: un rând FĂRĂ câmp (ce era înainte fixul) pică.
 check("17. ⭐ rândul VECHI (fără secret_rotated_at, ca înainte de E3) → guard false",
-  !hasValidCredentialVersion(BASE as any));
+  !hasValidCredentialVersion(BASE as unknown as Parameters<typeof hasValidCredentialVersion>[0]));
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

@@ -2,7 +2,6 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { pairAddressSchema } from "./pairAddressSchema";
 import { readAllRedis, getPipelineState, resolvePairChain, findLastEventForPair, formatEth, formatVol, formatPct, wsFlowQuality, combineConfidence } from "../redis-reader";
-import type { PairState } from "../types";
 import { mcpErr, mcpResponse, ERR } from "../errors";
 import type { SourceAgreement } from "@preflight/schema";
 import { hooksEvidenceField, isEstimatedReserve, reserveEstimatedFlag } from "@preflight/schema";
@@ -54,7 +53,7 @@ function getSourceAgreement(
   return "NO_DISCOVERY_DATA";
 }
 
-export function registerCandidateBrief(server: McpServer, exposePerformance: boolean) {
+export function registerCandidateBrief(server: McpServer) {
   server.registerTool(
     "tp_candidate_brief",
     {
@@ -130,7 +129,7 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
           const ageSec = Math.round((now - (hotEntry?.promotedAt ?? now)) / 1000);
           lines.push(`  • Promoted to HOT ${ageSec}s ago from source: ${hotEntry?.source ?? "WS"}`);
           const hotFlow = pairState?.flow ?? hotEntry?.flow;
-          lines.push(`  • Flow: ${hotFlow?.pressure ?? "?"} | buys: ${hotFlow?.buys5m ?? 0} | buyVol: ${formatVol((hotFlow as any)?.buyVol5mUsd, hotFlow?.buyVol5m ?? 0)}`);
+          lines.push(`  • Flow: ${hotFlow?.pressure ?? "?"} | buys: ${hotFlow?.buys5m ?? 0} | buyVol: ${formatVol((hotFlow as unknown as { buyVol5mUsd?: number } | undefined)?.buyVol5mUsd, hotFlow?.buyVol5m ?? 0)}`);
           if ((hotEntry?.largestBuyEth ?? 0) > (hotEntry?.avgBuyEth ?? 0) * 4) {
             lines.push(`  ⚠️ Concentrated buy pattern: largest buy ${formatEth(hotEntry?.largestBuyEth ?? 0, displayChain)} vs avg ${formatEth(hotEntry?.avgBuyEth ?? 0, displayChain)} (exceeds 4× concentration threshold)`);
           } else {

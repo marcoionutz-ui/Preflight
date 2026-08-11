@@ -76,7 +76,7 @@ Returns current status if pair is already being monitored.`,
         }
 
         if (inWatch) {
-          const watchInfo = watch[lookup] as any;
+          const watchInfo = watch[lookup] as { addedAt: number; kind?: string; chain?: string };
           const ageSec    = Math.round((now - watchInfo.addedAt) / 1_000);
           lines.push(`STATUS: already WATCHING`);
           lines.push(`  kind: ${watchInfo.kind ?? "?"} | age: ${ageSec}s | chain: ${watchInfo.chain}`);

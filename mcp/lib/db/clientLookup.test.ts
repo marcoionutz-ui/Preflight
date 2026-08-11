@@ -13,14 +13,14 @@ function check(name: string, cond: boolean): void {
 }
 
 // Stub minimal de client (forma exactă nu contează pt. clasificator).
-const CLIENT = { client_id: "c1", secret_rotated_at: "v1" } as any;
+const CLIENT = { client_id: "c1", secret_rotated_at: "v1" } as unknown as Parameters<typeof classifyClientLookup>[0];
 
 function main(): void {
 console.log("NF4 — classifyClientLookup (found | not_found | unavailable)");
 
 // found: data prezent, fără eroare.
 const found = classifyClientLookup(CLIENT, null);
-check("1. data prezent + fără eroare → found", found.status === "found" && (found as any).client === CLIENT);
+check("1. data prezent + fără eroare → found", found.status === "found" && (found as { client?: unknown }).client === CLIENT);
 
 // not_found: 0 rânduri (.maybeSingle → data null, error null).
 check("2. ⭐ data null + error null (0 rânduri) → not_found", classifyClientLookup(null, null).status === "not_found");

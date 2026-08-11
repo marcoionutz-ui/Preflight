@@ -12,11 +12,11 @@ import { authenticate, authErrorResponse } from "@/lib/mcp/auth";
 import { withToolContext }                 from "@/lib/mcp/middleware";
 import type { NextRequest }                from "next/server";
 
-const EXPOSE_PERFORMANCE = process.env.MCP_EXPOSE_PERFORMANCE === "true";
+
 
 const handler = createMcpHandler(
   (server) => {
-    registerAllTools(server, EXPOSE_PERFORMANCE);
+    registerAllTools(server);
   },
   {},
   {

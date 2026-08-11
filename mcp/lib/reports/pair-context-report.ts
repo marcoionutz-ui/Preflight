@@ -82,13 +82,29 @@ function getSourceAgreement(
 export interface BuildPairContextInput {
   pairAddress:        string;
   chain?:              string;
-  exposePerformance?: boolean;
+}
+
+/**
+ * View local peste `pair_context` (readPairContext întoarce `Record<string, unknown>` — validat de
+ * PairContextSchema, dar fără tip nominal). Enumeră DOAR câmpurile citite aici; index signature-ul
+ * `unknown` păstrează restul (fwd-compat) și permite `Record<string, unknown> as PfContextView`.
+ * `reserveSource` = exact tipul acceptat de `reserveEstimatedFlag` → fără cast la call-site.
+ */
+interface PfContextView {
+  [key: string]:    unknown;
+  updatedAt?:       number | null;
+  symbol?:          string | null;
+  chain?:           string | null;
+  reserveUsd?:      number | null;
+  reserveSource?:   Parameters<typeof reserveEstimatedFlag>[0];
+  pipelineState?:   string | null;
+  contextQuality?:  unknown;
 }
 
 export async function buildPairContextReport(
   input: BuildPairContextInput,
 ): Promise<PairContextReport> {
-  const { pairAddress, chain, exposePerformance = false } = input;
+  const { pairAddress, chain } = input;
 
   try {
     const rawAddr = pairAddress.trim();
@@ -187,7 +203,7 @@ export async function buildPairContextReport(
         errorMessage: "Pair address exists on multiple chains; specify chain",
       };
     }
-    const pfCtx = pfLookup.context;
+    const pfCtx = pfLookup.context as PfContextView | null;
 
     // B3f: hărțile live (watch/hot/armed/states/snapshot.memory/poolReserveEth)
     // sunt keyed pe pairKey(chain, addr). Precedență chain: hint explicit >
@@ -234,9 +250,9 @@ export async function buildPairContextReport(
           preflightContext: pfCtx,
           // NF/U5 (R4): în fallback-ul pe pair_context (fără pair_states) provenance-ul se pierdea complet →
           // îl expunem explicit la top-level (liquidityStatus din pfCtx e deja plafonat pt. estimat V4).
-          reserveUsd:       (pfCtx as any).reserveUsd ?? null,
-          reserveSource:    (pfCtx as any).reserveSource ?? null,
-          reserveEstimated: reserveEstimatedFlag((pfCtx as any).reserveSource),
+          reserveUsd:       pfCtx.reserveUsd ?? null,
+          reserveSource:    pfCtx.reserveSource ?? null,
+          reserveEstimated: reserveEstimatedFlag(pfCtx.reserveSource),
           pipeline: { state: pfCtx.pipelineState ?? "NONE", watch: watchOut, hot: hotOut, armed: armedOut },
           contextQuality: pfContextQuality,
           dataSource: "preflight_pair_context",
@@ -350,8 +366,8 @@ export async function buildPairContextReport(
       // NF/U5: proveniența rezervei — reserveUsd V4 (V4_STATE_LIQUIDITY) e estimat din virtual reserves
       // (poate supraestima concentrat), NU TVL confirmat. `reserveEstimated` = flag explicit pt. agent/UI.
       // NF/U5 (R4): cade pe pfCtx.reserveSource când nu avem pair_states (altfel provenance-ul dispare).
-      reserveSource:      pairState?.reserveSource      ?? (pfCtx as any)?.reserveSource ?? null,
-      reserveEstimated:   reserveEstimatedFlag(pairState?.reserveSource ?? (pfCtx as any)?.reserveSource), // tri-stare
+      reserveSource:      pairState?.reserveSource      ?? pfCtx?.reserveSource ?? null,
+      reserveEstimated:   reserveEstimatedFlag(pairState?.reserveSource ?? pfCtx?.reserveSource), // tri-stare
       liqStatus:          pairState?.liqStatus          ?? null,
       poolCountSameToken: pairState?.poolCountSameToken ?? null,
       reserveNative:      pairState?.reserveNative      ?? reserveEth,

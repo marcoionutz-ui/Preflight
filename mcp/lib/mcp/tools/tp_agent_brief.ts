@@ -71,7 +71,7 @@ Does not advise on trades. Routes to data, not to decisions.`,
         // Chain with most activity
         const chainCounts: Record<string, number> = {};
         for (const v of Object.values(watch)) {
-          const c = (v as any).chain ?? "unknown";
+          const c = (v as { chain?: string }).chain ?? "unknown";
           chainCounts[c] = (chainCounts[c] ?? 0) + 1;
         }
         const topChainInternal = Object.entries(chainCounts)
@@ -85,7 +85,8 @@ Does not advise on trades. Routes to data, not to decisions.`,
 
         // ── Priority routing ──────────────────────────────────────────────
         if (armedCount > 0) {
-          const armedList = Object.entries(armed).map(([key, a]: any) => {
+          const armedList = Object.entries(armed).map(([key, av]) => {
+            const a = av as { symbol?: string; chain?: string; score?: number; armedAt: number };
             const addr = splitPairKey(key).address; // cheia e pairKey → adresa brută
             return `${a.symbol ?? addr.slice(0, 8)} [${a.chain ?? "?"}] pair:${addr} score:${a.score} age:${Math.round((now - a.armedAt) / 1000)}s`;
           });
@@ -99,7 +100,8 @@ Does not advise on trades. Routes to data, not to decisions.`,
           lines.push(`  3. tp_late_move_context(pair, chain) — check for late-move evidence`);
 
         } else if (hotCount > 0) {
-          const hotList = Object.entries(hot).map(([key, h]: any) => {
+          const hotList = Object.entries(hot).map(([key, hv]) => {
+            const h = hv as { symbol?: string; chain?: string; flow?: { pressure?: string; buys5m?: number } };
             const addr = splitPairKey(key).address;
             return `${h.symbol ?? addr.slice(0, 8)} [${h.chain}] pair:${addr} flow:${h.flow?.pressure} buys:${h.flow?.buys5m}`;
           });

@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start -p ${PORT:-3000}",
-    "lint": "next lint",
+    "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test:e9": "tsx lib/db/redis.test.ts",
     "test:e14": "tsx lib/mcp/keyFreshness.test.ts",
@@ -43,6 +43,7 @@
     "zod": "4.4.3"
   },
   "devDependencies": {
+    "@eslint/eslintrc": "^3",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",

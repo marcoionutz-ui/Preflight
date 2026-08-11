@@ -22,6 +22,73 @@ interface Props {
   params: Promise<{ chain: string; address: string }>;
 }
 
+// Payload-ul raportului e un blob dinamic (union solana / evm / not-found) tipat `Record<string, unknown>`
+// la sursă. `Cell` = valori randabile direct în JSX ȘI în template literals. Obiectele imbricate citite mai
+// adânc au forme explicite; câmpurile navigate prin `?? {}` sunt non-opționale ca fallback-ul gol să nu
+// introducă un membru `{}` fără proprietăți. Index signature-ul `unknown` permite `Record<...> as DisplayPayload`
+// și păstrează câmpurile neenumerate. Ecran demo cache-only — precizie „suficientă", fără `any`.
+type Cell = string | number | boolean | null | undefined;
+
+interface RiskView {
+  riskLevel?:       Cell;
+  isHoneypot?:      unknown;
+  cannotSell?:      unknown;
+  buyTaxPct?:       Cell;
+  sellTaxPct?:      Cell;
+  ownerRenounced?:  unknown;
+  canMint?:         unknown;
+  canBlacklist?:    unknown;
+  canPauseTrading?: unknown;
+  checkedAgeSec?:   number | null;
+  flags?:           string[];
+  summary?:         Cell;
+}
+
+interface DiscoveryView {
+  agreement?:              Cell;
+  primaryDiscoverySource?: Cell;
+  discoverySources?:       unknown[];
+  firstDiscoveredAt?:      number | null;
+  lastDiscoveryAt?:        number | null;
+}
+
+interface ReadyView {
+  ready?:           unknown;
+  missingCritical?: unknown[];
+}
+
+interface DisplayPayload {
+  [key: string]:          unknown;
+  found?:                 boolean;
+  pairAddress?:           Cell;
+  chain?:                 Cell;
+  symbol?:                Cell;
+  contextQuality?:        string;
+  dataSource?:            Cell;
+  dataAgeSec?:            number | null;
+  priceSnapshot:          Record<string, Cell>;
+  registry:               Record<string, Cell>;
+  activity?:              unknown;
+  recentHistory?:         unknown;
+  observedCandidate?:     unknown;
+  dexType?:               Cell;
+  liqStatus?:             Cell;
+  reserveUsd?:            number | null;
+  reserveNative?:         Cell;
+  nativeSymbol?:          Cell;
+  poolCountSameToken?:    Cell;
+  currentPrice?:          Cell;
+  priceChange?:           { m5?: number; h1?: number; h24?: number } | null;
+  priceVsFirstSeenPct?:   Cell;
+  dataAvailability:       Record<string, Cell>;
+  dataReadyForReasoning:  ReadyView;
+  pipeline?:              { state?: Cell };
+  marketPattern?:         { lastMomentumVerdict?: Cell; monitoringTier?: Cell };
+  risk?:                  RiskView | null;
+  riskCacheStatus?:       Cell;
+  discovery?:             DiscoveryView | null;
+}
+
 export default async function PairContextDemoPage({ params }: Props) {
   const { chain, address } = await params;
 
@@ -54,7 +121,7 @@ export default async function PairContextDemoPage({ params }: Props) {
           <>
             <IdentityHeader chain={chain} address={address} report={report} />
             <PairContextTabs
-              human={<HumanView payload={report.payload} warnings={report.warnings} />}
+              human={<HumanView payload={report.payload} />}
               agentJson={agentJson}
             />
           </>
@@ -89,7 +156,7 @@ function IdentityHeader({
   address: string;
   report: Awaited<ReturnType<typeof buildPairContextReport>>;
 }) {
-  const p = report.payload as any;
+  const p = report.payload as DisplayPayload;
   const found = p.found !== false;
 
   return (
@@ -108,7 +175,7 @@ function IdentityHeader({
         </div>
         <div style={styles.badgeRow}>
           <ConfidenceBadge value={report.confidence} />
-          <QualityBadge value={p.contextQuality} />
+          <QualityBadge value={p.contextQuality ?? "unknown"} />
         </div>
       </div>
 
@@ -137,8 +204,8 @@ function IdentityHeader({
   );
 }
 
-function HumanView({ payload, warnings }: { payload: Record<string, unknown>; warnings?: string[] }) {
-  const p = payload as any;
+function HumanView({ payload }: { payload: Record<string, unknown> }) {
+  const p = payload as DisplayPayload;
   const isSolana = p.chain === "solana" || p.registry !== undefined || p.priceSnapshot !== undefined;
 
   return (
@@ -157,7 +224,7 @@ function HumanView({ payload, warnings }: { payload: Record<string, unknown>; wa
   );
 }
 
-function SolanaCard({ p }: { p: any }) {
+function SolanaCard({ p }: { p: DisplayPayload }) {
   const snap = p.priceSnapshot ?? {};
   const registry = p.registry ?? {};
   return (
@@ -179,7 +246,7 @@ function SolanaCard({ p }: { p: any }) {
   );
 }
 
-function LiquidityCard({ p }: { p: any }) {
+function LiquidityCard({ p }: { p: DisplayPayload }) {
   return (
     <Section title="Liquidity & market">
       <Row label="dex type" value={p.dexType ?? "—"} />
@@ -194,7 +261,7 @@ function LiquidityCard({ p }: { p: any }) {
   );
 }
 
-function FlowPipelineCard({ p }: { p: any }) {
+function FlowPipelineCard({ p }: { p: DisplayPayload }) {
   const avail = p.dataAvailability ?? {};
   const ready = p.dataReadyForReasoning ?? {};
   return (
@@ -217,7 +284,7 @@ function FlowPipelineCard({ p }: { p: any }) {
   );
 }
 
-function RiskCard({ p }: { p: any }) {
+function RiskCard({ p }: { p: DisplayPayload }) {
   const risk = p.risk;
   if (!risk) {
     return (
@@ -250,7 +317,7 @@ function RiskCard({ p }: { p: any }) {
   );
 }
 
-function DiscoveryCard({ p }: { p: any }) {
+function DiscoveryCard({ p }: { p: DisplayPayload }) {
   const d = p.discovery;
   if (!d) return null;
   return (
@@ -331,7 +398,8 @@ function formatTs(ts: number | null | undefined): string {
 
 // priceChange e un obiect { m5, h1, h24 }, nu un string/number — randat direct
 // în JSX (ca înainte) crăpa React ("Objects are not valid as a React child").
-// p e tipat `any`, deci tsc n-a prins asta la compile time.
+// Acum că `p` e tipat `DisplayPayload` (nu `any`), tsc prinde astfel de scăpări
+// la compile time — de-aia priceChange e `{ m5?, h1?, h24? }` și trece prin acest helper.
 function formatPriceChange(pc: { m5?: number; h1?: number; h24?: number } | null | undefined): string {
   if (!pc) return "—";
   const fmt = (v: number | undefined) =>

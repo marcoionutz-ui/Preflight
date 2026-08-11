@@ -1,9 +1,9 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { readAllRedis, freshnessLabel, safeMinAge, readQuoteOracleHealth, readQuotePriceHealth, readSolanaIndexerStats } from "../redis-reader";
+import { readAllRedis, safeMinAge, readQuoteOracleHealth, readQuotePriceHealth, readSolanaIndexerStats } from "../redis-reader";
 import { keyFreshness, aggregateKnownFreshness, completeOnKnownChains } from "../health-freshness";
 import { mcpResponse, mcpErr, ERR } from "../errors";
 
-export function registerHealthCheck(server: McpServer, exposePerformance: boolean) {
+export function registerHealthCheck(server: McpServer) {
   server.registerTool(
     "tp_health_check",
     {
