@@ -31,12 +31,29 @@ const SCAN_COUNT   = Number(process.env.LAUNCH_SCAN_COUNT ?? "1000");
 const MGET_BATCH   = Number(process.env.LAUNCH_MGET_BATCH ?? "500");
 const SAMPLE_LIMIT = Number(process.env.SAMPLE_REJECTED ?? "25");
 
+/**
+ * Rezolvă URL-ul Redis. ⚠️ Diagnostic rulat din AFARA Railway (laptop/WSL) → preferă ENDPOINT-ul
+ * PUBLIC: `REDIS_PUBLIC_URL` întâi (reachable extern), apoi override explicit `REDIS_URL`, apoi
+ * `REDIS_PRIVATE_URL` (host intern `*.railway.internal` — reachable DOAR din rețeaua Railway, dă
+ * ECONNRESET/timeout de pe laptop). Escape hatch: `INSPECT_REDIS_URL` bate tot.
+ * NU logăm URL-ul (conține parola) — doar ce VARIABILĂ am ales + host:port.
+ */
 function resolveRedisUrl(): string {
-  const url = process.env.REDIS_URL ?? process.env.REDIS_PRIVATE_URL ?? process.env.REDIS_PUBLIC_URL;
-  if (!url) {
-    console.error("Missing Redis env: set REDIS_URL, REDIS_PRIVATE_URL, or REDIS_PUBLIC_URL");
+  const candidates: [string, string | undefined][] = [
+    ["INSPECT_REDIS_URL", process.env.INSPECT_REDIS_URL],
+    ["REDIS_PUBLIC_URL",  process.env.REDIS_PUBLIC_URL],
+    ["REDIS_URL",         process.env.REDIS_URL],
+    ["REDIS_PRIVATE_URL", process.env.REDIS_PRIVATE_URL],
+  ];
+  const picked = candidates.find(([, v]) => typeof v === "string" && v.length > 0);
+  if (!picked || !picked[1]) {
+    console.error("Missing Redis env: set REDIS_PUBLIC_URL (recomandat pt. rulare externă), INSPECT_REDIS_URL, REDIS_URL sau REDIS_PRIVATE_URL");
     process.exit(2);
   }
+  const [name, url] = picked;
+  let hostPort = "(neparseabil)";
+  try { const u = new URL(url); hostPort = u.host; } catch { /* ignore */ }
+  console.log("[U9][INSPECT] folosesc " + name + " → " + hostPort + (url.startsWith("rediss://") ? " (TLS)" : ""));
   return url;
 }
 
@@ -55,9 +72,13 @@ async function scanLaunchKeys(redis: Redis): Promise<string[]> {
 
 async function main(): Promise<void> {
   const redis = new Redis(resolveRedisUrl(), {
-    maxRetriesPerRequest: 3,
+    maxRetriesPerRequest: 5,
     enableReadyCheck: true,
     lazyConnect: false,
+    family: 0,              // dual-stack IPv4/IPv6 — proxy-ul public Railway poate fi doar AAAA
+    connectTimeout: 15_000, // toleranță la handshake lent prin proxy
+    // reîncearcă conexiunea de câteva ori la reset tranzitoriu, apoi renunță (diagnostic, nu daemon)
+    retryStrategy: (times) => (times > 6 ? null : Math.min(times * 500, 3_000)),
   });
   redis.on("error", (err) => console.error("[REDIS] error:", err.message));
 
