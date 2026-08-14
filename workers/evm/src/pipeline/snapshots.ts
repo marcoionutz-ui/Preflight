@@ -7,6 +7,7 @@
 import type { Redis } from "ioredis";
 import {
   activeWatch, hotCandidates, memory, wsFlow, wsClients,
+  wsLastPongAt, wsLastMessageAt,
   momentumEventsBuffer, qualifiedSignalsBuffer, recentDrops,
 } from "../state/stores";
 import { buildPairStates, buildWatchSnapshot, buildHotSnapshot, buildArmedSnapshot } from "../state/pairStates";
@@ -56,11 +57,19 @@ export async function writeAllSnapshots(r: Redis): Promise<void> {
   // per-chain scrie doar cheile chain-urilor lui (CHAINS = runtime).
   const runtimeNow  = Date.now();
   const runtimePipe = r.pipeline();
+  const ageSec = (t: number | undefined): number | null =>
+    typeof t === "number" ? Math.max(0, Math.round((runtimeNow - t) / 1000)) : null;
   for (const c of CHAINS) {
     const ws = wsClients.get(c.id);
     runtimePipe.set(REDIS_KEYS.workerRuntime(c.id), JSON.stringify({
       chain:       c.id,
       wsConnected: ws?.readyState === WebSocket.OPEN,
+      // D1 (health onestitate): două semnale DISTINCTE. `lastPongAgeSec` = transportul WS răspunde la ping
+      // (viu); `lastWsMessageAgeSec` = ultima notificare de log livrată (data stream chiar curge). Un pong
+      // proaspăt + un message vechi = „serverul răspunde la ping, dar subscripțiile au murit tăcut" — vizibil
+      // acum pentru ops/alerting, fără să mintă `wsConnected` (schema MCP e passthrough → nu rupe parse-ul).
+      lastPongAgeSec:      ageSec(wsLastPongAt.get(c.id)),
+      lastWsMessageAgeSec: ageSec(wsLastMessageAt.get(c.id)),
       updatedAt:   runtimeNow,
     }), "EX", SNAPSHOT_TTL_SEC);
   }

@@ -96,6 +96,12 @@ export const poolLiquidity = new PairMap<{
 // ── WS client state ───────────────────────────────────────────────────────────
 
 export const wsClients        = new Map<string, any>(); // WebSocket per chain
+// D1 (health onestitate): două semnale DISTINCTE de liveness per chain.
+//  - wsLastPongAt      = ultimul pong (transportul WS e viu — răspunde la ping)
+//  - wsLastMessageAt   = ultima NOTIFICARE de log livrată (data stream-ul chiar curge)
+// Un pong proaspăt + un message vechi = „serverul răspunde la ping, dar subscripțiile au murit tăcut".
+export const wsLastPongAt      = new Map<string, number>();
+export const wsLastMessageAt   = new Map<string, number>();
 export const swapSubIds        = new Map<string, string[]>();
 export const pendingSwapSubs   = new Map<number, string>();
 export let   swapSubReqId      = 10_000;

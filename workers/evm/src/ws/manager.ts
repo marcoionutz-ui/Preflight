@@ -7,8 +7,9 @@ import WebSocket from "ws";
 import type { ChainConfig } from "../config/chains";
 import { getQuoteFlowAsEth, toPoolConventionAmounts, extractBaseQuote, resolveLpNativeAmount } from "./quoteFlow";
 import { createReconnectManager, type BackoffConfig } from "./wsBackoff";
+import { startHeartbeat } from "./heartbeat";
 import {
-  wsClients, v3PoolMap, v4PoolMap,
+  wsClients, wsLastPongAt, wsLastMessageAt, v3PoolMap, v4PoolMap,
   swapSubIds, swapSubSnapshot, pendingSwapSubs,
   scopedSubStore, poolLiquidity, memory, hotCandidates,
   watchedPoolCache,
@@ -47,6 +48,7 @@ function int256FromWord(hex64: string): bigint {
 // controller-ul PUR `createReconnectManager` (testabil izolat); aici doar îl cablăm cu timere/rand/connect reale.
 const WS_RECONNECT_BACKOFF: BackoffConfig = { baseMs: 1_000, capMs: 30_000, jitterRatio: 0.5 };
 const WS_STABLE_MS = 60_000; // socketul trebuie să reziste 60s neîntrerupt înainte de a reseta backoff-ul
+const WS_HEARTBEAT_INTERVAL_MS = 30_000; // D1: fereastra ping→pong; un interval fără pong = socket zombie → terminate
 
 // Registry chainId→ChainConfig: controller-ul lucrează cu chainId; aici recuperăm ChainConfig-ul pt. reconnect.
 const chainRegistry = new Map<string, ChainConfig>();
@@ -84,9 +86,19 @@ export function connectChainWebSocket(chain: ChainConfig): void {
   }
   wsClients.set(chain.id, wsClient);
 
-  const pingInterval = setInterval(() => {
-    if (wsClient.readyState === WebSocket.OPEN) wsClient.ping();
-  }, 30_000);
+  // D1 (fix wiring): heartbeat ping/pong REAL — detectează socketul zombie (TCP OPEN, dar serverul nu
+  // mai livrează nimic) și-l `terminate()` → `close` → reconnect. Înainte se trimitea DOAR `ping()`,
+  // fără listener de `pong` și fără terminate → zombie-ul rămânea OPEN pe veci, `close` nu se emitea,
+  // reconnect-ul nu pornea, iar health-ul îl raporta „conectat" cu flow zero. Wiring-ul e în
+  // `startHeartbeat` (heartbeat.ts) → testat pe socket fals (scripts/wsHeartbeatWiring.test.ts).
+  const heartbeat = startHeartbeat(wsClient, {
+    openState:     WebSocket.OPEN,
+    intervalMs:    WS_HEARTBEAT_INTERVAL_MS,
+    setInterval:   (fn, ms) => setInterval(fn, ms),
+    clearInterval: (h) => clearInterval(h as ReturnType<typeof setInterval>),
+    log:           (m) => console.log(`[WS ${chain.id}] ${m}`),
+    onPong:        () => wsLastPongAt.set(chain.id, Date.now()), // transport viu (distinct de data stream)
+  });
 
   wsClient.on("open", () => {
     console.log(`[WS] Connected to Alchemy ${chain.id.toUpperCase()}`);
@@ -139,6 +151,11 @@ export function connectChainWebSocket(chain: ChainConfig): void {
           return;
         }
       }
+
+      // D1 (health onestitate): o NOTIFICARE de log livrată prin subscripție = data stream viu — distinct
+      // de pong (= doar transport viu). Marcăm înainte de a filtra pe topic, ca orice log de la orice
+      // subscripție să conteze ca „stream care curge" (nu doar swap-urile de care ne pasă mai jos).
+      if (msg.params?.result) wsLastMessageAt.set(chain.id, Date.now());
 
       // ── V4 Swap (all chains) ─────────────────────────────────────────────
       if (msg.params?.result?.topics?.[0] === SWAP_V4_TOPIC) {
@@ -380,7 +397,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
   wsClient.on("error", (err: Error) => console.log(`[WS ${chain.id}] Error: ${err.message}`));
 
   wsClient.on("close", () => {
-    clearInterval(pingInterval);
+    heartbeat.stop();
     clearScopedSubsForChain(scopedSubStore, chain.id); // D3: subscripțiile mor cu socketul → stare goală
     console.log(`[WS ${chain.id}] Disconnected — programez reconnect (backoff + jitter)...`);
     wsReconnect.handleClose(chain.id); // E27: backoff + jitter + reprogramare protejată/contorizată (wsBackoff.ts)
