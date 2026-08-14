@@ -474,6 +474,11 @@ export interface PreflightMarketContext {
 export interface PreflightWorkerRuntime {
   chain:       PreflightEvmChain;
   wsConnected: boolean;
+  // D1 (health onestitate): vârste distincte de liveness WS (ajustate la `now` de reader).
+  // lastPongAgeSec = transportul răspunde la ping; lastWsMessageAgeSec = ultima notificare de log livrată.
+  // `?`/null = worker vechi / semnal absent (snapshot legacy) — passthrough-safe.
+  lastPongAgeSec?:      number | null;
+  lastWsMessageAgeSec?: number | null;
   updatedAt:   number;
 }
 

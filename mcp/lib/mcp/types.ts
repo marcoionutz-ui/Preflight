@@ -185,6 +185,8 @@ export interface RedisContext {
   };
   knownChains:            string[];
   liveChains:             string[];
+  // D1 (health onestitate): vârste WS per-chain (pong = transport, lastWsMessage = data stream), ajustate la now.
+  wsRuntimeByChain:       Record<string, { wsConnected: boolean; lastPongAgeSec: number | null; lastWsMessageAgeSec: number | null }>;
   pipelineCoverage: PipelineCoverage | null;
   scannerStats:     ScannerStats | null;
   pfLifecycle:      LifecycleEntry[] | null;

@@ -30,6 +30,7 @@ import {
 } from "@preflight/schema";
 import { safeAgeSec, quotePriceCurrentAgeSec, pricePoolsWindowStart } from "./freshness";
 import { adjustMoverReadTime } from "./moverReadTime";
+import { resolveWsRuntime } from "./health-freshness";
 import { parseWithSchema, mergeChainRecords, mergeChainArrays } from "./safeParse";
 import {
   SolanaHealthSchema, SolanaMoversSnapshotSchema, SolanaPoolSchema,
@@ -264,6 +265,8 @@ export async function readAllRedis(): Promise<RedisContext | null> {
   // sau expirat (>120s) = ignorat.
   const wsConnectedChains: PreflightEvmChain[] = [];
   const scanOnlyChains:    PreflightEvmChain[] = [];
+  // D1 (health onestitate): vârste WS per-chain, ajustate la `now` (workerul publică vârsta la updatedAt-ul lui).
+  const wsRuntimeByChain: Record<string, { wsConnected: boolean; lastPongAgeSec: number | null; lastWsMessageAgeSec: number | null }> = {};
   const chainsActive:      PreflightEvmChain[] = [];
   const runtimeUpdatedAts: number[] = [];
   const RUNTIME_MAX_AGE_MS = 120_000;
@@ -273,15 +276,23 @@ export async function readAllRedis(): Promise<RedisContext | null> {
     const keyChain = evmChains[i];
     const wr = parseWithSchema<Partial<PreflightWorkerRuntime> | null>(raw, WorkerRuntimeSchema, null, `worker_runtime:${keyChain}`);
     if (!wr) continue;
-    if (normalizeChainId(String(wr.chain ?? "")) !== keyChain) continue; // refuză chain străin
-    const updatedAt = Number(wr.updatedAt);
-    if (!Number.isFinite(updatedAt)) continue;
-    const ageMs = now - updatedAt;
-    if (ageMs < -30_000 || ageMs > RUNTIME_MAX_AGE_MS) continue; // viitor >30s sau expirat
-    runtimeUpdatedAts.push(updatedAt);
+    // D1: validare + normalizare WS-liveness (chain-guard, updatedAt, viitor/expirat, vârste ajustate la `now`)
+    // extrasă în `resolveWsRuntime` (health-freshness) — pură + unit-testată. P2: vârstă negativă → null (nu „acum").
+    const wsrt = resolveWsRuntime(wr, keyChain, now, {
+      maxAgeMs:       RUNTIME_MAX_AGE_MS,
+      futureSkewMs:   30_000,
+      normalizeChain: normalizeChainId,
+    });
+    if (!wsrt) continue;
+    runtimeUpdatedAts.push(wsrt.updatedAt);
     chainsActive.push(keyChain);
-    if (wr.wsConnected === true) wsConnectedChains.push(keyChain);
+    if (wsrt.wsConnected) wsConnectedChains.push(keyChain);
     else scanOnlyChains.push(keyChain);
+    wsRuntimeByChain[keyChain] = {
+      wsConnected:         wsrt.wsConnected,
+      lastPongAgeSec:      wsrt.lastPongAgeSec,
+      lastWsMessageAgeSec: wsrt.lastWsMessageAgeSec,
+    };
   }
   // Port 1:1 al deriveMarketContext (workers/evm/src/pipeline/marketContext.ts) pe states merge-uite.
   const mcVals    = Object.values(statesM.merged) as Array<{ flow?: { hasData?: boolean; pressure?: string }; updatedAt?: number }>;
@@ -436,6 +447,7 @@ export async function readAllRedis(): Promise<RedisContext | null> {
     keyPresentByChain,
     knownChains,
     liveChains: chainsActive,
+    wsRuntimeByChain,
     pipelineCoverage: coverageM.merged,
     scannerStats:     scannerM.merged,
     pfLifecycle:      lifecycleM.any ? lifecycleM.merged : null,

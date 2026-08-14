@@ -172,3 +172,79 @@ export function classifyEmptyDrops(opts: {
     text: `No pipeline drops were recorded in the last ${minutesBack} minutes.`,
   };
 }
+
+// ── D1 (health onestitate): semnale WS-liveness per-chain, PURE + testabile ──────────────
+// Extrase din redis-reader/tp_health_check ca să fie unit-testate direct (leaf pattern), și ca să
+// închidă două capcane de fals-fresh (cgpt P2/P3):
+//   P2 — o vârstă publicată NEGATIVĂ (clock skew / bug de writer) nu trebuie clampată la 0 („acum"),
+//        ci respinsă → `null` („necunoscut"). Altfel un semnal corupt devine „proaspăt".
+//   P3 — un pong NECUNOSCUT (`null`) nu înseamnă „recent"; nu-l putem folosi ca dovadă de transport viu.
+
+/**
+ * Vârsta WS publicată de worker (la updatedAt-ul lui) → vârsta CURENTĂ la `now`, adunând `runtimeAgeSec`
+ * (câte secunde a stat snapshot-ul în Redis), exact ca adjustMoverReadTime/E38. Respinge orice input
+ * ne-numeric, non-finit SAU negativ → `null` (P2: negativul e date corupte, nu „acum"). `runtimeAgeSec`
+ * negativ (viitor) e clampat la 0 — deja filtrat upstream, dar defensiv aici.
+ */
+export function adjustWsAgeSec(published: unknown, runtimeAgeSec: number): number | null {
+  if (typeof published !== "number" || !Number.isFinite(published) || published < 0) return null;
+  return Math.round(published) + Math.max(0, Math.round(runtimeAgeSec));
+}
+
+export interface WsRuntimeRaw {
+  chain?:              unknown;
+  updatedAt?:          unknown;
+  wsConnected?:        unknown;
+  lastPongAgeSec?:     unknown;
+  lastWsMessageAgeSec?: unknown;
+}
+
+export interface WsRuntimeEntry {
+  updatedAt:           number;
+  wsConnected:         boolean;
+  lastPongAgeSec:      number | null;
+  lastWsMessageAgeSec: number | null;
+}
+
+/**
+ * Validează + normalizează un `worker_runtime:{chain}` raw într-o intrare WS-liveness la `now`, SAU `null`
+ * dacă e de ignorat. CHEIA MGET (`keyChain`) e autoritatea de chain (refuză payload cu alt chain — bug B4a).
+ * Filtre 1:1 cu redis-reader: updatedAt lipsă/NaN → null; viitor > futureSkewMs → null; expirat > maxAgeMs → null.
+ * Vârstele WS sunt ajustate la `now` prin adjustWsAgeSec (P2 negativ → null).
+ */
+export function resolveWsRuntime(
+  wr:   WsRuntimeRaw,
+  keyChain: string,
+  now:  number,
+  opts: { maxAgeMs: number; futureSkewMs: number; normalizeChain: (s: string) => string },
+): WsRuntimeEntry | null {
+  if (opts.normalizeChain(String(wr.chain ?? "")) !== keyChain) return null;
+  const updatedAt = Number(wr.updatedAt);
+  if (!Number.isFinite(updatedAt)) return null;
+  const ageMs = now - updatedAt;
+  if (ageMs < -opts.futureSkewMs || ageMs > opts.maxAgeMs) return null;
+  const rtAgeSec = Math.max(0, Math.round(ageMs / 1000));
+  return {
+    updatedAt,
+    wsConnected:         wr.wsConnected === true,
+    lastPongAgeSec:      adjustWsAgeSec(wr.lastPongAgeSec, rtAgeSec),
+    lastWsMessageAgeSec: adjustWsAgeSec(wr.lastWsMessageAgeSec, rtAgeSec),
+  };
+}
+
+/**
+ * „WS stream stale" = transportul e viu (pong PROASPĂT, cunoscut & sub pongFreshSec) DAR data stream-ul e mort
+ * (ultima notificare de log > staleSec) — adică „serverul răspunde la ping, dar subscripțiile au murit tăcut".
+ * P3: un pong `null` (necunoscut) NU e dovadă de transport viu → NU raportăm stream-stale (n-avem cum ști dacă
+ * transportul mai trăiește; ar fi un fals-pozitiv bazat pe necunoscut). La fel, mesaj `null` → nu putem afirma stale.
+ */
+export function isWsStreamStale(
+  w:            { wsConnected: boolean; lastPongAgeSec: number | null; lastWsMessageAgeSec: number | null } | undefined,
+  pongFreshSec: number,
+  staleSec:     number,
+): boolean {
+  return !!w
+    && w.wsConnected
+    && w.lastPongAgeSec !== null && w.lastPongAgeSec < pongFreshSec       // transport DOVEDIT viu (nu doar „necunoscut")
+    && w.lastWsMessageAgeSec !== null && w.lastWsMessageAgeSec > staleSec; // data stream dovedit mort
+}

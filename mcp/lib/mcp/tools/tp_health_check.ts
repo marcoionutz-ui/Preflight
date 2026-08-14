@@ -1,6 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { readAllRedis, safeMinAge, readQuoteOracleHealth, readQuotePriceHealth, readSolanaIndexerStats } from "../redis-reader";
-import { keyFreshness, aggregateKnownFreshness, completeOnKnownChains } from "../health-freshness";
+import { keyFreshness, aggregateKnownFreshness, completeOnKnownChains, isWsStreamStale } from "../health-freshness";
 import { mcpResponse, mcpErr, ERR } from "../errors";
 
 export function registerHealthCheck(server: McpServer) {
@@ -27,7 +27,7 @@ Use this first to verify the worker is running before calling other tools.`,
         if (!ctx) return mcpErr(ERR.REDIS_DOWN, "Redis not connected");
 
         const { now, states, watch, hot, armed, snapshot, pipelineCoverage, scannerStats,
-                snapshotSavedAtByChain, statesNewestAtByChain, keyPresentByChain, knownChains, liveChains } = ctx;
+                snapshotSavedAtByChain, statesNewestAtByChain, keyPresentByChain, knownChains, liveChains, wsRuntimeByChain } = ctx;
 
         // E14 (varu R4): agregăm prospețimea pe cel mai SLAB chain CUNOSCUT (knownChains = orice amprentă worker),
         // NU pe max (care ascunde un chain mort) și NICI doar pe liveChains (un chain mort iese din live după ce
@@ -51,16 +51,31 @@ Use this first to verify the worker is running before calling other tools.`,
         const armedComplete = completeOnKnownChains(keyPresentByChain.armed_entries,  knownChains);
 
         // per-chain (peste TOATE chain-urile cunoscute, nu doar live) — vârstă snapshot + quality + live.
-        const perChainWorker: Record<string, { ageSec: number | null; quality: string; live: boolean }> = {};
+        const perChainWorker: Record<string, { ageSec: number | null; quality: string; live: boolean; wsConnected: boolean; lastPongAgeSec: number | null; lastWsMessageAgeSec: number | null }> = {};
         for (const c of knownChains) {
           const sv    = snapshotSavedAtByChain[c];
           const ageMs = typeof sv === "number" && Number.isFinite(sv) && now - sv >= 0 ? now - sv : null;
+          const wsrt  = wsRuntimeByChain[c];
           perChainWorker[c] = {
             ageSec:  ageMs !== null ? Math.round(ageMs / 1000) : null,
             quality: keyFreshness(true, ageMs).quality,
             live:    liveChains.includes(c),
+            // D1 (health onestitate): pong = transport viu; lastWsMessage = data stream viu. wsConnected + pong
+            // recent + lastWsMessageAgeSec mare = subscripții moarte tăcut (sau piață liniștită).
+            wsConnected:         wsrt?.wsConnected ?? false,
+            lastPongAgeSec:      wsrt?.lastPongAgeSec ?? null,
+            lastWsMessageAgeSec: wsrt?.lastWsMessageAgeSec ?? null,
           };
         }
+        // D1: chain conectat + transport viu (pong recent) DAR fără notificări de log de mult = data stream
+        // POSIBIL mort (poate fi și piață liniștită) → semnal SOFT; vârstele exacte sunt în perChainWorker.
+        // P3: un pong NECUNOSCUT (null) NU e dovadă de transport viu → nu raportăm stream-stale pe necunoscut
+        // (ar fi un fals-pozitiv). Regula (transport dovedit viu + data stream dovedit mort) trăiește în
+        // `isWsStreamStale` (health-freshness), pură + unit-testată.
+        const WS_STREAM_STALE_SEC = 300;
+        const WS_PONG_FRESH_SEC   = 90;
+        const wsStreamStaleChains = knownChains.filter(c =>
+          isWsStreamStale(wsRuntimeByChain[c], WS_PONG_FRESH_SEC, WS_STREAM_STALE_SEC));
 
         // dexscreener.lastFetchAgeSec/last429AgeSec are baked in at scan
         // time (age-at-write), then cached in Redis for up to 5min — read
@@ -104,6 +119,8 @@ Use this first to verify the worker is running before calling other tools.`,
 		  knownChains,
 		  liveChains,
 		  runtimeHeartbeatMissingChains,
+		  // D1: conectat dar data stream posibil mort (pong recent + fără notificări > prag). Vezi perChainWorker pt. vârste.
+		  wsStreamStaleChains,
 		  missingSnapshotChains: snapAgg.missing,
 		  stats: {
 			totalPairs:    stateVals.length || Object.keys(snapshot?.memory ?? {}).length,

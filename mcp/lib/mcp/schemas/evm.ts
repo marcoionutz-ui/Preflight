@@ -292,4 +292,8 @@ export const WorkerRuntimeSchema = z.object({
   chain:       z.string(),
   updatedAt:   z.number(),
   wsConnected: z.boolean(),
+  // D1 (P2): vârstă transport (pong) / data stream — nonnegative: o vârstă negativă e date corupte (clock skew),
+  // .catch(null) o degradează la „necunoscut" în loc să respingă tot runtime-ul; nullish: worker vechi / absent.
+  lastPongAgeSec:      z.number().nonnegative().nullish().catch(null),
+  lastWsMessageAgeSec: z.number().nonnegative().nullish().catch(null),
 }).passthrough();
