@@ -8,7 +8,7 @@
  * Fără Redis, fără timere — doar input→output. Exact GAP-ul din cgpt P2/P3 (fals-fresh pe date corupte/necunoscute).
  */
 
-import { adjustWsAgeSec, resolveWsRuntime, isWsStreamStale } from "./health-freshness";
+import { adjustWsAgeSec, resolveWsRuntime, isWsStreamStale, resolveWsSub, classifyWsSubs } from "./health-freshness";
 
 let passed = 0, failed = 0;
 function check(name: string, cond: boolean): void {
@@ -97,6 +97,109 @@ function main(): void {
     isWsStreamStale({ wsConnected: true, lastPongAgeSec: 90, lastWsMessageAgeSec: 400 }, PF, ST) === false);
   check("s9. graniță: msg exact 300 (===stale, nu >) → false",
     isWsStreamStale({ wsConnected: true, lastPongAgeSec: 10, lastWsMessageAgeSec: 300 }, PF, ST) === false);
+
+  // ── Part B: resolveWsSub ─────────────────────────────────────────────────────
+  console.log(" resolveWsSub:");
+  {
+    const e = resolveWsSub({ confirmed: true, poolCount: 3, lastMessageAgeSec: 40, confirmedAgeSec: 120 }, 10);
+    check("b1. valid → entry", e !== null);
+    check("b2. → confirmed true", e?.confirmed === true);
+    check("b3. → poolCount 3", e?.poolCount === 3);
+    check("b4. → lastMessageAgeSec ajustat (40 + 10 = 50)", e?.lastMessageAgeSec === 50);
+    check("b4b. → confirmedAgeSec ajustat (120 + 10 = 130)", e?.confirmedAgeSec === 130);
+  }
+  check("b5. undefined → null (kind nepublicat)", resolveWsSub(undefined, 10) === null);
+  check("b6. null → null", resolveWsSub(null, 10) === null);
+  check("b7. confirmed non-true (coerc.) → false",
+    resolveWsSub({ confirmed: "yes" as unknown, poolCount: 1, lastMessageAgeSec: 0 }, 0)?.confirmed === false);
+  check("b8. poolCount negativ → 0 (defensiv)",
+    resolveWsSub({ confirmed: true, poolCount: -5, lastMessageAgeSec: 0 }, 0)?.poolCount === 0);
+  check("b9. poolCount NaN → 0",
+    resolveWsSub({ confirmed: true, poolCount: NaN, lastMessageAgeSec: 0 }, 0)?.poolCount === 0);
+  check("b10. poolCount fracționar → floor (2.9 → 2)",
+    resolveWsSub({ confirmed: true, poolCount: 2.9, lastMessageAgeSec: 0 }, 0)?.poolCount === 2);
+  check("b11. P2: lastMessageAgeSec negativ -> null (nu fals acum)",
+    resolveWsSub({ confirmed: true, poolCount: 1, lastMessageAgeSec: -30 }, 5)?.lastMessageAgeSec === null);
+  check("b12. lastMessageAgeSec absent → null",
+    resolveWsSub({ confirmed: true, poolCount: 1 }, 5)?.lastMessageAgeSec === null);
+  check("b12b. confirmedAgeSec absent → null",
+    resolveWsSub({ confirmed: true, poolCount: 1, lastMessageAgeSec: 5 }, 5)?.confirmedAgeSec === null);
+
+  // resolveWsRuntime propagă subs (Part B) când workerul publică wsSubs
+  {
+    const r = resolveWsRuntime(
+      { chain: "ethereum", updatedAt: NOW - 10_000, wsConnected: true, lastPongAgeSec: 4,
+        wsSubs: { v2: { confirmed: true, poolCount: 5, lastMessageAgeSec: 400, confirmedAgeSec: 900 }, v4: { confirmed: false, poolCount: 0, lastMessageAgeSec: null, confirmedAgeSec: null } } },
+      "ethereum", NOW, OPTS);
+    check("b13. subs prezent → v2 entry (age 400 + 10 = 410)", r?.subs?.v2?.lastMessageAgeSec === 410);
+    check("b14. subs v2 confirmed + poolCount 5", r?.subs?.v2?.confirmed === true && r?.subs?.v2?.poolCount === 5);
+    check("b15. subs v3 absent din payload → null", r?.subs?.v3 === null);
+    check("b16. subs v4 present (confirmed false)", r?.subs?.v4?.confirmed === false);
+  }
+  check("b17. worker vechi (fără wsSubs) → subs null",
+    resolveWsRuntime({ chain: "ethereum", updatedAt: NOW, wsConnected: true }, "ethereum", NOW, OPTS)?.subs === null);
+
+  // ── Part B: classifyWsSubs (CROSS-KIND — cele 4 scenarii cgpt) ────────────────
+  console.log(" classifyWsSubs:");
+  const sub = (lastMessageAgeSec: number | null, confirmedAgeSec: number | null = 900, poolCount = 3, confirmed = true) =>
+    ({ confirmed, poolCount, lastMessageAgeSec, confirmedAgeSec });
+  const CL = { staleSec: 300 };
+
+  // scenariu 1: V2 400 (stale), V3 10, V4 20 (recente) → V2 SUSPECTED_STALE (frații livrează → path viu)
+  {
+    const c = classifyWsSubs({ v2: sub(400), v3: sub(10), v4: sub(20) }, CL);
+    check("c1. ⭐ V2 stale + V3/V4 recente → V2 SUSPECTED_STALE", c.perKind.v2 === "SUSPECTED_STALE");
+    check("c2. V3 recent → ACTIVE", c.perKind.v3 === "ACTIVE");
+    check("c3. V4 recent → ACTIVE", c.perKind.v4 === "ACTIVE");
+    check("c4. suspectedStaleKinds = [v2]", c.suspectedStaleKinds.length === 1 && c.suspectedStaleKinds[0] === "v2");
+    check("c5. rollup chain = SUSPECTED_STALE", c.chain === "SUSPECTED_STALE");
+  }
+  // scenariu 2: toate 400 (stale) → niciun frate livrează recent → toate QUIET_OR_UNKNOWN (NU stale)
+  {
+    const c = classifyWsSubs({ v2: sub(400), v3: sub(400), v4: sub(400) }, CL);
+    check("c6. ⭐ toate stale, niciun frate recent → v2 QUIET_OR_UNKNOWN", c.perKind.v2 === "QUIET_OR_UNKNOWN");
+    check("c7. → v3 QUIET_OR_UNKNOWN", c.perKind.v3 === "QUIET_OR_UNKNOWN");
+    check("c8. → v4 QUIET_OR_UNKNOWN", c.perKind.v4 === "QUIET_OR_UNKNOWN");
+    check("c9. ⭐ suspectedStaleKinds gol (nu declarăm 3 stale)", c.suspectedStaleKinds.length === 0);
+    check("c10. rollup chain = QUIET_OR_UNKNOWN", c.chain === "QUIET_OR_UNKNOWN");
+  }
+  // scenariu 3: niciun kind confirmat/cu pool-uri → NO_ACTIVE_SUBSCRIPTIONS
+  {
+    const c = classifyWsSubs({ v2: sub(10, 900, 0), v3: sub(10, 900, 3, false), v4: null }, CL);
+    check("c11. ⭐ niciun kind activ → chain NO_ACTIVE_SUBSCRIPTIONS", c.chain === "NO_ACTIVE_SUBSCRIPTIONS");
+    check("c12. → perKind toate null (v2 poolCount 0, v3 neconfirmat, v4 absent)",
+      c.perKind.v2 === null && c.perKind.v3 === null && c.perKind.v4 === null);
+    check("c13. subs null (worker vechi) → NO_ACTIVE_SUBSCRIPTIONS", classifyWsSubs(null, CL).chain === "NO_ACTIVE_SUBSCRIPTIONS");
+  }
+  // scenariu 4: un singur kind confirmat + recent → ACTIVE
+  {
+    const c = classifyWsSubs({ v2: sub(10), v3: null, v4: null }, CL);
+    check("c14. ⭐ un kind recent → v2 ACTIVE", c.perKind.v2 === "ACTIVE");
+    check("c15. rollup chain = ACTIVE", c.chain === "ACTIVE");
+    check("c16. v3/v4 inactive → null", c.perKind.v3 === null && c.perKind.v4 === null);
+  }
+  // never-delivered (lastMessageAgeSec null) + confirmedAgeSec → gating corect
+  {
+    // V3 livrează recent (frate viu); V2 n-a livrat NICIODATĂ dar confirmat de mult (900>300) → SUSPECTED_STALE
+    const c = classifyWsSubs({ v2: sub(null, 900), v3: sub(10), v4: null }, CL);
+    check("c17. ⭐ never-delivered + confirmat de mult + frate viu → SUSPECTED_STALE", c.perKind.v2 === "SUSPECTED_STALE");
+  }
+  {
+    // V2 n-a livrat + confirmat RECENT (50<300) → prea nou ca să suspectăm → QUIET_OR_UNKNOWN (chiar cu frate viu)
+    const c = classifyWsSubs({ v2: sub(null, 50), v3: sub(10), v4: null }, CL);
+    check("c18. ⭐ never-delivered + confirmat recent → QUIET_OR_UNKNOWN (prea nou)", c.perKind.v2 === "QUIET_OR_UNKNOWN");
+  }
+  {
+    // V2 stale + confirmedAgeSec null (necunoscut) DAR a livrat cândva (msg vechi) + frate viu → SUSPECTED_STALE
+    // (candidatura vine din mesajul vechi, nu din confirmedAge)
+    const c = classifyWsSubs({ v2: sub(400, null), v3: sub(10), v4: null }, CL);
+    check("c19. stale prin mesaj vechi (confirmedAge null irelevant) + frate viu → SUSPECTED_STALE", c.perKind.v2 === "SUSPECTED_STALE");
+  }
+  {
+    // never-delivered + confirmedAge null (necunoscut) + frate viu → nu putem afirma candidatura → QUIET_OR_UNKNOWN
+    const c = classifyWsSubs({ v2: sub(null, null), v3: sub(10), v4: null }, CL);
+    check("c20. never-delivered + confirmedAge necunoscut → QUIET_OR_UNKNOWN (onest)", c.perKind.v2 === "QUIET_OR_UNKNOWN");
+  }
 
   console.log(`\n${passed} passed, ${failed} failed`);
   if (failed > 0) process.exit(1);

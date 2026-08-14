@@ -471,6 +471,18 @@ export interface PreflightMarketContext {
 // deriveze wsConnectedChains/scanOnlyChains în market_regime (starea WS e per-worker,
 // nu e în pair_states). market_context/market_regime NU se mai scriu în Redis — MCP-ul
 // le derivă la read-time din pair_states-urile per-chain + acest heartbeat.
+// Part B: sănătatea unei subscripții scoped per-kind (v2/v3/v4). Workerul publică ages-at-updatedAt; reader-ul
+// MCP ajustează `lastMessageAgeSec` la `now`. `confirmed` = server a acceptat subscripția (D3 `active`);
+// `poolCount` = câte pool-uri acoperă snapshot-ul confirmat.
+export interface PreflightWsSubHealth {
+  confirmed:         boolean;
+  poolCount:         number;
+  lastMessageAgeSec: number | null;
+  // de cât timp e subscripția confirmată (age-at-updatedAt) — ca reader-ul să suspecteze cross-kind o subscripție
+  // care n-a livrat NICIODATĂ (lastMessageAgeSec null) dar e confirmată de destul timp. null = neconfirmat/necunoscut.
+  confirmedAgeSec:   number | null;
+}
+
 export interface PreflightWorkerRuntime {
   chain:       PreflightEvmChain;
   wsConnected: boolean;
@@ -479,6 +491,13 @@ export interface PreflightWorkerRuntime {
   // `?`/null = worker vechi / semnal absent (snapshot legacy) — passthrough-safe.
   lastPongAgeSec?:      number | null;
   lastWsMessageAgeSec?: number | null;
+  // Part B: granularitate per-subscripție (v2/v3/v4) — distinge „un tip a murit tăcut" de „piață liniștită".
+  // Opțional (worker vechi n-o publică → passthrough-safe); fiecare kind e opțional (un chain poate n-avea V4).
+  wsSubs?: {
+    v2?: PreflightWsSubHealth;
+    v3?: PreflightWsSubHealth;
+    v4?: PreflightWsSubHealth;
+  };
   updatedAt:   number;
 }
 

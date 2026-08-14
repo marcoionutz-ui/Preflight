@@ -197,6 +197,7 @@ export interface WsRuntimeRaw {
   wsConnected?:        unknown;
   lastPongAgeSec?:     unknown;
   lastWsMessageAgeSec?: unknown;
+  wsSubs?:             unknown; // Part B: { v2?, v3?, v4? } granularitate per-subscripție (opțional — worker vechi n-o publică)
 }
 
 export interface WsRuntimeEntry {
@@ -204,6 +205,9 @@ export interface WsRuntimeEntry {
   wsConnected:         boolean;
   lastPongAgeSec:      number | null;
   lastWsMessageAgeSec: number | null;
+  // Part B: sănătatea per-kind a subscripțiilor scoped (v2/v3/v4). `null` = worker vechi (fără wsSubs);
+  // un kind individual `null` = kind absent din payload. Vârstele mesajelor sunt ajustate la `now`.
+  subs:                { v2: WsSubEntry | null; v3: WsSubEntry | null; v4: WsSubEntry | null } | null;
 }
 
 /**
@@ -224,11 +228,23 @@ export function resolveWsRuntime(
   const ageMs = now - updatedAt;
   if (ageMs < -opts.futureSkewMs || ageMs > opts.maxAgeMs) return null;
   const rtAgeSec = Math.max(0, Math.round(ageMs / 1000));
+  // Part B: normalizează per-kind (v2/v3/v4) dacă workerul publică `wsSubs`; altfel `subs: null` (worker vechi).
+  const rawSubs = typeof wr.wsSubs === "object" && wr.wsSubs !== null
+    ? (wr.wsSubs as { v2?: WsSubRaw; v3?: WsSubRaw; v4?: WsSubRaw })
+    : null;
+  const subs = rawSubs
+    ? {
+        v2: resolveWsSub(rawSubs.v2, rtAgeSec),
+        v3: resolveWsSub(rawSubs.v3, rtAgeSec),
+        v4: resolveWsSub(rawSubs.v4, rtAgeSec),
+      }
+    : null;
   return {
     updatedAt,
     wsConnected:         wr.wsConnected === true,
     lastPongAgeSec:      adjustWsAgeSec(wr.lastPongAgeSec, rtAgeSec),
     lastWsMessageAgeSec: adjustWsAgeSec(wr.lastWsMessageAgeSec, rtAgeSec),
+    subs,
   };
 }
 
@@ -247,4 +263,119 @@ export function isWsStreamStale(
     && w.wsConnected
     && w.lastPongAgeSec !== null && w.lastPongAgeSec < pongFreshSec       // transport DOVEDIT viu (nu doar „necunoscut")
     && w.lastWsMessageAgeSec !== null && w.lastWsMessageAgeSec > staleSec; // data stream dovedit mort
+}
+
+// ── Part B: granularitate per-subscripție (v2/v3/v4) + clasificare CROSS-KIND ─────────────
+// `lastWsMessageAgeSec` per-chain agregă TOATE kind-urile → un tip mort tăcut (ex. V2) e mascat de altele
+// care curg (V3/V4). Part B expune sănătatea FIECĂREI subscripții scoped separat (confirmată? câte pool-uri?
+// vârsta ultimei notificări?) ȘI clasifică CROSS-KIND: discriminatorul dead-vs-quiet e dacă un ALT kind de pe
+// același socket livrează recent. Dacă da → data path-ul (nu doar transportul) e DOVEDIT viu → tăcerea altui
+// kind e SUSPECTĂ. Dacă TOȚI tac → nu putem distinge mort de liniștit → QUIET_OR_UNKNOWN (onest).
+
+export interface WsSubRaw {
+  confirmed?:         unknown;
+  poolCount?:         unknown;
+  lastMessageAgeSec?: unknown;
+  confirmedAgeSec?:   unknown; // de cât timp e subscripția confirmată — ca să suspectăm una care n-a livrat NICIODATĂ
+}
+
+export interface WsSubEntry {
+  confirmed:         boolean;
+  poolCount:         number;
+  lastMessageAgeSec: number | null;
+  confirmedAgeSec:   number | null;
+}
+
+/**
+ * Normalizează sănătatea unei subscripții scoped (un kind) la `now`. `raw` absent/ne-obiect → `null` (kind
+ * nepublicat). `poolCount` ne-numeric/negativ → 0 (defensiv). `lastMessageAgeSec`/`confirmedAgeSec` sunt ajustate
+ * la `now` prin adjustWsAgeSec (P2: negativ/NaN → null — nu fals „acum"). `confirmed` e strict `=== true`.
+ */
+export function resolveWsSub(raw: WsSubRaw | undefined | null, runtimeAgeSec: number): WsSubEntry | null {
+  if (!raw || typeof raw !== "object") return null;
+  const poolCount = typeof raw.poolCount === "number" && Number.isFinite(raw.poolCount) && raw.poolCount >= 0
+    ? Math.floor(raw.poolCount)
+    : 0;
+  return {
+    confirmed:         raw.confirmed === true,
+    poolCount,
+    lastMessageAgeSec: adjustWsAgeSec(raw.lastMessageAgeSec, runtimeAgeSec),
+    confirmedAgeSec:   adjustWsAgeSec(raw.confirmedAgeSec, runtimeAgeSec),
+  };
+}
+
+export type WsSubKind      = "v2" | "v3" | "v4";
+export type WsSubState     = "ACTIVE" | "SUSPECTED_STALE" | "QUIET_OR_UNKNOWN";
+export type WsChainSubState = WsSubState | "NO_ACTIVE_SUBSCRIPTIONS";
+export type WsSubMap       = { v2: WsSubEntry | null; v3: WsSubEntry | null; v4: WsSubEntry | null };
+
+export interface WsSubsClassification {
+  /** Rollup pe chain: NO_ACTIVE_SUBSCRIPTIONS dacă niciun kind nu-i activ; altfel worst-of (suspected>quiet>active). */
+  chain:               WsChainSubState;
+  /** Starea per kind ACTIV; `null` = kind inactiv (neconfirmat sau fără pool-uri). */
+  perKind:             { v2: WsSubState | null; v3: WsSubState | null; v4: WsSubState | null };
+  /** Kind-urile clasificate SUSPECTED_STALE (alimentează alertele top-line). */
+  suspectedStaleKinds: WsSubKind[];
+}
+
+const WS_SUB_KINDS: readonly WsSubKind[] = ["v2", "v3", "v4"];
+
+/** Un kind e „activ" = confirmat de server ȘI acoperă ≥1 pool (are de la ce livra). Altfel nu-l clasificăm. */
+function isActiveSub(s: WsSubEntry | null): s is WsSubEntry {
+  return !!s && s.confirmed && s.poolCount > 0;
+}
+/** „Livrează recent" = un mesaj sub pragul de stale → dovadă că data path-ul (nu doar transportul) curge. */
+function isDeliveringRecently(s: WsSubEntry, staleSec: number): boolean {
+  return s.lastMessageAgeSec !== null && s.lastMessageAgeSec < staleSec;
+}
+/**
+ * Candidat la stale = a livrat cândva DAR de mult (`lastMessageAgeSec >= staleSec`), SAU n-a livrat NICIODATĂ
+ * (`lastMessageAgeSec === null`) dar e confirmat de destul timp (`confirmedAgeSec >= staleSec`). Fără
+ * `confirmedAgeSec`, o subscripție care n-a livrat niciodată rămâne onest QUIET_OR_UNKNOWN (poate fi doar nouă).
+ */
+function isStaleCandidate(s: WsSubEntry, staleSec: number): boolean {
+  if (s.lastMessageAgeSec !== null) return s.lastMessageAgeSec >= staleSec;
+  return s.confirmedAgeSec !== null && s.confirmedAgeSec >= staleSec;
+}
+
+/**
+ * Clasificare CROSS-KIND a subscripțiilor scoped ale unui chain (opțiunea 1 aleasă). Reguli:
+ *   - niciun kind activ (confirmat + pool-uri) → `NO_ACTIVE_SUBSCRIPTIONS`.
+ *   - kind care livrează recent (< staleSec) → `ACTIVE`.
+ *   - kind candidat-stale (mesaj vechi ≥ staleSec, SAU niciun mesaj + confirmat de mult) ȘI EXISTĂ un frate care
+ *     livrează recent (data path DOVEDIT viu) → `SUSPECTED_STALE`.
+ *   - altfel (candidat-stale dar NIMENI nu livrează recent → nu putem distinge mort de liniștit; sau prea nou) →
+ *     `QUIET_OR_UNKNOWN`.
+ * PUR (fără I/O/ceas). `staleSec` = pragul de tăcere considerată suspectă.
+ */
+export function classifyWsSubs(subs: WsSubMap | null, opts: { staleSec: number }): WsSubsClassification {
+  const perKind: { v2: WsSubState | null; v3: WsSubState | null; v4: WsSubState | null } = { v2: null, v3: null, v4: null };
+  const suspectedStaleKinds: WsSubKind[] = [];
+  if (!subs) return { chain: "NO_ACTIVE_SUBSCRIPTIONS", perKind, suspectedStaleKinds };
+
+  const active = WS_SUB_KINDS.filter(k => isActiveSub(subs[k]));
+  if (active.length === 0) return { chain: "NO_ACTIVE_SUBSCRIPTIONS", perKind, suspectedStaleKinds };
+
+  // Cross-kind: dacă ORICE sub activ livrează recent, data path-ul e DOVEDIT viu (un kind stale e „nu doar
+  // transportul răspunde, ci chiar SE livrează pe socket — deci ăsta ar fi trebuit să primească ceva").
+  // Un sub stale nu livrează recent, deci `some` numără efectiv FRAȚII care livrează.
+  const anySiblingDelivering = active.some(k => isDeliveringRecently(subs[k]!, opts.staleSec));
+
+  for (const k of active) {
+    const s = subs[k]!;
+    if (isDeliveringRecently(s, opts.staleSec)) { perKind[k] = "ACTIVE"; continue; }
+    if (isStaleCandidate(s, opts.staleSec) && anySiblingDelivering) {
+      perKind[k] = "SUSPECTED_STALE";
+      suspectedStaleKinds.push(k);
+    } else {
+      perKind[k] = "QUIET_OR_UNKNOWN";
+    }
+  }
+
+  const states = active.map(k => perKind[k]!);
+  const chain: WsChainSubState =
+    states.includes("SUSPECTED_STALE")  ? "SUSPECTED_STALE"  :
+    states.includes("QUIET_OR_UNKNOWN") ? "QUIET_OR_UNKNOWN" :
+    "ACTIVE";
+  return { chain, perKind, suspectedStaleKinds };
 }

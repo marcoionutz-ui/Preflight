@@ -287,6 +287,16 @@ export const ScannerStatsSchema = z.object({
   dexscreener:     DexscreenerHealthSchema,
 }).passthrough();
 
+// Part B: sănătatea unei subscripții scoped per-kind. `.catch` pe fiecare câmp → un kind corupt se degradează
+// (confirmed→false, poolCount→0, age→null) în loc să respingă tot runtime-ul. Reader-ul (resolveWsSub) e oricum
+// defensiv peste asta. Toate câmpurile required aici, dar zod le repară via .catch (nu pică parse-ul).
+const WsSubHealthSchema = z.object({
+  confirmed:         z.boolean().catch(false),
+  poolCount:         z.number().nonnegative().catch(0),
+  lastMessageAgeSec: z.number().nonnegative().nullish().catch(null),
+  confirmedAgeSec:   z.number().nonnegative().nullish().catch(null),
+}).passthrough();
+
 // worker_runtime:{chain} = PreflightWorkerRuntime — chain/updatedAt/wsConnected TOATE required.
 export const WorkerRuntimeSchema = z.object({
   chain:       z.string(),
@@ -296,4 +306,12 @@ export const WorkerRuntimeSchema = z.object({
   // .catch(null) o degradează la „necunoscut" în loc să respingă tot runtime-ul; nullish: worker vechi / absent.
   lastPongAgeSec:      z.number().nonnegative().nullish().catch(null),
   lastWsMessageAgeSec: z.number().nonnegative().nullish().catch(null),
+  // Part B: granularitate per-subscripție (v2/v3/v4). Opțional (worker vechi n-o publică); fiecare kind opțional.
+  // .catch(undefined): un `wsSubs` corupt (ne-obiect) se degradează la absent — NU respinge tot runtime-ul (altfel
+  // un sub-semnal stricat ar nuci pong/message-ul sănătos de la nivelul de sus). Aceeași filosofie ca P2/P3.
+  wsSubs: z.object({
+    v2: WsSubHealthSchema.optional(),
+    v3: WsSubHealthSchema.optional(),
+    v4: WsSubHealthSchema.optional(),
+  }).partial().passthrough().optional().catch(undefined),
 }).passthrough();

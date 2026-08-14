@@ -186,7 +186,17 @@ export interface RedisContext {
   knownChains:            string[];
   liveChains:             string[];
   // D1 (health onestitate): vârste WS per-chain (pong = transport, lastWsMessage = data stream), ajustate la now.
-  wsRuntimeByChain:       Record<string, { wsConnected: boolean; lastPongAgeSec: number | null; lastWsMessageAgeSec: number | null }>;
+  // Part B: `subs` = sănătatea per-kind (v2/v3/v4) a subscripțiilor scoped; `null` = worker vechi (fără wsSubs).
+  wsRuntimeByChain:       Record<string, {
+    wsConnected:         boolean;
+    lastPongAgeSec:      number | null;
+    lastWsMessageAgeSec: number | null;
+    subs: {
+      v2: { confirmed: boolean; poolCount: number; lastMessageAgeSec: number | null; confirmedAgeSec: number | null } | null;
+      v3: { confirmed: boolean; poolCount: number; lastMessageAgeSec: number | null; confirmedAgeSec: number | null } | null;
+      v4: { confirmed: boolean; poolCount: number; lastMessageAgeSec: number | null; confirmedAgeSec: number | null } | null;
+    } | null;
+  }>;
   pipelineCoverage: PipelineCoverage | null;
   scannerStats:     ScannerStats | null;
   pfLifecycle:      LifecycleEntry[] | null;

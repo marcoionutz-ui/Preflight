@@ -1,6 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { readAllRedis, safeMinAge, readQuoteOracleHealth, readQuotePriceHealth, readSolanaIndexerStats } from "../redis-reader";
-import { keyFreshness, aggregateKnownFreshness, completeOnKnownChains, isWsStreamStale } from "../health-freshness";
+import { keyFreshness, aggregateKnownFreshness, completeOnKnownChains, isWsStreamStale, classifyWsSubs } from "../health-freshness";
 import { mcpResponse, mcpErr, ERR } from "../errors";
 
 export function registerHealthCheck(server: McpServer) {
@@ -50,12 +50,25 @@ Use this first to verify the worker is running before calling other tools.`,
         const hotComplete   = completeOnKnownChains(keyPresentByChain.hot_candidates, knownChains);
         const armedComplete = completeOnKnownChains(keyPresentByChain.armed_entries,  knownChains);
 
+        // Praguri WS-liveness. WS_STREAM_STALE_SEC = tăcere considerată suspectă (per-chain ȘI per-sub).
+        const WS_STREAM_STALE_SEC = 300;
+        const WS_PONG_FRESH_SEC   = 90;
+
         // per-chain (peste TOATE chain-urile cunoscute, nu doar live) — vârstă snapshot + quality + live.
-        const perChainWorker: Record<string, { ageSec: number | null; quality: string; live: boolean; wsConnected: boolean; lastPongAgeSec: number | null; lastWsMessageAgeSec: number | null }> = {};
+        type WsSubView = { confirmed: boolean; poolCount: number; lastMessageAgeSec: number | null; confirmedAgeSec: number | null } | null;
+        type WsSubStateView = { v2: string | null; v3: string | null; v4: string | null };
+        const perChainWorker: Record<string, { ageSec: number | null; quality: string; live: boolean; wsConnected: boolean; lastPongAgeSec: number | null; lastWsMessageAgeSec: number | null; subs: { v2: WsSubView; v3: WsSubView; v4: WsSubView } | null; subsState: WsSubStateView | null; subsSummary: string | null }> = {};
+        // Part B: semnal SOFT la nivel de SUBSCRIPȚIE (chain:kind), din clasificarea CROSS-KIND — prinde
+        // „V2 mort, V3/V4 curg" pe care agregatul per-chain (wsStreamStaleChains) îl ascunde.
+        const wsStreamStaleSubs: string[] = [];
         for (const c of knownChains) {
           const sv    = snapshotSavedAtByChain[c];
           const ageMs = typeof sv === "number" && Number.isFinite(sv) && now - sv >= 0 ? now - sv : null;
           const wsrt  = wsRuntimeByChain[c];
+          // Clasificare cross-kind: un kind stale e SUSPECTED_STALE doar dacă un FRATE livrează recent (data path
+          // dovedit viu); dacă toți tac → QUIET_OR_UNKNOWN (onest); niciun kind activ → NO_ACTIVE_SUBSCRIPTIONS.
+          const cls = classifyWsSubs(wsrt?.subs ?? null, { staleSec: WS_STREAM_STALE_SEC });
+          for (const k of cls.suspectedStaleKinds) wsStreamStaleSubs.push(`${c}:${k}`);
           perChainWorker[c] = {
             ageSec:  ageMs !== null ? Math.round(ageMs / 1000) : null,
             quality: keyFreshness(true, ageMs).quality,
@@ -65,15 +78,16 @@ Use this first to verify the worker is running before calling other tools.`,
             wsConnected:         wsrt?.wsConnected ?? false,
             lastPongAgeSec:      wsrt?.lastPongAgeSec ?? null,
             lastWsMessageAgeSec: wsrt?.lastWsMessageAgeSec ?? null,
+            // Part B: sănătatea RAW per-kind (confirmed + poolCount + vârste) + STAREA clasificată cross-kind
+            // (subsState per kind + subsSummary rollup pe chain). `null` = worker vechi (fără wsSubs).
+            subs:                wsrt?.subs ?? null,
+            subsState:           wsrt?.subs ? cls.perKind : null,
+            subsSummary:         wsrt?.subs ? cls.chain : null,
           };
         }
         // D1: chain conectat + transport viu (pong recent) DAR fără notificări de log de mult = data stream
         // POSIBIL mort (poate fi și piață liniștită) → semnal SOFT; vârstele exacte sunt în perChainWorker.
-        // P3: un pong NECUNOSCUT (null) NU e dovadă de transport viu → nu raportăm stream-stale pe necunoscut
-        // (ar fi un fals-pozitiv). Regula (transport dovedit viu + data stream dovedit mort) trăiește în
-        // `isWsStreamStale` (health-freshness), pură + unit-testată.
-        const WS_STREAM_STALE_SEC = 300;
-        const WS_PONG_FRESH_SEC   = 90;
+        // P3: un pong NECUNOSCUT (null) NU e dovadă de transport viu → nu raportăm stream-stale pe necunoscut.
         const wsStreamStaleChains = knownChains.filter(c =>
           isWsStreamStale(wsRuntimeByChain[c], WS_PONG_FRESH_SEC, WS_STREAM_STALE_SEC));
 
@@ -121,6 +135,9 @@ Use this first to verify the worker is running before calling other tools.`,
 		  runtimeHeartbeatMissingChains,
 		  // D1: conectat dar data stream posibil mort (pong recent + fără notificări > prag). Vezi perChainWorker pt. vârste.
 		  wsStreamStaleChains,
+		  // Part B: același semnal la nivel de subscripție (chain:kind) — prinde „un tip a murit tăcut" pe care
+		  // agregatul per-chain (wsStreamStaleChains) îl maschează dacă alt kind încă livrează. Vezi perChainWorker.subs.
+		  wsStreamStaleSubs,
 		  missingSnapshotChains: snapAgg.missing,
 		  stats: {
 			totalPairs:    stateVals.length || Object.keys(snapshot?.memory ?? {}).length,

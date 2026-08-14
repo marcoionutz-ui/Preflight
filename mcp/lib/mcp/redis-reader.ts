@@ -266,7 +266,14 @@ export async function readAllRedis(): Promise<RedisContext | null> {
   const wsConnectedChains: PreflightEvmChain[] = [];
   const scanOnlyChains:    PreflightEvmChain[] = [];
   // D1 (health onestitate): vârste WS per-chain, ajustate la `now` (workerul publică vârsta la updatedAt-ul lui).
-  const wsRuntimeByChain: Record<string, { wsConnected: boolean; lastPongAgeSec: number | null; lastWsMessageAgeSec: number | null }> = {};
+  const wsRuntimeByChain: Record<string, {
+    wsConnected: boolean; lastPongAgeSec: number | null; lastWsMessageAgeSec: number | null;
+    subs: {
+      v2: { confirmed: boolean; poolCount: number; lastMessageAgeSec: number | null; confirmedAgeSec: number | null } | null;
+      v3: { confirmed: boolean; poolCount: number; lastMessageAgeSec: number | null; confirmedAgeSec: number | null } | null;
+      v4: { confirmed: boolean; poolCount: number; lastMessageAgeSec: number | null; confirmedAgeSec: number | null } | null;
+    } | null;
+  }> = {};
   const chainsActive:      PreflightEvmChain[] = [];
   const runtimeUpdatedAts: number[] = [];
   const RUNTIME_MAX_AGE_MS = 120_000;
@@ -292,6 +299,7 @@ export async function readAllRedis(): Promise<RedisContext | null> {
       wsConnected:         wsrt.wsConnected,
       lastPongAgeSec:      wsrt.lastPongAgeSec,
       lastWsMessageAgeSec: wsrt.lastWsMessageAgeSec,
+      subs:                wsrt.subs, // Part B: per-kind (v2/v3/v4) sau null (worker vechi)
     };
   }
   // Port 1:1 al deriveMarketContext (workers/evm/src/pipeline/marketContext.ts) pe states merge-uite.
