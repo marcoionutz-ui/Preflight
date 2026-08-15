@@ -1,12 +1,12 @@
 /**
  * lib/oauth/oauthHardening.test.ts — U7 (OAuth hardening).
- *   A. resolveBaseUrl/normalizeBaseUrl/shouldWarnMissingBaseUrl (host-header poisoning: env canonic + warn prod)
+ *   A. resolveBaseUrl/normalizeBaseUrl/isBaseUrlFailClosed (host-header poisoning: env canonic + fail-closed prod)
  *   B. isSafeRedirectUri (https + custom + http-loopback; fără fragment/userinfo/http-nonloopback/scheme periculoase)
  *   C. AUTH_CODE_CONSUME_AND_ISSUE_LUA + classifyIssueResult (atomic issuance — ORDINEA SET-înainte-de-DEL, no-rollback)
  *   D. PROBĂ Redis reală: all-or-nothing — SET NX eșuat → COD PĂSTRAT (skip curat dacă Redis indisponibil)
  * Părțile A/B/C sunt PURE (tsx standalone). Partea D rulează pe Redis real (CI redis:7) sau skip.
  */
-import { resolveBaseUrl, normalizeBaseUrl, shouldWarnMissingBaseUrl } from "./baseUrl";
+import { resolveBaseUrl, normalizeBaseUrl, resolvePublicBaseUrl, isBaseUrlFailClosed, BaseUrlNotConfiguredError } from "./baseUrl";
 import { isSafeRedirectUri } from "./redirectUri";
 import { AUTH_CODE_CONSUME_AND_ISSUE_LUA, classifyIssueResult } from "../db/oauthAtomic";
 
@@ -36,6 +36,12 @@ check("A9. * non-URL → null", normalizeBaseUrl("not a url") === null);
 check("A10. * ftp: → null (doar http/https)", normalizeBaseUrl("ftp://a.com") === null);
 check("A11. * javascript: → null", normalizeBaseUrl("javascript:alert(1)") === null);
 check("A12. trim aplicat", normalizeBaseUrl("  https://a.com  ") === "https://a.com");
+// RFC 8414 (cgpt): issuer FĂRĂ query / fragment / userinfo — structural, indiferent de env.
+check("A12b. ⭐ query → null (RFC 8414)", normalizeBaseUrl("https://a.com?tenant=x") === null);
+check("A12c. ⭐ fragment → null (RFC 8414)", normalizeBaseUrl("https://a.com#frag") === null);
+check("A12d. ⭐ userinfo user:pass@ → null", normalizeBaseUrl("https://u:p@a.com") === null);
+check("A12e. ⭐ userinfo doar user@ → null", normalizeBaseUrl("https://u@a.com") === null);
+check("A12f. path + query → null (query respins chiar cu path)", normalizeBaseUrl("https://a.com/mcp?x=1") === null);
 
 // ── A. resolveBaseUrl (env canonic, imun la poisoning) ────────────────────────
 check("A13. ⭐ PUBLIC_BASE_URL setat → folosit, IGNORĂ x-forwarded-host (imun poisoning)",
@@ -53,12 +59,47 @@ check("A18. env absent → x-forwarded-proto respectat",
 check("A19. * PUBLIC_BASE_URL INVALID → fallback pe header (nu-l folosi orbește)",
   resolveBaseUrl(H({ "x-forwarded-host": "real.com" }), { PUBLIC_BASE_URL: "garbage" }) === "https://real.com");
 
-// ── A. shouldWarnMissingBaseUrl (A1: warning în producție) ────────────────────
-check("A20. ⭐ prod + PUBLIC_BASE_URL lipsă → warn", shouldWarnMissingBaseUrl({ NODE_ENV: "production" }) === true);
-check("A21. ⭐ prod + PUBLIC_BASE_URL invalid → warn", shouldWarnMissingBaseUrl({ NODE_ENV: "production", PUBLIC_BASE_URL: "garbage" }) === true);
-check("A22. * prod + PUBLIC_BASE_URL valid → NU warn", shouldWarnMissingBaseUrl({ NODE_ENV: "production", PUBLIC_BASE_URL: "https://a.com" }) === false);
-check("A23. * dev + lipsă → NU warn (doar producția)", shouldWarnMissingBaseUrl({ NODE_ENV: "development" }) === false);
-check("A24. * NODE_ENV absent + lipsă → NU warn", shouldWarnMissingBaseUrl({}) === false);
+// ── A. isBaseUrlFailClosed (PH-8: fail-closed în producție, nu warn) ───────────
+check("A20. ⭐ prod + PUBLIC_BASE_URL lipsă → fail-closed", isBaseUrlFailClosed({ NODE_ENV: "production" }) === true);
+check("A21. ⭐ prod + PUBLIC_BASE_URL invalid → fail-closed", isBaseUrlFailClosed({ NODE_ENV: "production", PUBLIC_BASE_URL: "garbage" }) === true);
+check("A22. * prod + PUBLIC_BASE_URL valid → NU fail-closed", isBaseUrlFailClosed({ NODE_ENV: "production", PUBLIC_BASE_URL: "https://a.com" }) === false);
+check("A23. * dev + lipsă → NU fail-closed (doar producția)", isBaseUrlFailClosed({ NODE_ENV: "development" }) === false);
+check("A24. * NODE_ENV absent + lipsă → NU fail-closed", isBaseUrlFailClosed({}) === false);
+
+// ── A. resolveBaseUrl fail-closed (PH-8: prod neconfigurat → THROW, nu fallback pe host din request) ──
+check("A25. ⭐⭐ prod + lipsă → resolveBaseUrl ARUNCĂ (nu cade pe x-forwarded-host = poisonable)", (() => {
+  try { resolveBaseUrl(H({ "x-forwarded-host": "evil.com" }), { NODE_ENV: "production" }); return false; }
+  catch (e) { return e instanceof BaseUrlNotConfiguredError; }
+})());
+check("A26. ⭐ prod + invalid → resolveBaseUrl ARUNCĂ (nu fallback orb pe header)", (() => {
+  try { resolveBaseUrl(H({ "host": "evil.com" }), { NODE_ENV: "production", PUBLIC_BASE_URL: "garbage" }); return false; }
+  catch (e) { return e instanceof BaseUrlNotConfiguredError; }
+})());
+check("A27. * prod + valid → NU aruncă (folosește env-ul canonic)",
+  resolveBaseUrl(H({ "x-forwarded-host": "evil.com" }), { NODE_ENV: "production", PUBLIC_BASE_URL: "https://mcp.preflight.xyz" }) === "https://mcp.preflight.xyz");
+check("A28. * dev + lipsă → NU aruncă (fallback pe header, doar local)",
+  resolveBaseUrl(H({ "x-forwarded-host": "real.com", "x-forwarded-proto": "https" }), { NODE_ENV: "development" }) === "https://real.com");
+
+// ── A. resolvePublicBaseUrl + prod https-only (RFC 8414, cgpt) ─────────────────
+check("A29. prod + https valid → păstrat", resolvePublicBaseUrl("https://a.com", { NODE_ENV: "production" }) === "https://a.com");
+check("A30. ⭐ prod + http → null (https-only în prod)", resolvePublicBaseUrl("http://a.com", { NODE_ENV: "production" }) === null);
+check("A31. dev + http → păstrat (http permis local)", resolvePublicBaseUrl("http://localhost:3000", { NODE_ENV: "development" }) === "http://localhost:3000");
+check("A32. ⭐ prod + https?query → null", resolvePublicBaseUrl("https://a.com?t=x", { NODE_ENV: "production" }) === null);
+check("A33. ⭐ prod + https#frag → null", resolvePublicBaseUrl("https://a.com#f", { NODE_ENV: "production" }) === null);
+check("A34. schemă uppercase HTTPS acceptată (case-insensitive)", resolvePublicBaseUrl("HTTPS://a.com", { NODE_ENV: "production" }) === "HTTPS://a.com");
+// resolveBaseUrl fail-closed pe issuer NEVALID (nu doar absent) în producție:
+const throwsBad = (pburl: string): boolean => {
+  try { resolveBaseUrl(H({ "x-forwarded-host": "evil.com" }), { NODE_ENV: "production", PUBLIC_BASE_URL: pburl }); return false; }
+  catch (e) { return e instanceof BaseUrlNotConfiguredError; }
+};
+check("A35. ⭐⭐ prod + http PUBLIC_BASE_URL → resolveBaseUrl ARUNCĂ (nu servi http)", throwsBad("http://a.com"));
+check("A36. ⭐ prod + query → ARUNCĂ", throwsBad("https://a.com?t=x"));
+check("A37. ⭐ prod + fragment → ARUNCĂ", throwsBad("https://a.com#f"));
+check("A38. ⭐ prod + userinfo → ARUNCĂ", throwsBad("https://u:p@a.com"));
+check("A39. * prod + https curat → NU aruncă (folosit)",
+  resolveBaseUrl(H({ "x-forwarded-host": "evil.com" }), { NODE_ENV: "production", PUBLIC_BASE_URL: "https://a.com" }) === "https://a.com");
+check("A40. ⭐ isBaseUrlFailClosed: prod + http → true (http nu-i issuer valid în prod)",
+  isBaseUrlFailClosed({ NODE_ENV: "production", PUBLIC_BASE_URL: "http://a.com" }) === true);
 
 // ── B. isSafeRedirectUri ──────────────────────────────────────────────────────
 check("B1. https non-loopback → OK", isSafeRedirectUri("https://claude.ai/api/mcp/callback") === true);
