@@ -23,12 +23,13 @@
     "test:e38": "tsx lib/mcp/moverReadTime.test.ts",
     "test:e37": "tsx lib/mcp/tools/pairAddressSchema.test.ts",
     "test:e8": "tsx lib/mcp/safeParse.test.ts",
-    "test": "npm run test:e9 && npm run test:e14 && npm run test:e15 && npm run test:e10 && npm run test:e11-e13 && npm run test:e4-e6 && npm run test:e7 && npm run test:e2 && npm run test:e5 && npm run test:nf4 && npm run test:e1 && npm run test:e3 && npm run test:e38 && npm run test:e37 && npm run test:e8 && npm run test:p1-1 && npm run test:u7 && npm run test:d1c && npm run test:ph7 && npm run test:ph15",
+    "test": "npm run test:e9 && npm run test:e14 && npm run test:e15 && npm run test:e10 && npm run test:e11-e13 && npm run test:e4-e6 && npm run test:e7 && npm run test:e2 && npm run test:e5 && npm run test:nf4 && npm run test:e1 && npm run test:e3 && npm run test:e38 && npm run test:e37 && npm run test:e8 && npm run test:p1-1 && npm run test:u7 && npm run test:d1c && npm run test:ph7 && npm run test:ph15 && npm run test:ph5",
     "test:p1-1": "tsx lib/mcp/tools/safetyResolve.test.ts",
     "test:u7": "tsx lib/oauth/oauthHardening.test.ts",
     "test:d1c": "tsx lib/mcp/wsRuntime.test.ts",
     "test:ph7": "tsx lib/mcp/errors.test.ts",
-    "test:ph15": "tsx lib/mcp/wording.test.ts"
+    "test:ph15": "tsx lib/mcp/wording.test.ts",
+    "test:ph5": "tsx lib/mcp/releaseGates.test.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.26.0",
