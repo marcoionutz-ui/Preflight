@@ -236,3 +236,53 @@ export function activeSnapshot(store: ScopedSubStore, key: string): string | nul
 export function activeSubId(store: ScopedSubStore, key: string): string | null {
   return store.active.get(key)?.subId ?? null;
 }
+
+/** Sănătatea unei subscripții scoped per-kind, pt. publicarea în worker_runtime (Part B). Ages-at-`now`. */
+export interface ScopedSubHealth {
+  confirmed:       boolean;       // există o subscripție CONFIRMATĂ activă pt. (chain, kind)
+  poolCount:       number;        // câte pool-uri acoperă snapshot-ul confirmat (split pe „,")
+  confirmedAgeSec: number | null; // de cât timp e confirmată (din scopedConfirmedAt); null = necunoscut
+}
+
+/**
+ * PUR: derivă sănătatea subscripției scoped (chain, kind) din `active` + harta de confirmări. Fără subscripție
+ * activă → `{confirmed:false, poolCount:0, confirmedAgeSec:null}`. `poolCount` = numărul de intrări din snapshot-ul
+ * confirmat (adresele/pool-id-urile join-uite cu „,"). `confirmedAgeSec` = (now - confirmedAt)/1000, clampat ≥0;
+ * `null` dacă nu avem timestamp (ex. confirmat înainte de a exista harta — passthrough-safe). Testabil izolat.
+ */
+export function scopedSubHealth(
+  active:           Map<string, ConfirmedSub>,
+  confirmedAtByKey: Map<string, number>,
+  chainId:          string,
+  kind:             ScopedSubKind,
+  now:              number,
+): ScopedSubHealth {
+  const key = scopedSubKey(chainId, kind);
+  const sub = active.get(key);
+  if (!sub) return { confirmed: false, poolCount: 0, confirmedAgeSec: null };
+  const poolCount    = sub.snapshot.split(",").filter(Boolean).length;
+  const confirmedAt  = confirmedAtByKey.get(key);
+  const confirmedAgeSec = typeof confirmedAt === "number" && Number.isFinite(confirmedAt)
+    ? Math.max(0, Math.round((now - confirmedAt) / 1000))
+    : null;
+  return { confirmed: true, poolCount, confirmedAgeSec };
+}
+
+/**
+ * PUR (corectitudine Part B): un log de notificare contează drept „viu" pentru (chain, kind) DOAR dacă vine de
+ * la subscripția CONFIRMATĂ ACTIVĂ — `msg.params.subscription === active.subId`. Protejează contra:
+ *   - vechea subscripție care mai livrează imediat după replacement (până se dezabonează);
+ *   - un stale-success/orfan înainte de unsubscribe;
+ *   - o subscripție veche al cărei `eth_unsubscribe` a eșuat;
+ *   - orice subscripție străină cu ACELAȘI topic0.
+ * Fără asta, un mesaj orfan ar marca fals kind-ul „ACTIVE" (și l-ar face „sibling recent" fals în cross-kind).
+ */
+export function isActiveKindMessage(
+  active:       Map<string, ConfirmedSub>,
+  chainId:      string,
+  kind:         ScopedSubKind,
+  subscription: unknown,
+): boolean {
+  const activeSub = active.get(scopedSubKey(chainId, kind));
+  return !!activeSub && typeof subscription === "string" && subscription === activeSub.subId;
+}

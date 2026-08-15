@@ -102,6 +102,13 @@ export const wsClients        = new Map<string, any>(); // WebSocket per chain
 // Un pong proaspăt + un message vechi = „serverul răspunde la ping, dar subscripțiile au murit tăcut".
 export const wsLastPongAt      = new Map<string, number>();
 export const wsLastMessageAt   = new Map<string, number>();
+// Part B: granularitate per-subscripție. Cheie = `chain:kind` (v2/v3/v4, ca scopedSubKey).
+//  - wsLastMessageAtByKind = ultima notificare de log livrată PT. ACEL KIND (din topic0) — distinge un tip mort
+//    tăcut (ex. V2) de agregatul per-chain care-l maschează dacă V3/V4 curg.
+//  - scopedConfirmedAt      = momentul ULTIMEI promovări în `active` (server a confirmat subscripția). Reader-ul
+//    MCP derivă `confirmedAgeSec` → poate suspecta o subscripție care n-a livrat NICIODATĂ dar e confirmată de mult.
+export const wsLastMessageAtByKind = new Map<string, number>();
+export const scopedConfirmedAt     = new Map<string, number>();
 export const swapSubIds        = new Map<string, string[]>();
 export const pendingSwapSubs   = new Map<number, string>();
 export let   swapSubReqId      = 10_000;

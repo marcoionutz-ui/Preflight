@@ -9,13 +9,14 @@ import { getQuoteFlowAsEth, toPoolConventionAmounts, extractBaseQuote, resolveLp
 import { createReconnectManager, type BackoffConfig } from "./wsBackoff";
 import { startHeartbeat } from "./heartbeat";
 import {
-  wsClients, wsLastPongAt, wsLastMessageAt, v3PoolMap, v4PoolMap,
+  wsClients, wsLastPongAt, wsLastMessageAt, wsLastMessageAtByKind, scopedConfirmedAt,
+  v3PoolMap, v4PoolMap,
   swapSubIds, swapSubSnapshot, pendingSwapSubs,
   scopedSubStore, poolLiquidity, memory, hotCandidates,
   watchedPoolCache,
   incrementSwapSubReqId,
 } from "../state/stores";
-import { applyScopedSubResponse, clearScopedSubsForChain } from "./scopedSubs";
+import { applyScopedSubResponse, clearScopedSubsForChain, scopedSubKey, isActiveKindMessage, type ScopedSubKind } from "./scopedSubs";
 import { recordSwap, recordLp } from "../risk/flow";
 import { getWsFlow } from "../risk/flow";
 import { promoteHotCandidate } from "../pipeline/transitions";
@@ -39,6 +40,22 @@ import {
 function int256FromWord(hex64: string): bigint {
   const x = BigInt("0x" + hex64);
   return x >= (1n << 255n) ? x - (1n << 256n) : x;
+}
+
+// Part B: topic0 → kind subscripție (v2/v3/v4), pentru `wsLastMessageAtByKind`. Un log livrat = data stream viu
+// PT. ACEL KIND (distinge V2 mort tăcut de V3/V4 care curg — pe care agregatul per-chain `wsLastMessageAt` îl maschează).
+const TOPIC_TO_KIND: Record<string, ScopedSubKind> = {
+  [SWAP_V4_TOPIC]:              "v4",
+  [MODIFY_LIQUIDITY_V4_TOPIC]:  "v4",
+  [SWAP_V3_TOPIC]:              "v3",
+  [MINT_V3_TOPIC]:              "v3",
+  [BURN_V3_TOPIC]:              "v3",
+  [SWAP_V2_TOPIC]:              "v2",
+  [MINT_V2_TOPIC]:              "v2",
+  [BURN_V2_TOPIC]:              "v2",
+};
+function kindForTopic(topic0: unknown): ScopedSubKind | null {
+  return typeof topic0 === "string" ? (TOPIC_TO_KIND[topic0] ?? null) : null;
 }
 
 // extractBaseQuote a fost mutată în ./quoteFlow (pură, testabilă izolat — E18).
@@ -106,6 +123,11 @@ export function connectChainWebSocket(chain: ChainConfig): void {
     swapSubIds.delete(chain.id);
     swapSubSnapshot.delete(chain.id);
     clearScopedSubsForChain(scopedSubStore, chain.id); // D3: reconnect → stare scoped goală (active+pending+latest)
+    // Part B: golește semnalele per-kind ale chain-ului — subscripțiile vechi au murit cu socketul, iar un
+    // lastMessage/confirmedAt vechi ar raporta fals „proaspăt" până la expirare pe socketul NOU (gol).
+    for (const m of [wsLastMessageAtByKind, scopedConfirmedAt]) {
+      for (const k of [...m.keys()]) if (k.startsWith(chain.id + ":")) m.delete(k);
+    }
     for (const [reqId, reqChain] of pendingSwapSubs.entries()) {
       if (reqChain === chain.id) pendingSwapSubs.delete(reqId);
     }
@@ -122,10 +144,19 @@ export function connectChainWebSocket(chain: ChainConfig): void {
       // Succes pe cea mai recentă cerere → promovează + anulează subscripția veche; eroare → păstrează
       // subscripția veche (retry la scanul următor); răspuns depășit → anulează subId-ul orfan.
       if (typeof msg.id === "number" && scopedSubStore.pending.has(msg.id)) {
+        // Part B: cheia cererii ÎNAINTE ca reducer-ul s-o consume — ca s-o marcăm confirmată pe „promoted".
+        const pendKey = scopedSubStore.pending.get(msg.id)?.key;
         const result = typeof msg.result === "string"
           ? { ok: true as const, subId: msg.result }
           : { ok: false as const };
         const { unsub, outcome } = applyScopedSubResponse(scopedSubStore, msg.id, result);
+        // Part B: o subscripție NOU confirmată → resetează momentul confirmării (baza pt. confirmedAgeSec) ȘI
+        // șterge vârsta de mesaj a generației VECHI (corectitudine cgpt): altfel un lastMessage moștenit ar
+        // raporta fals „ACTIVE" pentru subscripția nouă până la primul ei mesaj real.
+        if (outcome === "promoted" && pendKey) {
+          scopedConfirmedAt.set(pendKey, Date.now());
+          wsLastMessageAtByKind.delete(pendKey);
+        }
         for (const subId of unsub) {
           wsClient.send(JSON.stringify({ jsonrpc: "2.0", id: 88, method: "eth_unsubscribe", params: [subId] }));
         }
@@ -155,7 +186,16 @@ export function connectChainWebSocket(chain: ChainConfig): void {
       // D1 (health onestitate): o NOTIFICARE de log livrată prin subscripție = data stream viu — distinct
       // de pong (= doar transport viu). Marcăm înainte de a filtra pe topic, ca orice log de la orice
       // subscripție să conteze ca „stream care curge" (nu doar swap-urile de care ne pasă mai jos).
-      if (msg.params?.result) wsLastMessageAt.set(chain.id, Date.now());
+      if (msg.params?.result) {
+        wsLastMessageAt.set(chain.id, Date.now()); // per-chain: ORICE log livrat = data stream curge (transport)
+        // Part B (corectitudine cgpt): per-kind DOAR dacă mesajul vine de la subscripția ACTIVĂ confirmată
+        // (`msg.params.subscription === active.subId`) — nu de la una veche/orfană/stale cu ACELAȘI topic0,
+        // altfel am marca fals kind-ul „viu" (și l-am face „sibling recent" fals în clasificarea cross-kind).
+        const kind = kindForTopic(msg.params.result.topics?.[0]);
+        if (kind && isActiveKindMessage(scopedSubStore.active, chain.id, kind, msg.params.subscription)) {
+          wsLastMessageAtByKind.set(scopedSubKey(chain.id, kind), Date.now());
+        }
+      }
 
       // ── V4 Swap (all chains) ─────────────────────────────────────────────
       if (msg.params?.result?.topics?.[0] === SWAP_V4_TOPIC) {

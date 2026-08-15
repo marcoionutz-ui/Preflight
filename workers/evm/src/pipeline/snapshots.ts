@@ -7,9 +7,10 @@
 import type { Redis } from "ioredis";
 import {
   activeWatch, hotCandidates, memory, wsFlow, wsClients,
-  wsLastPongAt, wsLastMessageAt,
+  wsLastPongAt, wsLastMessageAt, wsLastMessageAtByKind, scopedConfirmedAt, scopedSubStore,
   momentumEventsBuffer, qualifiedSignalsBuffer, recentDrops,
 } from "../state/stores";
+import { scopedSubHealth, scopedSubKey, type ScopedSubKind } from "../ws/scopedSubs";
 import { buildPairStates, buildWatchSnapshot, buildHotSnapshot, buildArmedSnapshot } from "../state/pairStates";
 import { writeDropsAndEvents } from "./marketContext";
 import WebSocket from "ws";
@@ -59,6 +60,15 @@ export async function writeAllSnapshots(r: Redis): Promise<void> {
   const runtimePipe = r.pipeline();
   const ageSec = (t: number | undefined): number | null =>
     typeof t === "number" ? Math.max(0, Math.round((runtimeNow - t) / 1000)) : null;
+  // Part B: sănătatea per-kind (v2/v3/v4) = starea confirmată a subscripției scoped (scopedSubHealth, pură)
+  // + vârsta ultimei notificări de log PT. ACEL KIND. Reader-ul MCP clasifică cross-kind (SUSPECTED_STALE etc).
+  const wsSubHealthForChain = (chainId: string) => {
+    const kind = (k: ScopedSubKind) => ({
+      ...scopedSubHealth(scopedSubStore.active, scopedConfirmedAt, chainId, k, runtimeNow),
+      lastMessageAgeSec: ageSec(wsLastMessageAtByKind.get(scopedSubKey(chainId, k))),
+    });
+    return { v2: kind("v2"), v3: kind("v3"), v4: kind("v4") };
+  };
   for (const c of CHAINS) {
     const ws = wsClients.get(c.id);
     runtimePipe.set(REDIS_KEYS.workerRuntime(c.id), JSON.stringify({
@@ -70,6 +80,8 @@ export async function writeAllSnapshots(r: Redis): Promise<void> {
       // acum pentru ops/alerting, fără să mintă `wsConnected` (schema MCP e passthrough → nu rupe parse-ul).
       lastPongAgeSec:      ageSec(wsLastPongAt.get(c.id)),
       lastWsMessageAgeSec: ageSec(wsLastMessageAt.get(c.id)),
+      // Part B: granularitate per-subscripție (v2/v3/v4) — {confirmed, poolCount, confirmedAgeSec, lastMessageAgeSec}.
+      wsSubs:      wsSubHealthForChain(c.id),
       updatedAt:   runtimeNow,
     }), "EX", SNAPSHOT_TTL_SEC);
   }
