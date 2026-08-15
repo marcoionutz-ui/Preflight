@@ -32,3 +32,25 @@ export function classifyClientLookup(
   if (!data)  return { status: "not_found" };
   return { status: "found", client: data };
 }
+
+export type ClientCredResult =
+  | { status: "ok";             client: OAuthClient }
+  | { status: "invalid_client" }
+  | { status: "unavailable";    reason: string };
+
+/**
+ * PH-9: din `ClientLookup` (discriminat) + verificarea secretului → rezultatul pentru TOKEN endpoint (grant
+ * `client_credentials`). Cheia: `unavailable` (Supabase jos) NU devine `invalid_client` — altfel un OUTAGE ar
+ * apărea user-ului ca „secret greșit / client revocat" (401), deși credențialele lui pot fi perfect valide.
+ *   - `unavailable` → se propagă → ruta răspunde 503 `temporarily_unavailable` (retry), ca la Redis jos.
+ *   - `not_found` SAU secret greșit → `invalid_client` (verificarea a REUȘIT, răspunsul onest e „nu").
+ * PUR: `secretMatches` (comparația constant-time a secretului) e injectată → testabil fără Supabase/crypto.
+ */
+export function classifyClientCredentials(
+  lookup:        ClientLookup,
+  secretMatches: (client: OAuthClient) => boolean,
+): ClientCredResult {
+  if (lookup.status === "unavailable") return { status: "unavailable", reason: lookup.reason };
+  if (lookup.status === "not_found")   return { status: "invalid_client" };
+  return secretMatches(lookup.client) ? { status: "ok", client: lookup.client } : { status: "invalid_client" };
+}

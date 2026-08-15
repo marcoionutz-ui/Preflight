@@ -6,7 +6,7 @@
 import { createHash, randomBytes } from "crypto";
 import { supabaseAdmin }           from "./supabase-admin";
 import { timingSafeStrEqual }      from "./constantTime";
-import { classifyClientLookup, type ClientLookup } from "./clientLookup";
+import { classifyClientLookup, classifyClientCredentials, type ClientLookup, type ClientCredResult } from "./clientLookup";
 import { buildOAuthClientInsertRow, hasValidCredentialVersion } from "./oauthClientInsert";
 import { isSafeRedirectUri } from "../oauth/redirectUri";
 
@@ -107,6 +107,20 @@ export async function verifyClientCredentials(
   if (!client) return null;
   if (!verifySecret(clientSecret, client.secret_hash)) return null;
   return client;
+}
+
+/**
+ * PH-9: variantă DISCRIMINATĂ a lui `verifyClientCredentials` pentru token endpoint — distinge `unavailable`
+ * (Supabase jos → 503) de `invalid_client` (client inexistent/revocat SAU secret greșit → 401). Bazat pe
+ * `lookupClientById` (deja discriminat) + clasificatorul PUR `classifyClientCredentials`. `verifyClientCredentials`
+ * (null-based) rămâne pentru caller-ii care nu disting (ex. `/authorize`).
+ */
+export async function verifyClientCredentialsResult(
+  clientId:     string,
+  clientSecret: string,
+): Promise<ClientCredResult> {
+  const lookup = await lookupClientById(clientId);
+  return classifyClientCredentials(lookup, (c) => verifySecret(clientSecret, c.secret_hash));
 }
 
 // ── Lookup by owning Supabase Auth user (dashboard) ────────────────────────────

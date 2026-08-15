@@ -7,7 +7,7 @@
  */
 
 import { NextRequest }                      from "next/server";
-import { verifyClientCredentials, touchClient, getClientById } from "@/lib/db/oauth-clients";
+import { verifyClientCredentialsResult, touchClient, lookupClientById } from "@/lib/db/oauth-clients";
 import { issueToken }                       from "@/lib/db/oauth-tokens";
 import { peekAuthCode, verifyCodeVerifier, consumeCodeAndIssueToken } from "@/lib/db/oauth-codes";
 import { sanitizeTokenError }               from "@/lib/oauth/tokenError";
@@ -63,10 +63,16 @@ async function handlePost(req: NextRequest) {
       return jsonError(400, "invalid_request", "client_id and client_secret are required");
     }
 
-    const client = await verifyClientCredentials(client_id, client_secret);
-    if (!client) {
+    // PH-9: rezultat DISCRIMINAT — `unavailable` (Supabase jos) → 503 (retry), NU 401 invalid_client (ar minți
+    // „secret greșit/revocat" la un outage). `invalid_client` = client inexistent/revocat SAU secret greșit.
+    const cred = await verifyClientCredentialsResult(client_id, client_secret);
+    if (cred.status === "unavailable") {
+      return jsonError(503, "temporarily_unavailable", "Authorization service temporarily unavailable, please retry");
+    }
+    if (cred.status === "invalid_client") {
       return jsonError(401, "invalid_client", "Invalid credentials or client revoked");
     }
+    const client = cred.client;
 
     const token = await issueToken({
       client_id:          client.client_id,
@@ -140,11 +146,15 @@ async function handlePost(req: NextRequest) {
     const valid = verifyCodeVerifier(code_verifier, payload.code_challenge, payload.code_challenge_method);
     if (!valid) return jsonError(400, "invalid_grant", "code_verifier mismatch");
 
-    // Verifică că clientul e încă activ
-    const client = await getClientById(client_id);
-    if (!client) {
+    // Verifică că clientul e încă activ. PH-9: discriminat — Supabase jos → 503 (retry), NU 401 invalid_client.
+    const clientLookup = await lookupClientById(client_id);
+    if (clientLookup.status === "unavailable") {
+      return jsonError(503, "temporarily_unavailable", "Authorization service temporarily unavailable, please retry");
+    }
+    if (clientLookup.status === "not_found") {
       return jsonError(401, "invalid_client", "Client not found or revoked");
     }
+    const client = clientLookup.client;
 
     // E4 + U7: TOATĂ validarea a trecut → consumă codul ȘI emite tokenul ATOMIC (un singur EVAL: compare-and-delete
     // pe blob + SET token). Înainte, `finalizeAuthCode` ardea codul, apoi `issueToken` scria separat — dacă Redis
