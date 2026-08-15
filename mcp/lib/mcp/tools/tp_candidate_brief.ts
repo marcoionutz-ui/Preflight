@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { pairAddressSchema } from "./pairAddressSchema";
 import { readAllRedis, getPipelineState, resolvePairChain, findLastEventForPair, formatEth, formatVol, formatPct, wsFlowQuality, combineConfidence } from "../redis-reader";
-import { mcpErr, mcpResponse, ERR } from "../errors";
+import { mcpErr, mcpResponse, ERR, sanitizeToolError } from "../errors";
 import type { SourceAgreement } from "@preflight/schema";
 import { hooksEvidenceField, isEstimatedReserve, reserveEstimatedFlag } from "@preflight/schema";
 
@@ -320,7 +320,7 @@ return mcpResponse({
     lpCoverage:    pairState ? getLpCoverage(pairState.dexType, pairState.lp?.hasData ?? false) : "NO_PAIR_STATE",
   },
 });
-      } catch (e) { return mcpErr(ERR.INTERNAL, e instanceof Error ? e.message : String(e)); }
+      } catch (e) { return mcpErr(ERR.INTERNAL, sanitizeToolError(e)); }
     },
   );
 }

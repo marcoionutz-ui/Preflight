@@ -23,7 +23,7 @@ import {
   combineConfidence,
 } from "../redis-reader";
 import { pairKey, isEstimatedReserve } from "@preflight/schema";
-import { mcpErr, mcpResponse, ERR } from "../errors";
+import { mcpErr, mcpResponse, ERR, sanitizeToolError } from "../errors";
 
 const FLAP_WINDOW_MS    = 10 * 60_000; // 10 minute
 const SELL_RATIO_WARN   = 0.4;         // 40%+ sell vs buy = warning
@@ -264,7 +264,7 @@ return mcpResponse({
     hasFlowData:   !!flow?.hasData,
    },
 });
-      } catch (e) { return mcpErr(ERR.INTERNAL, e instanceof Error ? e.message : String(e)); }
+      } catch (e) { return mcpErr(ERR.INTERNAL, sanitizeToolError(e)); }
     },
   );
 }

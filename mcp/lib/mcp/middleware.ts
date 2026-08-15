@@ -12,7 +12,7 @@ import type { McpServer }              from "@modelcontextprotocol/sdk/server/mc
 import { logUsage, generateRequestId, reserveQuota, refundQuota } from "./usage";
 import { getToolCredits, resolvePlan }                  from "./billing";
 import { toolAuthorized }                               from "./scopes";
-import { mcpErr, ERR }                                   from "./errors";
+import { mcpErr, ERR, sanitizeToolError }                                   from "./errors";
 
 // ── Plan-mismatch telemetry (E10) ──────────────────────────────────────────────
 // Loud but de-duplicat: un plan necunoscut din DB (typo / plan legacy / drift DB↔cod) → degradat la free_trial,
@@ -185,7 +185,7 @@ export function createInstrumentedServer(server: McpServer): McpServer {
           request_id:   requestId,
           credits_used: 0,
         });
-        return mcpErr(ERR.INTERNAL, e instanceof Error ? e.message : String(e));
+        return mcpErr(ERR.INTERNAL, sanitizeToolError(e));
       }
     };
 

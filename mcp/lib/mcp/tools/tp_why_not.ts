@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { pairAddressSchema } from "./pairAddressSchema";
 import { readAllRedis, getPipelineState, resolvePairChain, chainsForAddressInArrays, findLastEventForPair, findLastDropForPair, formatVol } from "../redis-reader";
-import { mcpResponse, mcpErr, ERR } from "../errors";
+import { mcpResponse, mcpErr, ERR, sanitizeToolError } from "../errors";
 import { pairKey } from "@preflight/schema";
 
 export function registerWhyNot(server: McpServer) {
@@ -148,7 +148,7 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
         }
 
         return mcpResponse({ text: lines.join("\n"), confidence: "MEDIUM" });
-      } catch (e) { return mcpErr(ERR.INTERNAL, e instanceof Error ? e.message : String(e)); }
+      } catch (e) { return mcpErr(ERR.INTERNAL, sanitizeToolError(e)); }
     },
   );
 }

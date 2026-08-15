@@ -3,7 +3,7 @@ import { z } from "zod";
 import { readAllRedis, readTrendingMovers, readSolanaMovers } from "../redis-reader";
 import { normalizeChainId, reserveEstimatedFlag, pairKey } from "@preflight/schema";
 import type { MemoryEntry } from "../types";
-import { mcpResponse, mcpErr, ERR } from "../errors";
+import { mcpResponse, mcpErr, ERR, sanitizeToolError } from "../errors";
 
 export function registerMarketOverview(server: McpServer) {
   server.registerTool(
@@ -154,7 +154,7 @@ Args: chain (optional), top_n (default 5, max 20)`,
             "LOW",
           dataQuality: { wsFlow: wsFlowQuality },
         });
-      } catch (e) { return mcpErr(ERR.INTERNAL, e instanceof Error ? e.message : String(e)); }
+      } catch (e) { return mcpErr(ERR.INTERNAL, sanitizeToolError(e)); }
     },
   );
 }

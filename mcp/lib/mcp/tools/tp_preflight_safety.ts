@@ -6,7 +6,7 @@ import { getRedis } from "@/lib/db/redis";
 import { checkTokenRisk } from "@preflight/risk-layer";
 import type { RiskResult } from "@preflight/risk-layer";
 import { normalizeChainId, REDIS_KEYS } from "@preflight/schema";
-import { mcpResponse, mcpErr, ERR } from "../errors";
+import { mcpResponse, mcpErr, ERR, sanitizeToolError } from "../errors";
 
 /** V4 poolId = bytes32 (0x + 64 hex) — not an EVM contract address */
 const BYTES32_RE = /^0x[a-f0-9]{64}$/i;
@@ -301,7 +301,7 @@ Args:
           dataQuality: { risk: riskQuality },
           evidence: { safetyStatus, sellability, ownerRisk, riskLevel: risk.riskLevel },
         });
-      } catch (e) { return mcpErr(ERR.INTERNAL, e instanceof Error ? e.message : String(e)); }
+      } catch (e) { return mcpErr(ERR.INTERNAL, sanitizeToolError(e)); }
     },
   );
 }

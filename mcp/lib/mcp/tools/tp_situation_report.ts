@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { readAllRedis, formatVol, formatPct, combineConfidence, dedupeByPair } from "../redis-reader";
 import { pairKey, splitPairKey, isEstimatedReserve } from "@preflight/schema";
-import { mcpErr, mcpResponse, ERR } from "../errors";
+import { mcpErr, mcpResponse, ERR, sanitizeToolError } from "../errors";
 import type { PairState } from "../types";
 
 export function registerSituationReport(server: McpServer) {
@@ -278,7 +278,7 @@ return mcpResponse({
     },
   },
 });
-      } catch (e) { return mcpErr(ERR.INTERNAL, e instanceof Error ? e.message : String(e)); }
+      } catch (e) { return mcpErr(ERR.INTERNAL, sanitizeToolError(e)); }
     },
   );
 }

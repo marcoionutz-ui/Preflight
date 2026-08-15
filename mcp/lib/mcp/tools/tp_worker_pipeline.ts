@@ -3,7 +3,7 @@ import { z } from "zod";
 import { readAllRedis } from "../redis-reader";
 import { normalizeChainId, pairKey, splitPairKey } from "@preflight/schema";
 import type { PreflightSignalPipelineEntry } from "@preflight/schema";
-import { mcpResponse, mcpErr, ERR } from "../errors";
+import { mcpResponse, mcpErr, ERR, sanitizeToolError } from "../errors";
 
 export function registerWorkerPipeline(server: McpServer) {
   server.registerTool(
@@ -199,7 +199,7 @@ Args: chain (filter: 'base', 'arbitrum', 'bsc', or 'eth')`,
             armed:    armedEntries.length,
           },
         });
-      } catch (e) { return mcpErr(ERR.INTERNAL, e instanceof Error ? e.message : String(e)); }
+      } catch (e) { return mcpErr(ERR.INTERNAL, sanitizeToolError(e)); }
     },
   );
 }

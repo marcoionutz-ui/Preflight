@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { readAllRedis, safeMinAge, readQuoteOracleHealth, readQuotePriceHealth, readSolanaIndexerStats } from "../redis-reader";
 import { keyFreshness, aggregateKnownFreshness, completeOnKnownChains, isWsStreamStale, classifyWsSubs } from "../health-freshness";
-import { mcpResponse, mcpErr, ERR } from "../errors";
+import { mcpResponse, mcpErr, ERR, sanitizeToolError } from "../errors";
 
 export function registerHealthCheck(server: McpServer) {
   server.registerTool(
@@ -258,7 +258,7 @@ Use this first to verify the worker is running before calling other tools.`,
 			armedEntries:  payload.stats.armedEntries,
 		  },
 		});
-			} catch (e) { return mcpErr(ERR.INTERNAL, e instanceof Error ? e.message : String(e)); }
+			} catch (e) { return mcpErr(ERR.INTERNAL, sanitizeToolError(e)); }
     },
   );
 }

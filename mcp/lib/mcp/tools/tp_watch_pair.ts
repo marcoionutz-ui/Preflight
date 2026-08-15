@@ -8,7 +8,7 @@ import { z } from "zod";
 import { pairAddressSchema } from "./pairAddressSchema";
 import { readAllRedis } from "../redis-reader";
 import { getRedis } from "@/lib/db/redis";
-import { mcpResponse, mcpErr, ERR } from "../errors";
+import { mcpResponse, mcpErr, ERR, sanitizeToolError } from "../errors";
 import { REDIS_KEYS, pairKey, normalizeChainId, isEstimatedReserve } from "@preflight/schema";
 
 export function registerWatchPair(server: McpServer) {
@@ -113,7 +113,7 @@ Returns current status if pair is already being monitored.`,
         lines.push(`NOTE: pair must pass watch gates to enter pipeline — not guaranteed`);
 
         return mcpResponse({ text: lines.join("\n"), confidence: "MEDIUM" });
-      } catch (e) { return mcpErr(ERR.INTERNAL, e instanceof Error ? e.message : String(e)); }
+      } catch (e) { return mcpErr(ERR.INTERNAL, sanitizeToolError(e)); }
     },
   );
 }

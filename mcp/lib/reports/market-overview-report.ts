@@ -21,6 +21,7 @@ import {
   readSolanaIndexerStats, readSolanaMovers,
 } from "../mcp/redis-reader";
 import { safeAgeSec } from "../mcp/freshness";
+import { sanitizeToolError } from "../mcp/errors";
 import { pairKey, reserveEstimatedFlag, type ReserveSource } from "@preflight/schema";
 
 export type ChainCoverageTier = "LIVE" | "CACHED" | "SAMPLED";
@@ -185,8 +186,11 @@ export async function buildMarketOverviewReport(topN = 5): Promise<MarketOvervie
     return { ok: true, generatedAt, chains: [...evmChains, solanaOverview] };
   } catch (e) {
     return {
+      // PH-7: NU stoca `e.message` brut — acest report alimentează demo-ul PUBLIC (app/demo/page.tsx redă
+      // `report.errorMessage` direct în HTML). `sanitizeToolError` logează eroarea reală server-side și întoarce
+      // un mesaj generic stabil, deci nici demo-ul nici un consumator MCP nu văd internals (host Redis, stack).
       ok: false, generatedAt, chains: [],
-      errorCode: "INTERNAL", errorMessage: e instanceof Error ? e.message : String(e),
+      errorCode: "INTERNAL", errorMessage: sanitizeToolError(e),
     };
   }
 }

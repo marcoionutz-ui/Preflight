@@ -11,7 +11,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { readAllRedis, formatVol, getPipelineState, resolvePairChain } from "../redis-reader";
-import { mcpResponse, mcpErr, ERR } from "../errors";
+import { mcpResponse, mcpErr, ERR, sanitizeToolError } from "../errors";
 
 // Normalizează timestamp: seconds → ms dacă e sub 10B
 const normalizeTs = (v: unknown): number | null => {
@@ -210,7 +210,7 @@ Returns per position:
         }
 
         return mcpResponse({ text: lines.join("\n").trim(), confidence: "MEDIUM" });
-      } catch (e) { return mcpErr(ERR.INTERNAL, e instanceof Error ? e.message : String(e)); }
+      } catch (e) { return mcpErr(ERR.INTERNAL, sanitizeToolError(e)); }
     },
   );
 }

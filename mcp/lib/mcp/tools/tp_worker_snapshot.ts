@@ -3,7 +3,7 @@ import { z } from "zod";
 import { readAllRedis } from "../redis-reader";
 import type { PairState, MemoryEntry } from "../types";
 import { splitPairKey, normalizeChainId, reserveEstimatedFlag } from "@preflight/schema";
-import { mcpResponse, mcpErr, ERR } from "../errors";
+import { mcpResponse, mcpErr, ERR, sanitizeToolError } from "../errors";
 
 export function registerWorkerSnapshot(server: McpServer) {
   server.registerTool(
@@ -98,7 +98,7 @@ Args:
             snapshotFreshnessSec !== null && snapshotFreshnessSec < 180 ? "MEDIUM" :
             "LOW",
         });
-      } catch (e) { return mcpErr(ERR.INTERNAL, e instanceof Error ? e.message : String(e)); }
+      } catch (e) { return mcpErr(ERR.INTERNAL, sanitizeToolError(e)); }
     },
   );
 }

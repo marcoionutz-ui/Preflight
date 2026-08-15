@@ -7,7 +7,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { readAllRedis, formatPct, combineConfidence, dedupeByPair } from "../redis-reader";
 import { splitPairKey } from "@preflight/schema";
-import { mcpResponse, mcpErr, ERR } from "../errors";
+import { mcpResponse, mcpErr, ERR, sanitizeToolError } from "../errors";
 
 export function registerNextAction(server: McpServer) {
   server.registerTool(
@@ -193,7 +193,7 @@ Does not advise on trades. Routes to data, not to decisions.`,
             topChain,
           },
         });
-      } catch (e) { return mcpErr(ERR.INTERNAL, e instanceof Error ? e.message : String(e)); }
+      } catch (e) { return mcpErr(ERR.INTERNAL, sanitizeToolError(e)); }
     },
   );
 }

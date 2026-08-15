@@ -17,7 +17,7 @@ import {
   resolvePairChain, wsFlowQuality, combineConfidence, readSolanaPoolContext,
 } from "../mcp/redis-reader";
 import type { PairRiskSummary } from "../mcp/types";
-import type { McpConfidence, McpDataQuality } from "../mcp/errors";
+import { sanitizeToolError, type McpConfidence, type McpDataQuality } from "../mcp/errors";
 import { normalizeChainId, reserveEstimatedFlag, type SourceAgreement } from "@preflight/schema";
 import { safeAgeSec, safeAgeMs } from "../mcp/freshness";
 
@@ -455,8 +455,12 @@ export async function buildPairContextReport(
     };
   } catch (e) {
     return {
+      // PH-7: sanitizează AICI, la sursă — excepția prinsă în report NU mai trece prin catch-ul sanitizat din
+      // middleware (tp_pair_context o primește deja ca `report.errorMessage` și o pasează în mcpErr), iar demo-ul
+      // public (app/demo/pair/.../page.tsx) o redă direct. `sanitizeToolError` logează real server-side, întoarce
+      // mesaj generic → nici MCP nici demo nu scurg internals.
       ok: false, payload: {}, freshnessSec: null, confidence: "LOW",
-      errorCode: "INTERNAL", errorMessage: e instanceof Error ? e.message : String(e),
+      errorCode: "INTERNAL", errorMessage: sanitizeToolError(e),
     };
   }
 }

@@ -14,6 +14,25 @@ export function mcpOk(data: unknown): { content: McpContent } {
   };
 }
 
+/**
+ * PH-7: mesajul generic returnat clientului pentru o eroare INTERNĂ neașteptată. Stabil (nu variază cu inputul)
+ * ca să nu scurgem detalii interne.
+ */
+export const GENERIC_TOOL_ERROR = "An internal error occurred while processing the request.";
+
+/**
+ * PH-7: eroarea REALĂ a unui tool (hostname Redis, detalii Supabase, stack) rămâne DOAR în logul server-side —
+ * clientul primește `GENERIC_TOOL_ERROR`. Fără asta, `mcpErr(ERR.INTERNAL, e.message)` reflecta excepția brută în
+ * răspunsul MCP (scurgere de internals). Leaf PUR (`log` injectat) → testabil; analog `sanitizeTokenError` (E5).
+ */
+export function sanitizeToolError(
+  err: unknown,
+  log: (label: string, detail: unknown) => void = console.error,
+): string {
+  log("[MCP TOOL ERROR]", err instanceof Error ? (err.stack ?? err.message) : err);
+  return GENERIC_TOOL_ERROR;
+}
+
 export function mcpErr(code: string, message: string, extra?: Record<string, unknown>): { content: McpContent; isError: true } {
   return {
     content: [{

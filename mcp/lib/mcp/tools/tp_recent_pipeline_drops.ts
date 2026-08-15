@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { readAllRedis, dedupeByPair, resolvePairChain } from "../redis-reader";
 import { classifyEmptyDrops, isWorkerFresh } from "../health-freshness";
-import { mcpResponse, mcpErr, ERR } from "../errors";
+import { mcpResponse, mcpErr, ERR, sanitizeToolError } from "../errors";
 
 export function registerRecentPipelineDrops(server: McpServer) {
   server.registerTool(
@@ -101,7 +101,7 @@ Args: limit (default 10, max 30), minutes_back (default 10, max 10)`,
           warnings: windowComplete ? undefined
             : ["Listed drops are recorded evidence, but coverage of the requested window may be incomplete (worker stale or recent-drops unreadable on ≥1 known chain)."],
 		});
-      } catch (e) { return mcpErr(ERR.INTERNAL, e instanceof Error ? e.message : String(e)); }
+      } catch (e) { return mcpErr(ERR.INTERNAL, sanitizeToolError(e)); }
     },
   );
 }
