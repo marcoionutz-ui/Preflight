@@ -268,7 +268,7 @@ function FlowPipelineCard({ p }: { p: DisplayPayload }) {
     <Section title="Flow & pipeline">
       <Row label="pipeline state" value={p.pipeline?.state ?? "NONE"} />
       <Row label="ws flow" value={avail.wsFlow ?? "—"} />
-      <Row label="lp signal" value={avail.lpSignal ?? "—"} />
+      <Row label="lp status" value={avail.lpStatus ?? "—"} />
       <Row label="lp coverage" value={avail.lpCoverage ?? "—"} />
       <Row label="ready for reasoning" value={ready.ready ? "yes" : "no"} />
       {Array.isArray(ready.missingCritical) && ready.missingCritical.length > 0 && (

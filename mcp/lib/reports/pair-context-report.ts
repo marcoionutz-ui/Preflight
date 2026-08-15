@@ -381,7 +381,7 @@ export async function buildPairContextReport(
         return {
           marketData: pairState ? "available" : "not_available",
           wsFlow:    hasWsFlow  ? "available" : liveMonitored ? "not_available_no_ws_events_yet" : "not_available_market_only",
-          lpSignal:  hasLpData  ? "available" : liveMonitored ? "not_available_no_lp_events_yet" : "not_available_market_only",
+          lpStatus:  hasLpData  ? "available" : liveMonitored ? "not_available_no_lp_events_yet" : "not_available_market_only",
           lpCoverage: getLpCoverage(pairState?.dexType, hasLpData),
         };
       })(),

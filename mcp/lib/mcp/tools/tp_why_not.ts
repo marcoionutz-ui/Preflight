@@ -12,7 +12,7 @@ export function registerWhyNot(server: McpServer) {
       title: "Preflight Why Not",
       description: `Explains why a specific pair is NOT currently HOT or ARMED.
 
-Absence of a signal is information. This tool tells you:
+Absence of activity is information. This tool tells you:
 - If it's still WATCHING: how long, what's missing
 - If it was recently dropped: exactly why
 - If it's tracked but not in pipeline: phase/history context
@@ -129,7 +129,7 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
           }
 
           const reasons: string[] = [];
-          if (data.phase === "RECOVERING" && data.seenCount > 20) reasons.push("phase RECOVERING with long history — entry blocked by default");
+          if (data.phase === "RECOVERING" && data.seenCount > 20) reasons.push("phase RECOVERING with long history — not tracked by default");
           const pCount = states[lookup]?.poolCountSameToken ?? 1;
           if (pCount >= 5) reasons.push(`${pCount} pools for same token — clone/fragmentation block`);
 

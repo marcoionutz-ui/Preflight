@@ -270,13 +270,13 @@ Args:
 
         lines.push(`RISK INTERPRETATION:`);
         if (safetyStatus === "CRITICAL_RISK") {
-          lines.push(`  Critical contract-level risk signals detected: ${risk.summary}`);
+          lines.push(`  Critical contract-level risk indicators detected: ${risk.summary}`);
         } else if (safetyStatus === "HIGH_RISK") {
-          lines.push(`  Elevated risk signals present: ${risk.summary}`);
+          lines.push(`  Elevated risk indicators present: ${risk.summary}`);
         } else if (safetyStatus === "MEDIUM_RISK") {
-          lines.push(`  Moderate risk signals present: ${risk.summary}`);
+          lines.push(`  Moderate risk indicators present: ${risk.summary}`);
         } else if (safetyStatus === "LOW_DETECTED_RISK") {
-          lines.push(`  No critical contract risk signals detected.`);
+          lines.push(`  No critical contract risk indicators detected.`);
         } else {
           lines.push(`  Safety data incomplete — ${risk.missingData.length} data points unavailable.`);
         }

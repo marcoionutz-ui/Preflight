@@ -63,9 +63,9 @@ Does not advise on trades. Routes to data, not to decisions.`,
 
         // Coverage note — LOW sub 20%, nu "moderate"
         const coverageNote = coverage < 20
-          ? `WS coverage is ${coverage}% — flow signals are LOW confidence. Treat flow-derived context with caution.`
+          ? `WS coverage is ${coverage}% — flow data is LOW confidence. Treat flow-derived context with caution.`
           : coverage < 50
-          ? `WS coverage is ${coverage}% — MEDIUM confidence on flow signals.`
+          ? `WS coverage is ${coverage}% — MEDIUM confidence on flow data.`
           : null;
 
         // Chain with most activity
@@ -126,7 +126,7 @@ Does not advise on trades. Routes to data, not to decisions.`,
           lines.push(`  2. tp_why_not(pair, chain) — pipeline rejection reasons`);
 
         } else if (marketDead && watchCount > 0) {
-          lines.push(`FOCUS: COVERAGE LOW — flow signals unreliable`);
+          lines.push(`FOCUS: COVERAGE LOW — flow data unreliable`);
           lines.push(`coverage:${coverage}% watching:${watchCount}${topChain ? ` top_chain:${topChain}` : ""}`);
           lines.push("");
          lines.push(`NEXT_CHECK:`);

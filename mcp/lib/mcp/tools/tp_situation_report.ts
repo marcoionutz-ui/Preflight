@@ -72,7 +72,7 @@ Observed movers section shows tokens moving on market that haven't passed pipeli
           "LOW";
 
         if (coverageConfidence === "LOW") {
-          lines.push(`⚠️ COVERAGE_CONFIDENCE: LOW — only ${globalCoverage}% WS coverage globally. Flow-derived signals are partial and lower confidence.`);
+          lines.push(`⚠️ COVERAGE_CONFIDENCE: LOW — only ${globalCoverage}% WS coverage globally. Flow-derived data is partial and lower confidence.`);
         } else if (coverageConfidence === "MEDIUM") {
           lines.push(`ℹ️ COVERAGE_CONFIDENCE: MEDIUM — ${globalCoverage}% WS coverage globally.`);
         }
@@ -248,7 +248,7 @@ Observed movers section shows tokens moving on market that haven't passed pipeli
 
         const warnings = [
   !workerOnline ? "Worker snapshot offline or stale" : null,
-  globalCoverage < 20 ? `WS coverage ${globalCoverage}% — flow signals partial` : null,
+  globalCoverage < 20 ? `WS coverage ${globalCoverage}% — flow data partial` : null,
 ].filter((w): w is string => !!w);
 
 return mcpResponse({
@@ -256,7 +256,7 @@ return mcpResponse({
   freshnessSec: freshnessSec ?? null,
   confidence:   !workerOnline ? "LOW" : combineConfidence(freshnessSec, globalCoverage, false),
   coverageNote: globalCoverage < 20
-    ? `WS coverage ${globalCoverage}% — flow signals partial`
+    ? `WS coverage ${globalCoverage}% — flow data partial`
     : null,
   warnings,
   dataQuality: {

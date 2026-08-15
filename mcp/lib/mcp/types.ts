@@ -237,7 +237,7 @@ export interface GoPlusSafety {
   canChangeBalance:     boolean | null;
   canTakeBackOwnership: boolean | null;
   tokenAgeMinutes:      number | null;
-  agentVerdict:         "BLOCK" | "HIGH_CAUTION" | "OK_TO_INVESTIGATE" | "UNKNOWN_CHECK_MANUALLY";
+  agentVerdict:         "BLOCK" | "HIGH_CAUTION" | "NO_SAFETY_BLOCKERS" | "UNKNOWN_CHECK_MANUALLY";
   missingData:          string[];
   cachedAt:             number;
   source:               "goplus" | "cache" | "unavailable";
