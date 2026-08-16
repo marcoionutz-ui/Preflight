@@ -12,6 +12,8 @@ import { issueToken }                       from "@/lib/db/oauth-tokens";
 import { peekAuthCode, verifyCodeVerifier, consumeCodeAndIssueToken } from "@/lib/db/oauth-codes";
 import { sanitizeTokenError }               from "@/lib/oauth/tokenError";
 import { isValidCodeVerifier }              from "@/lib/oauth/pkce";
+import { resolveBaseUrl }                   from "@/lib/oauth/baseUrl";
+import { validateResourceIndicator, canonicalResourceUri } from "@/lib/oauth/resource";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -63,6 +65,14 @@ async function handlePost(req: NextRequest) {
       return jsonError(400, "invalid_request", "client_id and client_secret are required");
     }
 
+    // PH-3 (RFC 8707): validează `resource` și leagă audience-ul în token. Absent → default-bind canonic; prezent
+    // dar ≠ resursa noastră → invalid_target (RFC 8707 §2). issuer = base URL canonic (fail-closed prod — PH-8).
+    const ccIssuer = resolveBaseUrl(req.headers, process.env);
+    const ccRv = validateResourceIndicator(body.resource, ccIssuer);
+    if (ccRv.status === "invalid_target") {
+      return jsonError(400, "invalid_target", ccRv.reason);
+    }
+
     // PH-9: rezultat DISCRIMINAT — `unavailable` (Supabase jos) → 503 (retry), NU 401 invalid_client (ar minți
     // „secret greșit/revocat" la un outage). `invalid_client` = client inexistent/revocat SAU secret greșit.
     const cred = await verifyClientCredentialsResult(client_id, client_secret);
@@ -79,6 +89,7 @@ async function handlePost(req: NextRequest) {
       scopes:             client.scopes,
       issued_at:          Date.now(),
       credential_version: client.secret_rotated_at,
+      audience:           ccRv.resource, // PH-3: token legat de resursa canonică
     });
 
     if (!token) return jsonError(500, "server_error", "Failed to issue token — Redis unavailable");
@@ -110,6 +121,14 @@ async function handlePost(req: NextRequest) {
       return jsonError(400, "invalid_request", "code, redirect_uri, and client_id are required");
     }
 
+    // PH-3 (RFC 8707): dacă cererea de token include `resource`, validează-l (URI absolut, fără fragment, = resursa
+    // noastră). Consistența cu resursa legată în cod se verifică mai jos, DUPĂ ce citim payload-ul codului.
+    const acIssuer = resolveBaseUrl(req.headers, process.env);
+    const acRv = validateResourceIndicator(body.resource, acIssuer);
+    if (acRv.status === "invalid_target") {
+      return jsonError(400, "invalid_target", acRv.reason);
+    }
+
     // E4: CITEȘTE codul FĂRĂ să-l ștergi. Consumul (compare-and-delete atomic) vine ABIA după ce toată
     // validarea a trecut — altfel o cerere cu client_id/verifier greșit ardea codul clientului legitim (DoS).
     const lookup = await peekAuthCode(code);
@@ -130,6 +149,14 @@ async function handlePost(req: NextRequest) {
     // Verifică redirect_uri match
     if (payload.redirect_uri !== redirect_uri) {
       return jsonError(400, "invalid_grant", "redirect_uri mismatch");
+    }
+
+    // PH-3 (RFC 8707): audience-ul tokenului = resursa legată în cod la /authorize (`payload.resource`); coduri vechi
+    // dinainte de PH-3 (fără resource) → default-bind canonic. Dacă cererea de token a inclus EXPLICIT `resource`, el
+    // trebuie să coincidă cu resursa autorizată în cod (nu poți lărgi audience-ul la /token) — altfel invalid_target.
+    const boundAudience = payload.resource ?? canonicalResourceUri(acIssuer);
+    if ((body.resource ?? "").trim() !== "" && acRv.resource !== boundAudience) {
+      return jsonError(400, "invalid_target", "resource does not match the authorization request");
     }
 
     // PKCE e obligatoriu — /authorize refuză să emită un code fără
@@ -165,6 +192,7 @@ async function handlePost(req: NextRequest) {
       scopes:             payload.scopes,
       issued_at:          Date.now(),
       credential_version: client.secret_rotated_at,
+      audience:           boundAudience, // PH-3: token legat de resursa autorizată în cod
     });
     if (issued.status === "unavailable") {
       return jsonError(503, "temporarily_unavailable", "Authorization service temporarily unavailable, please retry");

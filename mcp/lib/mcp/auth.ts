@@ -8,6 +8,8 @@ import { validateToken, checkRateLimit } from "@/lib/db/oauth-tokens";
 import { lookupClientById, touchClient }  from "@/lib/db/oauth-clients";
 import { resolveAuth, resolveDevBypass } from "./authPolicy";
 import type { AuthResult }            from "./authPolicy";
+import { resolveBaseUrl }             from "@/lib/oauth/baseUrl";
+import { canonicalResourceUri }       from "@/lib/oauth/resource";
 
 export type { AuthResult } from "./authPolicy";
 
@@ -37,6 +39,16 @@ export async function authenticate(req: NextRequest): Promise<AuthResult> {
     return devBypass;
   }
 
+  // PH-3 (RFC 8707): resursa canonică a acestui server (`${issuer}/api/mcp`) — audience-ul așteptat pe token.
+  // Dacă nu o putem determina (PUBLIC_BASE_URL lipsă în prod → resolveBaseUrl aruncă, PH-8), fail-closed 503: NU
+  // dezactiva silențios validarea de audience (ar fi fail-open pe un misconfig).
+  let expectedAudience: string;
+  try {
+    expectedAudience = canonicalResourceUri(resolveBaseUrl(req.headers, process.env));
+  } catch {
+    return { ok: false, error: "Authentication backend misconfigured", errorCode: "AUTH_UNAVAILABLE", status: 503, retryAfter: 2 };
+  }
+
   const authHeader = (req.headers.get("authorization") ?? "").trim();
   return resolveAuth(authHeader, {
     validateToken,
@@ -44,6 +56,7 @@ export async function authenticate(req: NextRequest): Promise<AuthResult> {
     checkRate: checkRateLimit,
     touch:     touchClient,
     sleep:     (ms) => new Promise((res) => setTimeout(res, ms)),
+    expectedAudience, // PH-3: audience binding
   });
 }
 

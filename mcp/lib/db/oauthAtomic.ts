@@ -23,6 +23,10 @@ export interface AuthCodePayload {
   code_challenge:        string;
   code_challenge_method: string;
   issued_at:             number;
+  // PH-3 (RFC 8707): resursa (audience) cerută la /authorize, legată în cod → propagată în token. Opțional pe blob
+  // (coduri vechi dinainte de PH-3 nu-l au; sunt tratate ca „resursă implicită canonică" la /token). Când e prezent,
+  // trebuie să fie string.
+  resource?:             string;
 }
 
 /**
@@ -39,6 +43,8 @@ export function isAuthCodePayload(v: unknown): v is AuthCodePayload {
   if (typeof o.code_challenge_method !== "string") return false;
   if (typeof o.issued_at !== "number" || !Number.isFinite(o.issued_at)) return false;
   if (!Array.isArray(o.scopes) || !o.scopes.every(s => typeof s === "string")) return false;
+  // PH-3: `resource` e opțional, dar dacă e prezent trebuie să fie string (un blob cu resource ne-string e corupt).
+  if (o.resource !== undefined && typeof o.resource !== "string") return false;
   return true;
 }
 

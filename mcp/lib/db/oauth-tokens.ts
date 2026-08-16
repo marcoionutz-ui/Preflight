@@ -28,6 +28,10 @@ export interface TokenPayload {
   // Comparing this pinned value against the client's *current*
   // secret_rotated_at on every authenticate() call is race-free instead.
   credential_version: string;
+  // PH-3 (RFC 8707 / spec MCP „token audience binding"): resursa canonică pentru care a fost emis tokenul
+  // (`${issuer}/api/mcp`). Resource server-ul (resolveAuth) respinge un token al cărui audience != resursa lui.
+  // Opțional pe tip (grandfather pentru tokenuri dinainte de PH-3), dar toate căile de emitere de acum îl setează.
+  audience?:          string;
 }
 
 /**

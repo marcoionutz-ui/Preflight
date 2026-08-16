@@ -8,6 +8,8 @@ import { NextRequest }              from "next/server";
 import { verifyClientCredentials, isAllowedRedirectUri } from "@/lib/db/oauth-clients";
 import { issueAuthCode }            from "@/lib/db/oauth-codes";
 import { validateAuthorizeChallenge } from "@/lib/oauth/pkce";
+import { resolveBaseUrl }           from "@/lib/oauth/baseUrl";
+import { validateResourceIndicator } from "@/lib/oauth/resource";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -43,6 +45,9 @@ export async function POST(req: NextRequest) {
   // care nu-l trimite deloc trebuie respins explicit, nu tratat tacit ca și
   // cum ar fi fost "code".
   const response_type         = params.get("response_type")         ?? "";
+  // PH-3 (RFC 8707): resursa (audience) pentru care clientul cere tokenul. Poate lipsi (clienți mai vechi) →
+  // default-bind pe resursa canonică; dacă e prezentă dar ≠ resursa noastră → invalid_target (mai jos).
+  const resource              = params.get("resource")              ?? "";
 
   // Validare — PKCE e obligatoriu (public OAuth flow, nu doar recomandat).
   if (!client_id || !client_secret || !redirect_uri) {
@@ -80,6 +85,12 @@ export async function POST(req: NextRequest) {
     return errorPage("This redirect_uri is not allowed for this client. Add it in your dashboard first.");
   }
 
+  // PH-3: din acest punct redirect_uri e VALIDAT (allowlist) → orice eroare de mai jos e o eroare de authorization
+  // response și trebuie întoarsă prin REDIRECT la client cu `error`/`state`/`iss` (RFC 6749 §4.1.2.1 + RFC 9207: iss
+  // inclusiv pe erori, fiindcă declarăm suportul în metadata), NU ca pagină locală. `issuer` = base URL canonic
+  // (fail-closed în prod dacă PUBLIC_BASE_URL lipsește — PH-8).
+  const issuer = resolveBaseUrl(req.headers, process.env);
+
   // Scope clamp — codul emis primește doar ce s-a cerut, nu tot ce poate
   // clientul. Fără scope explicit în request, default-ul e client.scopes
   // (nu un hardcode ca "read:all"/"read:basic" — free_trial/basic ar fi
@@ -90,12 +101,19 @@ export async function POST(req: NextRequest) {
 
   const unknownScopes = grantedScopes.filter(s => !KNOWN_SCOPES.includes(s));
   if (unknownScopes.length > 0) {
-    return errorPage(`Requested scope is not supported: ${unknownScopes.join(", ")}`);
+    return oauthErrorRedirect(redirect_uri, "invalid_scope", `Requested scope is not supported: ${unknownScopes.join(", ")}`, state, issuer);
   }
 
   const notAllowed = grantedScopes.filter(s => !hasFullAccess && !client.scopes.includes(s));
   if (notAllowed.length > 0) {
-    return errorPage(`Requested scope not allowed for this client: ${notAllowed.join(", ")}`);
+    return oauthErrorRedirect(redirect_uri, "invalid_scope", `Requested scope not allowed for this client: ${notAllowed.join(", ")}`, state, issuer);
+  }
+
+  // PH-3 (RFC 8707): validează `resource` și leagă audience-ul în cod. `resource` absent → default-bind pe resursa
+  // canonică; prezent dar ≠ resursa noastră → invalid_target (redirect cu iss, ca celelalte erori post-allowlist).
+  const rv = validateResourceIndicator(resource, issuer);
+  if (rv.status === "invalid_target") {
+    return oauthErrorRedirect(redirect_uri, "invalid_target", rv.reason, state, issuer);
   }
 
   // Emite authorization code
@@ -106,18 +124,36 @@ export async function POST(req: NextRequest) {
     code_challenge,
     code_challenge_method,
     issued_at:             Date.now(),
+    resource:              rv.resource, // PH-3: audience legat în cod
   });
 
   if (!code) {
-    return errorPage("Failed to issue authorization code. Try again.");
+    // Post-allowlist → redirect OAuth cu iss (RFC 9207), server_error (RFC 6749 §4.1.2.1).
+    return oauthErrorRedirect(redirect_uri, "server_error", "Failed to issue authorization code", state, issuer);
   }
 
-  // Redirect înapoi la Claude.ai cu code + state
+  // Redirect înapoi la Claude.ai cu code + state (+ iss, RFC 9207: Authorization Server Issuer Identification —
+  // clientul poate verifica ce AS a emis răspunsul, apărare împotriva mix-up attacks).
   const redirectUrl = new URL(redirect_uri);
   redirectUrl.searchParams.set("code",  code);
   if (state) redirectUrl.searchParams.set("state", state);
+  redirectUrl.searchParams.set("iss", issuer);
 
   return Response.redirect(redirectUrl.toString(), 302);
+}
+
+/**
+ * PH-3 (RFC 6749 §4.1.2.1 + RFC 9207): eroare de authorization response întoarsă prin REDIRECT la client (redirect_uri
+ * DEJA validat pe allowlist). Include `state` (dacă a fost trimis) și `iss` — obligatoriu pe erori când
+ * `authorization_response_iss_parameter_supported` e declarat în metadata. NU pune `code`.
+ */
+function oauthErrorRedirect(redirectUri: string, error: string, description: string, state: string, issuer: string): Response {
+  const u = new URL(redirectUri);
+  u.searchParams.set("error", error);
+  u.searchParams.set("error_description", description);
+  if (state) u.searchParams.set("state", state);
+  u.searchParams.set("iss", issuer);
+  return Response.redirect(u.toString(), 302);
 }
 
 function escapeHtml(s: string): string {

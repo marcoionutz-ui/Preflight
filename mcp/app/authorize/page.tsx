@@ -18,6 +18,9 @@ interface Props {
     code_challenge?:        string;
     code_challenge_method?: string;
     response_type?:         string;
+    // PH-3 (RFC 8707): resursa (audience) cerută de client. TREBUIE transportată mai departe în POST — altfel API-ul
+    // vede „absent" și default-bind-uiește canonic, transformând un `resource` invalid într-un accept tăcut.
+    resource?:              string;
   }>;
 }
 
@@ -46,6 +49,9 @@ export default async function AuthorizePage({ searchParams }: Props) {
     // Fără default "code" — obligatoriu prin RFC 6749, un request care nu-l
     // trimite deloc trebuie respins, nu tratat tacit ca valid.
     response_type         = "",
+    // PH-3 (RFC 8707): resursa cerută — o trecem NESCHIMBATĂ în hidden input-ul POST-at, ca API-ul să o valideze
+    // (invalid_target dacă ≠ resursa noastră). Fără asta, `resource` se pierde între GET /authorize și POST.
+    resource              = "",
   } = params;
 
   // Validare minimă
@@ -124,6 +130,8 @@ export default async function AuthorizePage({ searchParams }: Props) {
           <input type="hidden" name="code_challenge"        value={code_challenge} />
           <input type="hidden" name="code_challenge_method" value={code_challenge_method} />
           <input type="hidden" name="response_type"         value={response_type} />
+          {/* PH-3 (RFC 8707): transportă resource în POST → API-ul îl validează (invalid_target la mismatch). */}
+          <input type="hidden" name="resource"              value={resource} />
 
           <label style={styles.label} htmlFor="client_secret">
             Client Secret

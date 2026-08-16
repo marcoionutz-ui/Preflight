@@ -14,6 +14,7 @@
 
 import type { TokenValidation, RateLimitOutcome } from "../db/oauth-tokens";
 import type { ClientLookup } from "../db/clientLookup";
+import { tokenAudienceValid } from "../oauth/resource";
 
 export const AUTH_RETRY_MS       = 75;  // un singur retry rapid pe „unavailable" înainte de 503
 export const UNAVAILABLE_RETRY_S = 2;   // Retry-After (secunde) pe 503
@@ -36,6 +37,9 @@ export interface AuthDeps {
   checkRate:     (clientId: string, rpm: number, rpd: number) => Promise<RateLimitOutcome>;
   touch:         (clientId: string) => void;
   sleep:         (ms: number) => Promise<void>;
+  // PH-3 (RFC 8707): resursa canonică a ACESTUI server (`${issuer}/api/mcp`). Când e furnizată, tokenul trebuie să
+  // aibă audience-ul == ea (altfel 401). Opțional: testele pure E10 nu-l injectează; `auth.ts` îl setează mereu.
+  expectedAudience?: string;
 }
 
 /**
@@ -89,6 +93,13 @@ export async function resolveAuth(authHeader: string, deps: AuthDeps): Promise<A
   }
   if (v.status === "invalid") {
     return unauthorized("INVALID_TOKEN", "Invalid or expired token");
+  }
+
+  // PH-3 (RFC 8707 / spec MCP „token audience binding"): tokenul trebuie emis pentru ACEST resource server. Un
+  // audience prezent dar ≠ resursa canonică = token pentru ALTĂ resursă → 401 (nu-l onora — anti confused-deputy).
+  // `expectedAudience` absent (teste pure) sau audience absent pe token (grandfather) → sar peste (vezi resource.ts).
+  if (deps.expectedAudience && !tokenAudienceValid(v.payload.audience, deps.expectedAudience)) {
+    return unauthorized("INVALID_TOKEN", "Token was not issued for this resource");
   }
 
   // 2. Client + rotație de secret. NF4: distinge „client inexistent/revocat" (401 onest) de „Supabase indisponibil"

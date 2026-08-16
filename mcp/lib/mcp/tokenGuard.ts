@@ -16,7 +16,11 @@ export function isTokenPayload(value: unknown): value is TokenPayload {
     typeof v.client_id === "string" && v.client_id.length > 0 &&
     Array.isArray(v.scopes) && v.scopes.every((s) => typeof s === "string") &&
     typeof v.issued_at === "number" && Number.isFinite(v.issued_at) &&
-    typeof v.credential_version === "string" && v.credential_version.length > 0
+    typeof v.credential_version === "string" && v.credential_version.length > 0 &&
+    // PH-3: aici verificăm doar FORMA (`audience` prezent → string). PREZENȚA + potrivirea audience-ului cu resursa
+    // canonică e o decizie de POLITICĂ, impusă FAIL-CLOSED în `resolveAuth`/`tokenAudienceValid` (un token fără
+    // audience → 401, nu acceptat). Un blob cu audience ne-string e corupt → invalid.
+    (v.audience === undefined || typeof v.audience === "string")
   );
 }
 
