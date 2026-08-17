@@ -20,7 +20,10 @@ export function isTokenPayload(value: unknown): value is TokenPayload {
     // PH-3: aici verificăm doar FORMA (`audience` prezent → string). PREZENȚA + potrivirea audience-ului cu resursa
     // canonică e o decizie de POLITICĂ, impusă FAIL-CLOSED în `resolveAuth`/`tokenAudienceValid` (un token fără
     // audience → 401, nu acceptat). Un blob cu audience ne-string e corupt → invalid.
-    (v.audience === undefined || typeof v.audience === "string")
+    (v.audience === undefined || typeof v.audience === "string") &&
+    // PH-4: la fel, doar FORMA (`family_id` prezent → string ne-gol). Verificarea de REVOCARE a familiei e politică,
+    // impusă în `resolveAuth`. Un blob cu family_id ne-string/gol e corupt → invalid.
+    (v.family_id === undefined || (typeof v.family_id === "string" && v.family_id.length > 0))
   );
 }
 

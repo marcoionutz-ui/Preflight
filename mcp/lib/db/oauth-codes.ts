@@ -15,13 +15,16 @@ import { timingSafeStrEqual }      from "./constantTime";
 import {
   type AuthCodePayload,
   type ConsumeResult,
+  type RefreshPayload,
   AUTH_CODE_CONSUME_LUA,
   AUTH_CODE_CONSUME_AND_ISSUE_LUA,
+  AUTH_CODE_ISSUE_WITH_REFRESH_LUA,
   classifyConsumeResult,
   classifyIssueResult,
   parseAuthCode,
 } from "./oauthAtomic";
-import { mintToken, TOKEN_TTL_SEC, type TokenPayload } from "./oauth-tokens";
+import { mintToken, TOKEN_TTL_SEC, REFRESH_TTL_SEC, type TokenPayload } from "./oauth-tokens";
+import { newFamilyId, mintRefreshToken, familyKey } from "./oauth-refresh";
 
 export type { AuthCodePayload } from "./oauthAtomic";
 
@@ -123,6 +126,58 @@ export async function consumeCodeAndIssueToken(
     if (verdict === "issued")       return { status: "issued", token };
     // SET NX a eșuat → tokenul NU s-a scris ȘI codul NU s-a șters (all-or-nothing) → 503 retry (nu ardem codul).
     if (verdict === "write_failed") return { status: "unavailable" };
+    return { status: "already_used" };
+  } catch {
+    return { status: "unavailable" };
+  }
+}
+
+/**
+ * PH-4: emitere inițială la authorization_code CU refresh token. Consumă codul (compare-and-delete pe `raw`) ȘI scrie
+ * access + refresh + cheia de familie, all-or-nothing (`AUTH_CODE_ISSUE_WITH_REFRESH_LUA`). Refresh-ul moștenește
+ * client_id/scopes/audience/credential_version din access payload + un `family_id` NOU (rădăcina lanțului de rotație).
+ *   `issued`       → cod consumat + access + refresh + familie scrise atomic.
+ *   `already_used` → codul a dispărut între peek și finalize (replay) → invalid_grant.
+ *   `unavailable`  → Redis jos/respins → 503 (NU emite pe un cod nesigilat).
+ */
+export type IssueWithRefreshResult =
+  | { status: "issued"; token: string; refreshToken: string }
+  | { status: "already_used" }
+  | { status: "unavailable" };
+
+export async function consumeCodeAndIssueWithRefresh(
+  code:         string,
+  raw:          string,
+  tokenPayload: TokenPayload,
+): Promise<IssueWithRefreshResult> {
+  const r = getRedis();
+  if (!r) return { status: "unavailable" };
+
+  const familyId = newFamilyId();
+  // cgpt #1: access token-ul emis la authorization_code poartă ACELAȘI family_id ca refresh-ul → dacă familia e
+  // revocată (reuse-detection pe lanț), și access token-ul emis inițial moare în resolveAuth, nu doar refresh-ul.
+  const access   = mintToken({ ...tokenPayload, family_id: familyId });
+  const refreshPayload: RefreshPayload = {
+    client_id:          tokenPayload.client_id,
+    scopes:             tokenPayload.scopes,
+    audience:           tokenPayload.audience ?? "", // la auth_code audience e mereu setat (PH-3)
+    credential_version: tokenPayload.credential_version,
+    family_id:          familyId,
+    issued_at:          tokenPayload.issued_at,
+  };
+  const refresh = mintRefreshToken(refreshPayload);
+
+  try {
+    const res = await r.eval(
+      AUTH_CODE_ISSUE_WITH_REFRESH_LUA,
+      4,
+      codeKey(code), access.key, refresh.key, familyKey(familyId),
+      raw, access.value, refresh.value,
+      String(TOKEN_TTL_SEC), String(REFRESH_TTL_SEC), refresh.hash,
+    );
+    const verdict = classifyIssueResult(res);
+    if (verdict === "issued")       return { status: "issued", token: access.token, refreshToken: refresh.token };
+    if (verdict === "write_failed") return { status: "unavailable" }; // cod PĂSTRAT → retry
     return { status: "already_used" };
   } catch {
     return { status: "unavailable" };

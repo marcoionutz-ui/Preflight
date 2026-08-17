@@ -1,0 +1,132 @@
+/**
+ * lib/db/oauth-refresh.ts — PH-4 (refresh tokens: mint / peek / rotate, Redis-bound).
+ *
+ * Logica atomică + clasificatorii puri trăiesc în `oauthAtomic.ts` (Lua + `classifyRefreshRotate`, testabile izolat).
+ * Aici doar legăm la Redis. Refresh-urile sunt stocate HASH-uite (`mcp:refresh:<sha256>`); cheia de familie
+ * (`mcp:refresh_family:<family_id>`) ține hash-ul refresh-ului CURENT valid (sau sentinela REVOKED) și e sursa de
+ * adevăr pentru rotație + reuse-detection.
+ */
+
+import { createHash, randomBytes } from "crypto";
+import { getRedis }                from "./redis";
+import { mintToken, TOKEN_TTL_SEC, REFRESH_TTL_SEC, type TokenPayload } from "./oauth-tokens";
+import {
+  REFRESH_ROTATE_LUA, classifyRefreshRotate,
+  parseRefresh, type RefreshPayload,
+  REFRESH_FAMILY_REVOKED,
+} from "./oauthAtomic";
+
+function refreshKey(hash: string): string { return `mcp:refresh:${hash}`; }
+export function familyKey(familyId: string): string { return `mcp:refresh_family:${familyId}`; }
+
+function hashRefresh(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+/** Id de familie nou (lanț de rotație) — random, opac. */
+export function newFamilyId(): string { return randomBytes(16).toString("hex"); }
+
+/** Mint refresh token FĂRĂ scriere → token plain (de returnat clientului) + hash + cheie Redis + valoare serializată. */
+export function mintRefreshToken(payload: RefreshPayload): { token: string; hash: string; key: string; value: string } {
+  const token = randomBytes(32).toString("hex");
+  const hash  = hashRefresh(token);
+  return { token, hash, key: refreshKey(hash), value: JSON.stringify(payload) };
+}
+
+export type RefreshLookup =
+  | { status: "found"; payload: RefreshPayload }
+  | { status: "absent" }
+  | { status: "unavailable" };
+
+/**
+ * Citește payload-ul unui refresh (fără mutații). `absent` = hash inexistent/expirat SAU blob corupt (necredibil).
+ * `unavailable` = Redis jos/respins → caller-ul întoarce 503, NU invalid_grant (n-am putut verifica).
+ * NB: prezența înregistrării NU garantează validitatea — un refresh superseded (rotit) încă există (expiră prin TTL);
+ * VALIDITATEA e decisă de rotația atomică vs. pointerul de familie (vezi `rotateRefreshToken`).
+ */
+export async function peekRefreshToken(token: string): Promise<RefreshLookup> {
+  const r = getRedis();
+  if (!r) return { status: "unavailable" };
+  try {
+    const raw = await r.get(refreshKey(hashRefresh(token)));
+    if (!raw) return { status: "absent" };
+    const payload = parseRefresh(raw);
+    if (!payload) return { status: "absent" };
+    return { status: "found", payload };
+  } catch {
+    return { status: "unavailable" };
+  }
+}
+
+/**
+ * PH-4 (cgpt #1/#2r — grant-level revocation, FAIL-CLOSED): starea familiei unui token, citită de `resolveAuth` la
+ * FIECARE cerere. Invariantă: cât timp un access token (TTL 24h) e viu, cheia de familie (TTL 30 zile, sliding la
+ * fiecare rotație) TREBUIE să existe și să fie un hash valid. Deci absența/coruperea cheii NU e „grant încheiat
+ * natural", ci o invariantă RUPTĂ → respins (OAuth 2.1 §4.3.1: grantul refresh-ului trebuie să fie încă activ).
+ *   `active`      → hash valid de 64 hex (refresh-ul curent al lanțului).
+ *   `revoked`     → sentinela REVOKED (reuse-detection pe lanț sau logout).
+ *   `inactive`    → cheie ABSENTĂ (nil) SAU valoare malformată (nici hash, nici sentinela) → grant inactiv → 401.
+ *   `unavailable` → Redis jos/respins → caller-ul face retry apoi 503 (NU 401 fals).
+ * Vechea variantă trata orice ≠ REVOKED (inclusiv nil/gunoi) ca `active` = fail-OPEN; acum e fail-CLOSED.
+ */
+export type FamilyState = "active" | "revoked" | "inactive" | "unavailable";
+
+const FAMILY_HASH_RE = /^[0-9a-f]{64}$/;
+
+export async function getFamilyState(familyId: string): Promise<FamilyState> {
+  const r = getRedis();
+  if (!r) return "unavailable";
+  try {
+    const v = await r.get(familyKey(familyId));
+    if (v === null)                    return "inactive"; // cheie absentă/expirată cât access-ul e viu = invariantă ruptă
+    if (v === REFRESH_FAMILY_REVOKED)  return "revoked";
+    if (FAMILY_HASH_RE.test(v))        return "active";
+    return "inactive";                                    // valoare malformată = necredibil → inactiv (fail-closed)
+  } catch {
+    return "unavailable";
+  }
+}
+
+export type RefreshRotateResult =
+  | { status: "rotated"; accessToken: string; refreshToken: string }
+  | { status: "invalid" }         // familie expirată/inexistentă → invalid_grant
+  | { status: "revoked" }         // familia era deja revocată → invalid_grant
+  | { status: "reuse_detected" }  // refresh superseded reutilizat → familia REVOCATĂ acum → invalid_grant
+  | { status: "unavailable" };    // Redis jos → 503 retry
+
+/**
+ * ROTAȚIE atomică: emite access + refresh noi, mută `family.current` pe noul refresh, all-or-nothing. Reuse-detection
+ * e în Lua (refresh prezentat ≠ current → revocă familia). Caller-ul a validat deja client-activ + credential_version
+ * + scope narrowing pe payload-ul din `peekRefreshToken`; `newRefreshPayload` păstrează ACELAȘI `family_id`.
+ */
+export async function rotateRefreshToken(
+  oldToken:          string,
+  accessPayload:     TokenPayload,
+  newRefreshPayload: RefreshPayload,
+): Promise<RefreshRotateResult> {
+  const r = getRedis();
+  if (!r) return { status: "unavailable" };
+
+  const oldHash = hashRefresh(oldToken);
+  const access  = mintToken(accessPayload);
+  const refresh = mintRefreshToken(newRefreshPayload);
+  const famKey  = familyKey(newRefreshPayload.family_id);
+
+  try {
+    const res = await r.eval(
+      REFRESH_ROTATE_LUA,
+      3,
+      famKey, refresh.key, access.key,
+      oldHash, refresh.value, access.value,
+      String(REFRESH_TTL_SEC), String(TOKEN_TTL_SEC), refresh.hash,
+    );
+    const verdict = classifyRefreshRotate(res);
+    if (verdict === "rotated")        return { status: "rotated", accessToken: access.token, refreshToken: refresh.token };
+    if (verdict === "reuse_detected") return { status: "reuse_detected" };
+    if (verdict === "revoked")        return { status: "revoked" };
+    if (verdict === "write_failed")   return { status: "unavailable" }; // SET NX collision → retry, nu consumăm
+    return { status: "invalid" };
+  } catch {
+    return { status: "unavailable" };
+  }
+}

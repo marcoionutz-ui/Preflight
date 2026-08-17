@@ -208,3 +208,120 @@ export function rateLimitFromEval(
   if (minBlocked) return { status: "limited", retry_after: retry, remaining_min: 0, remaining_day };
   return { status: "limited", retry_after: retry, remaining_min, remaining_day: 0 };
 }
+
+// ── PH-4: refresh tokens (RFC 6749 §6 / OAuth 2.1 — rotație + reuse-detection cu family revocation) ──────────────
+//
+// Un refresh token e legat de o FAMILIE (`family_id`, comună întregului lanț descendent dintr-un authorization code).
+// Cheia de familie `mcp:refresh_family:<family_id>` ține hash-ul refresh-ului CURENT valid (SAU sentinela REVOKED).
+// Un refresh e valid DOAR dacă e egal cu „current"-ul familiei. La rotație, „current" devine hash-ul nou. Dacă un
+// refresh care NU mai e current e prezentat (semn de furt — a fost deja rotit), REVOCĂM toată familia. Astfel un
+// token furat poate fi folosit cel mult până când oricare parte rotește; apoi ambele sunt tăiate.
+
+/** Sentinela stocată în cheia de familie când familia e revocată (reuse detectat sau logout). */
+export const REFRESH_FAMILY_REVOKED = "REVOKED";
+
+export interface RefreshPayload {
+  client_id:          string;
+  scopes:             string[];
+  audience:           string;   // PH-3: resursa canonică pentru care sunt emise access token-urile din acest lanț
+  credential_version: string;   // secret_rotated_at pinned — rotația secretului forțează reauth (ca la access token)
+  family_id:          string;   // lanțul de rotație; reuse pe familie → revocare
+  issued_at:          number;
+}
+
+/** Guard de formă pentru un blob de refresh stocat. Formă invalidă (JSON valid dar câmpuri greșite) → tratat ca absent. */
+export function isRefreshPayload(v: unknown): v is RefreshPayload {
+  if (typeof v !== "object" || v === null) return false;
+  const o = v as Record<string, unknown>;
+  if (typeof o.client_id !== "string" || o.client_id.length === 0) return false;
+  if (typeof o.audience !== "string" || o.audience.length === 0) return false;
+  if (typeof o.credential_version !== "string" || o.credential_version.length === 0) return false;
+  if (typeof o.family_id !== "string" || o.family_id.length === 0) return false;
+  if (typeof o.issued_at !== "number" || !Number.isFinite(o.issued_at)) return false;
+  if (!Array.isArray(o.scopes) || !o.scopes.every(s => typeof s === "string")) return false;
+  return true;
+}
+
+/** Parse safe al blob-ului stocat → payload valid sau null (JSON stricat / formă invalidă). */
+export function parseRefresh(raw: string): RefreshPayload | null {
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch { return null; }
+  return isRefreshPayload(parsed) ? parsed : null;
+}
+
+/**
+ * ROTAȚIE ATOMICĂ a refresh-ului cu reuse-detection. Sursă de adevăr = cheia de familie (KEYS[1]), care ține hash-ul
+ * refresh-ului CURENT valid sau `REVOKED`. NU ștergem înregistrările vechi de refresh (expiră prin TTL) — pointerul de
+ * familie decide cine e valid, deci un refresh superseded (reuse) e respins + declanșează revocarea familiei.
+ *   KEYS[1]=familyKey KEYS[2]=newRefreshKey KEYS[3]=newAccessKey
+ *   ARGV[1]=oldHash ARGV[2]=newRefreshPayload ARGV[3]=newAccessPayload ARGV[4]=refreshTtlSec ARGV[5]=accessTtlSec ARGV[6]=newHash
+ *   1  → rotit (access + refresh noi scrise, family.current=newHash)
+ *   0  → familie inexistentă/expirată → invalid_grant
+ *  -1  → familie deja revocată → invalid_grant
+ *  -2  → REUSE: refresh prezentat ≠ current → familie REVOCATĂ acum → invalid_grant (toate tokenurile lanțului mor)
+ *  -3  → SET NX pe access a eșuat (coliziune astronomică) → write_failed (retry, nu consumăm)
+ */
+export const REFRESH_ROTATE_LUA = `
+local fam = redis.call('GET', KEYS[1])
+if not fam then return 0 end
+if fam == '${REFRESH_FAMILY_REVOKED}' then return -1 end
+if fam ~= ARGV[1] then
+  redis.call('SET', KEYS[1], '${REFRESH_FAMILY_REVOKED}', 'EX', tonumber(ARGV[4]))
+  return -2
+end
+local ok = redis.call('SET', KEYS[3], ARGV[3], 'EX', tonumber(ARGV[5]), 'NX')
+if not ok then return -3 end
+redis.call('SET', KEYS[2], ARGV[2], 'EX', tonumber(ARGV[4]))
+redis.call('SET', KEYS[1], ARGV[6], 'EX', tonumber(ARGV[4]))
+return 1
+`;
+
+export type RefreshRotateVerdict = "rotated" | "invalid" | "revoked" | "reuse_detected" | "write_failed";
+
+/** Mapează întoarcerea `REFRESH_ROTATE_LUA` la un verdict. */
+export function classifyRefreshRotate(luaReturn: unknown): RefreshRotateVerdict {
+  const n = Number(luaReturn);
+  if (n === 1)  return "rotated";
+  if (n === -1) return "revoked";
+  if (n === -2) return "reuse_detected";
+  if (n === -3) return "write_failed";
+  return "invalid";
+}
+
+/**
+ * EMITERE INIȚIALĂ atomică la authorization_code: consumă codul (compare-and-delete pe blob) ȘI scrie access + refresh
+ * + cheia de familie, all-or-nothing. Analog `AUTH_CODE_CONSUME_AND_ISSUE_LUA` dar cu refresh + familie în plus.
+ *   KEYS[1]=codeKey KEYS[2]=accessKey KEYS[3]=refreshKey KEYS[4]=familyKey
+ *   ARGV[1]=codeRaw ARGV[2]=accessPayload ARGV[3]=refreshPayload ARGV[4]=accessTtlSec ARGV[5]=refreshTtlSec ARGV[6]=refreshHash
+ *   1 → cod consumat + access + refresh + familie scrise; 0/-1 → already_used; -2 → SET access a eșuat (cod PĂSTRAT, retry).
+ * Verdictul → `classifyIssueResult` (același contract: 1→issued, -2→write_failed, else already_used).
+ */
+export const AUTH_CODE_ISSUE_WITH_REFRESH_LUA = `
+local cur = redis.call('GET', KEYS[1])
+if not cur then return 0 end
+if cur ~= ARGV[1] then return -1 end
+local ok = redis.call('SET', KEYS[2], ARGV[2], 'EX', tonumber(ARGV[4]), 'NX')
+if not ok then return -2 end
+redis.call('SET', KEYS[3], ARGV[3], 'EX', tonumber(ARGV[5]))
+redis.call('SET', KEYS[4], ARGV[6], 'EX', tonumber(ARGV[5]))
+redis.call('DEL', KEYS[1])
+return 1
+`;
+
+export type ScopeNarrowResult =
+  | { status: "ok";              scopes: string[] }
+  | { status: "invalid_scope";   reason: string };
+
+/**
+ * RFC 6749 §6: la refresh, scope-ul cerut trebuie să fie EGAL sau MAI ÎNGUST decât cel original (fără escaladare).
+ *   - `requested` gol/absent → păstrează `original` (RFC: omiterea = scope-ul original).
+ *   - orice scope cerut care NU e în `original` → invalid_scope (nu poți lărgi la refresh).
+ * PUR → testabil izolat.
+ */
+export function narrowScopes(requested: string[] | undefined, original: string[]): ScopeNarrowResult {
+  if (!requested || requested.length === 0) return { status: "ok", scopes: original };
+  const orig = new Set(original);
+  const escalated = requested.filter(s => !orig.has(s));
+  if (escalated.length > 0) return { status: "invalid_scope", reason: `scope escalation not allowed: ${escalated.join(", ")}` };
+  return { status: "ok", scopes: requested };
+}

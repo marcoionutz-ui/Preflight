@@ -14,6 +14,9 @@ import { RL_CHECK_INCR_LUA, rateLimitFromEval, type RateLimitOutcome } from "./o
 export type { RateLimitOutcome } from "./oauthAtomic";
 
 export const TOKEN_TTL_SEC = 24 * 60 * 60; // 24h
+// PH-4: refresh token lifetime — mult mai lung ca access token-ul (rotit la fiecare folosire), ca să elimine
+// reautorizarea zilnică. La fiecare rotație TTL-ul se reînnoește (sliding), deci o sesiune activă nu expiră.
+export const REFRESH_TTL_SEC = 30 * 24 * 60 * 60; // 30 zile
 const RL_MIN_TTL    = 60;            // 1 min window
 const RL_DAY_TTL    = 86_400;        // 24h window
 
@@ -32,6 +35,11 @@ export interface TokenPayload {
   // (`${issuer}/api/mcp`). Resource server-ul (resolveAuth) respinge un token al cărui audience != resursa lui.
   // Opțional pe tip (grandfather pentru tokenuri dinainte de PH-3), dar toate căile de emitere de acum îl setează.
   audience?:          string;
+  // PH-4 (cgpt #1 — grant-level revocation): family_id-ul lanțului de refresh din care provine acest access token.
+  // resolveAuth verifică `mcp:refresh_family:<family_id>`; dacă familia e REVOCATĂ (reuse-detection/logout), TOATE
+  // access token-urile lanțului mor imediat, nu doar refresh-ul. Opțional: client_credentials NU are familie (fără
+  // refresh), iar tokenurile dinainte de PH-4 n-au family_id → sar peste verificare (grandfather, nu revocate).
+  family_id?:         string;
 }
 
 /**

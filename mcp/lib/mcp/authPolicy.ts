@@ -14,6 +14,7 @@
 
 import type { TokenValidation, RateLimitOutcome } from "../db/oauth-tokens";
 import type { ClientLookup } from "../db/clientLookup";
+import type { FamilyState } from "../db/oauth-refresh";
 import { tokenAudienceValid } from "../oauth/resource";
 
 export const AUTH_RETRY_MS       = 75;  // un singur retry rapid pe „unavailable" înainte de 503
@@ -40,6 +41,10 @@ export interface AuthDeps {
   // PH-3 (RFC 8707): resursa canonică a ACESTUI server (`${issuer}/api/mcp`). Când e furnizată, tokenul trebuie să
   // aibă audience-ul == ea (altfel 401). Opțional: testele pure E10 nu-l injectează; `auth.ts` îl setează mereu.
   expectedAudience?: string;
+  // PH-4 (cgpt #1 — grant-level revocation): starea familiei de refresh a tokenului (`active|revoked|unavailable`).
+  // Injectată de `auth.ts` (Redis). Absentă în testele pure E10. Când e furnizată ȘI tokenul are family_id, o familie
+  // REVOCATĂ → 401 INVALID_TOKEN (revocarea ajunge și la access token-urile deja emise, nu doar la refresh).
+  familyState?: (familyId: string) => Promise<FamilyState>;
 }
 
 /**
@@ -100,6 +105,27 @@ export async function resolveAuth(authHeader: string, deps: AuthDeps): Promise<A
   // `expectedAudience` absent (teste pure) sau audience absent pe token (grandfather) → sar peste (vezi resource.ts).
   if (deps.expectedAudience && !tokenAudienceValid(v.payload.audience, deps.expectedAudience)) {
     return unauthorized("INVALID_TOKEN", "Token was not issued for this resource");
+  }
+
+  // PH-4 (cgpt #1 — grant-level revocation): access token-ul poartă family_id-ul lanțului său de refresh. Dacă familia
+  // a fost REVOCATĂ (reuse-detection pe refresh sau logout), acest access token e mort ACUM — revocarea ajunge la
+  // access token-uri, nu doar la refresh (fereastra de compromis = min(access TTL, până rotește cineva)). `familyState`
+  // absent (teste pure) sau token fără family_id (grandfather / client_credentials) → sar peste. `unavailable` → 1 retry
+  // scurt apoi 503 (identic cu validateToken/getClient), NICIODATĂ 401 fals pe un outage Redis.
+  if (deps.familyState && v.payload.family_id) {
+    let fs = await deps.familyState(v.payload.family_id);
+    if (fs === "unavailable") {
+      await deps.sleep(AUTH_RETRY_MS);
+      fs = await deps.familyState(v.payload.family_id);
+    }
+    if (fs === "unavailable") {
+      return unavailable("AUTH_UNAVAILABLE", "Authentication backend temporarily unavailable");
+    }
+    // `revoked` = familie tăiată explicit (reuse/logout). `inactive` = cheie absentă/malformată cât access-ul e viu =
+    // invariantă ruptă (fail-closed, cgpt #2r). Ambele → grantul nu mai e activ → 401 (OAuth 2.1 §4.3.1).
+    if (fs === "revoked" || fs === "inactive") {
+      return unauthorized("INVALID_TOKEN", "Token revoked or grant no longer active");
+    }
   }
 
   // 2. Client + rotație de secret. NF4: distinge „client inexistent/revocat" (401 onest) de „Supabase indisponibil"

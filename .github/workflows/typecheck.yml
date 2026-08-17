@@ -44,3 +44,12 @@ jobs:
         run: npm run test
       - name: Lint mcp
         run: npm run lint -w @preflight/mcp
+      # PH-4: integrarea pe Redis REAL nu e in `npm run test` (suita unitara ramane infra-free). Pas dedicat care
+      # foloseste serviciul redis de mai sus. Modulul din integration-down pointeaza pe portul INCHIS 6390 (nimic nu
+      # asculta acolo pe runner) -> dovedeste fail-closed unreachable; PH4_LIVE_REDIS_URL = redis-ul real pentru seed.
+      - name: PH-4 refresh integration (real Redis)
+        env:
+          REDIS_URL: redis://localhost:6379
+          PH4_LIVE_REDIS_URL: redis://localhost:6379
+          PH4_INTEGRATION_ALLOW: '1'
+        run: npm run test:integration -w @preflight/mcp

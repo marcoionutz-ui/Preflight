@@ -6,6 +6,7 @@
 import type { NextRequest }        from "next/server";
 import { validateToken, checkRateLimit } from "@/lib/db/oauth-tokens";
 import { lookupClientById, touchClient }  from "@/lib/db/oauth-clients";
+import { getFamilyState }                 from "@/lib/db/oauth-refresh";
 import { resolveAuth, resolveDevBypass } from "./authPolicy";
 import type { AuthResult }            from "./authPolicy";
 import { resolveBaseUrl }             from "@/lib/oauth/baseUrl";
@@ -57,6 +58,7 @@ export async function authenticate(req: NextRequest): Promise<AuthResult> {
     touch:     touchClient,
     sleep:     (ms) => new Promise((res) => setTimeout(res, ms)),
     expectedAudience, // PH-3: audience binding
+    familyState: getFamilyState, // PH-4: grant-level revocation (familie REVOCATĂ → 401 chiar pe access token)
   });
 }
 
