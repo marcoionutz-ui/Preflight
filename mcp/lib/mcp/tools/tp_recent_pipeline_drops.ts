@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { readAllRedis, dedupeByPair, resolvePairChain } from "../redis-reader";
 import { classifyEmptyDrops, isWorkerFresh } from "../health-freshness";
-import { mcpResponse, mcpErr, ERR, sanitizeToolError } from "../errors";
+import { mcpResponse, mcpErr, ERR, sanitizeToolError, PREFLIGHT_OUTPUT_SCHEMA } from "../errors";
 
 export function registerRecentPipelineDrops(server: McpServer) {
   server.registerTool(
@@ -19,6 +19,7 @@ Args: limit (default 10, max 30), minutes_back (default 10, max 10)`,
         limit:        z.number().int().min(1).max(30).default(10),
         minutes_back: z.number().int().min(1).max(10).default(10),
       },
+      outputSchema: PREFLIGHT_OUTPUT_SCHEMA,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async ({ limit, minutes_back }: { limit: number; minutes_back: number }) => {

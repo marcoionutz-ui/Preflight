@@ -10,7 +10,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { readAllRedis, formatVol, formatPct, combineConfidence, getPipelineState, readSolanaIndexerStats, readSolanaMovers, readSolanaRecentActivity } from "../redis-reader";
 import { normalizeChainId, splitPairKey, isEstimatedReserve } from "@preflight/schema";
-import { mcpResponse, mcpErr, ERR, sanitizeToolError } from "../errors";
+import { mcpResponse, mcpErr, ERR, sanitizeToolError, PREFLIGHT_OUTPUT_SCHEMA } from "../errors";
 
 // Timestamp fallback — events pot folosi ts, detectedAt, sau timestamp
 const eventTs = (e: { ts?: number; detectedAt?: number; timestamp?: number }): number =>
@@ -58,6 +58,7 @@ Args: chain — one of: base, arbitrum, eth, bsc, solana`,
       inputSchema: {
         chain: z.enum(["base", "arbitrum", "eth", "bsc", "solana"]),
       },
+      outputSchema: PREFLIGHT_OUTPUT_SCHEMA,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
     async ({ chain }: { chain: string }) => {

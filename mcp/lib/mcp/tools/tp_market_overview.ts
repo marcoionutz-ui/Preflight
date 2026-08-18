@@ -3,7 +3,7 @@ import { z } from "zod";
 import { readAllRedis, readTrendingMovers, readSolanaMovers } from "../redis-reader";
 import { normalizeChainId, reserveEstimatedFlag, pairKey } from "@preflight/schema";
 import type { MemoryEntry } from "../types";
-import { mcpResponse, mcpErr, ERR, sanitizeToolError } from "../errors";
+import { mcpResponse, mcpErr, ERR, sanitizeToolError, PREFLIGHT_OUTPUT_SCHEMA } from "../errors";
 
 export function registerMarketOverview(server: McpServer) {
   server.registerTool(
@@ -18,6 +18,7 @@ Args: chain (optional), top_n (default 5, max 20)`,
         chain: z.enum(["base", "arbitrum", "bsc", "eth", "solana"]).optional(),
         top_n: z.number().int().min(1).max(20).default(5),
       },
+      outputSchema: PREFLIGHT_OUTPUT_SCHEMA,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
     async ({ chain, top_n }: { chain?: string; top_n: number }) => {
@@ -29,12 +30,14 @@ Args: chain (optional), top_n (default 5, max 20)`,
         if (chainId === "solana") {
           const now = Date.now();
           const solanaMovers = await readSolanaMovers(now, top_n).catch(() => null);
+          const solanaPayload = {
+            chain:  "solana",
+            note:   "Solana movers are sampled from observed swap vault deltas, not full firehose.",
+            solanaSampledMovers: solanaMovers,
+          };
           return mcpResponse({
-            text: JSON.stringify({
-              chain:  "solana",
-              note:   "Solana movers are sampled from observed swap vault deltas, not full firehose.",
-              solanaSampledMovers: solanaMovers,
-            }, null, 2),
+            text: JSON.stringify(solanaPayload, null, 2),
+            data: solanaPayload,
             freshnessSec: solanaMovers?.computedAgeSec ?? null,
             confidence:
               solanaMovers && solanaMovers.computedAgeSec < 120 ? "MEDIUM" :
@@ -116,37 +119,41 @@ Args: chain (optional), top_n (default 5, max 20)`,
 
         const freshnessSec = newestStateAt ? Math.round((now - newestStateAt) / 1000) : null;
 
+        // Solana sampled movers — incluse doar în global overview (fără chain filter)
+        // chainId === "solana" e deja handled de branch-ul de mai sus
+        const solanaSampledMovers = !chainId
+          ? await readSolanaMovers(now, top_n).catch(() => null)
+          : undefined;
+
+        const payload = {
+          phases, flowPressure,
+          topBuyingPairs: entries
+            .filter(([, p]) => p.flow.hasData && p.flow.pressure === "BUYING")
+            .sort(([, a], [, b]) => b.flow.buyVol5m - a.flow.buyVol5m)
+            .slice(0, top_n)
+            // B3f-2: cheia e pairKey → expune adresa brută + chain din VALOARE (PairState).
+            .map(([, p]) => ({
+              symbol: p.symbol, pairAddress: p.pairAddress, chain: p.chain, phase: p.phase,
+              dexType: p.dexType, reserveUsd: p.reserveUsd,
+              // NF/U5: proveniența rezervei — reserveUsd V4 e estimat (virtual reserves, poate supraestima).
+              reserveSource: p.reserveSource ?? null, reserveEstimated: reserveEstimatedFlag(p.reserveSource),
+              buyVol5m: p.flow.buyVol5m, netVol5m: p.flow.netVol5m, buys5m: p.flow.buys5m,
+            })),
+          pipeline: {
+            // B3f-2: numără doar entries pe chain-ul raportului (înainte era global —
+            // un overview Base raporta watching-ul de pe toate chain-urile).
+            watching: countPipelineEntries(watch),
+            hot:      countPipelineEntries(hot),
+            armed:    countPipelineEntries(armed),
+          },
+          totalTracked: entries.length,
+          freshnessSec,
+          trendingMovers: Object.keys(moversByChain).length ? moversByChain : null,
+          solanaSampledMovers,
+        };
         return mcpResponse({
-          text: JSON.stringify({
-            phases, flowPressure,
-            topBuyingPairs: entries
-              .filter(([, p]) => p.flow.hasData && p.flow.pressure === "BUYING")
-              .sort(([, a], [, b]) => b.flow.buyVol5m - a.flow.buyVol5m)
-              .slice(0, top_n)
-              // B3f-2: cheia e pairKey → expune adresa brută + chain din VALOARE (PairState).
-              .map(([, p]) => ({
-                symbol: p.symbol, pairAddress: p.pairAddress, chain: p.chain, phase: p.phase,
-                dexType: p.dexType, reserveUsd: p.reserveUsd,
-                // NF/U5: proveniența rezervei — reserveUsd V4 e estimat (virtual reserves, poate supraestima).
-                reserveSource: p.reserveSource ?? null, reserveEstimated: reserveEstimatedFlag(p.reserveSource),
-                buyVol5m: p.flow.buyVol5m, netVol5m: p.flow.netVol5m, buys5m: p.flow.buys5m,
-              })),
-            pipeline: {
-              // B3f-2: numără doar entries pe chain-ul raportului (înainte era global —
-              // un overview Base raporta watching-ul de pe toate chain-urile).
-              watching: countPipelineEntries(watch),
-              hot:      countPipelineEntries(hot),
-              armed:    countPipelineEntries(armed),
-            },
-            totalTracked: entries.length,
-            freshnessSec,
-            trendingMovers: Object.keys(moversByChain).length ? moversByChain : null,
-            // Solana sampled movers — incluse doar în global overview (fără chain filter)
-            // chainId === "solana" e deja handled de branch-ul de mai sus
-            solanaSampledMovers: !chainId
-              ? await readSolanaMovers(now, top_n).catch(() => null)
-              : undefined,
-          }, null, 2),
+          text: JSON.stringify(payload, null, 2),
+          data: payload,
           freshnessSec,
           confidence:
             newestStateAt && now - newestStateAt < 60_000     ? "HIGH" :

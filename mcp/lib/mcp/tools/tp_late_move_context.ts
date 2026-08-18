@@ -23,7 +23,7 @@ import {
   combineConfidence,
 } from "../redis-reader";
 import { pairKey, isEstimatedReserve } from "@preflight/schema";
-import { mcpErr, mcpResponse, ERR, sanitizeToolError } from "../errors";
+import { mcpErr, mcpResponse, ERR, sanitizeToolError, PREFLIGHT_OUTPUT_SCHEMA } from "../errors";
 
 const FLAP_WINDOW_MS    = 10 * 60_000; // 10 minute
 const SELL_RATIO_WARN   = 0.4;         // 40%+ sell vs buy = warning
@@ -52,6 +52,7 @@ Args: pair_address (0x... EVM address)`,
         pair_address: pairAddressSchema.describe("EVM pair address (0x...) or V4 pool ID"),
         chain:        z.enum(["base", "arbitrum", "bsc", "eth"]).optional().describe("Optional chain hint — needed only if the same address exists on multiple chains"),
       },
+      outputSchema: PREFLIGHT_OUTPUT_SCHEMA,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async ({ pair_address, chain }: { pair_address: string; chain?: "base" | "arbitrum" | "bsc" | "eth" }) => {

@@ -3,7 +3,7 @@ import { z } from "zod";
 import { readAllRedis } from "../redis-reader";
 import type { PairState, MemoryEntry } from "../types";
 import { splitPairKey, normalizeChainId, reserveEstimatedFlag } from "@preflight/schema";
-import { mcpResponse, mcpErr, ERR, sanitizeToolError } from "../errors";
+import { mcpResponse, mcpErr, ERR, sanitizeToolError, PREFLIGHT_OUTPUT_SCHEMA } from "../errors";
 
 export function registerWorkerSnapshot(server: McpServer) {
   server.registerTool(
@@ -25,6 +25,7 @@ Args:
         limit:          z.number().int().min(1).max(100).default(20),
         offset:         z.number().int().min(0).default(0),
       },
+      outputSchema: PREFLIGHT_OUTPUT_SCHEMA,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async ({ phase, flow_pressure, chain, min_seen_count, limit, offset }: {
@@ -67,31 +68,33 @@ Args:
 
         const snapshotFreshnessSec = snapshot?.savedAt ? Math.round((now - snapshot.savedAt) / 1000) : null;
 
+        const payload = {
+          total, count: paginated.length, offset,
+          has_more: total > offset + paginated.length,
+          // B3f-2: `addr` e cheia pairKey (states/memory keyed pe pairKey). Payload
+          // extern = adresă brută + chain din cheie; fallback pe valoare pt. chei
+          // legacy fără `:` (fereastra scurtă după deploy). lookup-urile `states[addr]`
+          // rămân pe cheie.
+          pairs: paginated.map(({ addr, data }) => {
+            const ref = splitPairKey(addr);
+            return {
+            pairAddress: ref.address, chain: ref.chain || (data as unknown as { chain?: string }).chain || null, symbol: data.symbol, phase: data.phase,
+            seenCount: data.seenCount, currentPrice: data.currentPrice,
+            dexType:    states[addr]?.dexType    ?? null,
+            reserveUsd: states[addr]?.reserveUsd ?? null,
+            // NF/U5: proveniența rezervei — reserveUsd V4 e estimat (virtual reserves, poate supraestima).
+            reserveSource:    states[addr]?.reserveSource ?? null,
+            reserveEstimated: reserveEstimatedFlag(states[addr]?.reserveSource), // tri-stare (null=necunoscut)
+            liqStatus:  states[addr]?.liqStatus  ?? null,
+            flow:       states[addr]?.flow ?? null,
+            updatedAt: states[addr]?.updatedAt ?? null,
+          }; }),
+          snapshotAgeSec: snapshotFreshnessSec,
+          workerVersion:  snapshot?.version ?? null,
+        };
         return mcpResponse({
-          text: JSON.stringify({
-            total, count: paginated.length, offset,
-            has_more: total > offset + paginated.length,
-            // B3f-2: `addr` e cheia pairKey (states/memory keyed pe pairKey). Payload
-            // extern = adresă brută + chain din cheie; fallback pe valoare pt. chei
-            // legacy fără `:` (fereastra scurtă după deploy). lookup-urile `states[addr]`
-            // rămân pe cheie.
-            pairs: paginated.map(({ addr, data }) => {
-              const ref = splitPairKey(addr);
-              return {
-              pairAddress: ref.address, chain: ref.chain || (data as unknown as { chain?: string }).chain || null, symbol: data.symbol, phase: data.phase,
-              seenCount: data.seenCount, currentPrice: data.currentPrice,
-              dexType:    states[addr]?.dexType    ?? null,
-              reserveUsd: states[addr]?.reserveUsd ?? null,
-              // NF/U5: proveniența rezervei — reserveUsd V4 e estimat (virtual reserves, poate supraestima).
-              reserveSource:    states[addr]?.reserveSource ?? null,
-              reserveEstimated: reserveEstimatedFlag(states[addr]?.reserveSource), // tri-stare (null=necunoscut)
-              liqStatus:  states[addr]?.liqStatus  ?? null,
-              flow:       states[addr]?.flow ?? null,
-              updatedAt: states[addr]?.updatedAt ?? null,
-            }; }),
-            snapshotAgeSec: snapshotFreshnessSec,
-            workerVersion:  snapshot?.version ?? null,
-          }, null, 2),
+          text: JSON.stringify(payload, null, 2),
+          data: payload,
           freshnessSec: snapshotFreshnessSec,
           confidence:
             snapshotFreshnessSec !== null && snapshotFreshnessSec < 60  ? "HIGH" :

@@ -9,7 +9,7 @@ import { pairAddressSchema } from "./pairAddressSchema";
 import { readAllRedis } from "../redis-reader";
 import { getToolContext } from "../middleware";
 import { enqueueWatchRequest } from "@/lib/db/watchQueue";
-import { mcpResponse, mcpErr, ERR, sanitizeToolError } from "../errors";
+import { mcpResponse, mcpErr, ERR, sanitizeToolError, PREFLIGHT_OUTPUT_SCHEMA } from "../errors";
 import { pairKey, normalizeChainId, isEstimatedReserve, WATCH_PER_CLIENT_CAP } from "@preflight/schema";
 
 export function registerWatchPair(server: McpServer) {
@@ -34,6 +34,7 @@ Returns current status if pair is already being monitored.`,
         chain:        z.enum(["base", "arbitrum", "bsc", "eth"]).describe("Chain: 'base', 'arbitrum', 'bsc', or 'eth'"),
         reason:       z.string().max(160).optional().describe("Optional: why you're watching this pair"),
       },
+      outputSchema: PREFLIGHT_OUTPUT_SCHEMA,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async ({ pair_address, chain, reason }: { pair_address: string; chain: "base" | "arbitrum" | "bsc" | "eth"; reason?: string }) => {

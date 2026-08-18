@@ -6,7 +6,7 @@ import { getRedis } from "@/lib/db/redis";
 import { checkTokenRisk } from "@preflight/risk-layer";
 import type { RiskResult } from "@preflight/risk-layer";
 import { normalizeChainId, REDIS_KEYS } from "@preflight/schema";
-import { mcpResponse, mcpErr, ERR, sanitizeToolError } from "../errors";
+import { mcpResponse, mcpErr, ERR, sanitizeToolError, PREFLIGHT_OUTPUT_SCHEMA } from "../errors";
 
 /** V4 poolId = bytes32 (0x + 64 hex) — not an EVM contract address */
 const BYTES32_RE = /^0x[a-f0-9]{64}$/i;
@@ -127,6 +127,7 @@ Args:
         token_address: z.string().max(120).optional().describe("Optional token contract address (EVM only)"),
         chain:         z.enum(["base", "arbitrum", "bsc", "eth", "solana"]).optional().describe("Chain: 'base', 'arbitrum', 'bsc', 'eth', or 'solana'"),
       },
+      outputSchema: PREFLIGHT_OUTPUT_SCHEMA,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async ({ pair_address, token_address, chain }: { pair_address: string; token_address?: string; chain?: string }) => {

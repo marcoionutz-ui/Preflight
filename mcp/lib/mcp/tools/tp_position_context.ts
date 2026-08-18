@@ -11,7 +11,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { readAllRedis, formatVol, getPipelineState, resolvePairChain } from "../redis-reader";
-import { mcpResponse, mcpErr, ERR, sanitizeToolError } from "../errors";
+import { mcpResponse, mcpErr, ERR, sanitizeToolError, PREFLIGHT_OUTPUT_SCHEMA } from "../errors";
 
 // Normalizează timestamp: seconds → ms dacă e sub 10B
 const normalizeTs = (v: unknown): number | null => {
@@ -83,6 +83,7 @@ Returns per position:
       inputSchema: {
         positions: z.array(positionSchema).min(1).max(20),
       },
+      outputSchema: PREFLIGHT_OUTPUT_SCHEMA,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
     async ({ positions }: { positions: Position[] }) => {

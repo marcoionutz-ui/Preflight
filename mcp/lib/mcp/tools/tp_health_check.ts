@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { readAllRedis, safeMinAge, readQuoteOracleHealth, readQuotePriceHealth, readSolanaIndexerStats } from "../redis-reader";
 import { keyFreshness, aggregateKnownFreshness, completeOnKnownChains, isWsStreamStale, classifyWsSubs } from "../health-freshness";
-import { mcpResponse, mcpErr, ERR, sanitizeToolError } from "../errors";
+import { mcpResponse, mcpErr, ERR, sanitizeToolError, PREFLIGHT_OUTPUT_SCHEMA } from "../errors";
 
 export function registerHealthCheck(server: McpServer) {
   server.registerTool(
@@ -15,6 +15,7 @@ total pairs tracked, phase distribution, active watch/hot/armed counts.
 
 Use this first to verify the worker is running before calling other tools.`,
       inputSchema: {},
+      outputSchema: PREFLIGHT_OUTPUT_SCHEMA,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async () => {
@@ -240,6 +241,7 @@ Use this first to verify the worker is running before calling other tools.`,
 
 		return mcpResponse({
 		  text: JSON.stringify(payload, null, 2),
+		  data: payload,
 		  freshnessSec: statesAge !== null ? Math.round(statesAge / 1000) : null,
 		  // E14 (varu R4): confidence din prospețimea celui mai SLAB chain CUNOSCUT (nu max). Un chain cunoscut
 		  // lipsă/stale (snapAgg.complete=false → snapAggAge=null) → LOW.

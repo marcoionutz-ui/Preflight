@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { pairAddressSchema } from "./pairAddressSchema";
 import { readAllRedis, getPipelineState, resolvePairChain, chainsForAddressInArrays, findLastEventForPair, findLastDropForPair, formatVol } from "../redis-reader";
-import { mcpResponse, mcpErr, ERR, sanitizeToolError } from "../errors";
+import { mcpResponse, mcpErr, ERR, sanitizeToolError, PREFLIGHT_OUTPUT_SCHEMA } from "../errors";
 import { pairKey } from "@preflight/schema";
 
 export function registerWhyNot(server: McpServer) {
@@ -23,6 +23,7 @@ Args: pair_address (0x... EVM address or V4 pool ID)`,
         pair_address: pairAddressSchema.describe("EVM pair address (0x...) or V4 pool ID"),
         chain:        z.enum(["base", "arbitrum", "bsc", "eth"]).optional().describe("Optional chain hint — needed only if the same address exists on multiple chains"),
       },
+      outputSchema: PREFLIGHT_OUTPUT_SCHEMA,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async ({ pair_address, chain }: { pair_address: string; chain?: "base" | "arbitrum" | "bsc" | "eth" }) => {

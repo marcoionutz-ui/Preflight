@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { readAllRedis, formatVol, formatPct, combineConfidence, dedupeByPair } from "../redis-reader";
 import { pairKey, splitPairKey, isEstimatedReserve } from "@preflight/schema";
-import { mcpErr, mcpResponse, ERR, sanitizeToolError } from "../errors";
+import { mcpErr, mcpResponse, ERR, sanitizeToolError, PREFLIGHT_OUTPUT_SCHEMA } from "../errors";
 import type { PairState } from "../types";
 
 export function registerSituationReport(server: McpServer) {
@@ -24,6 +24,7 @@ Returns a compact but complete picture:
 Pair addresses are included in every entry — no need to call tp_worker_snapshot just to get addresses.
 Observed movers section shows tokens moving on market that haven't passed pipeline filters yet.`,
       inputSchema: {},
+      outputSchema: PREFLIGHT_OUTPUT_SCHEMA,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
     async () => {

@@ -3,7 +3,7 @@ import { z } from "zod";
 import { readAllRedis } from "../redis-reader";
 import { normalizeChainId, pairKey, splitPairKey } from "@preflight/schema";
 import type { PreflightSignalPipelineEntry } from "@preflight/schema";
-import { mcpResponse, mcpErr, ERR, sanitizeToolError } from "../errors";
+import { mcpResponse, mcpErr, ERR, sanitizeToolError, PREFLIGHT_OUTPUT_SCHEMA } from "../errors";
 
 export function registerWorkerPipeline(server: McpServer) {
   server.registerTool(
@@ -24,6 +24,7 @@ Args: chain (filter: 'base', 'arbitrum', 'bsc', or 'eth')`,
         // Codurile publice; normalizeChainId mapează "eth"→"ethereum" intern la filtrare.
         chain: z.enum(["base", "arbitrum", "bsc", "eth"]).optional().describe("Filter by chain: 'base', 'arbitrum', 'bsc', or 'eth'"),
       },
+      outputSchema: PREFLIGHT_OUTPUT_SCHEMA,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
     async ({ chain }: { chain?: string }) => {
@@ -170,21 +171,23 @@ Args: chain (filter: 'base', 'arbitrum', 'bsc', or 'eth')`,
          return f?.hasData || f?.buys5m || f?.buyVol5mUsd;
        }) ?? false;
 
+        const payload = {
+          pipeline: pipelineEntries,
+          armed: armedEntries,
+          legacy: { activeWatch, hotCandidates, armedEntries },
+          summary: pipelineEntries
+            ? {
+                watching:   pipelineEntries.filter(e => e.pipelineState === "WATCHING").length,
+                hot:        pipelineEntries.filter(e => e.pipelineState === "HOT").length,
+                armed:      pipelineEntries.filter(e => e.pipelineState === "ARMED").length,
+                qualified:  pfQualified?.filter(q => filterChain(q.chain)).length ?? 0,
+              }
+            : { watching: activeWatch.length, hot: hotCandidates.length, armed: armedEntries.length },
+          freshnessSec,
+        };
         return mcpResponse({
-          text: JSON.stringify({
-            pipeline: pipelineEntries,
-            armed: armedEntries,
-            legacy: { activeWatch, hotCandidates, armedEntries },
-            summary: pipelineEntries
-              ? {
-                  watching:   pipelineEntries.filter(e => e.pipelineState === "WATCHING").length,
-                  hot:        pipelineEntries.filter(e => e.pipelineState === "HOT").length,
-                  armed:      pipelineEntries.filter(e => e.pipelineState === "ARMED").length,
-                  qualified:  pfQualified?.filter(q => filterChain(q.chain)).length ?? 0,
-                }
-              : { watching: activeWatch.length, hot: hotCandidates.length, armed: armedEntries.length },
-            freshnessSec,
-          }, null, 2),
+          text: JSON.stringify(payload, null, 2),
+          data: payload,
           freshnessSec,
           confidence:
             freshnessSec !== null && freshnessSec < 30 ? "HIGH" :

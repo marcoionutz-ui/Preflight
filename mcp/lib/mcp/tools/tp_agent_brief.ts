@@ -7,7 +7,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { readAllRedis, formatPct, combineConfidence, dedupeByPair } from "../redis-reader";
 import { splitPairKey } from "@preflight/schema";
-import { mcpResponse, mcpErr, ERR, sanitizeToolError } from "../errors";
+import { mcpResponse, mcpErr, ERR, sanitizeToolError, PREFLIGHT_OUTPUT_SCHEMA } from "../errors";
 
 export function registerNextAction(server: McpServer) {
   server.registerTool(
@@ -26,6 +26,7 @@ Returns:
 
 Does not advise on trades. Routes to data, not to decisions.`,
       inputSchema: {},
+      outputSchema: PREFLIGHT_OUTPUT_SCHEMA,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
     async () => {
