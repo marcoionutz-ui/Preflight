@@ -7,9 +7,10 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { pairAddressSchema } from "./pairAddressSchema";
 import { readAllRedis } from "../redis-reader";
-import { getRedis } from "@/lib/db/redis";
+import { getToolContext } from "../middleware";
+import { enqueueWatchRequest } from "@/lib/db/watchQueue";
 import { mcpResponse, mcpErr, ERR, sanitizeToolError } from "../errors";
-import { REDIS_KEYS, pairKey, normalizeChainId, isEstimatedReserve } from "@preflight/schema";
+import { pairKey, normalizeChainId, isEstimatedReserve, WATCH_PER_CLIENT_CAP } from "@preflight/schema";
 
 export function registerWatchPair(server: McpServer) {
   server.registerTool(
@@ -84,23 +85,39 @@ Returns current status if pair is already being monitored.`,
           return mcpResponse({ text: lines.join("\n"), confidence: "MEDIUM" });
         }
 
-        const r = getRedis();
-        if (!r) return mcpErr(ERR.REDIS_DOWN, "Redis client not available");
-
-        const request = JSON.stringify({
+        // PH-10: enqueue FAIR per-client — idempotent (pair deja în coadă → already_queued), cap per-client, iar la
+        // coadă plină RESPINGE cererea nouă în loc să evacueze pending-ul altui client (vechiul LTRIM 0 99 evacua).
+        // clientId-ul autentificat vine din contextul requestului (AsyncLocalStorage din middleware).
+        const clientId = getToolContext().clientId;
+        const request  = JSON.stringify({
           pairAddress: addr,
           chain:       normalizedChain,
           reason:      reason?.slice(0, 160) ?? "AGENT_SUPPLIED",
           requestedAt: now,
+          clientId,
         });
 
-        await r
-          .multi()
-          .lpush(REDIS_KEYS.agentWatchRequests(normalizedChain), request)
-          .ltrim(REDIS_KEYS.agentWatchRequests(normalizedChain), 0, 99)
-          .expire(REDIS_KEYS.agentWatchRequests(normalizedChain), 300)
-          .exec();
+        const enq = await enqueueWatchRequest(normalizedChain, addr, request, clientId);
+        if (enq === "unavailable") return mcpErr(ERR.REDIS_DOWN, "Redis not connected");
+        if (enq === "already_queued") {
+          lines.push(`STATUS: already queued for monitoring`);
+          lines.push(`  chain: ${normalizedChain} — pair is already in the watch queue, will be fetched on next refresh cycle`);
+          lines.push(`NEXT_CHECK: tp_pair_context(${addr}) in ~60s`);
+          return mcpResponse({ text: lines.join("\n"), confidence: "MEDIUM" });
+        }
+        if (enq === "client_limit") {
+          lines.push(`STATUS: watch queue full for your client (${WATCH_PER_CLIENT_CAP} pending on ${normalizedChain})`);
+          lines.push(`  wait for your pending watches to be processed (~30-60s) before adding more`);
+          lines.push(`NEXT_CHECK: tp_pair_context(...) on a pair you already submitted`);
+          return mcpResponse({ text: lines.join("\n"), confidence: "MEDIUM" });
+        }
+        if (enq === "queue_full") {
+          lines.push(`STATUS: watch queue is temporarily full on ${normalizedChain} — retry shortly`);
+          lines.push(`  existing requests are NOT evicted; the queue drains every ~30-60s`);
+          return mcpResponse({ text: lines.join("\n"), confidence: "LOW" });
+        }
 
+        // enq === "queued"
         lines.push(`STATUS: queued for monitoring`);
         lines.push(`  chain: ${normalizedChain}${reason ? ` | reason: ${reason}` : ""}`);
         if (hasContext) {

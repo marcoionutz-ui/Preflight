@@ -50,6 +50,7 @@ import { subscribeV3Scoped, subscribeV4Scoped, subscribeV2Scoped, cleanupActiveW
 import type { Redis } from "ioredis";
 import {
   REDIS_KEYS, normalizeChainId, pairKey,
+  drainWatchQueue, WATCH_DRAIN_BUDGET,
   type PreflightScannerStats, type PreflightSourceByChainEntry, type PreflightGeckoChainHealth,
 } from "@preflight/schema";
 
@@ -909,41 +910,39 @@ export async function runFollowRefresh(): Promise<void> {
   try {
     const r = getRedis();
     if (r) {
-      // B4e: coadă chain-scoped — fiecare worker drenează DOAR cozile chain-urilor lui
-      // (CHAINS runtime). Elimină race-ul de work-stealing: un worker Base nu mai poate face
-      // rpop pe requestul Arbitrum și să-l arunce prin `continue` înainte ca workerul
-      // Arbitrum să-l vadă. Autoritatea chain-ului = cheia cozii, nu payload-ul (doctrina B4d-2).
+      // B4e + PH-10: coadă chain-scoped, FAIR per-client. Fiecare worker drenează DOAR cozile chain-urilor lui
+      // (autoritatea chain-ului = cheia cozii, nu payload-ul — doctrina B4d-2). PH-10: în loc de o listă flat (unde
+      // LTRIM 0 99 evacua cererile vechi ale altor clienți sub load), avem o coadă per-client + roster; drenăm
+      // ROUND-ROBIN (o cerere/client/pas până la buget) ca throughput-ul să fie împărțit corect între clienți.
       for (const { id: queueChain } of CHAINS) {
-        for (let i = 0; i < 50; i++) {
-          const item = await r.rpop(REDIS_KEYS.agentWatchRequests(queueChain));
-          if (!item) break;
-          try {
-            const req      = JSON.parse(item);
-            const reqAddr  = String(req.pairAddress ?? "").toLowerCase().trim();
-            const isPoolId =
-              /^0x[a-f0-9]{40}$/.test(reqAddr) ||
-              /^0x[a-f0-9]{64}$/.test(reqAddr);
-            if (!isPoolId) continue;
-            // Payload mislabeled (chain ≠ coada din care a ieșit) = respins, nu redirecționat.
-            if (normalizeChainId(String(req.chain ?? "")) !== queueChain) continue;
-            const reqChain      = queueChain;
-            const reqReason     = String(req.reason ?? "AGENT_SUPPLIED").slice(0, 160);
-            const reqAt         = Number(req.requestedAt ?? now);
-            const requestedAt   = Number.isFinite(reqAt) ? reqAt : now;
-            const existingEntry = marketFollowList.get(reqChain, reqAddr);
-            marketFollowList.set(reqChain, reqAddr, {
-              chain:           reqChain,
-              addedAt:         existingEntry?.addedAt ?? requestedAt,
-              attentionScore:  Math.max(existingEntry?.attentionScore ?? 0, 80),
-              lastRefreshedAt: existingEntry?.lastRefreshedAt ?? 0,
-              missCount:       existingEntry?.missCount ?? 0,
-              reason:          existingEntry?.reason
-                ? `${existingEntry.reason} | ${reqReason}`.slice(0, 160)
-                : reqReason,
-              source: "AGENT_SUPPLIED",
-            });
-            console.log(`[AGENT WATCH] queued: ${reqChain}:${reqAddr.slice(0, 12)}... reason:${reqReason}`);
-          } catch { /* ignore malformed */ }
+        // PH-10: drenăm prin PRIMITIVA atomică shared (drainWatchQueue → WATCH_DRAIN_LUA): pop round-robin FAIR
+        // across-cycles (clientul servit merge la coada rotației) + prune-by-score + curățare seen/meta, totul
+        // într-un singur EVAL — fără cursa LLEN→SREM și fără zombie. Întoarce cererile deja parsate.
+        const drained = await drainWatchQueue(r, queueChain, WATCH_DRAIN_BUDGET);
+        for (const req of drained) {
+          const reqAddr  = req.pairAddress.toLowerCase().trim();
+          const isPoolId =
+            /^0x[a-f0-9]{40}$/.test(reqAddr) ||
+            /^0x[a-f0-9]{64}$/.test(reqAddr);
+          if (!isPoolId) continue;
+          // Payload mislabeled (chain ≠ coada din care a ieșit) = respins, nu redirecționat.
+          if (normalizeChainId(req.chain) !== queueChain) continue;
+          const reqChain      = queueChain;
+          const reqReason     = req.reason.slice(0, 160);
+          const requestedAt   = Number.isFinite(req.requestedAt) && req.requestedAt > 0 ? req.requestedAt : now;
+          const existingEntry = marketFollowList.get(reqChain, reqAddr);
+          marketFollowList.set(reqChain, reqAddr, {
+            chain:           reqChain,
+            addedAt:         existingEntry?.addedAt ?? requestedAt,
+            attentionScore:  Math.max(existingEntry?.attentionScore ?? 0, 80),
+            lastRefreshedAt: existingEntry?.lastRefreshedAt ?? 0,
+            missCount:       existingEntry?.missCount ?? 0,
+            reason:          existingEntry?.reason
+              ? `${existingEntry.reason} | ${reqReason}`.slice(0, 160)
+              : reqReason,
+            source: "AGENT_SUPPLIED",
+          });
+          console.log(`[AGENT WATCH] queued: ${reqChain}:${reqAddr.slice(0, 12)}... client:${req.clientId.slice(0, 8)} reason:${reqReason}`);
         }
       }
     }

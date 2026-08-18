@@ -1325,7 +1325,19 @@ export const REDIS_KEYS = {
   qualifiedSignals:   (chain: string) => `preflight:qualified_signals:${normalizeChainId(chain)}`,
   pipelineCoverage:   (chain: string) => `preflight:pipeline_coverage:${normalizeChainId(chain)}`,
   scannerStats:       (chain: string) => `preflight:scanner_stats:${normalizeChainId(chain)}`,
-  agentWatchRequests: (chain: string) => `preflight:agent_watch_requests:${normalizeChainId(chain)}`,
+  // PH-10: coadă de watch FAIR per-client, cu EXPIRARE PER-REQUEST (score = expiryTs) ca să nu apară zombie.
+  //   agentWatchSeen        = ZSET member=pair score=expiryTs → dedup GLOBAL + cap global (ZCARD după prune-by-score)
+  //   agentWatchClientQueue = ZSET member=pair score=expiryTs → coada per-client (dedup per-client + cap via ZCARD)
+  //   agentWatchRotation    = LIST de clientId → rotație round-robin FAIR ÎNTRE CICLURI (servitul merge la coadă)
+  //   agentWatchInRotation  = SET de clientId → dedup push-uri în rotație (un client apare o singură dată în LIST)
+  //   agentWatchMeta        = HASH field=pair → requestJson (payload pt. worker: clientId/reason)
+  // Înlocuiește vechea listă flat `agent_watch_requests` (LTRIM 0 99 evacua cererile vechi — varu PH-10). Corectitudinea
+  // vine din scorul de expirare (prune în Lua), NU din key-TTL (care diverge între chei); key-TTL e doar GC de igienă.
+  agentWatchSeen:        (chain: string) => `preflight:agent_watch_seen:${normalizeChainId(chain)}`,
+  agentWatchClientQueue: (chain: string, clientId: string) => `preflight:agent_watch_q:${normalizeChainId(chain)}:${clientId}`,
+  agentWatchRotation:    (chain: string) => `preflight:agent_watch_rr:${normalizeChainId(chain)}`,
+  agentWatchInRotation:  (chain: string) => `preflight:agent_watch_inrr:${normalizeChainId(chain)}`,
+  agentWatchMeta:        (chain: string) => `preflight:agent_watch_meta:${normalizeChainId(chain)}`,
   lifecycle:          (chain: string) => `preflight:lifecycle:${normalizeChainId(chain)}`,
 
   // Per-pair, chain-scoped (Faza B2). pairContext e EVM-only în practică, dar
@@ -1338,5 +1350,177 @@ export const REDIS_KEYS = {
   trendingSnapshot:  (chain: string, addr: string) => `preflight:trending:snapshot:${pairKey(chain, addr)}`,
   trendingMovers:    (chain: string) => `preflight:trending:movers:${normalizeChainId(chain)}`,
 } as const;
+
+// ── PH-10: coadă de watch FAIR per-client (enqueue atomic + drain atomic round-robin, expirare per-request) ──────
+// Shared între MCP (tp_watch_pair — enqueue) și worker (scan.ts — drain) ȘI testul de integrare, ca toți să
+// folosească EXACT aceleași primitive. Corectitudinea vine din scorul de expirare (prune-by-score în ambele Lua),
+// nu din key-TTL (care ar diverge între chei) — deci nu apar zombie în `seen` nici sub outage de worker.
+export const WATCH_PER_CLIENT_CAP = 20;   // pair-uri distincte pending / client / chain
+export const WATCH_GLOBAL_CAP     = 200;  // pair-uri distincte pending / chain (peste = reject NOU, NU evacuăm)
+export const WATCH_QUEUE_TTL_SEC  = 300;  // 5 min — durata logică a unei cereri (scorul = now + asta)
+export const WATCH_DRAIN_BUDGET   = 50;   // câte cereri drenează worker-ul / chain / ciclu
+
+/**
+ * Enqueue ATOMIC (PH-10). `now` = ceasul Redis (`TIME`) → o singură sursă de timp, fără skew între mcp/worker.
+ *   KEYS[1]=seen(ZSET) KEYS[2]=clientQueue(ZSET) KEYS[3]=rotation(LIST) KEYS[4]=inRotation(SET) KEYS[5]=meta(HASH)
+ *   ARGV[1]=pair ARGV[2]=requestJson ARGV[3]=clientId ARGV[4]=perClientCap ARGV[5]=globalCap ARGV[6]=ttlSec
+ * Întâi PRUNE-BY-SCORE (elimină zombie expirați din seen+meta și din coada clientului), apoi decide:
+ *    1 → already_queued (pair încă LIVE în seen — idempotency global)
+ *   -1 → client_limit  (ZCARD coada clientului ≥ perClientCap → REJECT, nu evacuăm)
+ *   -2 → queue_full    (ZCARD seen ≥ globalCap → REJECT cererea NOUĂ, NU evacuăm pending-ul altcuiva)
+ *    0 → queued (scrie seen+clientQueue cu score=now+ttl, meta, și pune clientul în rotație dacă nu era)
+ */
+export const WATCH_ENQUEUE_LUA = `
+local now = tonumber(redis.call('TIME')[1])
+local exp = now + tonumber(ARGV[6])
+local dead = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', now)
+for i=1,#dead do redis.call('HDEL', KEYS[5], dead[i]) end
+if #dead > 0 then redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now) end
+redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now)
+if redis.call('ZSCORE', KEYS[1], ARGV[1]) then return 1 end
+if redis.call('ZCARD', KEYS[2]) >= tonumber(ARGV[4]) then return -1 end
+if redis.call('ZCARD', KEYS[1]) >= tonumber(ARGV[5]) then return -2 end
+redis.call('ZADD', KEYS[1], exp, ARGV[1])
+redis.call('ZADD', KEYS[2], exp, ARGV[1])
+redis.call('HSET', KEYS[5], ARGV[1], ARGV[2])
+if redis.call('SADD', KEYS[4], ARGV[3]) == 1 then redis.call('RPUSH', KEYS[3], ARGV[3]) end
+local ttl = tonumber(ARGV[6]) + 60
+redis.call('EXPIRE', KEYS[1], ttl)
+redis.call('EXPIRE', KEYS[2], ttl)
+redis.call('EXPIRE', KEYS[3], ttl)
+redis.call('EXPIRE', KEYS[4], ttl)
+redis.call('EXPIRE', KEYS[5], ttl)
+return 0
+`;
+
+/**
+ * Drain ATOMIC round-robin FAIR ÎNTRE CICLURI (PH-10). Un singur EVAL: pop + prune + curățare seen/meta + menținerea
+ * rotației — fără cursă (spre deosebire de LLEN→SREM separat). Fairness across cycles: clientul servit e RPUSH-uit la
+ * COADA listei de rotație, deci cei neserviți vin primii data viitoare (chiar cu > budget clienți, toți sunt serviți
+ * într-un număr limitat de cicluri). Prune-by-score per client → zero zombie.
+ *   KEYS[1]=rotation(LIST) KEYS[2]=inRotation(SET) KEYS[3]=seen(ZSET) KEYS[4]=meta(HASH)
+ *   ARGV[1]=budget ARGV[2]=clientQueuePrefix (cheia cozii = prefix .. clientId)
+ * Întoarce un array de requestJson (payload-urile drenate, cele mai vechi întâi pe client).
+ */
+export const WATCH_DRAIN_LUA = `
+local now = tonumber(redis.call('TIME')[1])
+local budget = tonumber(ARGV[1])
+local out = {}
+local bound = redis.call('LLEN', KEYS[1]) + budget
+local steps = 0
+while #out < budget and steps < bound do
+  steps = steps + 1
+  local client = redis.call('LPOP', KEYS[1])
+  if not client then break end
+  local qk = ARGV[2] .. client
+  redis.call('ZREMRANGEBYSCORE', qk, '-inf', now)
+  local popped = redis.call('ZPOPMIN', qk)
+  if popped[1] then
+    local pair = popped[1]
+    redis.call('ZREM', KEYS[3], pair)
+    local meta = redis.call('HGET', KEYS[4], pair)
+    redis.call('HDEL', KEYS[4], pair)
+    if meta then out[#out+1] = meta end
+    if redis.call('ZCARD', qk) > 0 then
+      redis.call('RPUSH', KEYS[1], client)
+    else
+      redis.call('SREM', KEYS[2], client)
+    end
+  else
+    redis.call('SREM', KEYS[2], client)
+  end
+end
+return out
+`;
+
+export type WatchEnqueueStatus = "queued" | "already_queued" | "client_limit" | "queue_full" | "unexpected";
+
+/**
+ * Mapează întoarcerea `WATCH_ENQUEUE_LUA` la un status — FAIL-CLOSED: doar 0/1/-1/-2 sunt verdicte cunoscute;
+ * orice altceva (null, NaN, valoare neașteptată) → `unexpected` (NU `queued`), ca helper-ul să-l trateze ca eroare.
+ */
+export function classifyWatchEnqueue(luaReturn: unknown): WatchEnqueueStatus {
+  if (luaReturn === 0 || luaReturn === "0")   return "queued";
+  if (luaReturn === 1 || luaReturn === "1")   return "already_queued";
+  if (luaReturn === -1 || luaReturn === "-1") return "client_limit";
+  if (luaReturn === -2 || luaReturn === "-2") return "queue_full";
+  return "unexpected";
+}
+
+/** Payload-ul unei cereri de watch (produs de tp_watch_pair, consumat de worker). */
+export interface WatchRequest {
+  pairAddress: string;
+  chain:       string;
+  reason:      string;
+  requestedAt: number;
+  clientId:    string;
+}
+
+/** Parse safe al unui requestJson drenat → WatchRequest sau null (JSON stricat / formă invalidă). */
+export function parseWatchRequest(raw: string): WatchRequest | null {
+  try {
+    const o = JSON.parse(raw) as Record<string, unknown>;
+    if (o && typeof o.pairAddress === "string" && typeof o.chain === "string") {
+      return {
+        pairAddress: o.pairAddress,
+        chain:       o.chain,
+        reason:      typeof o.reason === "string" ? o.reason : "AGENT_SUPPLIED",
+        requestedAt: typeof o.requestedAt === "number" ? o.requestedAt : 0,
+        clientId:    typeof o.clientId === "string" ? o.clientId : "unknown",
+      };
+    }
+  } catch { /* stricat → null */ }
+  return null;
+}
+
+/** Client Redis minim (structural) — atât mcp cât și worker-ul folosesc ioredis, care satisface asta. */
+export interface WatchEvalClient {
+  eval(script: string, numKeys: number, ...args: (string | number)[]): Promise<unknown>;
+}
+
+/**
+ * PRIMITIVA de enqueue (folosită de mcp `tp_watch_pair` ȘI de testul de integrare). Rulează WATCH_ENQUEUE_LUA cu
+ * cele 5 chei + capurile din schema. Întoarce verdictul (incl. `unexpected` fail-closed).
+ */
+export async function enqueueWatchQueue(
+  r: WatchEvalClient, chain: string, pair: string, requestJson: string, clientId: string,
+): Promise<WatchEnqueueStatus> {
+  const res = await r.eval(
+    WATCH_ENQUEUE_LUA, 5,
+    REDIS_KEYS.agentWatchSeen(chain),
+    REDIS_KEYS.agentWatchClientQueue(chain, clientId),
+    REDIS_KEYS.agentWatchRotation(chain),
+    REDIS_KEYS.agentWatchInRotation(chain),
+    REDIS_KEYS.agentWatchMeta(chain),
+    pair, requestJson, clientId,
+    String(WATCH_PER_CLIENT_CAP), String(WATCH_GLOBAL_CAP), String(WATCH_QUEUE_TTL_SEC),
+  );
+  return classifyWatchEnqueue(res);
+}
+
+/**
+ * PRIMITIVA de drain (folosită de worker `scan.ts` ȘI de testul de integrare — aceeași logică atomică, nu o replică).
+ * Rulează WATCH_DRAIN_LUA și întoarce cererile drenate parsate (cele malformate sunt filtrate).
+ */
+export async function drainWatchQueue(
+  r: WatchEvalClient, chain: string, budget: number,
+): Promise<WatchRequest[]> {
+  const prefix = REDIS_KEYS.agentWatchClientQueue(chain, ""); // `...:<chain>:` → cheia cozii = prefix + clientId
+  const res = await r.eval(
+    WATCH_DRAIN_LUA, 4,
+    REDIS_KEYS.agentWatchRotation(chain),
+    REDIS_KEYS.agentWatchInRotation(chain),
+    REDIS_KEYS.agentWatchSeen(chain),
+    REDIS_KEYS.agentWatchMeta(chain),
+    String(budget), prefix,
+  );
+  const arr = Array.isArray(res) ? (res as unknown[]) : [];
+  const out: WatchRequest[] = [];
+  for (const item of arr) {
+    const parsed = parseWatchRequest(String(item));
+    if (parsed) out.push(parsed);
+  }
+  return out;
+}
 
 export const SCHEMA_VERSION = "preflight-schema-v2";  // B5: bump — schema per-chain post-B4 (marker de observabilitate; NU e gated la citire)

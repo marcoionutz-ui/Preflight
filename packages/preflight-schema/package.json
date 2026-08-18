@@ -8,7 +8,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
     "test:e32b": "tsx scripts/integrity.test.ts",
     "test:u9": "tsx scripts/normalizeLaunch.test.ts",
-    "test": "npm run test:e32b && npm run test:u9"
+    "test:ph10": "tsx scripts/watchQueue.test.ts",
+    "test": "npm run test:e32b && npm run test:u9 && npm run test:ph10"
   },
   "dependencies": {
     "@preflight/risk-layer": "*"

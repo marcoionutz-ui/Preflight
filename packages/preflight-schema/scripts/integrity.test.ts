@@ -72,7 +72,11 @@ function main(): void {
     ["qualifiedSignals", REDIS_KEYS.qualifiedSignals],
     ["pipelineCoverage", REDIS_KEYS.pipelineCoverage],
     ["scannerStats", REDIS_KEYS.scannerStats],
-    ["agentWatchRequests", REDIS_KEYS.agentWatchRequests],
+    ["agentWatchSeen", REDIS_KEYS.agentWatchSeen],
+    ["agentWatchRotation", REDIS_KEYS.agentWatchRotation],
+    ["agentWatchInRotation", REDIS_KEYS.agentWatchInRotation],
+    ["agentWatchMeta", REDIS_KEYS.agentWatchMeta],
+    ["agentWatchClientQueue(fixed client)", (c: string) => REDIS_KEYS.agentWatchClientQueue(c, "clientX")],
     ["lifecycle", REDIS_KEYS.lifecycle],
     ["trendingMovers", REDIS_KEYS.trendingMovers],
   ];
