@@ -7,13 +7,37 @@
  */
 
 import Link from "next/link";
+import { headers } from "next/headers";
 import { buildMarketOverviewReport } from "@/lib/reports/market-overview-report";
-import type { ChainOverview, MoverSummary } from "@/lib/reports/market-overview-report";
+import type { ChainOverview, MoverSummary, MarketOverviewReport } from "@/lib/reports/market-overview-report";
+import { enforceRequestRate, admitBuildRequest, withBuildLease, resolveClientIp } from "@/lib/db/demoCache";
+import type { DemoAction, DemoServedFrom } from "@/lib/db/demoCache";
 
 export const dynamic = "force-dynamic";
 
+const OVERVIEW_SLUG = "overview";
+
 export default async function MarketOverviewPage() {
-  const report = await buildMarketOverviewReport();
+  // PH-11: (item 4) request-rate per-IP ÎNTÂI (orice request). Apoi admitBuildRequest decide: cache fresh/stale,
+  // build sub single-flight + concurență + rate/buget, sau refuz ieftin. Build-ul rulează sub withBuildLease
+  // (heartbeat owner-safe + publicare fenced + release în finally).
+  const h  = await headers();
+  const ip = resolveClientIp((n) => h.get(n));
+  // FAIL-CLOSED: orice ≠ allow (limited SAU unavailable/Redis-down) → busy; NU construim (nici pentru URL invalid).
+  const rate = await enforceRequestRate(ip);
+  if (rate !== "allow") return <DemoBusy action={rate === "limited" ? "rate_limited" : "busy"} />;
+
+  const admission = await admitBuildRequest(OVERVIEW_SLUG, ip);
+
+  let report: MarketOverviewReport | null = null;
+  if (admission.action === "build" && admission.leaseToken) {
+    const res = await withBuildLease(OVERVIEW_SLUG, admission.leaseToken, () => buildMarketOverviewReport());
+    if (res.built && res.report) report = res.report; // afișăm ce am calculat (chiar dacă publicarea a fost lost_lease)
+  } else if ((admission.action === "serve_fresh" || admission.action === "serve_stale") && admission.payload) {
+    report = admission.payload as MarketOverviewReport;
+  }
+  // rate_limited | busy | (serve fără payload valid) → notă ieftină.
+  if (!report) return <DemoBusy action={admission.action} />;
 
   return (
     <div style={styles.page}>
@@ -32,6 +56,8 @@ export default async function MarketOverviewPage() {
           Base-first. Multichain-aware. Coverage badges are honest about what&apos;s live vs. sampled —
           nothing here claims full firehose where it isn&apos;t.
         </p>
+
+        <CacheBanner servedFrom={admission.servedFrom} ageSec={admission.cacheAgeSec} />
 
         {!report.ok && report.chains.length === 0 ? (
           <div style={styles.card}>
@@ -54,6 +80,56 @@ export default async function MarketOverviewPage() {
         )}
       </main>
 
+      <footer style={styles.footer}>
+        Preflight reports observed market context only. The agent decides.
+      </footer>
+    </div>
+  );
+}
+
+// PH-11 (item 6): onestitatea prospețimii — când servim din cache (fresh/stale) marcăm EXPLICIT că valorile-s un
+// snapshot cache-uit + vârsta lui; NU prezentăm un freshnessSec înghețat drept vârstă curentă. Build live → fără notă.
+function fmtAge(sec: number | null): string {
+  if (sec === null || !Number.isFinite(sec)) return "recently";
+  if (sec < 60)   return `${sec}s ago`;
+  if (sec < 3600) return `${Math.round(sec / 60)}m ago`;
+  return `${Math.round(sec / 3600)}h ago`;
+}
+function CacheBanner({ servedFrom, ageSec }: { servedFrom: DemoServedFrom; ageSec: number | null }) {
+  if (servedFrom === "build" || servedFrom === "none") return null;
+  const stale = servedFrom === "stale";
+  return (
+    <div style={stale ? styles.staleBanner : styles.cacheBanner}>
+      {stale
+        ? `⚠ Serving a cached fallback — the live demo is busy. Snapshot built ${fmtAge(ageSec)}; values below are not live.`
+        : `Cached snapshot · built ${fmtAge(ageSec)}. Values below are a cached snapshot, not live.`}
+    </div>
+  );
+}
+
+// PH-11: notă IEFTINĂ (zero Redis, zero build) când suntem peste rate-limit per-IP sau peste bugetul global.
+function DemoBusy({ action }: { action: DemoAction }) {
+  const rateLimited = action === "rate_limited";
+  return (
+    <div style={styles.page}>
+      <header style={styles.topbar}>
+        <Link href="/" style={styles.brand}>✈ PREFLIGHT</Link>
+        <span style={styles.topbarNote}>demo · cache-only · no live calls</span>
+      </header>
+      <main style={styles.main}>
+        <div style={styles.card}>
+          <div style={{ ...styles.badge, ...styles.badgeAmber }}>{rateLimited ? "SLOW DOWN" : "BUSY"}</div>
+          <h1 style={styles.h1}>{rateLimited ? "Too many requests" : "Demo is busy right now"}</h1>
+          <p style={styles.dim}>
+            {rateLimited
+              ? "You are refreshing faster than the public demo allows. Give it a few seconds and reload."
+              : "The public demo is at capacity for a moment. Reload shortly — or connect your own agent for unthrottled access."}
+          </p>
+          <p style={styles.dim}>
+            <Link href="/docs/connect" style={styles.navLink}>Connect your agent →</Link>
+          </p>
+        </div>
+      </main>
       <footer style={styles.footer}>
         Preflight reports observed market context only. The agent decides.
       </footer>
@@ -258,6 +334,24 @@ const styles: Record<string, React.CSSProperties> = {
     color:        "#ffb020",
     fontSize:     "12px",
     padding:      "10px 14px",
+    marginBottom: "16px",
+  },
+  staleBanner: {
+    background:   "#1a1305",
+    border:       "1px solid #3a2a08",
+    borderRadius: "6px",
+    color:        "#ffb020",
+    fontSize:     "12px",
+    padding:      "10px 14px",
+    marginBottom: "16px",
+  },
+  cacheBanner: {
+    background:   "#0a0a0a",
+    border:       "1px solid #1a1a1a",
+    borderRadius: "6px",
+    color:        "#777",
+    fontSize:     "11.5px",
+    padding:      "8px 14px",
     marginBottom: "16px",
   },
   card: {

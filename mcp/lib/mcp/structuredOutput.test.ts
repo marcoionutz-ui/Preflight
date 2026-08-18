@@ -27,16 +27,18 @@ function main(): void {
 console.log("PH-14 — structuredContent + outputSchema STRICT guard (pur, fara Redis)");
 
 // ── (A) mcpOk expune structuredContent (obiect real) ──────────────────────────
-const okObj = mcpOk({ ok: true, format: "preflight.response.v1", text: "hi", meta: {} });
+const envIn = { ok: true, format: "preflight.response.v1", text: "hi", meta: {} };
+const okObj = mcpOk(envIn);
 check("1. mcpOk(obiect) -> structuredContent e obiectul, content.text e JSON serializat",
   okObj.structuredContent.ok === true &&
   Array.isArray(okObj.content) && okObj.content[0].type === "text" &&
   typeof okObj.content[0].text === "string");
 
-const okStr = mcpOk("plain text");
-check("2. mcpOk(string) -> structuredContent wrap {ok:true,text}, content.text = string brut",
-  okStr.structuredContent.ok === true && okStr.structuredContent.text === "plain text" &&
-  okStr.content[0].text === "plain text");
+// PH-20: mcpOk acceptă DOAR envelope (obiect) — trece envelope-ul NESCHIMBAT în structuredContent (ramura string
+// moartă a fost eliminată: producea {ok:true,text} fără format, ne-conform cu schema strictă).
+check("2. ⭐ mcpOk(envelope) -> structuredContent E chiar envelope-ul (pass-through prin referință, fără wrap)",
+  okObj.structuredContent === envIn && okObj.structuredContent.format === "preflight.response.v1" &&
+  okObj.structuredContent.text === "hi");
 
 // ── (B) mcpErr: isError:true + content.text machine-readable, FARA structuredContent ──
 // PH-14 (cgpt R1 #1): erorile NU poarta structuredContent — un client SDK conform ar valida orice structuredContent

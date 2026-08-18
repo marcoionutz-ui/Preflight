@@ -12,8 +12,13 @@
  * public and unauthenticated.
  */
 
+import { headers } from "next/headers";
 import { buildPairContextReport } from "@/lib/reports/pair-context-report";
+import type { PairContextReport } from "@/lib/reports/pair-context-report";
 import { mcpResponse, mcpErr } from "@/lib/mcp/errors";
+import { enforceRequestRate, admitBuildRequest, withBuildLease, resolveClientIp } from "@/lib/db/demoCache";
+import type { DemoServedFrom } from "@/lib/db/demoCache";
+import { canonicalizeDemoPair, demoPairSlug, type DemoAction } from "@/lib/demo/demoGuard";
 import PairContextTabs from "./tabs-client";
 
 export const dynamic = "force-dynamic";
@@ -92,7 +97,41 @@ interface DisplayPayload {
 export default async function PairContextDemoPage({ params }: Props) {
   const { chain, address } = await params;
 
-  const report = await buildPairContextReport({ pairAddress: address, chain });
+  // PH-11 (item 4): request-rate per-IP ÎNTÂI — ORICE request, inclusiv URL invalid (altfel un pair invalid ar fi
+  // spam-uibil nelimitat ca SSR dinamic). Abia apoi (item 1) canonicalizăm — o singură normalizare, aceeași pt.
+  // pre-validare ȘI slug. Perechile MALFORMATE NU consumă build-rate/lease/slot/buget.
+  const h  = await headers();
+  const ip = resolveClientIp((n) => h.get(n));
+  // FAIL-CLOSED: orice ≠ allow (limited SAU unavailable/Redis-down) → busy ÎNAINTE de validare → un URL invalid nu
+  // poate fi spam-uit ca SSR nici când Redis e jos.
+  const rate = await enforceRequestRate(ip);
+  if (rate !== "allow") return <DemoBusy action={rate === "limited" ? "rate_limited" : "busy"} />;
+
+  const canonical = canonicalizeDemoPair(chain, address);
+  let report: PairContextReport | null = null;
+  let admissionAction: DemoAction = "build";
+  let servedFrom: DemoServedFrom = "build";
+  let cacheAge: number | null = null;
+
+  if (!canonical) {
+    report = await buildPairContextReport({ pairAddress: address, chain }); // INVALID_INPUT ieftin (request-rate deja aplicat)
+  } else {
+    const slug = demoPairSlug(chain, address) as string; // non-null (canonical valid); dedupe eth/ethereum + EVM casing
+    const admission = await admitBuildRequest(slug, ip);
+    admissionAction = admission.action;
+    servedFrom      = admission.servedFrom;
+    cacheAge        = admission.cacheAgeSec;
+
+    if (admission.action === "build" && admission.leaseToken) {
+      const res = await withBuildLease(slug, admission.leaseToken, () => buildPairContextReport({ pairAddress: address, chain }));
+      if (res.built && res.report) report = res.report; // afișăm ce am calculat (chiar dacă publicarea a fost lost_lease)
+    } else if ((admission.action === "serve_fresh" || admission.action === "serve_stale") && admission.payload) {
+      report = admission.payload as PairContextReport;
+    }
+    // rate_limited | busy → notă ieftină.
+  }
+
+  if (!report) return <DemoBusy action={admissionAction} />;
 
   // Same envelope an MCP client gets back from tp_pair_context — copy/paste ready.
   const envelope = report.ok
@@ -115,6 +154,7 @@ export default async function PairContextDemoPage({ params }: Props) {
       </header>
 
       <main style={styles.main}>
+        <CacheBanner servedFrom={servedFrom} ageSec={cacheAge} />
         {!report.ok ? (
           <ErrorState code={report.errorCode} message={report.errorMessage} />
         ) : (
@@ -136,6 +176,52 @@ export default async function PairContextDemoPage({ params }: Props) {
 }
 
 // ── Sub-components ──────────────────────────────────────────────────────────
+
+// PH-11 (item 6): onestitatea prospețimii — marcăm EXPLICIT valorile servite din cache drept snapshot + vârsta lui.
+function fmtCacheAge(sec: number | null): string {
+  if (sec === null || !Number.isFinite(sec)) return "recently";
+  if (sec < 60)   return `${sec}s ago`;
+  if (sec < 3600) return `${Math.round(sec / 60)}m ago`;
+  return `${Math.round(sec / 3600)}h ago`;
+}
+function CacheBanner({ servedFrom, ageSec }: { servedFrom: DemoServedFrom; ageSec: number | null }) {
+  if (servedFrom === "build" || servedFrom === "none") return null;
+  const stale = servedFrom === "stale";
+  return (
+    <div style={stale ? styles.staleBanner : styles.cacheBanner}>
+      {stale
+        ? `⚠ Serving a cached fallback — the live demo is busy. Snapshot built ${fmtCacheAge(ageSec)}; freshness below is as-of-snapshot, not live.`
+        : `Cached snapshot · built ${fmtCacheAge(ageSec)}. Freshness below is as-of-snapshot, not live.`}
+    </div>
+  );
+}
+
+// PH-11: notă IEFTINĂ (zero Redis, zero build) când suntem peste rate-limit per-IP sau peste bugetul global.
+function DemoBusy({ action }: { action: DemoAction }) {
+  const rateLimited = action === "rate_limited";
+  return (
+    <div style={styles.page}>
+      <header style={styles.topbar}>
+        <span style={styles.brand}>✈ PREFLIGHT</span>
+        <span style={styles.topbarNote}>demo · cache-only · no live calls</span>
+      </header>
+      <main style={styles.main}>
+        <div style={styles.card}>
+          <div style={{ ...styles.badge, ...styles.badgeAmber }}>{rateLimited ? "SLOW DOWN" : "BUSY"}</div>
+          <h1 style={styles.h1}>{rateLimited ? "Too many requests" : "Demo is busy right now"}</h1>
+          <p style={styles.dim}>
+            {rateLimited
+              ? "You are refreshing faster than the public demo allows. Give it a few seconds and reload."
+              : "The public demo is at capacity for a moment. Reload shortly — or connect your own agent for unthrottled access."}
+          </p>
+        </div>
+      </main>
+      <footer style={styles.footer}>
+        Preflight reports observed market context only. The agent decides.
+      </footer>
+    </div>
+  );
+}
 
 function ErrorState({ code, message }: { code?: string; message?: string }) {
   return (
@@ -538,6 +624,24 @@ const styles: Record<string, React.CSSProperties> = {
     color:        "#888",
     fontSize:     "12px",
     lineHeight:   "1.6",
+  },
+  staleBanner: {
+    marginBottom: "14px",
+    padding:      "10px 14px",
+    background:   "#1a1305",
+    border:       "1px solid #3a2a08",
+    borderRadius: "6px",
+    color:        "#ffb020",
+    fontSize:     "12px",
+  },
+  cacheBanner: {
+    marginBottom: "14px",
+    padding:      "8px 14px",
+    background:   "#0a0a0a",
+    border:       "1px solid #1a1a1a",
+    borderRadius: "6px",
+    color:        "#777",
+    fontSize:     "11.5px",
   },
   warningsBox: {
     marginTop:    "14px",

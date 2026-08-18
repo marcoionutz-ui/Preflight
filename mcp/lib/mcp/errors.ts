@@ -65,17 +65,16 @@ export const preflightErrorEnvelopeSchema = z.object({
   error: z.object({ code: z.string(), message: z.string() }).catchall(z.unknown()),
 }).strict();
 
-export function mcpOk(data: unknown): { content: McpContent; structuredContent: Record<string, unknown> } {
-  const structured: Record<string, unknown> =
-    data !== null && typeof data === "object" && !Array.isArray(data)
-      ? (data as Record<string, unknown>)
-      : { ok: true, text: typeof data === "string" ? data : JSON.stringify(data) };
+/**
+ * PH-20 (cgpt nit PH-14): `mcpOk` acceptă DOAR un envelope valid (obiect), NU `unknown`. Vechea ramură string/non-obiect
+ * producea `{ok:true,text}` FĂRĂ `format` → nu respecta `PREFLIGHT_OUTPUT_SCHEMA` (strict). Era ramură moartă (singurul
+ * apelant e `mcpResponse`, mereu cu envelope complet {ok,format,text,meta,data?}); acum e imposibilă tipizat. Content-ul
+ * uman rămâne JSON-ul envelope-ului serializat.
+ */
+export function mcpOk(envelope: Record<string, unknown>): { content: McpContent; structuredContent: Record<string, unknown> } {
   return {
-    content: [{
-      type: "text" as const,
-      text: typeof data === "string" ? data : JSON.stringify(data, null, 2),
-    }],
-    structuredContent: structured,
+    content: [{ type: "text" as const, text: JSON.stringify(envelope, null, 2) }],
+    structuredContent: envelope,
   };
 }
 
