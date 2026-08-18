@@ -27,3 +27,16 @@ export function getRedis(): Redis | null {
   }
   return _redis;
 }
+
+/**
+ * PH-13 (graceful shutdown): închide conexiunea Redis DUPĂ persistarea finală a memoriei. `quit()` golește elegant
+ * (așteaptă comenzile în coadă), cu `disconnect()` ca fallback dur dacă `quit` aruncă. Idempotent — dacă nu există
+ * client, e no-op. Nulificăm singleton-ul ca un eventual `getRedis()` ulterior să nu întoarcă un client închis.
+ */
+export async function closeRedis(): Promise<void> {
+  if (!_redis) return;
+  const r = _redis;
+  _redis = null;
+  try { await r.quit(); }
+  catch { try { r.disconnect(); } catch { /* best-effort */ } }
+}

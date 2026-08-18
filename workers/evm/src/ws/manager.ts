@@ -5,6 +5,7 @@
 
 import WebSocket from "ws";
 import type { ChainConfig } from "../config/chains";
+import { isShuttingDown, beginJob, closeSocketsBounded } from "../lib/lifecycle";
 import { getQuoteFlowAsEth, toPoolConventionAmounts, extractBaseQuote, resolveLpNativeAmount } from "./quoteFlow";
 import { createReconnectManager, type BackoffConfig } from "./wsBackoff";
 import { startHeartbeat } from "./heartbeat";
@@ -69,20 +70,40 @@ const WS_HEARTBEAT_INTERVAL_MS = 30_000; // D1: fereastra ping→pong; un interv
 
 // Registry chainId→ChainConfig: controller-ul lucrează cu chainId; aici recuperăm ChainConfig-ul pt. reconnect.
 const chainRegistry = new Map<string, ChainConfig>();
+
+// PH-13 (cgpt #1): registru al TUTUROR timer-elor de reconnect/stability programate de controller. La shutdown le
+// oprim EXPLICIT (`stopWsReconnectTimers`), ca un reconnect deja programat să NU mai construiască un socket nou după
+// `markShuttingDown()`. (Guard-ul de la intrarea în `connectChainWebSocket` e a doua plasă de siguranță.)
+const wsReconnectTimers = new Set<ReturnType<typeof setTimeout>>();
+function stopWsReconnectTimers(): number {
+  let n = 0;
+  for (const h of wsReconnectTimers) { clearTimeout(h); n++; }
+  wsReconnectTimers.clear();
+  return n;
+}
+
 const wsReconnect = createReconnectManager({
   connect: (chainId) => {
+    // PH-13: nu reconecta în timpul shutdown-ului (chiar dacă un timer a scăpat de stopWsReconnectTimers).
+    if (isShuttingDown()) return;
     const chain = chainRegistry.get(chainId);
     if (chain) connectChainWebSocket(chain);
   },
   config:     WS_RECONNECT_BACKOFF,
   stableMs:   WS_STABLE_MS,
-  setTimer:   (fn, ms) => setTimeout(fn, ms),
-  clearTimer: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
+  setTimer:   (fn, ms) => { const h = setTimeout(() => { wsReconnectTimers.delete(h); fn(); }, ms); wsReconnectTimers.add(h); return h; },
+  clearTimer: (h) => { wsReconnectTimers.delete(h as ReturnType<typeof setTimeout>); clearTimeout(h as ReturnType<typeof setTimeout>); },
   rand:       Math.random,
   log:        (m) => console.log(m),
 });
 
 export function connectChainWebSocket(chain: ChainConfig): void {
+  // PH-13 (cgpt #1): guard CHIAR LA INTRARE — un timer de reconnect deja programat înainte de shutdown poate ajunge
+  // aici după `markShuttingDown()`; refuzăm să construim un socket nou în timpul închiderii.
+  if (isShuttingDown()) {
+    console.log(`[WS ${chain.id}] connect ignorat — shutdown în curs.`);
+    return;
+  }
   if (!chain.wsUrl) {
     console.log(`[CHAIN MODE] ${chain.id.toUpperCase()} — scan-only, WS/flow disabled`);
     return;
@@ -97,8 +118,9 @@ export function connectChainWebSocket(chain: ChainConfig): void {
   try {
     wsClient = new WebSocket(chain.wsUrl);
   } catch (e) {
-    console.log(`[WS ${chain.id}] Constructor WebSocket a eșuat — programez reconnect`, e);
-    wsReconnect.handleClose(chain.id);
+    console.log(`[WS ${chain.id}] Constructor WebSocket a eșuat`, e);
+    // PH-13: în timpul shutdown-ului NU reprogramăm reconnect (altfel un socket nou ar învia după ce am oprit tot).
+    if (!isShuttingDown()) wsReconnect.handleClose(chain.id);
     return;
   }
   wsClients.set(chain.id, wsClient);
@@ -118,6 +140,9 @@ export function connectChainWebSocket(chain: ChainConfig): void {
   });
 
   wsClient.on("open", () => {
+    // PH-13 (cgpt #1): un `open` poate sosi DUPĂ începerea shutdown-ului (socket deschis chiar înainte de semnal).
+    // Nu (re)subscriem și nu resetăm backoff-ul — lăsăm closeAllWebSockets să-l închidă.
+    if (isShuttingDown()) { console.log(`[WS ${chain.id}] open ignorat — shutdown în curs.`); return; }
     console.log(`[WS] Connected to Alchemy ${chain.id.toUpperCase()}`);
     wsReconnect.handleOpen(chain.id); // E27: reset backoff DOAR după WS_STABLE_MS de conexiune neîntreruptă
     swapSubIds.delete(chain.id);
@@ -137,6 +162,11 @@ export function connectChainWebSocket(chain: ChainConfig): void {
   });
 
   wsClient.on("message", async (data: Buffer) => {
+    // PH-13 (cgpt #3): un handler de mesaj poate MUTA memoria (recordSwap/recordLp/promote…). Nu porni procesare
+    // nouă după shutdown, iar cea deja pornită e URMĂRITĂ prin lifecycle (drain-ul așteaptă `__wsJob` înainte de
+    // snapshot) — altfel un mesaj async ar putea scrie memoria DUPĂ ce am persistat.
+    if (isShuttingDown()) return;
+    const __wsJob = beginJob();
     try {
       const msg = JSON.parse(data.toString());
 
@@ -432,6 +462,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
       }
 
     } catch (e) { console.log(`[WS ERR ${chain.id}]`, e); }
+    finally { __wsJob(); } // PH-13: eliberează job-ul urmărit de drain (chiar și pe eroare/return timpuriu)
   });
 
   wsClient.on("error", (err: Error) => console.log(`[WS ${chain.id}] Error: ${err.message}`));
@@ -439,7 +470,41 @@ export function connectChainWebSocket(chain: ChainConfig): void {
   wsClient.on("close", () => {
     heartbeat.stop();
     clearScopedSubsForChain(scopedSubStore, chain.id); // D3: subscripțiile mor cu socketul → stare goală
+    // PH-13 (cgpt #3): dacă închidem în cadrul unui shutdown, NU reprogramăm reconnect — `close` a fost provocat de
+    // `closeAllWebSockets()`, iar un socket nou reînviat ar rata drain-ul/persistarea și ar bloca ieșirea.
+    if (isShuttingDown()) {
+      console.log(`[WS ${chain.id}] Disconnected în timpul shutdown — fără reconnect.`);
+      return;
+    }
     console.log(`[WS ${chain.id}] Disconnected — programez reconnect (backoff + jitter)...`);
     wsReconnect.handleClose(chain.id); // E27: backoff + jitter + reprogramare protejată/contorizată (wsBackoff.ts)
   });
+}
+
+/**
+ * PH-13 (cgpt #4): închide TOATE socket-urile WS la shutdown, ASINCRON și BOUNDED. Se cheamă DUPĂ `markShuttingDown()`.
+ * Pași:
+ *   1. oprește EXPLICIT toate timer-ele de reconnect/stability (un reconnect programat nu mai construiește socket nou);
+ *   2. pentru fiecare socket: `close()` (FIN curat) + AȘTEAPTĂ evenimentul `close`; dacă handshake-ul nu se termină în
+ *      `perSocketTimeoutMs`, cade pe `terminate()` (închidere dură). Socket-urile se închid concurent → wall-clock
+ *      ≤ perSocketTimeoutMs, sub deadline-ul global de shutdown.
+ * Await-ul e important: fără el, un handshake în curs putea lăsa un handler să mute memoria DUPĂ snapshot (cgpt #4).
+ * Golim registrul ca un scan/health întârziat să nu mai vadă socket-uri moarte.
+ */
+export async function closeAllWebSockets(perSocketTimeoutMs = 2_000): Promise<void> {
+  const canceledTimers = stopWsReconnectTimers();
+  const sockets = [...wsClients.values()];
+  wsClients.clear();
+  // Adaptor la `ClosableSocket` (evită fricțiunea de tip cu supraîncărcările `once` din `ws`).
+  const adapters = sockets.map(s => ({
+    close:     () => s.close(),
+    terminate: () => s.terminate(),
+    once:      (ev: "close", cb: () => void) => { s.once(ev, cb); },
+  }));
+  const res = await closeSocketsBounded(adapters, {
+    perSocketTimeoutMs,
+    setTimer:   (fn, ms) => setTimeout(fn, ms),
+    clearTimer: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
+  });
+  console.log(`[WS] closeAllWebSockets — ${res.closed} socket(uri) închise (${res.terminated} terminate hard), ${canceledTimers} timer(e) de reconnect anulate.`);
 }

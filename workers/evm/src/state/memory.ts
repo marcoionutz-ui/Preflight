@@ -98,39 +98,66 @@ export function updateMemory(pool: SourcePool, price: number): PairMemoryEntry {
   return existing;
 }
 
+/**
+ * PH-13 (graceful shutdown, cgpt #3): varianta STRICTĂ a salvării — folosită la shutdown, unde o „reușită" falsă e
+ * inacceptabilă (am ieși 0 și am pierde starea). Diferă de best-effort prin trei garanții:
+ *   1. Redis lipsă (`getRedis()===null`, ex. REDIS_URL neconfigurat) → ARUNCĂ (nu „a mers", nimic scris).
+ *   2. Erorile de rețea/pipeline se PROPAGĂ (fără `catch` care le înghite).
+ *   3. Verifică rezultatele per-comandă ale `pipeline.exec()` — ioredis întoarce `[[err,res], …]`; o comandă `SET`
+ *      eșuată individual NU aruncă din `exec()`, deci o inspectăm și aruncăm pe prima eroare (altfel un snapshot
+ *      parțial scris ar trece drept succes).
+ * Caller-ul (secvența de shutdown) transformă un throw de aici în exit 1.
+ */
+export async function saveMemoryToRedisStrict(): Promise<void> {
+  const r = getRedis();
+  if (!r) throw new Error("saveMemoryToRedisStrict: Redis indisponibil (REDIS_URL lipsă) — memoria NU a fost persistată");
+
+  // B4: worker_snapshot chain-scoped — partiționăm pe chain (din cheia PairMap)
+  // și scriem o cheie per-chain (fiecare chain restaurează independent).
+  const memByChain: Record<string, Record<string, PairMemoryEntry>> = {};
+  for (const [{ chain, address: addr }, mem] of memory.entries()) {
+    (memByChain[chain] ??= {})[pairKey(chain, addr)] = { ...mem, chain, pairAddress: addr };
+  }
+  const resByChain: Record<string, Record<string, number>> = {};
+  for (const [{ chain, address: addr }, liqCtx] of poolLiquidity.entries()) {
+    (resByChain[chain] ??= {})[pairKey(chain, addr)] = liqCtx.reserveEth;
+  }
+  const savedAt = Date.now();
+  const pipe    = r.pipeline();
+  // Iterăm chain-urile RUNTIME-ului (CHAINS = ENABLED_CHAINS), nu doar cele cu date:
+  // fiecare chain deținut primește o cheie proaspătă (chiar goală `{}`) → suprascrie
+  // orice cheie stale și confirmă ownership-ul. Un chain din afara runtime-ului NU e scris.
+  for (const { id: chain } of CHAINS) {
+    const snapshot: PreflightWorkerSnapshot = {
+      version:        WORKER_VERSION,
+      savedAt,
+      memory:         memByChain[chain] ?? {},
+      poolReserveEth: resByChain[chain] ?? {},
+    };
+    pipe.set(REDIS_KEYS.workerSnapshot(chain), JSON.stringify(snapshot), "EX", 24 * 60 * 60);
+  }
+  const results = await pipe.exec();
+  // ioredis: `null` dacă pipeline-ul a fost abortat/gol; altfel un tuplu [err,res] per comandă.
+  if (results) {
+    for (const [err] of results) {
+      if (err) throw err; // o singură comandă eșuată = persist parțial → tratăm ca eșec total (fail-closed)
+    }
+  } else if (CHAINS.length > 0) {
+    throw new Error("saveMemoryToRedisStrict: pipeline.exec() a întors null deși existau chain-uri de scris");
+  }
+  console.log(`[REDIS] Worker snapshot saved (strict, per-chain): ${memory.size} pairs, ${poolLiquidity.size} reserves`);
+}
+
+/**
+ * Salvare BEST-EFFORT — folosită de save-ul PERIODIC (la fiecare 60s): o eroare tranzitorie de Redis nu trebuie să
+ * dărâme worker-ul între snapshot-uri. Delegă la varianta strictă și înghite doar la acest nivel (log, fără throw).
+ * La SHUTDOWN folosim `saveMemoryToRedisStrict` direct, ca eșecul să conteze.
+ */
 export async function saveMemoryToRedis(): Promise<void> {
   try {
-    const r = getRedis();
-    if (!r) return;
-
-    // B4: worker_snapshot chain-scoped — partiționăm pe chain (din cheia PairMap)
-    // și scriem o cheie per-chain (fiecare chain restaurează independent).
-    const memByChain: Record<string, Record<string, PairMemoryEntry>> = {};
-    for (const [{ chain, address: addr }, mem] of memory.entries()) {
-      (memByChain[chain] ??= {})[pairKey(chain, addr)] = { ...mem, chain, pairAddress: addr };
-    }
-    const resByChain: Record<string, Record<string, number>> = {};
-    for (const [{ chain, address: addr }, liqCtx] of poolLiquidity.entries()) {
-      (resByChain[chain] ??= {})[pairKey(chain, addr)] = liqCtx.reserveEth;
-    }
-    const savedAt = Date.now();
-    const pipe    = r.pipeline();
-    // Iterăm chain-urile RUNTIME-ului (CHAINS = ENABLED_CHAINS), nu doar cele cu date:
-    // fiecare chain deținut primește o cheie proaspătă (chiar goală `{}`) → suprascrie
-    // orice cheie stale și confirmă ownership-ul. Un chain din afara runtime-ului NU e scris.
-    for (const { id: chain } of CHAINS) {
-      const snapshot: PreflightWorkerSnapshot = {
-        version:        WORKER_VERSION,
-        savedAt,
-        memory:         memByChain[chain] ?? {},
-        poolReserveEth: resByChain[chain] ?? {},
-      };
-      pipe.set(REDIS_KEYS.workerSnapshot(chain), JSON.stringify(snapshot), "EX", 24 * 60 * 60);
-    }
-    await pipe.exec();
-    console.log(`[REDIS] Worker snapshot saved (per-chain): ${memory.size} pairs, ${poolLiquidity.size} reserves`);
-  } catch {
-    console.log(`[REDIS] Snapshot save failed`);
+    await saveMemoryToRedisStrict();
+  } catch (e) {
+    console.log(`[REDIS] Snapshot save failed (best-effort): ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 
