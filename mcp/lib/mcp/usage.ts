@@ -8,6 +8,7 @@ import { supabaseAdmin } from "@/lib/db/supabase-admin";
 import { getRedis }      from "@/lib/db/redis";
 import { randomUUID }    from "crypto";
 import { emergencyQuotaAllow, clearDegradedQuota } from "./degraded";
+import { monthlyQuotaKey, yearMonthUTC, type QuotaSubject } from "@/lib/db/quotaKey";
 
 export interface UsageLog {
   client_id:    string;
@@ -77,10 +78,16 @@ export async function getMonthlyCreditsUsed(clientId: string): Promise<number> {
 
 const QUOTA_KEY_TTL_SEC = 32 * 24 * 60 * 60; // outlives any calendar month; next month just uses a new key
 
-function quotaKey(clientId: string): string {
-  const now = new Date();
-  const ym  = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
-  return `mcp:quota:${clientId}:${ym}`;
+// PH-2 (9b): cheia lunară e derivată din SUBIECT via `monthlyQuotaKey` (leaf pur aprobat), NU mai construită aici.
+//   subiect client → `mcp:quota:${clientId}:${ym}` (IDENTIC cu formula veche → contoarele client_credentials NU se
+//   resetează). subiect account → `mcp:quota:acct:${userId}:${ym}` (doi clienți ai aceluiași user împart o quota).
+
+/** Id stabil pentru plasa degraded in-process. Client → `clientId` (IDENTIC cu azi). Account → `acct:${userId}`.
+ *  EXPLICIT pe ambele kind-uri, fără fallback implicit: un kind necunoscut → aruncă (fail-closed, prins de apelant). */
+function degradedBucketId(subject: QuotaSubject): string {
+  if (subject.kind === "account") return `acct:${subject.userId}`;
+  if (subject.kind === "client")  return subject.clientId;
+  throw new Error(`degradedBucketId: kind invalid „${(subject as { kind?: unknown }).kind}"`);
 }
 
 /**
@@ -158,16 +165,29 @@ return redis.call("DECRBY", KEYS[1], credits)
  * din middleware).
  */
 export async function reserveQuota(
-  clientId:     string,
+  subject:      QuotaSubject,
   credits:      number,
   monthlyQuota: number,
 ): Promise<QuotaOutcome> {
+  // 1. Validează SUBIECTUL PRIMUL (cgpt, fail-closed): construiește cheia (ARUNCĂ pe subiect malformat) ÎNAINTE de
+  //    ramurile unlimited / Redis / degraded — un subiect invalid → `unavailable`, NICIODATĂ `unlimited` sau
+  //    `degraded` (nu trebuie să scape prin plasa degraded fără să fi trecut validarea). reserveQuota NU aruncă
+  //    (rulează înainte de try/catch-ul din middleware) → orice throw devine `unavailable` (nu crash, nu quota gratis).
+  let key: string;
+  try {
+    key = monthlyQuotaKey(subject, yearMonthUTC(new Date()));
+  } catch (err) {
+    console.error("[QUOTA] subiect invalid pentru cheie:", err instanceof Error ? err.message : err);
+    return { status: "unavailable" };
+  }
+
+  // 2. unlimited abia DUPĂ ce subiectul e valid (un subiect malformat cu quota -1 tot e `unavailable`, nu `unlimited`).
   if (monthlyQuota === -1) return { status: "unlimited" };
 
+  // 3. Redis / plasa degraded — subiect deja validat. Bucket EXPLICIT pe ambele kind-uri.
+  const bucketId = degradedBucketId(subject);
   const r = getRedis();
-  if (!r) return degradedQuota(clientId);
-
-  const key = quotaKey(clientId);
+  if (!r) return degradedQuota(bucketId);
 
   try {
     const result = await r.eval(
@@ -179,8 +199,8 @@ export async function reserveQuota(
       String(QUOTA_KEY_TTL_SEC),
     ) as [number, number];
 
-    // Redis a răspuns → clientul iese din degraded.
-    clearDegradedQuota(clientId);
+    // Redis a răspuns → subiectul iese din degraded.
+    clearDegradedQuota(bucketId);
 
     // Lua întoarce {0, current} fără să atingă Redis când e depășit; {1, newTotal} când a incrementat.
     return result[0] === 1
@@ -188,16 +208,16 @@ export async function reserveQuota(
       : { status: "exceeded", used: Number(result[1]) };
   } catch (err) {
     console.error("[QUOTA] reserve degraded:", err instanceof Error ? err.message : err);
-    return degradedQuota(clientId);
+    return degradedQuota(bucketId);
   }
 }
 
 /**
  * E10: plasa locală bounded pentru quota când Redis nu răspunde. `allow` → `degraded` (permis, NEreconciliat);
- * buget/fereastră epuizat → `unavailable` (→ QUOTA_UNAVAILABLE, eroare MCP).
+ * buget/fereastră epuizat → `unavailable` (→ QUOTA_UNAVAILABLE, eroare MCP). `bucketId` din `degradedBucketId`.
  */
-function degradedQuota(clientId: string): QuotaOutcome {
-  return emergencyQuotaAllow(clientId) === "allow" ? { status: "degraded" } : { status: "unavailable" };
+function degradedQuota(bucketId: string): QuotaOutcome {
+  return emergencyQuotaAllow(bucketId) === "allow" ? { status: "degraded" } : { status: "unavailable" };
 }
 
 /**

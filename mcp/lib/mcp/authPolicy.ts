@@ -16,6 +16,8 @@ import type { TokenValidation, RateLimitOutcome } from "../db/oauth-tokens";
 import type { ClientLookup } from "../db/clientLookup";
 import type { FamilyState } from "../db/oauth-refresh";
 import { tokenAudienceValid } from "../oauth/resource";
+import { parseTokenSubject } from "../oauth/subjectClaims";
+import type { QuotaSubject } from "../db/quotaKey";
 
 export const AUTH_RETRY_MS       = 75;  // un singur retry rapid pe „unavailable" înainte de 503
 export const UNAVAILABLE_RETRY_S = 2;   // Retry-After (secunde) pe 503
@@ -25,10 +27,36 @@ export interface AuthResult {
   clientId?:   string;
   scopes?:     string[];
   plan?:       string;
+  // PH-2 (9b-wire): subiectul de quota derivat din TOKEN (account pe user_id / client pe client_id). Setat pe toate
+  // căile `ok:true`; ruta îl pune neschimbat în `ToolContext.quotaSubject`. Absent pe căile de eroare.
+  subject?:    QuotaSubject;
   error?:      string;
   errorCode?:  string;
   status?:     number;
   retryAfter?: number;
+}
+
+/**
+ * PH-2 (9b-wire): mapează payload-ul de token la SUBIECTUL de quota, FAIL-CLOSED (cgpt):
+ *   - `subject_kind` ABSENT  → token dinainte de cutover (client-only) → fallback CLIENT pe `fallbackClientId`.
+ *   - `subject_kind = user`  ȘI subiect user VALID → ACCOUNT pe `user_id`.
+ *   - `subject_kind = client` ȘI subiect client VALID → CLIENT pe `fallbackClientId`.
+ *   - `subject_kind` PREZENT dar formă INVALIDĂ (user incomplet, kind necunoscut, claim interzis) → `null` = RESPINGE.
+ * Fallback-ul pe client e permis DOAR la absența lui `subject_kind`; un `subject_kind` prezent-dar-malformat NU cade
+ * tăcut pe quota clientului (altfel un rollout parțial ar taxa silențios clientul în locul contului). `null` →
+ * `resolveAuth` întoarce 401 INVALID_TOKEN. Pur → testabil izolat.
+ */
+export function quotaSubjectFromToken(payload: unknown, fallbackClientId: string): QuotaSubject | null {
+  const kind = (payload && typeof payload === "object")
+    ? (payload as { subject_kind?: unknown }).subject_kind
+    : undefined;
+  if (kind === undefined) return { kind: "client", clientId: fallbackClientId }; // legacy: fără subject_kind
+
+  const s = parseTokenSubject(payload); // subject_kind prezent → cere subiect VALID de forma declarată
+  if (!s) return null;                  // prezent dar invalid/necunoscut → RESPINGE (nu fallback tăcut pe client)
+  return s.subject_kind === "user"
+    ? { kind: "account", userId: s.user_id }
+    : { kind: "client", clientId: fallbackClientId };
 }
 
 export interface AuthDeps {
@@ -70,7 +98,7 @@ export function resolveDevBypass(env: { nodeEnv: string | undefined; bypassFlag:
   if ((env.nodeEnv ?? "").trim().toLowerCase() === "production") return null;
   // Opt-in explicit — absența unei chei NU mai deschide ușa (fail-closed).
   if (!isDevBypassEnabled(env.bypassFlag)) return null;
-  return { ok: true, clientId: "dev", scopes: ["read:all"], plan: "internal" };
+  return { ok: true, clientId: "dev", scopes: ["read:all"], plan: "internal", subject: { kind: "client", clientId: "dev" } };
 }
 
 function unauthorized(code: string, message: string): AuthResult {
@@ -156,6 +184,16 @@ export async function resolveAuth(authHeader: string, deps: AuthDeps): Promise<A
     return { ok: false, error: "Rate limit exceeded", errorCode: "RATE_LIMITED", status: 429, retryAfter: rl.retry_after };
   }
 
+  // PH-2 (9b-wire): subiectul de quota vine din TOKEN (nu din context reconstruit). Azi payload-ul e client-only →
+  // subiect CLIENT (cheie identică cu azi). La cutover, tokenurile user vor purta subject_kind=user → ACCOUNT pe
+  // user_id, fără altă schimbare aici. Fail-closed: un `subject_kind` prezent dar malformat/necunoscut → `null` →
+  // 401 (NU taxăm tăcut clientul în locul contului). (Condiționarea `credential_version` pe kind + emiterea
+  // tokenurilor user = cutover/step 10; aici doar DERIVĂM subiectul din ce poartă tokenul.)
+  const subject = quotaSubjectFromToken(v.payload, client.client_id);
+  if (!subject) {
+    return unauthorized("INVALID_TOKEN", "Token subject malformed");
+  }
+
   deps.touch(client.client_id);
-  return { ok: true, clientId: client.client_id, scopes: v.payload.scopes, plan: client.plan };
+  return { ok: true, clientId: client.client_id, scopes: v.payload.scopes, plan: client.plan, subject };
 }

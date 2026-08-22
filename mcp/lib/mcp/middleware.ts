@@ -7,12 +7,15 @@
  * - Timing per tool call
  */
 
-import { AsyncLocalStorage }           from "async_hooks";
 import type { McpServer }              from "@modelcontextprotocol/sdk/server/mcp.js";
 import { logUsage, generateRequestId, reserveQuota, refundQuota } from "./usage";
 import { getToolCredits, resolvePlan }                  from "./billing";
 import { toolAuthorized }                               from "./scopes";
 import { mcpErr, ERR, sanitizeToolError }                                   from "./errors";
+// PH-2 (9b-wire): context + builder pur trăiesc în `toolContext.ts` (modul ușor, testabil). Re-exportate aici ca
+// importurile caller-ilor (`route.ts`, `tp_watch_pair.ts`) să rămână neschimbate.
+import { getToolContext } from "./toolContext";
+export { withToolContext, getToolContext, buildToolContext, type ToolContext } from "./toolContext";
 
 // ── Plan-mismatch telemetry (E10) ──────────────────────────────────────────────
 // Loud but de-duplicat: un plan necunoscut din DB (typo / plan legacy / drift DB↔cod) → degradat la free_trial,
@@ -34,28 +37,6 @@ function logPlanMismatchOnce(clientId: string, receivedPlan: string): void {
     planMismatchLoggedAt.delete(oldest);
   }
   console.warn(`[PLAN_CONFIG_MISMATCH] clientId=${clientId} receivedPlan=${receivedPlan || "(none)"} fallback=free_trial`);
-}
-
-// ── Request context ───────────────────────────────────────────────────────────
-
-export interface ToolContext {
-  clientId: string;
-  scopes:   string[];
-  plan?:    string;
-}
-
-const contextStorage = new AsyncLocalStorage<ToolContext>();
-
-/**
- * Rulează fn în contextul requestului curent.
- * Fiecare request are contextul lui izolat — thread-safe.
- */
-export function withToolContext<T>(ctx: ToolContext, fn: () => T): T {
-  return contextStorage.run(ctx, fn);
-}
-
-export function getToolContext(): ToolContext {
-  return contextStorage.getStore() ?? { clientId: "unknown", scopes: [] };
 }
 
 // ── Server instrumentation ────────────────────────────────────────────────────
@@ -112,7 +93,9 @@ export function createInstrumentedServer(server: McpServer): McpServer {
       // MCP cu isError + retryAfter — NU un HTTP 503; quota-gate e per-tool, în interiorul dispatch-ului MCP,
       // deci nu poate emite un status HTTP ca auth/rate-limit). Distinct de `exceeded` (limită lunară reală).
       // reserved|unlimited|degraded → trece mai departe.
-      const quota = await reserveQuota(ctx.clientId, credits, planConfig.monthly_quota);
+      // PH-2 (9b-wire): quota lunară pe SUBIECTUL purtat din `resolveAuth` (NU reconstruit aici). Token client →
+      // subiect client → cheie identică cu azi; token user (la cutover) → subiect account → quota pe user_id.
+      const quota = await reserveQuota(ctx.quotaSubject, credits, planConfig.monthly_quota);
       if (quota.status === "unavailable") {
         logUsage({
           client_id:    ctx.clientId,
