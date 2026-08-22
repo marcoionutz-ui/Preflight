@@ -52,4 +52,5 @@ jobs:
           REDIS_URL: redis://localhost:6379
           PH4_LIVE_REDIS_URL: redis://localhost:6379
           PH4_INTEGRATION_ALLOW: '1'
+          QUOTA_INTEGRATION_ALLOW: '1'
         run: npm run test:integration -w @preflight/mcp
