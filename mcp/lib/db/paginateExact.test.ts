@@ -89,12 +89,19 @@ check("3. altă eroare → NU missing", isMissingTable({ code: "42501", message:
   check("11. pageSize 0 → aruncă", threw === true);
 }
 
-// ── ⭐⭐⭐ head.count=null fără eroare → aruncă (fail-closed, nu 0) (cgpt nit 1) ──
+// ── ⭐⭐⭐ head.count=null pe tabel care EXISTĂ → aruncă (fail-closed, nu 0) (cgpt nit 1) ──
 {
   const { f } = makeFetcher([1, 2, 3], { headCountNull: true });
   let threw = false, msg = "";
   try { await paginateExact<number>(f, 1000); } catch (e) { threw = true; msg = String(e); }
-  check("12. ⭐⭐⭐ count=null fără eroare → aruncă (nu tratează ca 0)", threw === true && /necunoscut/.test(msg));
+  check("12. ⭐⭐⭐ count=null (tabel existent) → aruncă (nu tratează ca 0)", threw === true && /necunoscut/.test(msg));
+}
+// ── ⭐⭐⭐ REGRESIE: count=null la HEAD + tabel ABSENT la citire (pre-schema) → present=false, NU aruncă ──
+{
+  const { f } = makeFetcher([1, 2, 3], { headCountNull: true, errOnCall: 1, err: { code: "42P01", message: 'could not find the table' } });
+  let threw = false; let res: { present: boolean } | null = null;
+  try { res = await paginateExact<number>(f, 1000); } catch { threw = true; }
+  check("13. ⭐⭐⭐ count=null la HEAD + absent la citire → present=false (nu aruncă; pre-schema)", threw === false && res?.present === false);
 }
 
 console.log("\n" + passed + " passed, " + failed + " failed");

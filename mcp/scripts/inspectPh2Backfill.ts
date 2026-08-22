@@ -18,7 +18,10 @@
  * Corectitudine: paginare stabilă + `count(*)` exact la SURSĂ ȘI ȚINTĂ (leaf `paginateExact`, testat separat);
  * orphan check pe `auth.users`; drift COMPLET (inclusiv `entitlement_version` + `expires_at`) via `driftCompare`;
  * „tabel absent” = DOAR `42P01`/„does not exist” (orice altă eroare aruncă). Verdict PUR (`evaluateBackfillVerdict`).
+ *
+ * Rulare:  npm run inspect:ph2 -w @preflight/mcp -- --phase=pre-schema   (bootstrap-ul încarcă .env.local + WebSocket).
  */
+import "./inspectBootstrap"; // PRIMUL: .env.local + polyfill WebSocket (Node < 22) înainte de supabase-admin
 import { supabaseAdmin } from "../lib/db/supabase-admin";
 import { computeEntitlementBackfill } from "../lib/db/entitlementBackfill";
 import { computeRegistrationBackfill } from "../lib/db/registrationBackfill";

@@ -34,20 +34,22 @@ export async function paginateExact<T>(f: PageFetcher, pageSize: number, label =
     if (isMissingTable(head.error)) return { rows: [], expected: 0, present: false };
     throw new Error(`count ${label} eșuat: ${head.error.message}`);
   }
-  // fail-closed: un count exact NECUNOSCUT (null fără eroare) NU e 0 — nu putem verifica integritatea paginării.
-  if (!Number.isInteger(head.count)) throw new Error(`count ${label} necunoscut (count=null fără eroare) — fail-closed`);
-  const expected = head.count as number;
-
+  // NB: un tabel ABSENT poate întoarce count=null FĂRĂ eroare la HEAD (schema-cache PostgREST). Nu decidem
+  // integritatea încă — întâi paginăm. Dacă prima pagină dă „tabel absent”, e pre-schema legitim → present=false.
+  // Abia dacă tabelul EXISTĂ aplicăm fail-closed pe count=null.
   const rows: T[] = [];
   for (let from = 0; ; from += pageSize) {
     const { data, error } = await f.fetchRange(from, from + pageSize - 1);
     if (error) {
-      if (isMissingTable(error)) return { rows: [], expected: 0, present: false }; // dispărut între HEAD și citire
+      if (isMissingTable(error)) return { rows: [], expected: 0, present: false }; // absent (sau dispărut între HEAD și citire)
       throw new Error(`citire pagină ${label} eșuată: ${error.message}`);
     }
     const page = (data ?? []) as T[];
     rows.push(...page);
     if (page.length < pageSize) break;
   }
-  return { rows, expected, present: true };
+
+  // tabelul EXISTĂ (nicio eroare de tabel-absent la citire) → un count exact NECUNOSCUT acum e fail-closed (nu 0).
+  if (!Number.isInteger(head.count)) throw new Error(`count ${label} necunoscut (count=null fără eroare) — fail-closed`);
+  return { rows, expected: head.count as number, present: true };
 }
