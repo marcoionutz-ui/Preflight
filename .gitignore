@@ -50,3 +50,5 @@ next-env.d.ts
 *:Zone.Identifier
 
 create-client.tsnode_modules/
+
+**/node_modules/
