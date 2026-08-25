@@ -15,9 +15,14 @@
 import type { TokenValidation, RateLimitOutcome } from "../db/oauth-tokens";
 import type { ClientLookup } from "../db/clientLookup";
 import type { FamilyState } from "../db/oauth-refresh";
+import type { GrantLookup } from "../db/grantLookup";
+import type { AccountEntitlementLookup } from "../db/entitlementLookup";
+import type { ScopeLimits } from "../db/quotaAtomic";
 import { tokenAudienceValid } from "../oauth/resource";
 import { parseTokenSubject } from "../oauth/subjectClaims";
-import { tokenCredentialVersion, tokenFamilyId } from "../oauth/tokenPayloadModel";
+import { tokenCredentialVersion, tokenFamilyId, type UserTokenPayload } from "../oauth/tokenPayloadModel";
+import { verifyUserTokenGrant } from "../oauth/userTokenGrantVerify";
+import { verifyUserAccount } from "../oauth/userAccountVerify";
 import type { QuotaSubject } from "../db/quotaKey";
 
 export const AUTH_RETRY_MS       = 75;  // un singur retry rapid pe „unavailable" înainte de 503
@@ -74,6 +79,13 @@ export interface AuthDeps {
   // Injectată de `auth.ts` (Redis). Absentă în testele pure E10. Când e furnizată ȘI tokenul are family_id, o familie
   // REVOCATĂ → 401 INVALID_TOKEN (revocarea ajunge și la access token-urile deja emise, nu doar la refresh).
   familyState?: (familyId: string) => Promise<FamilyState>;
+  // PH-2 step 10.5a frunza 4b — deps pentru ramura USER (auth-code). Opționale: testele client/legacy NU le injectează
+  // (nu ating ramura user); vor fi cablate de `auth.ts` în frunza 4c (încă NEcablate — slice dormant). Un token USER care ajunge FĂRĂ ele → 503 fail-closed (nu-l
+  // putem valida). `getGrant` = citirea grantului pinnat la consimțământ; `getAccountEntitlement` = starea CURENTĂ a
+  // contului; `checkAccountRate` = rate-limit ATOMIC account primar + client secundar (9a).
+  getGrant?:              (grantId: string) => Promise<GrantLookup>;
+  getAccountEntitlement?: (userId: string) => Promise<AccountEntitlementLookup>;
+  checkAccountRate?:      (userId: string, account: ScopeLimits, clientId: string, client: ScopeLimits) => Promise<RateLimitOutcome>;
 }
 
 /**
@@ -160,6 +172,13 @@ export async function resolveAuth(authHeader: string, deps: AuthDeps): Promise<A
     }
   }
 
+  // PH-2 step 10.5a frunza 4b: FORK pe subiect. Un token USER (auth-code) se validează pe GRANT (consimțământ pinnat)
+  // + CONT (stare curentă) + rate-limit atomic account+client, NU pe secretul clientului. Verificarea de audience +
+  // familie de mai sus se aplică deja și userului (token user are audience + family_id). Client/legacy continuă mai jos.
+  if (v.payload.subject_kind === "user") {
+    return resolveUserAuth(v.payload, deps);
+  }
+
   // 2. Client + rotație de secret. NF4: distinge „client inexistent/revocat" (401 onest) de „Supabase indisponibil"
   //    (503 AUTH_UNAVAILABLE — la fel ca Redis jos la token: 1 retry scurt, apoi 503, NICIODATĂ 401 fals). Rotația
   //    de secret (credential_version ≠ secret_rotated_at) rămâne 401 (verificare reușită, token invalidat).
@@ -204,4 +223,87 @@ export async function resolveAuth(authHeader: string, deps: AuthDeps): Promise<A
 
   deps.touch(client.client_id);
   return { ok: true, clientId: client.client_id, scopes: v.payload.scopes, plan: client.plan, subject };
+}
+
+/**
+ * PH-2 step 10.5a frunza 4b — ramura de auth pentru tokenurile USER (auth-code), PURĂ + injectabilă.
+ *
+ * Un access token USER e valid pe DOUĂ axe (fail-closed pe fiecare), NU pe secretul clientului:
+ *   1. CLIENT — există (existență + limitele lui pt. fereastra secundară anti-abuz). NU verificăm `credential_version`:
+ *      rotația secretului clientului NU invalidează un token user (validitatea = grant/cont). `not_found` → 401,
+ *      `unavailable` → 1 retry → 503.
+ *   2. GRANT — `getGrant` + `verifyUserTokenGrant`: grantul (consimțământul pinnat la emitere) e ACTIV și consistent cu
+ *      claim-urile tokenului (user_id/client_id/audience/entitlement_version/scopes⊆grant). `not_found` → 401 (consimțământ
+ *      șters), `unavailable` → 503, reject → 401.
+ *   3. CONT — `getAccountEntitlement` + `verifyUserAccount`: contul CURENT e utilizabil + `entitlement_version` egal (plan
+ *      schimbat → 401). `unavailable` → 503.
+ *   4. RATE-LIMIT — atomic account PRIMAR (limitele contului) + client SECUNDAR anti-abuz (limitele clientului), all-or-
+ *      nothing (9a). `limited` → 429, `unavailable` → 503 RATE_LIMIT_UNAVAILABLE.
+ * OK → subiect = CONT (`user_id`), `plan` din entitlement, `scopes` din token. Deps user lipsă → 503 (nu-l putem valida).
+ */
+export async function resolveUserAuth(payload: UserTokenPayload, deps: AuthDeps): Promise<AuthResult> {
+  if (!deps.getGrant || !deps.getAccountEntitlement || !deps.checkAccountRate) {
+    // Config lipsă (nu „credențial greșit") → 503, nu 401. Vor fi cablate de `auth.ts` în frunza 4c (deocamdată NEcablate).
+    return unavailable("AUTH_UNAVAILABLE", "Authentication backend temporarily unavailable");
+  }
+
+  // 1. Client — existență + limitele secundare. FĂRĂ gate de credential_version (validitatea user ≠ secret client).
+  let cl = await deps.getClient(payload.client_id);
+  if (cl.status === "unavailable") {
+    await deps.sleep(AUTH_RETRY_MS);
+    cl = await deps.getClient(payload.client_id);
+  }
+  if (cl.status === "unavailable") return unavailable("AUTH_UNAVAILABLE", "Authentication backend temporarily unavailable");
+  if (cl.status === "not_found")   return unauthorized("UNAUTHORIZED", "Client not found or revoked");
+  const client = cl.client;
+  // Granița fail-closed: confirmă EXPLICIT că rândul întors e chiar clientul tokenului (nu te baza pe filtrul
+  // lookup-ului). Un adaptor defect care întoarce alt client ar face rate-limit/`touch`/`AuthResult.clientId` pe
+  // identitatea greșită, deși grantul e validat față de `payload.client_id` — aceeași apărare ca verifyUserTokenGrant.
+  if (client.client_id !== payload.client_id) return unauthorized("INVALID_TOKEN", "client_id mismatch (wrong client row)");
+
+  // 2. Grant — consimțământul pinnat la emitere. getGrant `not_found` = grant șters/inexistent → 401 (nu 503).
+  let gl = await deps.getGrant(payload.grant_id);
+  if (gl.status === "unavailable") {
+    await deps.sleep(AUTH_RETRY_MS);
+    gl = await deps.getGrant(payload.grant_id);
+  }
+  if (gl.status === "unavailable") return unavailable("AUTH_UNAVAILABLE", "Authentication backend temporarily unavailable");
+  if (gl.status === "not_found")   return unauthorized("INVALID_TOKEN", "Grant no longer exists");
+  const gv = verifyUserTokenGrant({
+    grant:              gl.grant,
+    grantId:            payload.grant_id,
+    userId:             payload.user_id,
+    clientId:           payload.client_id,
+    audience:           payload.audience,
+    entitlementVersion: payload.entitlement_version,
+    scopes:             payload.scopes,
+  });
+  if (!gv.ok) return unauthorized("INVALID_TOKEN", "Grant no longer valid for this token");
+
+  // 3. Cont — starea CURENTĂ. verifyUserAccount discriminează 503 (outage) de 401 (retras/stale/user greșit).
+  let el = await deps.getAccountEntitlement(payload.user_id);
+  if (el.status === "unavailable") {
+    await deps.sleep(AUTH_RETRY_MS);
+    el = await deps.getAccountEntitlement(payload.user_id);
+  }
+  const av = verifyUserAccount(el, payload.user_id, payload.entitlement_version);
+  if (!av.ok && av.kind === "unavailable") return unavailable("AUTH_UNAVAILABLE", "Authentication backend temporarily unavailable");
+  if (!av.ok)                              return unauthorized("INVALID_TOKEN", "Account not valid for this token");
+  const entitlement = av.entitlement;
+
+  // 4. Rate-limit ATOMIC: account primar (limitele contului) + client secundar anti-abuz (limitele clientului).
+  const rl = await deps.checkAccountRate(
+    payload.user_id,
+    { perMinute: entitlement.rate_limit_per_minute, perDay: entitlement.rate_limit_per_day },
+    client.client_id,
+    { perMinute: client.rate_limit_per_minute,      perDay: client.rate_limit_per_day },
+  );
+  if (rl.status === "unavailable") return unavailable("RATE_LIMIT_UNAVAILABLE", "Rate limiter temporarily unavailable");
+  if (rl.status === "limited") {
+    return { ok: false, error: "Rate limit exceeded", errorCode: "RATE_LIMITED", status: 429, retryAfter: rl.retry_after };
+  }
+
+  // 5. OK — subiect = CONT (user_id), plan din entitlement (nu din client), scopes din token.
+  deps.touch(client.client_id);
+  return { ok: true, clientId: client.client_id, scopes: payload.scopes, plan: entitlement.plan, subject: { kind: "account", userId: payload.user_id } };
 }
