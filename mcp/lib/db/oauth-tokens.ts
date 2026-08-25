@@ -75,7 +75,9 @@ export async function issueToken(payload: TokenPayload): Promise<string | null> 
  * valoarea serializată, ca `consumeCodeAndIssueToken` (oauth-codes) să facă scrierea ATOMIC cu consumul codului
  * (un singur EVAL). `issueToken` de mai sus rămâne pentru client_credentials (scriere directă, fără cod de consumat).
  */
-export function mintToken(payload: TokenPayload): { token: string; key: string; value: string } {
+// PH-2 10.4c: generic pe payload (serializează orice formă validă) — acceptă și `UserTokenPayload` (finalizat),
+// nu doar `TokenPayload` client-shaped. Doar `JSON.stringify` + hash; forma e garantată de builder-ul apelantului.
+export function mintToken<T>(payload: T): { token: string; key: string; value: string } {
   const token = randomBytes(32).toString("hex");
   return { token, key: `mcp:token:${hashToken(token)}`, value: JSON.stringify(payload) };
 }

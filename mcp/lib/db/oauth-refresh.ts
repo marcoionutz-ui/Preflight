@@ -26,8 +26,9 @@ function hashRefresh(token: string): string {
 /** Id de familie nou (lanț de rotație) — random, opac. */
 export function newFamilyId(): string { return randomBytes(16).toString("hex"); }
 
-/** Mint refresh token FĂRĂ scriere → token plain (de returnat clientului) + hash + cheie Redis + valoare serializată. */
-export function mintRefreshToken(payload: RefreshPayload): { token: string; hash: string; key: string; value: string } {
+/** Mint refresh token FĂRĂ scriere → token plain (de returnat clientului) + hash + cheie Redis + valoare serializată.
+ *  PH-2 10.4c: generic pe payload — acceptă și `UserRefreshPayload` (finalizat), nu doar `RefreshPayload` client. */
+export function mintRefreshToken<T>(payload: T): { token: string; hash: string; key: string; value: string } {
   const token = randomBytes(32).toString("hex");
   const hash  = hashRefresh(token);
   return { token, hash, key: refreshKey(hash), value: JSON.stringify(payload) };

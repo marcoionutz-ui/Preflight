@@ -25,6 +25,8 @@ import {
 } from "./oauthAtomic";
 import { mintToken, TOKEN_TTL_SEC, REFRESH_TTL_SEC, type TokenPayload } from "./oauth-tokens";
 import { newFamilyId, mintRefreshToken, familyKey } from "./oauth-refresh";
+import { finalizeUserTokenPayload, type UserTokenDraft } from "../oauth/tokenPayloadModel";
+import { finalizeUserRefreshPayload, type UserRefreshDraft } from "../oauth/refreshPayloadModel";
 
 export type { AuthCodePayload } from "./oauthAtomic";
 
@@ -166,6 +168,45 @@ export async function consumeCodeAndIssueWithRefresh(
     issued_at:          tokenPayload.issued_at,
   };
   const refresh = mintRefreshToken(refreshPayload);
+
+  try {
+    const res = await r.eval(
+      AUTH_CODE_ISSUE_WITH_REFRESH_LUA,
+      4,
+      codeKey(code), access.key, refresh.key, familyKey(familyId),
+      raw, access.value, refresh.value,
+      String(TOKEN_TTL_SEC), String(REFRESH_TTL_SEC), refresh.hash,
+    );
+    const verdict = classifyIssueResult(res);
+    if (verdict === "issued")       return { status: "issued", token: access.token, refreshToken: refresh.token };
+    if (verdict === "write_failed") return { status: "unavailable" }; // cod PĂSTRAT → retry
+    return { status: "already_used" };
+  } catch {
+    return { status: "unavailable" };
+  }
+}
+
+/**
+ * PH-2 step 10.4c: emitere inițială la authorization_code pentru un cod cu identitate de USER. Analog exact cu
+ * `consumeCodeAndIssueWithRefresh` (ACELAȘI Lua `AUTH_CODE_ISSUE_WITH_REFRESH_LUA`, ACELEAȘI TTL-uri), dar payload-urile
+ * serializate sunt USER-shaped (access + refresh cu identitate `user_id`/`grant_id`/`entitlement_version`, FĂRĂ
+ * `credential_version`). `family_id` NOU se generează aici și e comun access + refresh (revocare la nivel de grant, ca
+ * la forma client). Draft-urile (fără familie) vin din planner-ul pur (10.4b); `finalize*` le sigilează cu familia +
+ * ARUNCĂ dacă payload-ul rezultat nu-i valid (fail-closed: mai bine 500 decât un token/refresh nerevocabil stocat).
+ *   `issued` → cod consumat + access + refresh + familie scrise atomic. `already_used`/`unavailable` ca la varianta client.
+ */
+export async function consumeCodeAndIssueUserWithRefresh(
+  code:         string,
+  raw:          string,
+  accessDraft:  UserTokenDraft,
+  refreshDraft: UserRefreshDraft,
+): Promise<IssueWithRefreshResult> {
+  const r = getRedis();
+  if (!r) return { status: "unavailable" };
+
+  const familyId = newFamilyId();
+  const access   = mintToken(finalizeUserTokenPayload(accessDraft, familyId));
+  const refresh  = mintRefreshToken(finalizeUserRefreshPayload(refreshDraft, familyId));
 
   try {
     const res = await r.eval(
