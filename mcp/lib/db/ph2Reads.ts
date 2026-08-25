@@ -12,6 +12,7 @@
 import { supabaseAdmin } from "./supabase-admin";
 import { classifyEntitlementLookup, type AccountEntitlementLookup } from "./entitlementLookup";
 import { classifyRegistrationLookup, type RegistrationLookup } from "./registrationLookup";
+import { classifyGrantLookup, type GrantLookup } from "./grantLookup";
 
 /** Entitlement-ul de cont al unui user (account_entitlements). `not_found` = user fără entitlement; `unavailable` = Supabase jos. */
 export async function getAccountEntitlement(userId: string): Promise<AccountEntitlementLookup> {
@@ -36,6 +37,26 @@ export async function getRegistrationByClientId(clientId: string): Promise<Regis
       .eq("client_id", clientId)
       .maybeSingle();
     return classifyRegistrationLookup(data, error);
+  } catch (err) {
+    return { status: "unavailable", reason: err instanceof Error ? err.message : "supabase_throw" };
+  }
+}
+
+/**
+ * Grantul de consimțământ după `grant_id` (oauth_grants), pentru validarea unui token USER în `resolveAuth`
+ * (PH-2 step 10.5a). `grant_id` din tokenul user TREBUIE rezolvat la un rând ca revocarea unui SINGUR consent
+ * (status=revoked) să conteze — altfel `grant_id` e decorativ (cgpt). `not_found` = grant inexistent → 401;
+ * `unavailable` = Supabase jos → 503 (NU 401 — grantul poate exista). `created_at` cerut EXPLICIT (altfel `found`
+ * ar întoarce un `OAuthGrant` type-unsound); un `revoked` e rând valid → `found`, gate-ul `active` e în verify.
+ */
+export async function getGrantById(grantId: string): Promise<GrantLookup> {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from("oauth_grants")
+      .select("grant_id, registration_id, client_id, user_id, resource, scopes, entitlement_version, status, created_at")
+      .eq("grant_id", grantId)
+      .maybeSingle();
+    return classifyGrantLookup(data, error);
   } catch (err) {
     return { status: "unavailable", reason: err instanceof Error ? err.message : "supabase_throw" };
   }
