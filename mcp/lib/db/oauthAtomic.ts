@@ -27,6 +27,12 @@ export interface AuthCodePayload {
   // (coduri vechi dinainte de PH-3 nu-l au; sunt tratate ca „resursă implicită canonică" la /token). Când e prezent,
   // trebuie să fie string.
   resource?:             string;
+  // PH-2 step 10 (consimțământ user): claim-urile de identitate sigilate în cod pentru un grant de USER. OPȚIONALE pe
+  // tip (un cod client-authorized / legacy NU le are), dar `isAuthCodePayload` le impune ALL-OR-NOTHING + semantic
+  // valide LA BOUNDARY (toate absente = legacy; toate prezente + valide = user; orice parțial/invalid → blob respins).
+  user_id?:              string;
+  grant_id?:             string;
+  entitlement_version?:  number;
 }
 
 /**
@@ -45,6 +51,16 @@ export function isAuthCodePayload(v: unknown): v is AuthCodePayload {
   if (!Array.isArray(o.scopes) || !o.scopes.every(s => typeof s === "string")) return false;
   // PH-3: `resource` e opțional, dar dacă e prezent trebuie să fie string (un blob cu resource ne-string e corupt).
   if (o.resource !== undefined && typeof o.resource !== "string") return false;
+  // PH-2 step 10 (cgpt): claim-urile user se impun ALL-OR-NOTHING + semantic valide CHIAR LA BOUNDARY. `peekAuthCode`
+  // (→ `isAuthCodePayload`) e SINGURUL gate înainte de consum; `/token` NU re-verifică identitatea până la 10.4, deci
+  // un cod cu claims parțiale/corupte NU trebuie să treacă drept legacy. Un cod stocat trebuie să fie FIE curat legacy
+  // (toate trei absente), FIE curat user (toate trei prezente + valide: id-uri ne-goale, entitlement_version întreg ≥1).
+  const anyUserClaim = o.user_id !== undefined || o.grant_id !== undefined || o.entitlement_version !== undefined;
+  if (anyUserClaim) {
+    if (typeof o.user_id !== "string" || o.user_id.length === 0) return false;
+    if (typeof o.grant_id !== "string" || o.grant_id.length === 0) return false;
+    if (typeof o.entitlement_version !== "number" || !Number.isInteger(o.entitlement_version) || o.entitlement_version < 1) return false;
+  }
   return true;
 }
 
