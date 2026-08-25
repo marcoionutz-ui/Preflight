@@ -7,6 +7,7 @@ import { createHash, randomBytes } from "crypto";
 import { getRedis }                from "./redis";
 import { emergencyRateAllow, clearDegradedRate } from "../mcp/degraded";
 import { parseStoredToken }        from "../mcp/tokenGuard";
+import type { StoredTokenPayload } from "../oauth/tokenPayloadModel";
 import { RL_CHECK_INCR_LUA, rateLimitFromEval, type RateLimitOutcome } from "./oauthAtomic";
 
 // E6: contractul RateLimitOutcome (ok | limited | unavailable) trăiește acum în leaf-ul `oauthAtomic.ts`
@@ -46,8 +47,12 @@ export interface TokenPayload {
  * E10: rezultat DISCRIMINAT pentru validarea tokenului. `unavailable` (Redis jos) NU trebuie confundat cu
  * `invalid` (token chiar inexistent/expirat) — caller-ul întoarce 503, nu 401. Un token neverificat NU se acceptă.
  */
+// PH-2 step 10.5a: payload-ul validat e `StoredTokenPayload` (union discriminat user/client/legacy), nu doar forma
+// client-shaped `TokenPayload`. `resolveAuth` accesează câmpurile care nu-s pe toți membrii (`credential_version`,
+// `family_id`) prin accesorii siguri pe union (`tokenCredentialVersion`/`tokenFamilyId`). `TokenPayload` rămâne
+// pentru EMITERE (issueToken/mintToken), care produce forma client-shaped.
 export type TokenValidation =
-  | { status: "valid";       payload: TokenPayload }
+  | { status: "valid";       payload: StoredTokenPayload }
   | { status: "invalid" }
   | { status: "unavailable"; reason: string };
 

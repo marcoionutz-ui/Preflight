@@ -113,8 +113,10 @@ check("41. ⭐⭐ getFamilyState FAIL-CLOSED (cgpt #2r): absent(null)->inactive,
   /\[0-9a-f\]\{64\}/.test(refreshMod) && /REFRESH_FAMILY_REVOKED[\s\S]{0,30}"revoked"/.test(refreshMod));
 
 const authpol = readFileSync("lib/mcp/authPolicy.ts", "utf8");
+// PH-2 step 10.5a: family_id se citește prin accesorul sigur pe union `tokenFamilyId(v.payload)` (payload-ul e acum
+// `StoredTokenPayload` — CLIENT M2M nu are family_id). Guard-ul pinează forma refactorizată; intenția e identică.
 check("42. ⭐⭐ resolveAuth: familie REVOCATA sau INACTIVA (absent/malformat) -> 401 INVALID_TOKEN (fail-closed)",
-  /deps\.familyState && v\.payload\.family_id/.test(authpol) && /fs === "revoked" \|\| fs === "inactive"[\s\S]{0,80}INVALID_TOKEN/.test(authpol));
+  /const familyId = tokenFamilyId\(v\.payload\)/.test(authpol) && /deps\.familyState && familyId/.test(authpol) && /fs === "revoked" \|\| fs === "inactive"[\s\S]{0,80}INVALID_TOKEN/.test(authpol));
 check("43. ⭐ resolveAuth: familyState unavailable -> retry -> 503 AUTH_UNAVAILABLE (nu 401 fals pe Redis jos)",
   /fs === "unavailable"[\s\S]{0,140}AUTH_UNAVAILABLE/.test(authpol));
 check("44. ⭐ AuthDeps declara dep-ul familyState (injectabil, optional pt. testele pure)",

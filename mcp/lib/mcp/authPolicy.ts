@@ -17,6 +17,7 @@ import type { ClientLookup } from "../db/clientLookup";
 import type { FamilyState } from "../db/oauth-refresh";
 import { tokenAudienceValid } from "../oauth/resource";
 import { parseTokenSubject } from "../oauth/subjectClaims";
+import { tokenCredentialVersion, tokenFamilyId } from "../oauth/tokenPayloadModel";
 import type { QuotaSubject } from "../db/quotaKey";
 
 export const AUTH_RETRY_MS       = 75;  // un singur retry rapid pe „unavailable" înainte de 503
@@ -140,11 +141,14 @@ export async function resolveAuth(authHeader: string, deps: AuthDeps): Promise<A
   // access token-uri, nu doar la refresh (fereastra de compromis = min(access TTL, până rotește cineva)). `familyState`
   // absent (teste pure) sau token fără family_id (grandfather / client_credentials) → sar peste. `unavailable` → 1 retry
   // scurt apoi 503 (identic cu validateToken/getClient), NICIODATĂ 401 fals pe un outage Redis.
-  if (deps.familyState && v.payload.family_id) {
-    let fs = await deps.familyState(v.payload.family_id);
+  // PH-2 step 10.5a: `family_id` nu e pe toți membrii union-ului (CLIENT nou M2M nu-l are) → accesor sigur pe union.
+  // Client/legacy/user păstrează comportamentul: undefined (client_credentials) → sare peste verificarea de familie.
+  const familyId = tokenFamilyId(v.payload);
+  if (deps.familyState && familyId) {
+    let fs = await deps.familyState(familyId);
     if (fs === "unavailable") {
       await deps.sleep(AUTH_RETRY_MS);
-      fs = await deps.familyState(v.payload.family_id);
+      fs = await deps.familyState(familyId);
     }
     if (fs === "unavailable") {
       return unavailable("AUTH_UNAVAILABLE", "Authentication backend temporarily unavailable");
@@ -171,7 +175,11 @@ export async function resolveAuth(authHeader: string, deps: AuthDeps): Promise<A
     return unauthorized("UNAUTHORIZED", "Client not found or revoked");
   }
   const client = cl.client;
-  if (!v.payload.credential_version || v.payload.credential_version !== client.secret_rotated_at) {
+  // PH-2 step 10.5a: `credential_version` nu e pe forma USER (validitatea = grant/familie) → accesor sigur pe union.
+  // Client/legacy: valoarea reală → gate-ul de rotație identic cu azi. User (dormant până la 10.5b/cutover): undefined
+  // → `!credentialVersion` true → 401 aici (ramura user propriu-zisă — getGrant/entitlement — vine în frunza 4).
+  const credentialVersion = tokenCredentialVersion(v.payload);
+  if (!credentialVersion || credentialVersion !== client.secret_rotated_at) {
     return unauthorized("UNAUTHORIZED", "Token invalidated by credential rotation");
   }
 

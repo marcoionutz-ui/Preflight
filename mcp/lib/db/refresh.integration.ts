@@ -14,6 +14,7 @@ import { createHash } from "node:crypto";
 import Redis from "ioredis";
 import { mintRefreshToken, familyKey, newFamilyId, peekRefreshToken, rotateRefreshToken, getFamilyState } from "./oauth-refresh";
 import { validateToken, REFRESH_TTL_SEC, TOKEN_TTL_SEC } from "./oauth-tokens";
+import { tokenFamilyId } from "../oauth/tokenPayloadModel";
 import { resolveAuth, type AuthDeps } from "../mcp/authPolicy";
 import type { RefreshPayload } from "./oauthAtomic";
 import type { ClientLookup } from "./clientLookup";
@@ -87,7 +88,7 @@ async function main() {
 
   // ── 2. ACCESS poartă family_id (#1) + onorat cât familia e activă ────────────
   const vA = await validateToken(accessA);
-  check("7. ⭐ access valid + payload.family_id === familyId (access poarta familia)", vA.status === "valid" && vA.payload.family_id === familyId);
+  check("7. ⭐ access valid + payload.family_id === familyId (access poarta familia)", vA.status === "valid" && tokenFamilyId(vA.payload) === familyId);
   check("8. ⭐ resolveAuth(access) cu familie ACTIVA -> ok", (await resolveAuth("Bearer " + accessA, activeDeps())).ok === true);
 
   // ── 3. Reuse A -> revocă familia; B -> respins ──────────────────────────────

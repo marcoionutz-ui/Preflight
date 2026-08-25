@@ -1,13 +1,21 @@
 /**
- * lib/mcp/tokenGuard.ts — E10 (validare runtime a payload-ului de token).
+ * lib/mcp/tokenGuard.ts — E10 (validare runtime a payload-ului de token) + PH-2 step 10.5a (union discriminat).
  *
  * `JSON.parse(raw) as TokenPayload` NU validează forma: `null`, `{}`, `42`, sau scopes ne-string sunt JSON
  * perfect valide și ar produce `{status:"valid", payload:null/…}` → `resolveAuth` ar face `payload.client_id`
  * și ar arunca → 500 neașteptat (exact calea pe care E10 pretinde că o elimină). Payload malformat = token
- * NEUTILIZABIL → `invalid` (401 INVALID_TOKEN), nu backend indisponibil. Leaf pur (doar `import type`) → testabil.
+ * NEUTILIZABIL → `invalid` (401 INVALID_TOKEN), nu backend indisponibil. Leaf pur → testabil.
+ *
+ * PH-2 step 10.5a: `parseStoredToken` DELEAGĂ acum la modelul discriminat `parseStoredTokenPayload` (o singură sursă
+ * de adevăr pentru cele trei forme: user / client nou / client legacy). Payload-ul validat e `StoredTokenPayload`
+ * (union), nu doar forma client-shaped `TokenPayload` — un access token USER (subject_kind="user", fără
+ * credential_version) trece acum ca `valid` în loc să fie respins la parse. Discriminarea + interzicerea cross-claim
+ * trăiesc în `tokenPayloadModel` (fail-closed acolo). `isTokenPayload` rămâne (guard de formă client-shaped, folosit
+ * de testele E10) dar nu mai e calea de parse.
  */
 
 import type { TokenPayload } from "../db/oauth-tokens";
+import { parseStoredTokenPayload, type StoredTokenPayload } from "../oauth/tokenPayloadModel";
 
 export function isTokenPayload(value: unknown): value is TokenPayload {
   if (!value || typeof value !== "object") return false;
@@ -28,16 +36,18 @@ export function isTokenPayload(value: unknown): value is TokenPayload {
 }
 
 export type StoredTokenResult =
-  | { status: "valid"; payload: TokenPayload }
+  | { status: "valid"; payload: StoredTokenPayload }
   | { status: "invalid" };
 
 /**
  * Interpretează blob-ul stocat în Redis. JSON invalid SAU formă invalidă → `invalid` (token neutilizabil, 401).
  * Nu întoarce niciodată `unavailable` — indisponibilitatea Redis e treaba stratului de citire (validateToken).
+ * Delegă discriminarea celor trei forme (user/client/legacy) la `parseStoredTokenPayload` (fail-closed acolo).
  */
 export function parseStoredToken(raw: string): StoredTokenResult {
   let parsed: unknown;
   try { parsed = JSON.parse(raw); }
   catch { return { status: "invalid" }; }
-  return isTokenPayload(parsed) ? { status: "valid", payload: parsed } : { status: "invalid" };
+  const payload = parseStoredTokenPayload(parsed);
+  return payload ? { status: "valid", payload } : { status: "invalid" };
 }

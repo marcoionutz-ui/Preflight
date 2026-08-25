@@ -143,6 +143,26 @@ export function tokenRequiresCredentialVersion(p: StoredTokenPayload): boolean {
   return p.subject_kind !== "user";
 }
 
+/**
+ * PH-2 step 10.5a: accesor SIGUR PE UNION pentru `credential_version`. Formele client/legacy îl poartă (rotația
+ * secretului le invalidează → `resolveAuth` compară cu `secret_rotated_at`); forma USER NU-l are (validitatea e pe
+ * grant/familie, nu pe secretul clientului) → `undefined`. Necesar fiindcă `UserTokenPayload` nu declară câmpul, deci
+ * un acces direct `p.credential_version` pe union n-ar compila. `resolveAuth` condiționează gate-ul de rotație pe kind.
+ */
+export function tokenCredentialVersion(p: StoredTokenPayload): string | undefined {
+  return p.subject_kind === "user" ? undefined : p.credential_version;
+}
+
+/**
+ * PH-2 step 10.5a: accesor SIGUR PE UNION pentru `family_id`. USER (obligatoriu, revocabil prin familia PH-4) și
+ * LEGACY (opțional — tokenurile auth-code de azi sunt client-shaped CU family_id) îl pot purta; CLIENT nou (M2M, fără
+ * refresh) NU-l are → `undefined`. Necesar fiindcă `ClientTokenPayload` nu declară câmpul. `resolveAuth` sare peste
+ * verificarea de familie când e `undefined` (client_credentials / grandfather pre-PH-4).
+ */
+export function tokenFamilyId(p: StoredTokenPayload): string | undefined {
+  return p.subject_kind === "client" ? undefined : p.family_id;
+}
+
 // ── buildere (pentru emitere, slice 10.4) ───────────────────────────────────
 // Builder-ele VALIDEAZĂ runtime ieșirea (nu doar tipul static): un tip promis ≠ o valoare validă (ex. `family_id`
 // gol trece la tip dar cade la guard). La granița de emitere aruncăm fail-closed dacă rezultatul nu-i valid, ca să
