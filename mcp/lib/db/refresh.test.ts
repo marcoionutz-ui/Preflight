@@ -35,6 +35,15 @@ check("8. parseRefresh JSON valid+forma -> payload", parseRefresh(JSON.stringify
 check("9. parseRefresh JSON stricat -> null", parseRefresh("{bad") === null);
 check("10. parseRefresh forma invalida -> null", parseRefresh(JSON.stringify({ client_id: "c1" })) === null);
 
+// ── (a') 10.4a — forma CLIENT respinge contaminarea cu identitate user (coliziune hibrid, cgpt) ──
+// Un refresh client legitim NU poarta subject_kind sau user_id/grant_id/entitlement_version; prezenta oricaruia =
+// blob necredibil -> false. Altfel un hibrid {client + user claims, fara subject_kind} trecea drept refresh client.
+check("10a. ⭐⭐⭐ client + subject_kind prezent -> false", !isRefreshPayload({ ...VALID_RP, subject_kind: "user" }));
+check("10b. ⭐⭐⭐ client + TOATE claim-urile user -> false", !isRefreshPayload({ ...VALID_RP, user_id: "u1", grant_id: "g1", entitlement_version: 2 }));
+check("10c. ⭐⭐⭐ client + un singur claim user (user_id) -> false", !isRefreshPayload({ ...VALID_RP, user_id: "u1" }));
+check("10d. ⭐⭐⭐ parseRefresh(hibrid) -> null", parseRefresh(JSON.stringify({ ...VALID_RP, user_id: "u1", grant_id: "g1", entitlement_version: 2 })) === null);
+check("10e. ⭐⭐ client curat inca valid (nu am spart forma legitima)", isRefreshPayload(VALID_RP));
+
 // ── (a) classifyRefreshRotate (mapare coduri Lua) ──
 check("11. 1 -> rotated", classifyRefreshRotate(1) === "rotated");
 check("12. -1 -> revoked", classifyRefreshRotate(-1) === "revoked");

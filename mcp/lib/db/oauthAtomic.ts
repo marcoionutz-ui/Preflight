@@ -245,10 +245,21 @@ export interface RefreshPayload {
   issued_at:          number;
 }
 
-/** Guard de formă pentru un blob de refresh stocat. Formă invalidă (JSON valid dar câmpuri greșite) → tratat ca absent. */
+/**
+ * Guard de formă pentru un blob de refresh CLIENT stocat. Formă invalidă (JSON valid dar câmpuri greșite) → tratat ca absent.
+ *
+ * 10.4a (cgpt — coliziune hibrid): forma client (subject_kind ABSENT) trebuie să RESPINGĂ explicit orice contaminare
+ * cu identitate user (`subject_kind` prezent, `user_id`/`grant_id`/`entitlement_version`). Un refresh client legitim NU
+ * poartă niciodată aceste câmpuri; prezența oricăruia = blob necredibil → false. Fără asta, un blob hibrid
+ * `{...client, user_id, grant_id, entitlement_version}` (fără subject_kind) ar trece drept refresh client — o formă
+ * coruptă interpretată ca legacy/client. Strict la rădăcină ⇒ și calea vie `parseRefresh`→`peekRefreshToken` e strictă,
+ * nu doar discriminatorul nou `classifyStoredRefresh`.
+ */
 export function isRefreshPayload(v: unknown): v is RefreshPayload {
   if (typeof v !== "object" || v === null) return false;
   const o = v as Record<string, unknown>;
+  if (o.subject_kind !== undefined) return false; // orice subject_kind (inclusiv "user"/"client") → NU e refresh client
+  if (o.user_id !== undefined || o.grant_id !== undefined || o.entitlement_version !== undefined) return false; // identitate user interzisă
   if (typeof o.client_id !== "string" || o.client_id.length === 0) return false;
   if (typeof o.audience !== "string" || o.audience.length === 0) return false;
   if (typeof o.credential_version !== "string" || o.credential_version.length === 0) return false;
