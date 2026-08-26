@@ -4,9 +4,10 @@
  */
 
 import type { NextRequest }        from "next/server";
-import { validateToken, checkRateLimit } from "@/lib/db/oauth-tokens";
+import { validateToken, checkRateLimit, checkAccountRateLimit } from "@/lib/db/oauth-tokens";
 import { lookupClientById, touchClient }  from "@/lib/db/oauth-clients";
 import { getFamilyState }                 from "@/lib/db/oauth-refresh";
+import { getGrantById, getAccountEntitlement } from "@/lib/db/ph2Reads";
 import { resolveAuth, resolveDevBypass } from "./authPolicy";
 import type { AuthResult }            from "./authPolicy";
 import { resolveBaseUrl }             from "@/lib/oauth/baseUrl";
@@ -59,6 +60,11 @@ export async function authenticate(req: NextRequest): Promise<AuthResult> {
     sleep:     (ms) => new Promise((res) => setTimeout(res, ms)),
     expectedAudience, // PH-3: audience binding
     familyState: getFamilyState, // PH-4: grant-level revocation (familie REVOCATĂ → 401 chiar pe access token)
+    // PH-2 step 10.5a frunza 4c: deps pentru ramura USER (auth-code). Un token USER se validează pe grant + cont +
+    // rate-limit atomic account+client (subiect = cont). Dormant efectiv până la 10.3b-iv (niciun cod user emis încă).
+    getGrant:              getGrantById,          // grantul pinnat la consimțământ (oauth_grants)
+    getAccountEntitlement,                         // starea CURENTĂ a contului (account_entitlements)
+    checkAccountRate:      checkAccountRateLimit,  // rate-limit atomic account primar + client secundar (9a)
   });
 }
 

@@ -9,6 +9,7 @@ import { emergencyRateAllow, clearDegradedRate } from "../mcp/degraded";
 import { parseStoredToken }        from "../mcp/tokenGuard";
 import type { StoredTokenPayload } from "../oauth/tokenPayloadModel";
 import { RL_CHECK_INCR_LUA, rateLimitFromEval, type RateLimitOutcome } from "./oauthAtomic";
+import { QUOTA_CHECK_INCR_LUA, quotaFromEval, authCodeQuotaPlan, evalArgs, type ScopeLimits } from "./quotaAtomic";
 
 // E6: contractul RateLimitOutcome (ok | limited | unavailable) trăiește acum în leaf-ul `oauthAtomic.ts`
 // (împreună cu scriptul Lua + mapper-ul pur). Re-exportat aici ca să nu se schimbe importurile caller-ilor.
@@ -165,3 +166,62 @@ export async function checkRateLimit(
     return degradedRate(clientId, rate_limit_per_minute);
   }
 }
+
+/**
+ * PH-2 step 10.5a frunza 4c — plasa degraded pt. tokenurile USER, MULTIDIMENSIONALĂ (cgpt): păstrează AMBELE dimensiuni
+ * (cont + client) când Redis cade, ca plafonul secundar al clientului să NU dispară exact la outage. Altfel un client
+ * public folosit de mulți useri ar primi câte un burst PER user (bucket-uri per-user distincte), ocolind limita
+ * clientului. Bucket CONT pe `acct:${userId}` (namespace distinct → fără coliziune dacă `userId === clientId`); bucket
+ * CLIENT pe `clientId` — ACELAȘI bucket ca `checkRateLimit` legacy → PARTAJAT între toți userii clientului (plafon
+ * agregat). Ambele decizii sunt computate (fiecare bucket vede cererea); trece DOAR dacă AMBELE permit.
+ */
+function degradedAccountRate(userId: string, account: ScopeLimits, clientId: string, client: ScopeLimits): RateLimitOutcome {
+  const acctOk   = emergencyRateAllow(`acct:${userId}`, account.perMinute) === "allow";
+  const clientOk = emergencyRateAllow(clientId,          client.perMinute)  === "allow";
+  return acctOk && clientOk
+    ? { status: "ok", remaining_min: 0, remaining_day: 0 } // degraded → remaining necunoscut
+    : { status: "unavailable" };
+}
+
+/**
+ * PH-2 step 10.5a frunza 4c — rate-limit ATOMIC pentru tokenurile USER (auth-code): ACCOUNT primar (`user_id`) +
+ * CLIENT secundar anti-abuz (`client_id`), cele 4 ferestre (day+min pe fiecare) all-or-nothing într-un singur EVAL
+ * (`QUOTA_CHECK_INCR_LUA` via `authCodeQuotaPlan` — reutilizează planul 9a). La refuz NU se incrementează NICIUNA.
+ * Degradare simetrică cu `checkRateLimit` DAR multidimensională (`degradedAccountRate`): Redis jos/corupt → plasa
+ * locală bounded pe AMBELE dimensiuni (cont + client), NU fail-open, NU pierde plafonul clientului. Succes Redis →
+ * curăță AMBELE bucket-uri degraded. `remaining_*` sunt pe ferestrele CONTULUI; `resolveUserAuth` folosește status + retry.
+ */
+export async function checkAccountRateLimit(
+  userId:  string,
+  account: ScopeLimits,
+  clientId: string,
+  client:  ScopeLimits,
+): Promise<RateLimitOutcome> {
+  const r = getRedis();
+  if (!r) return degradedAccountRate(userId, account, clientId, client);
+
+  const plan = authCodeQuotaPlan(userId, account, { clientId, limits: client });
+  const { keys, argv } = evalArgs(plan);
+
+  try {
+    const res = await r.eval(QUOTA_CHECK_INCR_LUA, keys.length, ...keys, ...argv);
+    const outcome = quotaFromEval(res, plan.length);
+    // Rezultat gol/neașteptat din Lua → nu putem avea încredere în contoare → plasa locală degraded (ambele dimensiuni).
+    if (!outcome) return degradedAccountRate(userId, account, clientId, client);
+
+    // Redis a răspuns corect → AMBELE dimensiuni ies din degraded (cont + client).
+    clearDegradedRate(`acct:${userId}`);
+    clearDegradedRate(clientId);
+    // counts (ordine authCodeQuotaPlan): [account.day, account.min, client.day, client.min].
+    const remaining_min = account.perMinute < 0 ? -1 : Math.max(0, account.perMinute - outcome.counts[1]);
+    const remaining_day = account.perDay    < 0 ? -1 : Math.max(0, account.perDay    - outcome.counts[0]);
+    return outcome.status === "limited"
+      ? { status: "limited", retry_after: outcome.retryAfterSec, remaining_min, remaining_day }
+      : { status: "ok", remaining_min, remaining_day };
+  } catch {
+    return degradedAccountRate(userId, account, clientId, client);
+  }
+}
+
+/** Export intern pt. teste: plasa degraded multidimensională (cont + client) — vezi `degradedAccountRate`. */
+export const __degradedAccountRateForTest = degradedAccountRate;
