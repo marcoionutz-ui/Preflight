@@ -168,60 +168,59 @@ export async function checkRateLimit(
 }
 
 /**
- * PH-2 step 10.5a frunza 4c — plasa degraded pt. tokenurile USER, MULTIDIMENSIONALĂ (cgpt): păstrează AMBELE dimensiuni
- * (cont + client) când Redis cade, ca plafonul secundar al clientului să NU dispară exact la outage. Altfel un client
- * public folosit de mulți useri ar primi câte un burst PER user (bucket-uri per-user distincte), ocolind limita
- * clientului. Bucket CONT pe `acct:${userId}` (namespace distinct → fără coliziune dacă `userId === clientId`); bucket
- * CLIENT pe `clientId` — ACELAȘI bucket ca `checkRateLimit` legacy → PARTAJAT între toți userii clientului (plafon
- * agregat). Ambele decizii sunt computate (fiecare bucket vede cererea); trece DOAR dacă AMBELE permit.
+ * PH-2 step 10.5 (rework cgpt DCR) — plasa degraded pt. tokenurile USER, ACCOUNT-ONLY. Clienții DCR PUBLICI (auth-code)
+ * NU au entitlement de client în `oauth_clients` (trăiesc în `oauth_client_registrations` fără plan/limite), deci NU
+ * există o „a doua dimensiune" legitimă de plafonat — autoritatea de quota pentru un token USER e CONTUL. (Plasa 2D
+ * cont+client din frunza 4c se baza pe premisa greșită că userul are limite de client; se retrage aici.) Bucket unic
+ * pe `acct:${userId}` (namespace distinct → fără coliziune cu bucket-urile de client legacy). Un plafon tehnic fix
+ * registration-scoped ar fi alternativa, dar accountOnly e recomandarea compatibilă cu designul (subiect = contul).
  */
-function degradedAccountRate(userId: string, account: ScopeLimits, clientId: string, client: ScopeLimits): RateLimitOutcome {
-  const acctOk   = emergencyRateAllow(`acct:${userId}`, account.perMinute) === "allow";
-  const clientOk = emergencyRateAllow(clientId,          client.perMinute)  === "allow";
-  return acctOk && clientOk
+function degradedAccountRate(userId: string, account: ScopeLimits): RateLimitOutcome {
+  return emergencyRateAllow(`acct:${userId}`, account.perMinute) === "allow"
     ? { status: "ok", remaining_min: 0, remaining_day: 0 } // degraded → remaining necunoscut
     : { status: "unavailable" };
 }
 
 /**
- * PH-2 step 10.5a frunza 4c — rate-limit ATOMIC pentru tokenurile USER (auth-code): ACCOUNT primar (`user_id`) +
- * CLIENT secundar anti-abuz (`client_id`), cele 4 ferestre (day+min pe fiecare) all-or-nothing într-un singur EVAL
- * (`QUOTA_CHECK_INCR_LUA` via `authCodeQuotaPlan` — reutilizează planul 9a). La refuz NU se incrementează NICIUNA.
- * Degradare simetrică cu `checkRateLimit` DAR multidimensională (`degradedAccountRate`): Redis jos/corupt → plasa
- * locală bounded pe AMBELE dimensiuni (cont + client), NU fail-open, NU pierde plafonul clientului. Succes Redis →
- * curăță AMBELE bucket-uri degraded. `remaining_*` sunt pe ferestrele CONTULUI; `resolveUserAuth` folosește status + retry.
+ * PH-2 step 10.5 (rework cgpt DCR) — rate-limit ATOMIC pentru tokenurile USER (auth-code), ACCOUNT-ONLY: doar
+ * dimensiunea CONT (`user_id`), cele 2 ferestre (day+min) all-or-nothing într-un singur EVAL (`QUOTA_CHECK_INCR_LUA`
+ * via `authCodeQuotaPlan(userId, account, { accountOnly: true })` — planul 9a suportă deja politica secundară
+ * account-only). La refuz NU se incrementează. Degradare simetrică cu `checkRateLimit` (`degradedAccountRate`): Redis
+ * jos/corupt → plasa locală bounded pe bucket-ul CONT, NU fail-open. Succes Redis → curăță bucket-ul degraded al
+ * contului. `remaining_*` sunt pe ferestrele CONTULUI; `resolveUserAuth` folosește status + retry.
+ *
+ * De ce NU dimensiune de client: un client DCR public n-are limite proprii în `oauth_clients` — a le citi de acolo
+ * (cum făcea 10.5a) respinge clientul legitim (nu-i în tabel) și aplică quota din tabelul greșit. Anti-abuzul per
+ * client se mută la stratul de registration (existență + status), nu la quota.
  */
 export async function checkAccountRateLimit(
   userId:  string,
   account: ScopeLimits,
-  clientId: string,
-  client:  ScopeLimits,
 ): Promise<RateLimitOutcome> {
   const r = getRedis();
-  if (!r) return degradedAccountRate(userId, account, clientId, client);
+  if (!r) return degradedAccountRate(userId, account);
 
-  const plan = authCodeQuotaPlan(userId, account, { clientId, limits: client });
+  const plan = authCodeQuotaPlan(userId, account, { accountOnly: true });
   const { keys, argv } = evalArgs(plan);
 
   try {
     const res = await r.eval(QUOTA_CHECK_INCR_LUA, keys.length, ...keys, ...argv);
     const outcome = quotaFromEval(res, plan.length);
-    // Rezultat gol/neașteptat din Lua → nu putem avea încredere în contoare → plasa locală degraded (ambele dimensiuni).
-    if (!outcome) return degradedAccountRate(userId, account, clientId, client);
+    // Rezultat gol/neașteptat din Lua → nu putem avea încredere în contoare → plasa locală degraded (cont).
+    if (!outcome) return degradedAccountRate(userId, account);
 
-    // Redis a răspuns corect → AMBELE dimensiuni ies din degraded (cont + client).
+    // Redis a răspuns corect → contul iese din degraded.
     clearDegradedRate(`acct:${userId}`);
-    clearDegradedRate(clientId);
-    // counts (ordine authCodeQuotaPlan): [account.day, account.min, client.day, client.min].
+    // counts (ordine authCodeQuotaPlan account-only): [account.day, account.min].
     const remaining_min = account.perMinute < 0 ? -1 : Math.max(0, account.perMinute - outcome.counts[1]);
     const remaining_day = account.perDay    < 0 ? -1 : Math.max(0, account.perDay    - outcome.counts[0]);
     return outcome.status === "limited"
       ? { status: "limited", retry_after: outcome.retryAfterSec, remaining_min, remaining_day }
       : { status: "ok", remaining_min, remaining_day };
   } catch {
-    return degradedAccountRate(userId, account, clientId, client);
+    return degradedAccountRate(userId, account);
   }
 }
 
-/** Export intern pt. teste: plasa degraded multidimensională (cont + client) — vezi `degradedAccountRate`. */
+/** Export intern pt. teste: plasa degraded account-only (bucket `acct:${userId}`) — vezi `degradedAccountRate`. */
 export const __degradedAccountRateForTest = degradedAccountRate;

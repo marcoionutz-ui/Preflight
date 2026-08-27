@@ -23,6 +23,8 @@ import { parseTokenSubject } from "../oauth/subjectClaims";
 import { tokenCredentialVersion, tokenFamilyId, type UserTokenPayload } from "../oauth/tokenPayloadModel";
 import { verifyUserTokenGrant } from "../oauth/userTokenGrantVerify";
 import { verifyUserAccount } from "../oauth/userAccountVerify";
+import { verifyUserRegistration } from "../oauth/userRegistrationVerify";
+import type { RegistrationLookup } from "../db/registrationLookup";
 import type { QuotaSubject } from "../db/quotaKey";
 
 export const AUTH_RETRY_MS       = 75;  // un singur retry rapid pe „unavailable" înainte de 503
@@ -79,13 +81,20 @@ export interface AuthDeps {
   // Injectată de `auth.ts` (Redis). Absentă în testele pure E10. Când e furnizată ȘI tokenul are family_id, o familie
   // REVOCATĂ → 401 INVALID_TOKEN (revocarea ajunge și la access token-urile deja emise, nu doar la refresh).
   familyState?: (familyId: string) => Promise<FamilyState>;
-  // PH-2 step 10.5a frunza 4b — deps pentru ramura USER (auth-code). Opționale: testele client/legacy NU le injectează
-  // (nu ating ramura user); vor fi cablate de `auth.ts` în frunza 4c (încă NEcablate — slice dormant). Un token USER care ajunge FĂRĂ ele → 503 fail-closed (nu-l
-  // putem valida). `getGrant` = citirea grantului pinnat la consimțământ; `getAccountEntitlement` = starea CURENTĂ a
-  // contului; `checkAccountRate` = rate-limit ATOMIC account primar + client secundar (9a).
+  // PH-2 step 10.5 (rework cgpt DCR) — deps pentru ramura USER (auth-code). Clienții DCR PUBLICI (Claude.ai connector)
+  // trăiesc în `oauth_client_registrations`, NU în `oauth_clients` — deci ramura user citește REGISTRATION-ul, NU
+  // `getClient`. Opționale (testele client/legacy nu ating ramura user); un token USER care ajunge FĂRĂ ele → 503
+  // fail-closed. NU citim plan/scopes/quota din registration (alea = CONTUL).
+  //   getRegistration       = shell-ul DCR (existență/status/expirare/grant types) → `verifyUserRegistration`;
+  //   getGrant              = grantul pinnat la consimțământ (oauth_grants);
+  //   getAccountEntitlement = starea CURENTĂ a contului (account_entitlements);
+  //   checkAccountRate      = rate-limit ATOMIC ACCOUNT-ONLY (DCR n-are entitlement de client → fără dimensiune client);
+  //   touchRegistration     = last_used_at pe registration (NU `touchClient`/oauth_clients).
+  getRegistration?:       (clientId: string) => Promise<RegistrationLookup>;
   getGrant?:              (grantId: string) => Promise<GrantLookup>;
   getAccountEntitlement?: (userId: string) => Promise<AccountEntitlementLookup>;
-  checkAccountRate?:      (userId: string, account: ScopeLimits, clientId: string, client: ScopeLimits) => Promise<RateLimitOutcome>;
+  checkAccountRate?:      (userId: string, account: ScopeLimits) => Promise<RateLimitOutcome>;
+  touchRegistration?:     (clientId: string) => void;
 }
 
 /**
@@ -226,40 +235,40 @@ export async function resolveAuth(authHeader: string, deps: AuthDeps): Promise<A
 }
 
 /**
- * PH-2 step 10.5a frunza 4b — ramura de auth pentru tokenurile USER (auth-code), PURĂ + injectabilă.
+ * PH-2 step 10.5 (rework cgpt DCR) — ramura de auth pentru tokenurile USER (auth-code), PURĂ + injectabilă.
  *
- * Un access token USER e valid pe DOUĂ axe (fail-closed pe fiecare), NU pe secretul clientului:
- *   1. CLIENT — există (existență + limitele lui pt. fereastra secundară anti-abuz). NU verificăm `credential_version`:
- *      rotația secretului clientului NU invalidează un token user (validitatea = grant/cont). `not_found` → 401,
- *      `unavailable` → 1 retry → 503.
+ * Un access token USER e valid pe TREI axe (fail-closed pe fiecare), NU pe secretul clientului:
+ *   1. REGISTRATION — clientul DCR PUBLIC trăiește în `oauth_client_registrations` (NU `oauth_clients`): `getRegistration`
+ *      + `verifyUserRegistration` cere existență + status `active` + ne-expirat + `client_id` identic + `authorization_code`
+ *      permis. NU verificăm `credential_version` (client public, fără secret). NU citim plan/scopes/quota din registration
+ *      (alea = CONTUL). `unavailable` → 1 retry → 503; orice reject → 401.
  *   2. GRANT — `getGrant` + `verifyUserTokenGrant`: grantul (consimțământul pinnat la emitere) e ACTIV și consistent cu
- *      claim-urile tokenului (user_id/client_id/audience/entitlement_version/scopes⊆grant). `not_found` → 401 (consimțământ
- *      șters), `unavailable` → 503, reject → 401.
+ *      claim-urile tokenului (user_id/client_id/audience/entitlement_version/scopes⊆grant). `not_found` → 401, `unavailable`
+ *      → 503, reject → 401.
  *   3. CONT — `getAccountEntitlement` + `verifyUserAccount`: contul CURENT e utilizabil + `entitlement_version` egal (plan
  *      schimbat → 401). `unavailable` → 503.
- *   4. RATE-LIMIT — atomic account PRIMAR (limitele contului) + client SECUNDAR anti-abuz (limitele clientului), all-or-
- *      nothing (9a). `limited` → 429, `unavailable` → 503 RATE_LIMIT_UNAVAILABLE.
- * OK → subiect = CONT (`user_id`), `plan` din entitlement, `scopes` din token. Deps user lipsă → 503 (nu-l putem valida).
+ *   4. RATE-LIMIT — ATOMIC ACCOUNT-ONLY (limitele CONTULUI). Un client DCR n-are entitlement de client → NU există a doua
+ *      dimensiune legitimă (anti-abuzul per client = stratul de registration, nu quota). `limited` → 429, `unavailable`
+ *      → 503 RATE_LIMIT_UNAVAILABLE.
+ * OK → subiect = CONT (`user_id`), `plan` din entitlement, `scopes` din token, `clientId` din TOKEN (nu din oauth_clients);
+ * `touchRegistration` (NU `touchClient`). Deps user lipsă → 503 (nu-l putem valida).
  */
 export async function resolveUserAuth(payload: UserTokenPayload, deps: AuthDeps): Promise<AuthResult> {
-  if (!deps.getGrant || !deps.getAccountEntitlement || !deps.checkAccountRate) {
-    // Config lipsă (nu „credențial greșit") → 503, nu 401. Vor fi cablate de `auth.ts` în frunza 4c (deocamdată NEcablate).
+  if (!deps.getRegistration || !deps.getGrant || !deps.getAccountEntitlement || !deps.checkAccountRate || !deps.touchRegistration) {
+    // Config lipsă (nu „credențial greșit") → 503, nu 401.
     return unavailable("AUTH_UNAVAILABLE", "Authentication backend temporarily unavailable");
   }
 
-  // 1. Client — existență + limitele secundare. FĂRĂ gate de credential_version (validitatea user ≠ secret client).
-  let cl = await deps.getClient(payload.client_id);
-  if (cl.status === "unavailable") {
+  // 1. REGISTRATION (DCR public) — existență + activă + ne-expirată + client_id identic + authorization_code permis.
+  //    NU `oauth_clients` (shell DCR nu-i acolo → getClient ar da 401 fals). FĂRĂ credential_version (client public).
+  let rl0 = await deps.getRegistration(payload.client_id);
+  if (rl0.status === "unavailable") {
     await deps.sleep(AUTH_RETRY_MS);
-    cl = await deps.getClient(payload.client_id);
+    rl0 = await deps.getRegistration(payload.client_id);
   }
-  if (cl.status === "unavailable") return unavailable("AUTH_UNAVAILABLE", "Authentication backend temporarily unavailable");
-  if (cl.status === "not_found")   return unauthorized("UNAUTHORIZED", "Client not found or revoked");
-  const client = cl.client;
-  // Granița fail-closed: confirmă EXPLICIT că rândul întors e chiar clientul tokenului (nu te baza pe filtrul
-  // lookup-ului). Un adaptor defect care întoarce alt client ar face rate-limit/`touch`/`AuthResult.clientId` pe
-  // identitatea greșită, deși grantul e validat față de `payload.client_id` — aceeași apărare ca verifyUserTokenGrant.
-  if (client.client_id !== payload.client_id) return unauthorized("INVALID_TOKEN", "client_id mismatch (wrong client row)");
+  const rgv = verifyUserRegistration(rl0, { clientId: payload.client_id, nowMs: Date.now(), requiredGrantType: "authorization_code" });
+  if (!rgv.ok && rgv.kind === "unavailable") return unavailable("AUTH_UNAVAILABLE", "Authentication backend temporarily unavailable");
+  if (!rgv.ok)                               return unauthorized("UNAUTHORIZED", "Client registration not found or not active");
 
   // 2. Grant — consimțământul pinnat la emitere. getGrant `not_found` = grant șters/inexistent → 401 (nu 503).
   let gl = await deps.getGrant(payload.grant_id);
@@ -291,19 +300,17 @@ export async function resolveUserAuth(payload: UserTokenPayload, deps: AuthDeps)
   if (!av.ok)                              return unauthorized("INVALID_TOKEN", "Account not valid for this token");
   const entitlement = av.entitlement;
 
-  // 4. Rate-limit ATOMIC: account primar (limitele contului) + client secundar anti-abuz (limitele clientului).
+  // 4. Rate-limit ATOMIC ACCOUNT-ONLY (limitele CONTULUI; DCR n-are dimensiune de client legitimă).
   const rl = await deps.checkAccountRate(
     payload.user_id,
     { perMinute: entitlement.rate_limit_per_minute, perDay: entitlement.rate_limit_per_day },
-    client.client_id,
-    { perMinute: client.rate_limit_per_minute,      perDay: client.rate_limit_per_day },
   );
   if (rl.status === "unavailable") return unavailable("RATE_LIMIT_UNAVAILABLE", "Rate limiter temporarily unavailable");
   if (rl.status === "limited") {
     return { ok: false, error: "Rate limit exceeded", errorCode: "RATE_LIMITED", status: 429, retryAfter: rl.retry_after };
   }
 
-  // 5. OK — subiect = CONT (user_id), plan din entitlement (nu din client), scopes din token.
-  deps.touch(client.client_id);
-  return { ok: true, clientId: client.client_id, scopes: payload.scopes, plan: entitlement.plan, subject: { kind: "account", userId: payload.user_id } };
+  // 5. OK — subiect = CONT (user_id), plan din entitlement, scopes + clientId din TOKEN (nu din oauth_clients).
+  deps.touchRegistration(payload.client_id);
+  return { ok: true, clientId: payload.client_id, scopes: payload.scopes, plan: entitlement.plan, subject: { kind: "account", userId: payload.user_id } };
 }

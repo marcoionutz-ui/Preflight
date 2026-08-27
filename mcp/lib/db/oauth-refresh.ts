@@ -12,9 +12,13 @@ import { getRedis }                from "./redis";
 import { mintToken, TOKEN_TTL_SEC, REFRESH_TTL_SEC, type TokenPayload } from "./oauth-tokens";
 import {
   REFRESH_ROTATE_LUA, classifyRefreshRotate,
-  parseRefresh, type RefreshPayload,
   REFRESH_FAMILY_REVOKED,
 } from "./oauthAtomic";
+// PH-2 step 10.5b: citirea refresh-ului e DISCRIMINATĂ (client SAU user) — `parseStoredRefresh` rutează pe
+// `subject_kind`, deci `RefreshLookup.payload` e uniunea `AnyRefreshPayload`. Rotația e generică pe formă:
+// accesează DOAR `family_id` (prezent pe ambele), iar `mintToken`/`mintRefreshToken` serializează orice payload.
+import { parseStoredRefresh, type AnyRefreshPayload } from "../oauth/refreshPayloadModel";
+import type { UserTokenPayload } from "../oauth/tokenPayloadModel";
 
 function refreshKey(hash: string): string { return `mcp:refresh:${hash}`; }
 export function familyKey(familyId: string): string { return `mcp:refresh_family:${familyId}`; }
@@ -35,7 +39,7 @@ export function mintRefreshToken<T>(payload: T): { token: string; hash: string; 
 }
 
 export type RefreshLookup =
-  | { status: "found"; payload: RefreshPayload }
+  | { status: "found"; payload: AnyRefreshPayload } // PH-2 10.5b: client SAU user (discriminat pe subject_kind)
   | { status: "absent" }
   | { status: "unavailable" };
 
@@ -51,7 +55,8 @@ export async function peekRefreshToken(token: string): Promise<RefreshLookup> {
   try {
     const raw = await r.get(refreshKey(hashRefresh(token)));
     if (!raw) return { status: "absent" };
-    const payload = parseRefresh(raw);
+    // Citire DISCRIMINATĂ fail-closed: blob user→formă user, subject_kind absent→formă client, orice altceva→null.
+    const payload = parseStoredRefresh(raw);
     if (!payload) return { status: "absent" };
     return { status: "found", payload };
   } catch {
@@ -97,13 +102,18 @@ export type RefreshRotateResult =
 
 /**
  * ROTAȚIE atomică: emite access + refresh noi, mută `family.current` pe noul refresh, all-or-nothing. Reuse-detection
- * e în Lua (refresh prezentat ≠ current → revocă familia). Caller-ul a validat deja client-activ + credential_version
- * + scope narrowing pe payload-ul din `peekRefreshToken`; `newRefreshPayload` păstrează ACELAȘI `family_id`.
+ * e în Lua (refresh prezentat ≠ current → revocă familia). Caller-ul a validat deja identitatea (client — credential_version
+ * pt. client; grant+cont pt. user) + scope narrowing pe payload-ul din `peekRefreshToken`; `newRefreshPayload` păstrează
+ * ACELAȘI `family_id`.
+ *
+ * PH-2 10.5b — GENERIC pe formă: `accessPayload` e client (`TokenPayload`) SAU user (`UserTokenPayload`), iar
+ * `newRefreshPayload` e `AnyRefreshPayload`. Corpul accesează DOAR `newRefreshPayload.family_id` (obligatoriu pe ambele
+ * forme stocate); `mintToken`/`mintRefreshToken` sunt generice (serializează orice payload deja validat de builder).
  */
 export async function rotateRefreshToken(
   oldToken:          string,
-  accessPayload:     TokenPayload,
-  newRefreshPayload: RefreshPayload,
+  accessPayload:     TokenPayload | UserTokenPayload,
+  newRefreshPayload: AnyRefreshPayload,
 ): Promise<RefreshRotateResult> {
   const r = getRedis();
   if (!r) return { status: "unavailable" };

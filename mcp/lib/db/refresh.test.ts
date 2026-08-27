@@ -88,7 +88,7 @@ check("34. ⭐ token route: refresh grant verifica credential_version (rotatia s
   /credential_version !== client\.secret_rotated_at[\s\S]{0,260}invalid_grant/.test(route));
 check("35. ⭐ token route: refresh grant aplica narrowScopes (fara escaladare)", /narrowScopes\(/.test(route));
 check("36. ⭐⭐ client_credentials NU emite refresh (issueToken direct, fara refresh_token in raspunsul cc)",
-  /issueToken\(\{/.test(route) && (route.match(/refresh_token:/g) ?? []).length === 2); // doar auth_code + refresh grant
+  /issueToken\(\{/.test(route) && (route.match(/refresh_token:\s*\w+\.refreshToken/g) ?? []).length === 3); // emisii raspuns: auth_code + refresh client + refresh USER (10.5b); NU cc
 
 const oam = readFileSync("app/.well-known/oauth-authorization-server/route.ts", "utf8");
 const oamApi = readFileSync("app/api/.well-known/oauth-authorization-server/route.ts", "utf8");
@@ -113,8 +113,6 @@ check("41. ⭐⭐ getFamilyState FAIL-CLOSED (cgpt #2r): absent(null)->inactive,
   /\[0-9a-f\]\{64\}/.test(refreshMod) && /REFRESH_FAMILY_REVOKED[\s\S]{0,30}"revoked"/.test(refreshMod));
 
 const authpol = readFileSync("lib/mcp/authPolicy.ts", "utf8");
-// PH-2 step 10.5a: family_id se citește prin accesorul sigur pe union `tokenFamilyId(v.payload)` (payload-ul e acum
-// `StoredTokenPayload` — CLIENT M2M nu are family_id). Guard-ul pinează forma refactorizată; intenția e identică.
 check("42. ⭐⭐ resolveAuth: familie REVOCATA sau INACTIVA (absent/malformat) -> 401 INVALID_TOKEN (fail-closed)",
   /const familyId = tokenFamilyId\(v\.payload\)/.test(authpol) && /deps\.familyState && familyId/.test(authpol) && /fs === "revoked" \|\| fs === "inactive"[\s\S]{0,80}INVALID_TOKEN/.test(authpol));
 check("43. ⭐ resolveAuth: familyState unavailable -> retry -> 503 AUTH_UNAVAILABLE (nu 401 fals pe Redis jos)",

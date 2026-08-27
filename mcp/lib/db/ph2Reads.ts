@@ -43,6 +43,23 @@ export async function getRegistrationByClientId(clientId: string): Promise<Regis
 }
 
 /**
+ * PH-2 step 10.5 (rework cgpt DCR): `last_used_at` pt. un client DCR se scrie pe REGISTRATION (oauth_client_registrations),
+ * NU pe `oauth_clients` (unde un shell DCR public nici nu există). Analog cu `touchClient`, fire-and-forget: query
+ * builder-ul Supabase e doar PromiseLike (fără `.catch`), deci two-arg `.then(onFulfilled, onRejected)`. Eșecul e
+ * doar logat — nu blochează auth-ul.
+ */
+export function touchRegistration(clientId: string): void {
+  supabaseAdmin
+    .from("oauth_client_registrations")
+    .update({ last_used_at: new Date().toISOString() })
+    .eq("client_id", clientId)
+    .then(
+      () => {},
+      (err: unknown) => console.error("[OAUTH] touchRegistration failed:", err),
+    );
+}
+
+/**
  * Grantul de consimțământ după `grant_id` (oauth_grants), pentru validarea unui token USER în `resolveAuth`
  * (PH-2 step 10.5a). `grant_id` din tokenul user TREBUIE rezolvat la un rând ca revocarea unui SINGUR consent
  * (status=revoked) să conteze — altfel `grant_id` e decorativ (cgpt). `not_found` = grant inexistent → 401;
