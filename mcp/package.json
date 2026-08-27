@@ -78,10 +78,11 @@
     "test:ph2-txnstore-integration": "tsx lib/db/authzTxnStore.integration.ts",
     "test:ph2-quota-atomic-integration": "tsx lib/db/quotaAtomic.integration.ts",
     "test:ph2-usage-integration": "tsx lib/mcp/usage.integration.ts",
+    "test:ph2-userauth-integration": "tsx lib/mcp/userAuth.integration.ts",
     "inspect:ph2": "tsx scripts/inspectPh2Backfill.ts",
     "test:ph10-integration": "tsx lib/db/watchQueue.integration.ts",
     "test:ph11-integration": "tsx lib/db/demoCache.integration.ts",
-    "test:integration": "npm run test:ph4-integration && npm run test:ph4-integration-down && npm run test:ph10-integration && npm run test:ph11-integration && npm run test:ph2-quota-atomic-integration && npm run test:ph2-usage-integration && npm run test:ph2-txnstore-integration"
+    "test:integration": "npm run test:ph4-integration && npm run test:ph4-integration-down && npm run test:ph10-integration && npm run test:ph11-integration && npm run test:ph2-quota-atomic-integration && npm run test:ph2-usage-integration && npm run test:ph2-txnstore-integration && npm run test:ph2-userauth-integration"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.26.0",
