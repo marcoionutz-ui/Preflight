@@ -11,8 +11,11 @@
 
 const TRUTHY = new Set(["1", "true", "yes", "on"]);
 
-/** `true` DOAR pt. un opt-in explicit; orice altceva (inclusiv necunoscut) → `false` (rămâne pe fluxul client de azi). */
-export function isResourceOwnerAuthorizeEnabled(env: { PH2_RESOURCE_OWNER_AUTHORIZE?: string | undefined }): boolean {
+/**
+ * `true` DOAR pt. un opt-in explicit; orice altceva (inclusiv necunoscut) → `false` (rămâne pe fluxul client de azi).
+ * `env: Record<string, string | undefined>` (ca `isLegacyAuthCodeCutoverEnabled`) ca să accepte direct `process.env`.
+ */
+export function isResourceOwnerAuthorizeEnabled(env: Record<string, string | undefined>): boolean {
   const raw = env.PH2_RESOURCE_OWNER_AUTHORIZE;
   if (typeof raw !== "string") return false;
   return TRUTHY.has(raw.trim().toLowerCase());

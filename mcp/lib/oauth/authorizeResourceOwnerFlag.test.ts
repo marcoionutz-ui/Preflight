@@ -36,7 +36,7 @@ check("12. ⭐⭐ ' YES ' (trim + case) → true", F(" YES ") === true);
 
 // ── izolare ───────────────────────────────────────────────────────────────────────
 check("13. ⭐ altă env var nu influențează (fără PH2_RESOURCE_OWNER_AUTHORIZE → false)",
-  isResourceOwnerAuthorizeEnabled({ OTHER: "1" } as { PH2_RESOURCE_OWNER_AUTHORIZE?: string }) === false);
+  isResourceOwnerAuthorizeEnabled({ OTHER: "1" }) === false);
 check("14. ⭐⭐ non-string (undefined explicit pe cheie) → false", isResourceOwnerAuthorizeEnabled({ PH2_RESOURCE_OWNER_AUTHORIZE: undefined }) === false);
 
 console.log("\n" + passed + " passed, " + failed + " failed");
