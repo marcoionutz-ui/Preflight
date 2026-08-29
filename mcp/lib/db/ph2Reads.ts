@@ -12,6 +12,7 @@
 import { supabaseAdmin } from "./supabase-admin";
 import { classifyEntitlementLookup, type AccountEntitlementLookup } from "./entitlementLookup";
 import { classifyRegistrationLookup, type RegistrationLookup } from "./registrationLookup";
+import { classifyAuthorizeRegistrationLookup, type AuthorizeRegistrationLookup } from "./authorizeRegistrationLookup";
 import { classifyGrantLookup, type GrantLookup } from "./grantLookup";
 
 /** Entitlement-ul de cont al unui user (account_entitlements). `not_found` = user fără entitlement; `unavailable` = Supabase jos. */
@@ -37,6 +38,27 @@ export async function getRegistrationByClientId(clientId: string): Promise<Regis
       .eq("client_id", clientId)
       .maybeSingle();
     return classifyRegistrationLookup(data, error);
+  } catch (err) {
+    return { status: "unavailable", reason: err instanceof Error ? err.message : "supabase_throw" };
+  }
+}
+
+/**
+ * PH-2 step 10.3b-iv: registration-ul EXTINS pentru `/authorize` GET (fluxul interactiv de consent). Față de
+ * `getRegistrationByClientId` (care citește doar câmpurile de protocol), cere EXPLICIT ȘI `redirect_uris` (allowlist-ul
+ * pe care `validateAuthorizeRequest` îl impune ÎNAINTE de a trusta redirectul) + metadatele de ecran de consent
+ * (`client_name`/`client_type`/`token_endpoint_auth_method`). Clasificatorul pur (`authorizeRegistrationLookup`) impune
+ * forma `AuthorizeRegistration` fail-closed → validatorul primește mereu un rând bine-tipat (nit cgpt). `select` explicit:
+ * o coloană omisă e tratată drept corupt de mapper, NU „lipsă benignă".
+ */
+export async function getAuthorizeRegistration(clientId: string): Promise<AuthorizeRegistrationLookup> {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from("oauth_client_registrations")
+      .select("registration_id, client_id, status, grant_types, expires_at, redirect_uris, client_name, client_type, token_endpoint_auth_method")
+      .eq("client_id", clientId)
+      .maybeSingle();
+    return classifyAuthorizeRegistrationLookup(data, error);
   } catch (err) {
     return { status: "unavailable", reason: err instanceof Error ? err.message : "supabase_throw" };
   }
