@@ -22,6 +22,9 @@
 import type { OAuthGrant } from "../oauth/grant";
 import type { GrantLookup } from "./grantLookup";
 
+// NB: acest fișier rămâne PUR (doar `import type`) → tsx-testabil FĂRĂ a încărca `supabase-admin` (care cheamă
+// `createClient` la load și cere env). Orchestrarea I/O e injectată (`exec`/`getGrant`); wiring-ul real e în ph2Reads.
+
 /** `OAuthGrant` → rândul de inserat în `oauth_grants` (created_at explicit; scopes copiat). */
 export function buildGrantInsertRow(grant: OAuthGrant): Record<string, unknown> {
   return {
@@ -117,4 +120,23 @@ export function decideGrantInsertOutcome(p: {
     return { status: "revoked", reason: "grantul persistat e revocat (persistat ≠ utilizabil)" };
   }
   return { status: "already_present" };
+}
+
+/** Rezultatul brut al insert-ului în `oauth_grants` (data = rândul întors pe succes). */
+export type GrantInsertExecResult = { data: unknown; error: { message?: string } | null };
+
+/**
+ * ORCHESTRAREA idempotentă (PURĂ: `exec`/`getGrant` INJECTATE, zero I/O direct → tsx-testabilă fără supabase-admin):
+ * `exec(buildGrantInsertRow(grant))` → pe ORICE eroare face read-back pe `grant.grant_id` (sticky) → verdictul via
+ * `decideGrantInsertOutcome`. Pe succes NU se face read-back. Wiring-ul real (`exec`=insert oauth_grants, `getGrant`=
+ * `getGrantById`) e în `ph2Reads.insertGrant`.
+ */
+export async function resolveGrantInsert(p: {
+  grant:    OAuthGrant;
+  exec:     (row: Record<string, unknown>) => Promise<GrantInsertExecResult>;
+  getGrant: (grantId: string) => Promise<GrantLookup>;
+}): Promise<InsertGrantResult> {
+  const { data, error } = await p.exec(buildGrantInsertRow(p.grant));
+  const readback = error ? await p.getGrant(p.grant.grant_id) : null;
+  return decideGrantInsertOutcome({ insertError: error, insertData: data, readback, expected: p.grant });
 }

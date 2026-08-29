@@ -14,6 +14,8 @@ import { classifyEntitlementLookup, type AccountEntitlementLookup } from "./enti
 import { classifyRegistrationLookup, type RegistrationLookup } from "./registrationLookup";
 import { classifyAuthorizeRegistrationLookup, type AuthorizeRegistrationLookup } from "./authorizeRegistrationLookup";
 import { classifyGrantLookup, type GrantLookup } from "./grantLookup";
+import { resolveGrantInsert, type InsertGrantResult, type GrantInsertExecResult } from "./grantInsert";
+import type { OAuthGrant } from "../oauth/grant";
 
 /** Entitlement-ul de cont al unui user (account_entitlements). `not_found` = user fără entitlement; `unavailable` = Supabase jos. */
 export async function getAccountEntitlement(userId: string): Promise<AccountEntitlementLookup> {
@@ -99,4 +101,30 @@ export async function getGrantById(grantId: string): Promise<GrantLookup> {
   } catch (err) {
     return { status: "unavailable", reason: err instanceof Error ? err.message : "supabase_throw" };
   }
+}
+
+/**
+ * Execută INSERT-ul în `oauth_grants` cu `.select("*").single()` (întoarce rândul scris pt. confirmarea de identitate).
+ * Prinde throw-urile (rețea) → le mapează la `error` (NU aruncă), ca orchestrarea să decidă uniform via read-back.
+ */
+async function defaultGrantInsertExec(row: Record<string, unknown>): Promise<GrantInsertExecResult> {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from("oauth_grants")
+      .insert(row)
+      .select("*")
+      .single();
+    return { data, error };
+  } catch (err) {
+    return { data: null, error: { message: err instanceof Error ? err.message : "supabase_throw" } };
+  }
+}
+
+/**
+ * PH-2 step 10.3b-v: persistă un grant în `oauth_grants`, IDEMPOTENT. Wrapper I/O SUBȚIRE peste `resolveGrantInsert`
+ * (orchestrarea pură din grantInsert.ts): leagă `exec` = insert real în `oauth_grants` + `getGrant` = `getGrantById`
+ * (read-back pe eroare). Logica (inserted / already_present / revoked / conflict / unavailable) e testată pur acolo.
+ */
+export async function insertGrant(grant: OAuthGrant): Promise<InsertGrantResult> {
+  return resolveGrantInsert({ grant, exec: defaultGrantInsertExec, getGrant: getGrantById });
 }
