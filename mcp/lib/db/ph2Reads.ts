@@ -104,15 +104,16 @@ export async function getGrantById(grantId: string): Promise<GrantLookup> {
 }
 
 /**
- * Execută INSERT-ul în `oauth_grants` cu `.select("*").single()` (întoarce rândul scris pt. confirmarea de identitate).
- * Prinde throw-urile (rețea) → le mapează la `error` (NU aruncă), ca orchestrarea să decidă uniform via read-back.
+ * Execută INSERT-ul în `oauth_grants` cu `.select(...).single()` (întoarce rândul scris pt. confirmarea de identitate).
+ * `select` EXPLICIT pe coloane (doctrina ph2Reads: NU `select('*')`) — exact câmpurile pe care `grantRowMatchesGrant`
+ * le compară. Prinde throw-urile (rețea) → le mapează la `error` (NU aruncă), ca orchestrarea să decidă via read-back.
  */
 async function defaultGrantInsertExec(row: Record<string, unknown>): Promise<GrantInsertExecResult> {
   try {
     const { data, error } = await supabaseAdmin
       .from("oauth_grants")
       .insert(row)
-      .select("*")
+      .select("grant_id, registration_id, client_id, user_id, resource, scopes, entitlement_version, status, created_at")
       .single();
     return { data, error };
   } catch (err) {
