@@ -63,7 +63,9 @@ export interface ValidatedAuthorizeRequest {
 
 export type AuthorizeValidation =
   | { kind: "invalid_client";  reason: string }                 // TRUST picat → pagină LOCALĂ, FĂRĂ redirect
-  | { kind: "error_redirect";  error: string; reason: string }  // redirect trusted → route redirectează cu error+state+iss
+  // redirect trusted → route redirectează cu error+state+iss. `redirect_uri`+`state` sunt DEJA validate/trusted și se
+  // TRANSPORTĂ aici (cgpt) ca ruta să NU le recitească din query-ul brut la construirea redirectului de eroare.
+  | { kind: "error_redirect";  error: string; reason: string; redirect_uri: string; state: string }
   | { kind: "ok";              request: ValidatedAuthorizeRequest };
 
 function isNonEmptyString(v: unknown): v is string { return typeof v === "string" && v.length > 0; }
@@ -103,23 +105,26 @@ export function validateAuthorizeRequest(p: {
   }
 
   // ── ETAPA 2 — REQUEST (redirect_uri DEJA trusted → erori prin redirect) ───────────
+  // `redirect_uri` e trusted (a trecut etapa 1); `state` e cel prezentat. Le transportăm în FIECARE error_redirect.
+  const trustedRedirect = q.redirect_uri;
+  const trustedState    = typeof q.state === "string" ? q.state : "";
   if (q.response_type !== "code") {
-    return { kind: "error_redirect", error: "unsupported_response_type", reason: `response_type ≠ code (${q.response_type})` };
+    return { kind: "error_redirect", error: "unsupported_response_type", reason: `response_type ≠ code (${q.response_type})`, redirect_uri: trustedRedirect, state: trustedState };
   }
   const pkce = validateAuthorizeChallenge(q.code_challenge, q.code_challenge_method);
   if (!pkce.ok) {
-    return { kind: "error_redirect", error: "invalid_request", reason: `PKCE invalid: ${pkce.reason}` };
+    return { kind: "error_redirect", error: "invalid_request", reason: `PKCE invalid: ${pkce.reason}`, redirect_uri: trustedRedirect, state: trustedState };
   }
   const rv = validateResourceIndicator(q.resource, p.issuer);
   if (rv.status === "invalid_target") {
-    return { kind: "error_redirect", error: "invalid_target", reason: rv.reason };
+    return { kind: "error_redirect", error: "invalid_target", reason: rv.reason, redirect_uri: trustedRedirect, state: trustedState };
   }
   // Scope: apartenență la catalog (rezolvarea față de cont e la consent). Scope-urile cerute care nu-s în catalog → invalid_scope.
   const requested = q.scope.split(/\s+/).map(s => s.trim()).filter(s => s.length > 0);
   const policy = new Set(p.serverPolicy);
   const unknown = requested.filter(s => !policy.has(s));
   if (unknown.length > 0) {
-    return { kind: "error_redirect", error: "invalid_scope", reason: `scope necunoscut: ${unknown.join(", ")}` };
+    return { kind: "error_redirect", error: "invalid_scope", reason: `scope necunoscut: ${unknown.join(", ")}`, redirect_uri: trustedRedirect, state: trustedState };
   }
 
   // ── SUCCES ────────────────────────────────────────────────────────────────────────

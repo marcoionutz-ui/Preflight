@@ -82,6 +82,11 @@ check("10. ⭐⭐ redirect_uri gol → invalid_client", V(mkParams({ redirect_ur
   const res = V(mkParams({ scope: "read:all read:ghost" }));
   check("16. ⭐⭐⭐ scope necunoscut → error_redirect invalid_scope", res.kind === "error_redirect" && res.error === "invalid_scope");
 }
+{
+  // cgpt: error_redirect TREBUIE să transporte redirect_uri + state deja trusted (ruta nu le recitește din query brut).
+  const res = V(mkParams({ scope: "read:ghost", state: "STATE-XYZ" }));
+  check("16b. ⭐⭐⭐ error_redirect transportă redirect_uri + state trusted", res.kind === "error_redirect" && res.redirect_uri === REDIRECT && res.state === "STATE-XYZ");
+}
 
 // ── SUCCES ────────────────────────────────────────────────────────────────────────
 {
