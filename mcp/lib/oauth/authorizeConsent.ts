@@ -38,7 +38,9 @@ export type ConsentGrantOutcome =
 /**
  * Decide GRANT-ul de emis DUPĂ un consent POST. `txn` = tranzacția din store (null dacă lipsă/consumată). Ordine:
  * verifică consent → gate registration → gate cont → construiește grant (scope resolution + claims consistente).
- * `grant_id`/`nowMs` (expiry consent)/`nowIso` (created_at grant) injectate (pur).
+ * `grant_id` provine STICKY din `txn.grant_id` (NU param liber — cgpt: altfel ruta ar putea injecta un UUID nou și
+ * read-back-ul idempotent din `insertGrant` n-ar prinde retry-urile). `nowMs` (expiry consent)/`nowIso` (created_at
+ * grant) injectate (pur).
  */
 export function decideConsentGrant(p: {
   txn:                  AuthzTransaction | null;
@@ -47,7 +49,6 @@ export function decideConsentGrant(p: {
   registration:         RegistrationRef | null;
   account:              AccountEntitlement | null;
   serverPolicy:         readonly string[];
-  grant_id:             string;
   nowMs:                number;
   nowIso:               string;
 }): ConsentGrantOutcome {
@@ -88,7 +89,7 @@ export function decideConsentGrant(p: {
 
   // 4. Grant + claims — TOT derivat din tranzacție + cont (nu din parametri liberi). Scope resolution în helper.
   const built = buildAuthGrantAndCodeClaims({
-    grant_id:        p.grant_id,
+    grant_id:        txn.grant_id,           // STICKY din tranzacție (nu param liber)
     registration_id: p.registration.registration_id,
     client_id:       txn.client_id,          // din tranzacție
     resource:        txn.resource,           // din tranzacție

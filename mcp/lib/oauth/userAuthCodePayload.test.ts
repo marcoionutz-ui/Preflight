@@ -39,7 +39,7 @@ function mkGrant(over: Partial<OAuthGrant> = {}): OAuthGrant {
 // de scopes-urile grantului → dovedește că payload.scopes vine din GRANT, nu din tranzacție.
 function mkTxn(over: Partial<AuthzTransaction> = {}): AuthzTransaction {
   const r = buildAuthzTransaction({
-    txn_id: "t1", csrf_token: "csrf1", registration_id: "reg1", client_id: "c1",
+    txn_id: "t1", csrf_token: "csrf1", grant_id: "g1", registration_id: "reg1", client_id: "c1",
     redirect_uri: REDIRECT, state: "st", resource: RESOURCE,
     requested_scopes: ["read:basic"], code_challenge: CHALLENGE, code_challenge_method: "S256",
     now: 1000, ttlMs: 600000,
@@ -74,7 +74,10 @@ check("11. ⭐⭐ code_challenge din txn", pl?.code_challenge === CHALLENGE);
 check("12. ⭐ code_challenge_method S256 din txn", pl?.code_challenge_method === "S256");
 check("13. ⭐ issued_at injectat", pl?.issued_at === 1700);
 
-// ── (d) ANTI MIX-UP: cele 4 cross-check-uri txn↔grant ────────────────────────────
+// ── (d) ANTI MIX-UP: cele 5 cross-check-uri txn↔grant ────────────────────────────
+const misGrantId = buildUserAuthCodePayload({ grant: mkGrant(), txn: mkTxn({ grant_id: "gX" }), issued_at: 1 });
+check("13b. ⭐⭐⭐ grant_id txn ≠ grant → error (mix-up sticky)", misGrantId.ok === false);
+
 const misReg = buildUserAuthCodePayload({ grant: mkGrant(), txn: mkTxn({ registration_id: "regX" }), issued_at: 1 });
 check("14. ⭐⭐⭐ registration_id txn ≠ grant → error (mix-up)", misReg.ok === false);
 

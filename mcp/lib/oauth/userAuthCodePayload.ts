@@ -11,6 +11,7 @@
  * userul tranzacției A cu redirectul + PKCE al tranzacției B → un cod perfect valid care ascunde un mix-up. Aici
  * TOTUL provine dintr-o singură tranzacție + grantul ei: transportul (redirect_uri/PKCE) din `txn`, iar identitatea +
  * scopes + resource din `grant`. ÎNAINTE de asamblare verificăm că grantul ȘI tranzacția descriu ACELAȘI consimțământ:
+ *   - `txn.grant_id        === grant.grant_id`    (grant_id-ul sticky din txn = cel al grantului)
  *   - `txn.registration_id === grant.registration_id`
  *   - `txn.client_id       === grant.client_id`
  *   - `txn.session_user_id  === grant.user_id`   (tranzacția e legată de userul grantului)
@@ -19,7 +20,7 @@
  * Fail-closed:
  *   1. `isValidGrant(grant)` (formă completă: registration_id/created_at/user_id/... valide) → apoi `isGrantUsable`
  *      (status `active` + scopes ne-goale). Un grant corupt / revocat / fără scopes NU mintează cod.
- *   2. Cele 4 cross-check-uri txn↔grant (anti mix-up) — orice nepotrivire → error.
+ *   2. Cele 5 cross-check-uri txn↔grant (anti mix-up) — orice nepotrivire → error.
  *   3. `redirect_uri` (din txn) ne-gol; PKCE (din txn) valid RFC 7636 (S256) — re-verificat, nu ne bazăm orb pe txn.
  *   4. `issued_at` (injectat) număr finit.
  *   5. GUARD FINAL: blob-ul asamblat trebuie să treacă `isAuthCodePayload` DREPT user curat (toate 3 claim-urile) —
@@ -52,6 +53,7 @@ export function buildUserAuthCodePayload(p: {
   if (!isGrantUsable(g)) return { ok: false, error: "grant inutilizabil (status ≠ active sau scopes goale)" };
 
   // 2. Anti mix-up: grantul ȘI tranzacția trebuie să descrie ACELAȘI consimțământ (nu grant A + transport B).
+  if (txn.grant_id        !== g.grant_id)        return { ok: false, error: "grant_id txn ≠ grant (mix-up)" };
   if (txn.registration_id !== g.registration_id) return { ok: false, error: "registration_id txn ≠ grant (mix-up)" };
   if (txn.client_id       !== g.client_id)       return { ok: false, error: "client_id txn ≠ grant (mix-up)" };
   if (txn.session_user_id !== g.user_id)         return { ok: false, error: "session_user_id txn ≠ user_id grant (mix-up)" };

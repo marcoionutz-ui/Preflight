@@ -15,6 +15,9 @@ import { validateAuthorizeChallenge } from "./pkce";
 export interface AuthzTransaction {
   txn_id:                string;         // opac, one-time
   csrf_token:            string;         // legat de consent POST
+  grant_id:              string;         // STICKY: id-ul grantului, generat DETERMINIST la GET (ca txn_id/csrf_token).
+                                         // Ruta POST îl ia de-aici → același grant_id la orice reintrare → read-back-ul
+                                         // idempotent din `insertGrant` chiar contează (nu un UUID nou la fiecare POST).
   registration_id:       string;
   client_id:             string;         // denormalizat
   redirect_uri:          string;         // DEJA validat pe allowlist la creare
@@ -36,12 +39,13 @@ function isFiniteNum(v: unknown): v is number { return typeof v === "number" && 
  * `now`/`ttlMs` injectate (pur). PKCE (challenge + method S256) validat prin helperul RFC 7636 existent.
  */
 export function buildAuthzTransaction(p: {
-  txn_id: string; csrf_token: string; registration_id: string; client_id: string; redirect_uri: string;
+  txn_id: string; csrf_token: string; grant_id: string; registration_id: string; client_id: string; redirect_uri: string;
   state: string; resource: string; requested_scopes: readonly string[];
   code_challenge: string; code_challenge_method: string; now: number; ttlMs: number;
 }): { ok: true; txn: AuthzTransaction } | { ok: false; error: string } {
   if (!isNonEmptyString(p.txn_id))          return { ok: false, error: "txn_id lipsă" };
   if (!isNonEmptyString(p.csrf_token))      return { ok: false, error: "csrf_token lipsă" };
+  if (!isNonEmptyString(p.grant_id))        return { ok: false, error: "grant_id lipsă" };
   if (!isNonEmptyString(p.registration_id)) return { ok: false, error: "registration_id lipsă" };
   if (!isNonEmptyString(p.client_id))       return { ok: false, error: "client_id lipsă" };
   if (!isNonEmptyString(p.redirect_uri))    return { ok: false, error: "redirect_uri lipsă" };
@@ -54,7 +58,7 @@ export function buildAuthzTransaction(p: {
   return {
     ok: true,
     txn: {
-      txn_id: p.txn_id, csrf_token: p.csrf_token, registration_id: p.registration_id, client_id: p.client_id,
+      txn_id: p.txn_id, csrf_token: p.csrf_token, grant_id: p.grant_id, registration_id: p.registration_id, client_id: p.client_id,
       redirect_uri: p.redirect_uri, state: typeof p.state === "string" ? p.state : "", resource: p.resource,
       requested_scopes: [...p.requested_scopes].filter(s => typeof s === "string" && s.trim() !== "").map(s => s.trim()),
       code_challenge: p.code_challenge, code_challenge_method: p.code_challenge_method,
@@ -71,7 +75,7 @@ export function buildAuthzTransaction(p: {
 export function isValidAuthzTransaction(raw: unknown): raw is AuthzTransaction {
   if (typeof raw !== "object" || raw === null) return false;
   const o = raw as Record<string, unknown>;
-  if (!isNonEmptyString(o.txn_id) || !isNonEmptyString(o.csrf_token) || !isNonEmptyString(o.registration_id)
+  if (!isNonEmptyString(o.txn_id) || !isNonEmptyString(o.csrf_token) || !isNonEmptyString(o.grant_id) || !isNonEmptyString(o.registration_id)
       || !isNonEmptyString(o.client_id) || !isNonEmptyString(o.redirect_uri) || !isNonEmptyString(o.resource)) return false;
   if (typeof o.state !== "string") return false;
   if (!Array.isArray(o.requested_scopes) || !o.requested_scopes.every(s => typeof s === "string" && s.trim() !== "")) return false;

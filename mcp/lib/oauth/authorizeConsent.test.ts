@@ -20,7 +20,7 @@ const POLICY = ["read:basic", "read:all", "read:market", "read:pair", "read:safe
 
 function makeTxn(userId: string | null, scopes: string[] = ["read:pair"], clientId = "c1"): AuthzTransaction {
   const b = buildAuthzTransaction({
-    txn_id: "t1", csrf_token: "csrf1", registration_id: "reg1", client_id: clientId, redirect_uri: "https://claude.ai/cb",
+    txn_id: "t1", csrf_token: "csrf1", grant_id: "g1", registration_id: "reg1", client_id: clientId, redirect_uri: "https://claude.ai/cb",
     state: "st", resource: RES, requested_scopes: scopes, code_challenge: CHALLENGE, code_challenge_method: "S256",
     now: NOW_MS, ttlMs: 300_000,
   });
@@ -46,7 +46,6 @@ const base = {
   registration,
   account,
   serverPolicy: POLICY,
-  grant_id: "g1",
   nowMs: NOW_MS + 1000,
   nowIso: NOW_ISO,
 };
@@ -63,7 +62,14 @@ console.log("PH-2 step 10.3a — authorizeConsent (grant post-consimțământ, p
     check("3. ⭐⭐⭐ claims consistente", d.claims.grant_id === d.grant.grant_id && d.claims.entitlement_version === 4);
     check("4. ⭐⭐ scope derivat din TRANZACȚIE (read:pair) + rezolvat prin cont", JSON.stringify(d.grant.scopes) === JSON.stringify(["read:pair"]));
     check("5. registration_id legat", d.grant.registration_id === "reg1" && d.grant.client_id === "c1");
+    check("5b. ⭐⭐⭐ grant.grant_id preia grant_id-ul STICKY din txn (nu param liber)", d.grant.grant_id === base.txn.grant_id);
   }
+}
+// STICKY: un txn cu alt grant_id → grantul preia EXACT acel grant_id (dovadă că vine din txn, nu injectat).
+{
+  const d = decideConsentGrant({ ...base, txn: { ...makeTxn("u1"), grant_id: "g_sticky_xyz" } });
+  check("5c. ⭐⭐⭐ grant_id din txn se propagă în grant (txn.grant_id ≠ default → grant îl preia)",
+    d.kind === "grant" && d.grant.grant_id === "g_sticky_xyz");
 }
 
 // ── consent GATE (cgpt #3): grant IMPOSIBIL fără approve verificat ───────────────

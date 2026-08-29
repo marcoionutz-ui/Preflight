@@ -21,7 +21,7 @@ function check(name: string, cond: boolean): void {
 const CH = "E9Melgz-yJgAB3Y9jn0aY0kEwlWdW3l1o0V0lqTfMug"; // 43-char base64url (format PKCE valid)
 function mkTxn(over: Partial<AuthzTransaction> = {}): AuthzTransaction {
   const r = buildAuthzTransaction({
-    txn_id: "tx1", csrf_token: "csrf1", registration_id: "reg1", client_id: "c1",
+    txn_id: "tx1", csrf_token: "csrf1", grant_id: "grant1", registration_id: "reg1", client_id: "c1",
     redirect_uri: "https://claude.ai/cb", state: "st", resource: "https://x/api/mcp",
     requested_scopes: ["read:all"], code_challenge: CH, code_challenge_method: "S256",
     now: 1000, ttlMs: 600000,

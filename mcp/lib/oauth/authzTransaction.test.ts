@@ -15,7 +15,7 @@ function check(name: string, cond: boolean): void {
 const NOW = 1_700_000_000_000;
 const CHALLENGE = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"; // 43 base64url canonic
 const baseParams = {
-  txn_id: "txn_abc", csrf_token: "csrf_xyz", registration_id: "reg_1", client_id: "tp_x",
+  txn_id: "txn_abc", csrf_token: "csrf_xyz", grant_id: "grant_1", registration_id: "reg_1", client_id: "tp_x",
   redirect_uri: "http://127.0.0.1:5000/cb", state: "st1", resource: "https://preflight.app/api/mcp",
   requested_scopes: ["read:pair", "read:market"], code_challenge: CHALLENGE, code_challenge_method: "S256",
   now: NOW, ttlMs: 300_000,
@@ -42,6 +42,8 @@ check("4. ⭐ method ≠ S256 → error (downgrade blocat, via helper PKCE)", bu
 check("5. ⭐ challenge malformat → error (PKCE RFC 7636)", buildAuthzTransaction({ ...baseParams, code_challenge: "prea-scurt" }).ok === false);
 check("6. ⭐ fără redirect_uri → error", buildAuthzTransaction({ ...baseParams, redirect_uri: "" }).ok === false);
 check("7. ttl 0 → error", buildAuthzTransaction({ ...baseParams, ttlMs: 0 }).ok === false);
+check("7b. ⭐⭐ fără grant_id → error (sticky obligatoriu)", buildAuthzTransaction({ ...baseParams, grant_id: "" }).ok === false);
+check("7c. ⭐ build valid → grant_id propagat în txn", (() => { const r = buildAuthzTransaction(baseParams); return r.ok && r.txn.grant_id === "grant_1"; })());
 
 // ── bindUser STICKY (cgpt P1#1) ───────────────────────────────────────────────
 {
@@ -75,6 +77,7 @@ check("17. ⭐ expires_at undefined → expirat", isTransactionExpired({ expires
   check("25. ⭐ session_user_id null e OK (înainte de login)", isValidAuthzTransaction({ ...good, session_user_id: null }));
   check("26. ⭐ session_user_id number → false", !isValidAuthzTransaction({ ...good, session_user_id: 5 as unknown as string }));
   check("27. lipsă txn_id → false", !isValidAuthzTransaction({ ...good, txn_id: "" }));
+  check("27b. ⭐⭐ lipsă grant_id → false (fail-closed la citire)", !isValidAuthzTransaction({ ...good, grant_id: "" }));
   check("28. null → false", !isValidAuthzTransaction(null));
 }
 

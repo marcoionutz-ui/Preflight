@@ -36,7 +36,7 @@ const SFX = Math.random().toString(36).slice(2, 10);
 const CH  = "E9Melgz-yJgAB3Y9jn0aY0kEwlWdW3l1o0V0lqTfMug"; // 43-char base64url valid
 function mkTxn(id: string, over: Partial<AuthzTransaction> = {}): AuthzTransaction {
   const r = buildAuthzTransaction({
-    txn_id: id, csrf_token: "csrf_" + id, registration_id: "reg1", client_id: "c1",
+    txn_id: id, csrf_token: "csrf_" + id, grant_id: "grant_" + id, registration_id: "reg1", client_id: "c1",
     redirect_uri: "https://claude.ai/cb", state: "st", resource: "https://x/api/mcp",
     requested_scopes: ["read:all"], code_challenge: CH, code_challenge_method: "S256",
     now: Date.now(), ttlMs: 600000,
