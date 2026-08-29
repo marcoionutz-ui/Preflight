@@ -5,6 +5,7 @@
 
 import type { NextRequest } from "next/server";
 import { resolveBaseUrl } from "@/lib/oauth/baseUrl";
+import { SERVER_SCOPE_CATALOG } from "@/lib/oauth/scopeCatalog";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -16,6 +17,6 @@ export async function GET(req: NextRequest) {
     resource:                 `${issuer}/api/mcp`,
     authorization_servers:    [`${issuer}`],
     bearer_methods_supported: ["header"],
-    scopes_supported:         ["read:basic", "read:all", "read:market", "read:pipeline", "read:pair", "read:safety", "read:reports", "read:positions"],
+    scopes_supported:         [...SERVER_SCOPE_CATALOG],
   });
 }

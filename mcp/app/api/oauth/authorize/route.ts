@@ -10,22 +10,10 @@ import { issueAuthCode }            from "@/lib/db/oauth-codes";
 import { validateAuthorizeChallenge } from "@/lib/oauth/pkce";
 import { resolveBaseUrl }           from "@/lib/oauth/baseUrl";
 import { validateResourceIndicator } from "@/lib/oauth/resource";
+import { SERVER_SCOPE_CATALOG } from "@/lib/oauth/scopeCatalog";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-// Sincronizat manual cu scopes_supported din discovery metadata
-// (app/.well-known/*) și cu TOOL_SCOPES din lib/mcp/scopes.ts.
-const KNOWN_SCOPES = [
-  "read:basic",
-  "read:all",
-  "read:market",
-  "read:pipeline",
-  "read:pair",
-  "read:safety",
-  "read:reports",
-  "read:positions",
-];
 
 export async function POST(req: NextRequest) {
   const body   = await req.text();
@@ -99,7 +87,7 @@ export async function POST(req: NextRequest) {
   const grantedScopes   = requestedScopes.length > 0 ? requestedScopes : client.scopes;
   const hasFullAccess   = client.scopes.includes("read:all");
 
-  const unknownScopes = grantedScopes.filter(s => !KNOWN_SCOPES.includes(s));
+  const unknownScopes = grantedScopes.filter(s => !SERVER_SCOPE_CATALOG.includes(s));
   if (unknownScopes.length > 0) {
     return oauthErrorRedirect(redirect_uri, "invalid_scope", `Requested scope is not supported: ${unknownScopes.join(", ")}`, state, issuer);
   }
