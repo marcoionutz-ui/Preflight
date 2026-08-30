@@ -3,13 +3,16 @@
  *
  * Frunză (ZERO importuri grele) → clasificatorii-s testabili în tsx, iar Lua-ul e evaluabil pe un Redis real (ca
  * `oauthAtomic.ts`). Tranzacția de consent e ONE-TIME + legată de sesiune (vezi `authzTransaction.ts` pt. logica pură).
- * Store-ul oferă cele 3 operații atomice necesare fluxului `/authorize` (10.3b-iv):
- *   - CREATE  = `SET NX EX` (atomic prin el însuși; coliziune pe txn_id existent → NU suprascrie).
- *   - CONSUME = compare-and-delete pe blob-ul EXACT (one-time: dublă-trimitere concurentă → a doua eșuează).
- *   - BIND    = compare-and-set (CAS) pe blob: aplică noul blob DOAR dacă cel curent e neschimbat (sticky-bind-ul
+ * Store-ul oferă cele 4 operații atomice necesare fluxului `/authorize` (10.3b-iv + frunză 5):
+ *   - CREATE        = `SET NX EX` (atomic prin el însuși; coliziune pe txn_id existent → NU suprascrie).
+ *   - CONSUME       = compare-and-delete pe blob-ul EXACT (one-time: dublă-trimitere concurentă → a doua eșuează).
+ *   - BIND          = compare-and-set (CAS) pe blob: aplică noul blob DOAR dacă cel curent e neschimbat (sticky-bind-ul
  *     de user, calculat PUR în app via `bindUser`, e scris atomic aici; păstrează TTL-ul rămas — consent bounded).
+ *   - CONSUME+ISSUE = compare-and-delete pe txn + `SET NX` cod într-o SINGURĂ op (poarta de concurență a Approve-ului).
  *
- * ⚠️ Redis Lua NU are rollback, dar aceste scripturi fac o singură mutație condiționată de un GET → sigure.
+ * ⚠️ Redis Lua rulează ATOMIC (scriptul întreg, neîntrerupt de alte comenzi). CREATE/CONSUME/BIND fac o singură mutație
+ * condiționată de un GET; CONSUME+ISSUE face `SET NX` (cod) + `DEL` (txn) ca o SINGURĂ unitate atomică (tot sau nimic) →
+ * sigure, fără rollback necesar.
  */
 
 export const AUTHZ_TXN_TTL_SEC = 10 * 60; // fereastra de consent (10 min)
@@ -56,4 +59,32 @@ export function classifyTxnCas(res: unknown): TxnCasResult {
   if (n === -1) return "absent";
   if (n === -2) return "expired"; // fără TTL valid (sub-secundă / anomalie) → NU s-a reînviat, tratat ca gone
   return "conflict"; // 0 → blob schimbat între citire și scriere (retry)
+}
+
+// ── CONSUME + ISSUE (atomic: consumă txn ȘI emite authorization code într-o SINGURĂ op) ──
+//   Poarta de concurență a fluxului Approve (PH-2 pas 6 frunză 5): compară blob-ul txn (ARGV[1]), scrie codul cu `SET NX`
+//   (KEYS[2]) și ȘTERGE txn — TOT sau NIMIC. Închide (a) double-submit-ul (a doua trimitere vede txn deja consumată →
+//   `gone`, fără al doilea cod) ȘI (b) cazul „txn consumată dar codul nescris" (nu mai există fereastră între consume și
+//   issue). `SET NX` exprimă invariantul „cheia code trebuie LIBERĂ" (ca `oauthAtomic.ts`): dacă a picat (cheia există)
+//   returnăm ÎNAINTE de `DEL` → txn NEATINSĂ, caller-ul reîncearcă cu alt cod. KEYS[1]=txn, KEYS[2]=code; ARGV[1]=blob
+//   txn AȘTEPTAT, ARGV[2]=payload code (JSON), ARGV[3]=TTL code (sec).
+//   1 = issued; -2 = collision (SET NX a picat — retry cu alt cod, txn NEATINSĂ); -1 = absent / 0 = schimbată → gone.
+export const AUTHZ_TXN_CONSUME_ISSUE_LUA = `
+local cur = redis.call('GET', KEYS[1])
+if not cur then return -1 end
+if cur ~= ARGV[1] then return 0 end
+local ok = redis.call('SET', KEYS[2], ARGV[2], 'EX', ARGV[3], 'NX')
+if not ok then return -2 end
+redis.call('DEL', KEYS[1])
+return 1
+`;
+export type TxnConsumeIssueResult = "issued" | "collision" | "gone" | "invalid";
+export function classifyTxnConsumeIssue(res: unknown): TxnConsumeIssueResult {
+  // Match EXACT pe formele canonice pe care le produce Lua-ul nostru prin ioredis (întreg SAU string-ul lui canonic).
+  // FĂRĂ `Number()`: ar accepta fals `""`/`" "`→0, `"1e0"`/`"01"`→1 (forme pe care Lua-ul NU le emite). Orice altceva
+  // (null/undefined/obiect/NaN/`2`/`-3`/forme necanonice) → `invalid` (fail-closed; wrapper-ul îl mapează la 503).
+  if (res === 1  || res === "1")                            return "issued";
+  if (res === -2 || res === "-2")                           return "collision"; // SET NX picat → retry alt cod, txn NEATINSĂ
+  if (res === -1 || res === "-1" || res === 0 || res === "0") return "gone";     // absentă / schimbată → deja folosită
+  return "invalid";
 }
