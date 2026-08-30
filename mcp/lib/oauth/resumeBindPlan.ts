@@ -98,12 +98,20 @@ export type BindStep =
   | { kind: "retryable"; reason: string }  // unavailable; SAU conflict fără retry (atac 2)
   | { kind: "reread" };                    // conflict cu retry permis (atac 1) → re-read + retry O DATĂ
 
+/** `BindStep` FĂRĂ `reread` — rezultatul atacului 2 (`allowRetry=false`): `conflict` → `retryable`, deci reread e imposibil. */
+export type TerminalBindStep = Exclude<BindStep, { kind: "reread" }>;
+
 /**
  * Clasifică rezultatul `bindAuthzTxnUser`. `allowRetry` = true DOAR pe primul atac: `conflict` → `reread` (ruta
  * re-citește + reîncearcă o singură dată). Pe al doilea atac (`allowRetry=false`) `conflict` → `retryable` (fără al
  * treilea retry → 503, cookie păstrat; refresh-ul reia). `txnId` pe `resume_ok` e derivat din `bind.txn.txn_id` (blob-ul
  * CHIAR legat), NU dintr-un parametru extern (fix cgpt P2: un id greșit al apelantului ar redirecta la alt txn).
+ *
+ * Overload: cu `allowRetry: false` tipul întors e `TerminalBindStep` (fără `reread`) → un `reread` NU poate ajunge la
+ * consumatorul atacului 2 (stare imposibilă la compilare; altfel ruta ar avea nevoie de o gardă de cod mort).
  */
+export function classifyBindStep(bind: BindAuthzTxnResult, allowRetry: false): TerminalBindStep;
+export function classifyBindStep(bind: BindAuthzTxnResult, allowRetry: boolean): BindStep;
 export function classifyBindStep(bind: BindAuthzTxnResult, allowRetry: boolean): BindStep {
   switch (bind.status) {
     case "updated":     return { kind: "resume_ok", txnId: bind.txn.txn_id };

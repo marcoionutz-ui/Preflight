@@ -1,14 +1,19 @@
 /**
  * app/auth/callback/route.ts
  * Magic-link redirect target. Exchanges the one-time code for a session
- * (sets auth cookies via lib/supabase/server.ts), then redirects to
- * /dashboard — which provisions a free_trial oauth_clients row on first
- * visit if the user doesn't have one yet.
+ * (sets auth cookies via lib/supabase/server.ts), then hands off:
+ *   - resource-owner flow ON (flag) → 303 /auth/resume (binds the pending consent txn to the session; retry-safe,
+ *     never re-touches the Supabase code), which then routes to consent.
+ *   - flag OFF → /dashboard (today's behavior; provisions a free_trial oauth_clients row on first visit).
+ * The Supabase code is exchanged EXACTLY ONCE here; /auth/resume does not touch it, so a page refresh there is a safe
+ * retry on outage.
  */
 
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { resolveBaseUrl } from "@/lib/oauth/baseUrl";
+import { isResourceOwnerAuthorizeEnabled } from "@/lib/oauth/authorizeResourceOwnerFlag";
+import { planCallbackRedirect } from "@/lib/oauth/callbackResumePlan";
 
 export const dynamic = "force-dynamic";
 
@@ -44,5 +49,12 @@ export async function GET(request: Request) {
     return NextResponse.redirect(`${origin}/login?error=auth_failed`);
   }
 
+  // PH-2: exchange REUȘIT (codul Supabase consumat o SINGURĂ dată aici). Decizia de destinație e pură (flag-gated);
+  // identitatea NU se clasifică aici — /auth/resume (cerere nouă, sesiune stabilită) o citește via getSessionState.
+  const redir = planCallbackRedirect(isResourceOwnerAuthorizeEnabled(process.env));
+  if (redir.kind === "resume_handoff") {
+    // 303 → /auth/resume: leagă txn-ul de consent de sesiune (retryable, fără a mai atinge codul Supabase).
+    return NextResponse.redirect(`${origin}/auth/resume`, 303);
+  }
   return NextResponse.redirect(`${origin}/dashboard`);
 }

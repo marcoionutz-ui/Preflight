@@ -8,7 +8,7 @@
  */
 import {
   planResumeEntry, classifyReadStep, classifyBindStep, classifyRebind, resumeClearsCookie,
-  type CheckedReadStep,
+  type CheckedReadStep, type TerminalBindStep,
 } from "./resumeBindPlan";
 import type { AuthzTransaction } from "./authzTransaction";
 import type { AuthzTxnReadResult, BindAuthzTxnResult } from "../db/authzTxnStoreIo";
@@ -44,6 +44,15 @@ function _compileProofP1(): void {
   classifyRebind(mkTxn({ session_user_id: "u1" }), "u1");
 }
 void _compileProofP1; // referință fără APEL (nu executa corpul sub tsx)
+
+// Probă COMPILE-TIME (fix TS2322 / overload): `allowRetry=false` narrowează la TerminalBindStep (fără `reread`); `true`
+// NU. Funcție moartă — validată de `tsc`, nerulată de `tsx`.
+function _compileProofTerminalBind(): void {
+  const _ok: TerminalBindStep = classifyBindStep({ status: "conflict" }, false); void _ok; // false → fără reread (OK)
+  // @ts-expect-error — allowRetry=true poate întoarce `reread`, deci rezultatul NU e TerminalBindStep
+  const _bad: TerminalBindStep = classifyBindStep({ status: "conflict" }, true); void _bad;
+}
+void _compileProofTerminalBind;
 
 function main(): void {
 console.log("PH-2 pas 6 frunză 4b — resumeBindPlan (entry + ladder read/bind, pur)");
