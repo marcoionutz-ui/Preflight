@@ -39,8 +39,9 @@ export type ConsentGrantOutcome =
  * Decide GRANT-ul de emis DUPĂ un consent POST. `txn` = tranzacția din store (null dacă lipsă/consumată). Ordine:
  * verifică consent → gate registration → gate cont → construiește grant (scope resolution + claims consistente).
  * `grant_id` provine STICKY din `txn.grant_id` (NU param liber — cgpt: altfel ruta ar putea injecta un UUID nou și
- * read-back-ul idempotent din `insertGrant` n-ar prinde retry-urile). `nowMs` (expiry consent)/`nowIso` (created_at
- * grant) injectate (pur).
+ * read-back-ul idempotent din `insertGrant` n-ar prinde retry-urile). `created_at`-ul grantului e DETERMINIST din
+ * `txn.created_at` (sticky, la fel ca grant_id) — NU din `now` — ca un retry să reconstruiască grant byte-identic.
+ * `nowMs` (doar expiry consent/registration) injectat (pur).
  */
 export function decideConsentGrant(p: {
   txn:                  AuthzTransaction | null;
@@ -50,7 +51,6 @@ export function decideConsentGrant(p: {
   account:              AccountEntitlement | null;
   serverPolicy:         readonly string[];
   nowMs:                number;
-  nowIso:               string;
 }): ConsentGrantOutcome {
   // 1. Consent VERIFICAT (leaf PH-2a). Doar `approve` deblochează grantul.
   const consent = verifyConsentSubmission(p.txn, p.presented, p.nowMs, p.currentSessionUserId);
@@ -60,6 +60,15 @@ export function decideConsentGrant(p: {
   // După `approve`, `txn` e garantat non-null (verifyConsentSubmission dă reject pe null). Guard defensiv.
   const txn = p.txn;
   if (!txn) return { kind: "reject", reason: "tranzacție lipsă" };
+
+  // created_at DETERMINIST din txn (sticky): la un retry după insert AMBIGUU (unavailable), decideConsentGrant
+  // reconstruiește ACELAȘI grant (identitate byte-egală) → insertGrant read-back dă `already_present`, NU `conflict`.
+  // Un `now` proaspăt per încercare ar fi făcut fiecare retry un grant nou → conflict fals (retry ne-idempotent).
+  // `Number.isFinite(created_at)` NU e suficient: un ms finit dar în afara range-ului Date (±8.64e15) → getTime() NaN →
+  // toISOString() ARUNCĂ. Guard pe data construită (fail-closed, fără throw într-o funcție pură).
+  const grantCreatedAt = new Date(txn.created_at);
+  if (!Number.isFinite(grantCreatedAt.getTime())) return { kind: "error", reason: "created_at tranzacție invalid (grant nedeterminist)" };
+  const grantCreatedAtIso = grantCreatedAt.toISOString();
 
   // 2. Registration: EXACT cea sigilată în tranzacție (nu doar același client), legată de client, activă, ne-expirată,
   //    cu authorization_code permis.
@@ -96,7 +105,7 @@ export function decideConsentGrant(p: {
     requestedScopes: txn.requested_scopes,   // din tranzacție
     serverPolicy:    p.serverPolicy,
     account:         p.account,
-    nowIso:          p.nowIso,
+    nowIso:          grantCreatedAtIso,       // STICKY din txn.created_at (determinist pe retry)
   });
   if (!built.ok) return { kind: "error", reason: built.error };
   return { kind: "grant", grant: built.grant, claims: built.claims };

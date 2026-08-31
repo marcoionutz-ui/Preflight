@@ -5,6 +5,7 @@ import { decideConsentGrant, type RegistrationRef } from "./authorizeConsent";
 import { buildAuthzTransaction, bindUser, type AuthzTransaction } from "./authzTransaction";
 import type { AccountEntitlement } from "./entitlement";
 import { isValidGrant } from "./grant";
+import { buildGrantInsertRow, grantRowMatchesGrant } from "../db/grantInsert";
 
 let passed = 0, failed = 0;
 function check(name: string, cond: boolean): void {
@@ -14,7 +15,6 @@ function check(name: string, cond: boolean): void {
 
 const CHALLENGE = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"; // 43 base64url (RFC 7636)
 const NOW_MS = 1_800_000_000_000;
-const NOW_ISO = "2026-08-22T10:00:00.000Z";
 const RES = "https://preflight.app/api/mcp";
 const POLICY = ["read:basic", "read:all", "read:market", "read:pair", "read:safety"];
 
@@ -47,7 +47,6 @@ const base = {
   account,
   serverPolicy: POLICY,
   nowMs: NOW_MS + 1000,
-  nowIso: NOW_ISO,
 };
 
 function main(): void {
@@ -71,6 +70,25 @@ console.log("PH-2 step 10.3a — authorizeConsent (grant post-consimțământ, p
   check("5c. ⭐⭐⭐ grant_id din txn se propagă în grant (txn.grant_id ≠ default → grant îl preia)",
     d.kind === "grant" && d.grant.grant_id === "g_sticky_xyz");
 }
+// STICKY created_at + IDEMPOTENȚĂ pe RETRY (blocker cgpt P1#2): același txn + `now` diferit la a doua încercare →
+// grant BYTE-IDENTIC, deci insertGrant read-back dă `already_present`, NU `conflict` fals.
+{
+  const txn = makeTxn("u1");
+  const d1 = decideConsentGrant({ ...base, txn, nowMs: NOW_MS + 1000 });
+  const d2 = decideConsentGrant({ ...base, txn, nowMs: NOW_MS + 200_000 }); // retry mai TÂRZIU, dar în fereastra txn (alt "acum")
+  const both = d1.kind === "grant" && d2.kind === "grant";
+  check("5d. ⭐⭐⭐ created_at DETERMINIST din txn.created_at (nu din now)",
+    both && d1.kind === "grant" && d1.grant.created_at === new Date(txn.created_at).toISOString());
+  check("5e. ⭐⭐⭐ retry cu now DIFERIT → created_at IDENTIC (nu se plimbă cu timpul)",
+    both && d1.kind === "grant" && d2.kind === "grant" && d1.grant.created_at === d2.grant.created_at);
+  check("5f. ⭐⭐⭐ retry IDEMPOTENT: read-back al grantului #1 se potrivește cu grantul #2 → already_present (NU conflict)",
+    both && d1.kind === "grant" && d2.kind === "grant" && grantRowMatchesGrant(buildGrantInsertRow(d1.grant), d2.grant));
+}
+// created_at FINIT dar în afara range-ului Date (1e20 ms) → error, NU throw (toISOString ar arunca RangeError).
+check("5g. ⭐⭐⭐ created_at finit dar în afara range Date → error (fără throw)", (() => {
+  const d = decideConsentGrant({ ...base, txn: { ...makeTxn("u1"), created_at: 1e20, expires_at: 1e20 + 300_000 } });
+  return d.kind === "error" && d.reason.includes("created_at");
+})());
 
 // ── consent GATE (cgpt #3): grant IMPOSIBIL fără approve verificat ───────────────
 check("6. ⭐⭐⭐ action=deny → denied (NU grant)", decideConsentGrant({ ...base, presented: { ...base.presented, action: "deny" } }).kind === "denied");
