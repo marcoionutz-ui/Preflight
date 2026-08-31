@@ -23,6 +23,7 @@ import {
   classifyIssueResult,
   parseAuthCode,
 } from "./oauthAtomic";
+import { authzTxnKey, AUTHZ_TXN_CONSUME_ISSUE_LUA, classifyTxnConsumeIssue } from "./authzTxnStore";
 import { mintToken, TOKEN_TTL_SEC, REFRESH_TTL_SEC, type TokenPayload } from "./oauth-tokens";
 import { newFamilyId, mintRefreshToken, familyKey } from "./oauth-refresh";
 import { finalizeUserTokenPayload, type UserTokenDraft } from "../oauth/tokenPayloadModel";
@@ -43,6 +44,57 @@ export async function issueAuthCode(payload: AuthCodePayload): Promise<string | 
   const code = randomBytes(32).toString("hex");
   await r.set(codeKey(code), JSON.stringify(payload), "EX", CODE_TTL_SEC);
   return code;
+}
+
+// ── PH-2 pas 6 frunză 5: consume txn + issue code ATOMIC (poarta de concurență a Approve-ului) ──
+const CONSUME_ISSUE_MAX_ATTEMPTS = 5; // retry pe coliziune de cod (astronomic improbabil pe 32B random) → apoi fail-closed
+
+export type ConsumeIssueOutcome =
+  | { status: "issued"; code: string }
+  | { status: "gone" }        // txn absentă/schimbată/consumată (double-submit sau expirată la mijloc) → NU emite
+  | { status: "unavailable" }; // eșec SAU stare NECUNOSCUTĂ (throw = poate consumată; invalid; collision persistent) → 503
+
+/**
+ * Consumă tranzacția de consent (compare-and-delete pe `txnRaw`) ȘI emite un authorization code, ÎNTR-O SINGURĂ op Lua
+ * (`AUTHZ_TXN_CONSUME_ISSUE_LUA`) — poarta de concurență a Approve-ului: serializează double-submit-ul și elimină
+ * fereastra „txn consumată dar cod nescris". Generează cod random; pe `collision` (SET NX picat) reîncearcă cu ALT cod
+ * (txn NEATINSĂ), până la MAX_ATTEMPTS. Pe `gone` NU emite.
+ *
+ * ⚠️ `unavailable` (503) = eșec SAU stare NECUNOSCUTĂ, NU o garanție că txn e intactă: un `throw` poate însemna că Lua
+ * A RULAT pe server (txn consumată + cod scris) dar reply-ul s-a pierdut pe conexiune. (`collision` persistent = txn
+ * sigur NEatinsă; `invalid` = rezultat anormal, necunoscut.) Caller-ul NU trebuie să presupună pe `unavailable` că 503
+ * a păstrat txn — retry-ul corect e RE-RULAREA întregului flux (readAuthzTxn → `gone` ⇒ eroare / `found` ⇒ re-emite),
+ * NU o re-emitere oarbă. Emiterea codului e AT-MOST-ONCE, nu exactly-once. NU șterge txn pe niciun eșec explicit.
+ */
+export async function consumeAuthzTxnAndIssueCode(
+  txnId:   string,
+  txnRaw:  string,
+  payload: AuthCodePayload,
+  client = getRedis(),
+): Promise<ConsumeIssueOutcome> {
+  if (!client) return { status: "unavailable" };
+  const body = JSON.stringify(payload);
+  for (let attempt = 0; attempt < CONSUME_ISSUE_MAX_ATTEMPTS; attempt++) {
+    const code = randomBytes(32).toString("hex");
+    let verdict: ReturnType<typeof classifyTxnConsumeIssue>;
+    try {
+      const res = await client.eval(
+        AUTHZ_TXN_CONSUME_ISSUE_LUA, 2,
+        authzTxnKey(txnId), codeKey(code),
+        txnRaw, body, String(CODE_TTL_SEC),
+      );
+      verdict = classifyTxnConsumeIssue(res);
+    } catch {
+      // throw = stare NECUNOSCUTĂ: Lua poate fi rulat pe server (txn consumată, cod scris) dar reply-ul s-a pierdut. NU
+      // presupunem txn intactă — vezi contractul de mai sus (`unavailable` ≠ garanție că txn există).
+      return { status: "unavailable" };
+    }
+    if (verdict === "issued")  return { status: "issued", code };
+    if (verdict === "gone")    return { status: "gone" };
+    if (verdict === "invalid") return { status: "unavailable" }; // rezultat Lua necunoscut → fail-closed (stare incertă)
+    // verdict === "collision" → cheia code ocupată; alt cod, reîncearcă (txn NEATINSĂ pe SET NX picat)
+  }
+  return { status: "unavailable" }; // coliziuni persistente (SET NX picat de fiecare dată → txn sigur NEatinsă), tot 503
 }
 
 /**
