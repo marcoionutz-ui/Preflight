@@ -17,6 +17,7 @@
 
 import { buildAuthGrantAndCodeClaims, type UserAuthCodeClaims } from "./authGrantIssuance";
 import { verifyConsentSubmission, type AuthzTransaction } from "./authzTransaction";
+import { checkRegistrationBinding } from "./registrationGate";
 import type { OAuthGrant } from "./grant";
 import type { AccountEntitlement } from "./entitlement";
 
@@ -71,24 +72,9 @@ export function decideConsentGrant(p: {
   const grantCreatedAtIso = grantCreatedAt.toISOString();
 
   // 2. Registration: EXACT cea sigilată în tranzacție (nu doar același client), legată de client, activă, ne-expirată,
-  //    cu authorization_code permis.
-  if (!p.registration) return { kind: "error", reason: "clientul nu are registration (oauth_client_registrations)" };
-  if (p.registration.registration_id !== txn.registration_id) {
-    return { kind: "error", reason: "registration ≠ cea sigilată în tranzacție (registration_id mismatch)" };
-  }
-  if (p.registration.client_id !== txn.client_id) {
-    return { kind: "error", reason: "registration nu aparține clientului tranzacției (client_id mismatch)" };
-  }
-  if (p.registration.status !== "active") {
-    return { kind: "error", reason: `registration status ≠ active (${p.registration.status})` };
-  }
-  // Expirare: acceptăm doar `expires_at` null SAU strict în viitor față de `nowMs` (un shell DCR expirat nu autorizează).
-  if (p.registration.expires_at !== null && !(p.registration.expires_at > p.nowMs)) {
-    return { kind: "error", reason: "registration expirată" };
-  }
-  if (!p.registration.grant_types.includes("authorization_code")) {
-    return { kind: "error", reason: "registration nu permite authorization_code" };
-  }
+  //    cu authorization_code permis. Poartă PURĂ partajată cu `buildConsentView` (sursă unică — afișare == acordare).
+  const regGate = checkRegistrationBinding(p.registration, txn, p.nowMs);
+  if (!regGate.ok) return { kind: "error", reason: regGate.reason };
 
   // 3. Cont AL userului legat în tranzacție.
   if (!p.account) return { kind: "error", reason: "contul nu are entitlement (account_entitlements)" };
@@ -99,7 +85,7 @@ export function decideConsentGrant(p: {
   // 4. Grant + claims — TOT derivat din tranzacție + cont (nu din parametri liberi). Scope resolution în helper.
   const built = buildAuthGrantAndCodeClaims({
     grant_id:        txn.grant_id,           // STICKY din tranzacție (nu param liber)
-    registration_id: p.registration.registration_id,
+    registration_id: txn.registration_id,    // = registration.registration_id (garantat de checkRegistrationBinding)
     client_id:       txn.client_id,          // din tranzacție
     resource:        txn.resource,           // din tranzacție
     requestedScopes: txn.requested_scopes,   // din tranzacție
