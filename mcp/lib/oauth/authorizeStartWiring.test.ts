@@ -99,8 +99,10 @@ check("27. ⭐⭐⭐ forwarding FĂRĂ colaps: Array.isArray → forEach append 
   /Array\.isArray\(v\)\)\s*v\.forEach\(\(x\)\s*=>\s*qs\.append\(k,\s*x\)\)/.test(page) && !/\.join\(","\)/.test(page));
 check("28. ⭐⭐ Props lărgit la string | string[] | undefined (fără colaps de tip)",
   /type QueryVal = string \| string\[\] \| undefined/.test(page));
-check("29. ⭐⭐⭐ render_consent → placeholder INERT (fără form/Approve/Deny/auto-submit; fără endpoint consent)",
-  /decision\.kind === "render_consent"\) return consentPlaceholder\(\)/.test(page) && !/authorize\/consent/.test(page) && !/name="action"/.test(page));
+check("29. ⭐⭐⭐ render_consent → consentScreen(decision.txn) (form REAL Approve/Deny + endpoint consent; NU mai placeholder INERT)",
+  /decision\.kind === "render_consent"\) return consentScreen\(decision\.txn\)/.test(page)
+  && !/consentPlaceholder/.test(page)
+  && /action="\/api\/oauth\/authorize\/consent"/.test(page) && /name="action"/.test(page));
 // ── FIX cgpt: boundary excepții + txn_id la /start + outage resume non-200 ───────
 check("30. ⭐⭐⭐ ROUTE: boundary de excepții — GET try { handleStart } catch(err) → internalError (500 generic, fără leak)",
   /try\s*\{\s*return await handleStart\(req\);\s*\}\s*catch\s*\(err\)\s*\{/.test(route)

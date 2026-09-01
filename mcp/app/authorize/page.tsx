@@ -17,7 +17,11 @@ import { isResourceOwnerAuthorizeEnabled } from "@/lib/oauth/authorizeResourceOw
 import { isValidResumeTxnId } from "@/lib/oauth/sessionResume";
 import { getSessionState } from "@/lib/oauth/sessionResumeIo";
 import { readAuthzTxn } from "@/lib/db/authzTxnStoreIo";
+import { getAuthorizeRegistration, getAccountEntitlement } from "@/lib/db/ph2Reads";
 import { decideAuthorizeGetOutcome } from "@/lib/oauth/authorizeGetDecision";
+import { buildConsentView, type ConsentView } from "@/lib/oauth/consentView";
+import { SERVER_SCOPE_CATALOG } from "@/lib/oauth/scopeCatalog";
+import type { AuthzTransaction } from "@/lib/oauth/authzTransaction";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -192,7 +196,7 @@ async function resourceOwnerAuthorize(params: Record<string, QueryVal>) {
     const session = await getSessionState();
     const decision = decideAuthorizeGetOutcome({ mode: "resume", txnRead, session, nowMs: Date.now() });
 
-    if (decision.kind === "render_consent") return consentPlaceholder();
+    if (decision.kind === "render_consent") return consentScreen(decision.txn);
     if (decision.kind === "unavailable") {
       // OUTAGE (Redis/Supabase jos): un 200 ar semnala fals „succes" la monitoring/clienți. RSC nu poate emite 503,
       // deci ARUNCĂM → Next randează pagina de eroare cu status 5xx (nu 200). Un 503 REAL ar cere mutarea resume-ului
@@ -214,10 +218,46 @@ async function resourceOwnerAuthorize(params: Record<string, QueryVal>) {
 }
 
 /**
- * Placeholder INERT pentru ecranul de consent (frunza 5 îl înlocuiește cu Approve/Deny + CSRF). Fără form, fără
- * auto-submit — flag-ul rămâne OFF până când UI-ul + callback-ul sunt complete.
+ * Ecranul de consent resource-owner (frunza 5c). Încarcă registration (metadate client) + entitlement-ul contului și
+ * construiește view-model-ul PUR `buildConsentView` — care oglindește TOATE porțile din `decideConsentGrant` (afișare ==
+ * acordare). Doctrina outage-ului (ca la resume): un `unavailable` pe oricare lookup ARUNCĂ (5xx), NU randează un
+ * "invalid link" fals la 200 pe un Redis/Supabase jos. `error` din view (registration invalidă / cont neutilizabil /
+ * zero scope-uri acordabile / redirect neparsabil) = cerere invalidă → afișare LOCALĂ 200 (RFC 6749 §4.1.2.1).
  */
-function consentPlaceholder() {
+async function consentScreen(txn: AuthzTransaction) {
+  const userId = txn.session_user_id;
+  // render_consent garantează txn legată de userul sesiunii; defensiv, fără user → cerere invalidă (nu interogăm cont gol).
+  if (!userId) return errorCard("⚠️ Invalid Request", "This authorization link is invalid or has expired.");
+
+  const [regLookup, acctLookup] = await Promise.all([
+    getAuthorizeRegistration(txn.client_id),
+    getAccountEntitlement(userId),
+  ]);
+
+  // OUTAGE pe oricare lookup → 5xx (RSC nu poate emite 503; aruncă → Next randează pagina de eroare cu status 5xx).
+  // Un 200 „invalid link" ar minți clientul/monitoring-ul pe un outage tranzitoriu.
+  if (regLookup.status === "unavailable" || acctLookup.status === "unavailable") {
+    throw new Error("consent lookups unavailable");
+  }
+
+  const registration = regLookup.status === "found" ? regLookup.registration : null;
+  const account      = acctLookup.status === "found" ? acctLookup.entitlement : null;
+
+  const built = buildConsentView({ txn, registration, account, serverPolicy: SERVER_SCOPE_CATALOG, nowMs: Date.now() });
+  if (built.kind === "error") {
+    // Cerere invalidă (nu outage): mesaj generic, fără detalii interne (built.reason rămâne server-side).
+    return errorCard("⚠️ Invalid Request", "This authorization link is invalid or has expired.");
+  }
+  return consentForm(built.view);
+}
+
+/**
+ * Form-ul de consent: POST la /api/oauth/authorize/consent cu `txn_id` + `csrf_token` (hidden) și DOUĂ butoane submit
+ * `action=approve|deny` (doar cel apăsat se trimite → exact o valoare `action`, cerută de `parseConsentForm`). Fără
+ * client_secret, fără auto-submit — consimțământul e o acțiune umană explicită. enctype implicit e
+ * application/x-www-form-urlencoded (poarta `isFormUrlEncoded` din rută).
+ */
+function consentForm(view: ConsentView) {
   return (
     <div style={styles.container}>
       <div style={styles.card}>
@@ -225,8 +265,44 @@ function consentPlaceholder() {
           <span style={styles.logo}>✈</span>
           <span style={styles.brandName}>Preflight</span>
         </div>
+
         <h1 style={styles.title}>Authorize access</h1>
-        <p style={styles.subtitle}>The consent screen is not available yet.</p>
+        <p style={styles.subtitle}>
+          <strong style={styles.clientNameStrong}>{view.clientName}</strong> wants to access your Preflight account.
+        </p>
+
+        <div style={styles.clientInfo}>
+          <span style={styles.clientLabel}>Client ID</span>
+          <span style={styles.clientId}>{view.clientId}</span>
+        </div>
+        <div style={styles.clientInfo}>
+          <span style={styles.clientLabel}>Redirects to</span>
+          <span style={styles.clientId}>{view.redirectHost}</span>
+        </div>
+
+        <p style={styles.scopeHeading}>This will grant access to:</p>
+        <ul style={styles.scopeList}>
+          {view.scopes.map((s) => (
+            <li key={s.scope} style={styles.scopeItem}>
+              <span style={styles.scopeCheck}>✓</span>
+              <span style={styles.scopeText}>{s.label}</span>
+              <span style={styles.scopeBadge}>{s.scope}</span>
+            </li>
+          ))}
+        </ul>
+
+        <form action="/api/oauth/authorize/consent" method="POST" style={styles.form}>
+          <input type="hidden" name="txn_id"     value={view.txnId} />
+          <input type="hidden" name="csrf_token" value={view.csrfToken} />
+          <div style={styles.buttonRow}>
+            <button type="submit" name="action" value="deny" style={styles.buttonDeny}>
+              Deny
+            </button>
+            <button type="submit" name="action" value="approve" style={styles.buttonApprove}>
+              Approve →
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   );
@@ -336,10 +412,75 @@ const styles: Record<string, React.CSSProperties> = {
     padding:      "3px 8px",
     borderRadius: "4px",
   },
+  clientNameStrong: {
+    color:      "#fff",
+    fontWeight: "700",
+  },
+  scopeHeading: {
+    color:        "#888",
+    fontSize:     "13px",
+    margin:       "8px 0 10px 0",
+  },
+  scopeList: {
+    listStyle:    "none",
+    margin:       "0 0 24px 0",
+    padding:      "0",
+    display:      "flex",
+    flexDirection: "column" as const,
+    gap:          "8px",
+  },
+  scopeItem: {
+    display:      "flex",
+    alignItems:   "center",
+    gap:          "10px",
+    background:   "#0d0d0d",
+    border:       "1px solid #1e1e1e",
+    borderRadius: "8px",
+    padding:      "10px 14px",
+  },
+  scopeCheck: {
+    color:      "#00ff88",
+    fontSize:   "14px",
+    fontWeight: "700",
+    flexShrink: 0,
+  },
+  scopeText: {
+    color:     "#ddd",
+    fontSize:  "13px",
+    flexGrow:  1,
+  },
   form: {
     display:        "flex",
     flexDirection:  "column" as const,
     gap:            "14px",
+  },
+  buttonRow: {
+    display:        "flex",
+    gap:            "12px",
+  },
+  buttonDeny: {
+    background:    "transparent",
+    border:        "1px solid #333",
+    borderRadius:  "8px",
+    color:         "#aaa",
+    cursor:        "pointer",
+    fontSize:      "14px",
+    fontWeight:    "600",
+    padding:       "13px",
+    flex:          1,
+    letterSpacing: "0.03em",
+  },
+  buttonApprove: {
+    background:    "#00ff88",
+    border:        "none",
+    borderRadius:  "8px",
+    color:         "#000",
+    cursor:        "pointer",
+    fontSize:      "14px",
+    fontWeight:    "700",
+    padding:       "13px",
+    flex:          2,
+    letterSpacing: "0.03em",
   },
   label: {
     color:      "#aaa",
