@@ -88,3 +88,41 @@ export function classifyTxnConsumeIssue(res: unknown): TxnConsumeIssueResult {
   if (res === -1 || res === "-1" || res === 0 || res === "0") return "gone";     // absentă / schimbată → deja folosită
   return "invalid";
 }
+
+// ── ACTION CLAIM (arbitrare atomică cross-action: approve VS deny pe ACEEAȘI txn) ──
+//   Închide cursa: Approve inserează grantul (SEPARAT de consume) ÎNAINTE ca un Deny concurent să consume txn +
+//   redirecteze access_denied → Approve ar lăsa un grant `active` ORFAN deși câștigătorul a fost Deny. Fix: ÎNAINTE de
+//   orice efect secundar (insertGrant / consume), fiecare cale revendică ATOMIC txn pentru acțiunea ei pe o cheie
+//   dedicată (`SET NX`). DOAR câștigătorul produce efecte; perdantul vede acțiunea câștigătoare și nu atinge nimic.
+//   Retry-ul ACELEIAȘI acțiuni e idempotent (cheia deja are acțiunea proprie → `idempotent` → poate re-rula sigur).
+//   KEYS[1] = cheia de claim; ARGV[1] = acțiunea proprie ("approve"|"deny"); ARGV[2] = TTL sec (≥ viața txn).
+//   'won' = am revendicat primul; 'idempotent' = deja revendicată de ACEEAȘI acțiune (retry sigur); altă valoare
+//   (acțiunea celuilalt) = am PIERDUT.
+export function authzActionClaimKey(txnId: string): string { return `mcp:authz_claim:${txnId}`; }
+
+export const AUTHZ_TXN_ACTION_CLAIM_LUA = `
+local ok = redis.call('SET', KEYS[1], ARGV[1], 'NX', 'EX', ARGV[2])
+if ok then return 'won' end
+local cur = redis.call('GET', KEYS[1])
+if cur == ARGV[1] then return 'idempotent' end
+return cur
+`;
+
+/** Cele DOUĂ acțiuni de consent — union STRICT. Orice altă valoare (typo/corupție Redis) NU e o acțiune legitimă. */
+export type AuthzTxnAction = "approve" | "deny";
+export function isAuthzTxnAction(v: unknown): v is AuthzTxnAction { return v === "approve" || v === "deny"; }
+
+export type ActionClaimResult = "won" | "idempotent" | { lost_to: AuthzTxnAction } | "invalid";
+
+/**
+ * Clasifică rezultatul claim-ului. `res` e ce întoarce Lua-ul: 'won' | 'idempotent' | acțiunea CELUILALT. `lost_to` e
+ * acceptat DOAR dacă `res` e o acțiune VALIDĂ (`approve`|`deny`) ≠ `myAction` — un typo/date corupte ("bogus") NU pot
+ * fi tratate ca „câștigător legitim" (altfel ar bloca txn 10 min cu un câștigător fantomă). Necunoscut → `invalid` → 503.
+ * `res === myAction` → `idempotent` (defensiv; Lua-ul ar fi dat deja 'idempotent').
+ */
+export function classifyActionClaim(res: unknown, myAction: AuthzTxnAction): ActionClaimResult {
+  if (res === "won")        return "won";
+  if (res === "idempotent") return "idempotent";
+  if (isAuthzTxnAction(res)) return res === myAction ? "idempotent" : { lost_to: res }; // DOAR cealaltă acțiune validă
+  return "invalid"; // null/undefined/număr/gol/"bogus" → necunoscut → fail-closed (NU câștigător)
+}

@@ -3,7 +3,7 @@
  * Zero I/O; acoperă fiecare ramură a fiecărei etape + contractul P1 (unavailable = stare incertă, 503, nu presupune txn).
  */
 import {
-  planConsentAction, planPayloadBuild, planAfterInsert, planAfterConsume, planAfterDenyConsume,
+  planConsentAction, planPayloadBuild, planAfterInsert, planAfterConsume, planAfterDenyConsume, planActionClaim,
   type ConsentRedirect,
 } from "./consentIssuancePlan";
 import type { ConsentGrantOutcome } from "./authorizeConsent";
@@ -25,6 +25,19 @@ const R_NOSTATE: ConsentRedirect = { redirectUri: "https://app.test/cb", iss: "h
 
 function main(): void {
 console.log("PH-2 pas 6 frunză 5a-planner — consentIssuancePlan (pur, în etape)");
+
+// ── Etapa 0: planActionClaim (arbitrare cross-action) ────────────────────────────────────────────────
+check("0a. ⭐⭐⭐ claim won → proceed", planActionClaim({ status: "won" }).kind === "proceed");
+check("0b. ⭐⭐⭐ claim idempotent (retry propriu) → proceed", planActionClaim({ status: "idempotent" }).kind === "proceed");
+{
+  const s = planActionClaim({ status: "lost", winner: "deny" });
+  check("0c. ⭐⭐⭐ claim lost → terminal local_error (NU efecte, NU redirect — perdantul nu conduce clientul)",
+    s.kind === "terminal" && s.outcome.kind === "local_error" && s.outcome.reason.includes("deny"));
+}
+check("0d. ⭐⭐⭐ claim unavailable → terminal 503", (() => {
+  const s = planActionClaim({ status: "unavailable" });
+  return s.kind === "terminal" && s.outcome.kind === "unavailable";
+})());
 
 // ── Etapa 1: planConsentAction ────────────────────────────────────────────────────────────────────────
 {

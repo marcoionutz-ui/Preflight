@@ -7,9 +7,9 @@
  * Redis real în `authzTxnStoreIo.integration.ts`.
  */
 import {
-  createAuthzTxn, readAuthzTxn, bindAuthzTxnUser, consumeAuthzTxn,
+  createAuthzTxn, readAuthzTxn, bindAuthzTxnUser, consumeAuthzTxn, claimAuthzTxnAction,
 } from "./authzTxnStoreIo";
-import { authzTxnKey, AUTHZ_TXN_CONSUME_LUA, AUTHZ_TXN_BIND_CAS_LUA } from "./authzTxnStore";
+import { authzTxnKey, AUTHZ_TXN_CONSUME_LUA, AUTHZ_TXN_BIND_CAS_LUA, AUTHZ_TXN_ACTION_CLAIM_LUA, authzActionClaimKey, AUTHZ_TXN_TTL_SEC } from "./authzTxnStore";
 import { buildAuthzTransaction, type AuthzTransaction } from "../oauth/authzTransaction";
 
 let passed = 0, failed = 0;
@@ -143,6 +143,24 @@ check("29. ⭐⭐ CONSUME throw → unavailable", await consumeAuthzTxn("tx1", "
 }
 check("33. ⭐⭐ READ blob cu txn_id === cheia → found (control pozitiv)",
   (await readAuthzTxn("tx1", fakeRedis({ get: JSON.stringify(mkTxn({ txn_id: "tx1" })) }).client)).status === "found");
+
+// ── ACTION CLAIM (unit, client fake) ───────────────────────────────────────────
+check("34. ⭐⭐ CLAIM client null → unavailable", (await claimAuthzTxnAction("tx1", "approve", null)).status === "unavailable");
+{
+  const { client, calls } = fakeRedis({ evalRet: "won" });
+  const res = await claimAuthzTxnAction("tx1", "approve", client);
+  check("35. ⭐⭐⭐ CLAIM eval 'won' → won", res.status === "won");
+  const evalArgs = calls.find(c => c.m === "eval")!.args;
+  check("36. ⭐⭐⭐ CLAIM cheamă AUTHZ_TXN_ACTION_CLAIM_LUA cu (claimKey, action, TTL)",
+    evalArgs[0] === AUTHZ_TXN_ACTION_CLAIM_LUA && evalArgs[2] === authzActionClaimKey("tx1") && evalArgs[3] === "approve" && evalArgs[4] === String(AUTHZ_TXN_TTL_SEC));
+}
+check("37. ⭐⭐⭐ CLAIM eval 'idempotent' → idempotent (retry aceeași acțiune)", (await claimAuthzTxnAction("tx1", "approve", fakeRedis({ evalRet: "idempotent" }).client)).status === "idempotent");
+{
+  const res = await claimAuthzTxnAction("tx1", "approve", fakeRedis({ evalRet: "deny" }).client);
+  check("38. ⭐⭐⭐ CLAIM eval acțiunea CELUILALT → lost{winner}", res.status === "lost" && res.status === "lost" && res.winner === "deny");
+}
+check("39. ⭐⭐⭐ CLAIM eval rezultat necunoscut (null) → unavailable (fail-closed)", (await claimAuthzTxnAction("tx1", "approve", fakeRedis({ evalRet: null }).client)).status === "unavailable");
+check("40. ⭐⭐ CLAIM throw → unavailable", (await claimAuthzTxnAction("tx1", "approve", fakeRedis({ evalRet: "won", throwOn: "eval" }).client)).status === "unavailable");
 
 console.log("\n" + passed + " passed, " + failed + " failed");
 if (failed > 0) process.exit(1);

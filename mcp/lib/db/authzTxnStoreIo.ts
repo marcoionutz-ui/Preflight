@@ -22,6 +22,7 @@ import {
   classifyTxnCreate, type TxnCreateResult,
   AUTHZ_TXN_CONSUME_LUA, classifyTxnConsume, type TxnConsumeResult,
   AUTHZ_TXN_BIND_CAS_LUA, classifyTxnCas,
+  authzActionClaimKey, AUTHZ_TXN_ACTION_CLAIM_LUA, classifyActionClaim, type AuthzTxnAction,
 } from "./authzTxnStore";
 import { bindUser, isValidAuthzTransaction, type AuthzTransaction } from "../oauth/authzTransaction";
 
@@ -127,5 +128,37 @@ export async function consumeAuthzTxn(
     return classifyTxnConsume(res);
   } catch {
     return "unavailable";
+  }
+}
+
+// ── ACTION CLAIM (arbitrare atomică cross-action, ÎNAINTE de efecte secundare) ──
+export type ClaimActionOutcome =
+  | { status: "won" }                          // am revendicat primul → produc efecte
+  | { status: "idempotent" }                   // deja revendicată de ACEEAȘI acțiune (retry) → pot re-rula sigur
+  | { status: "lost"; winner: AuthzTxnAction } // cealaltă acțiune VALIDĂ a câștigat → NU ating nimic
+  | { status: "unavailable" };                 // Redis jos/respins / rezultat necunoscut → 503 (fail-closed)
+
+/**
+ * Revendică ATOMIC txn-ul pentru `action` ("approve"|"deny") ÎNAINTE de orice efect secundar. Cheia de claim e distinctă
+ * de cheia txn; `SET NX` face ca EXACT o acțiune să câștige o cursă approve↔deny. Retry-ul aceleiași acțiuni → idempotent.
+ * TTL ≥ viața txn (același `AUTHZ_TXN_TTL_SEC`) ca un perdant lent să vadă tot claim-ul câștigător. `invalid`/throw → 503.
+ */
+export async function claimAuthzTxnAction(
+  txnId:  string,
+  action: AuthzTxnAction,
+  client: RedisClient = getRedis(),
+): Promise<ClaimActionOutcome> {
+  if (!client) return { status: "unavailable" };
+  try {
+    const res = await client.eval(
+      AUTHZ_TXN_ACTION_CLAIM_LUA, 1, authzActionClaimKey(txnId), action, String(AUTHZ_TXN_TTL_SEC),
+    );
+    const c = classifyActionClaim(res, action);
+    if (c === "won")        return { status: "won" };
+    if (c === "idempotent") return { status: "idempotent" };
+    if (c === "invalid")    return { status: "unavailable" }; // rezultat necunoscut → fail-closed
+    return { status: "lost", winner: c.lost_to };
+  } catch {
+    return { status: "unavailable" };
   }
 }

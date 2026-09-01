@@ -22,7 +22,7 @@ import type { AuthCodePayload } from "../db/oauthAtomic";
 // Tipurile I/O REALE prin `import type` — eliminate la runtime de tsx (NU încarcă redis), dar verificate în AMBELE
 // sensuri la typecheck (fără mirror, fără drift într-un singur sens).
 import type { ConsumeIssueOutcome } from "../db/oauth-codes";
-import type { ConsumeAuthzTxnResult } from "../db/authzTxnStoreIo";
+import type { ConsumeAuthzTxnResult, ClaimActionOutcome } from "../db/authzTxnStoreIo";
 
 /** Contextul de redirect, derivat DOAR din txn (trusted) + origin (iss RFC 9207). Niciodată din query brut. */
 export interface ConsentRedirect {
@@ -37,6 +37,22 @@ export type ConsentIssuanceOutcome =
   | { kind: "redirect_denied"; redirectUri: string;               state?: string; iss: string } // ?error=access_denied
   | { kind: "local_error";     error: string; reason: string }
   | { kind: "unavailable";     reason: string };
+
+// ── Etapa 0 (issue ȘI deny): arbitrare atomică ÎNAINTE de orice efect secundar (cursa cross-action) ──
+export type ClaimStep =
+  | { kind: "proceed" }                                    // won/idempotent → produc efecte (insert/consume)
+  | { kind: "terminal"; outcome: ConsentIssuanceOutcome }; // lost/unavailable → nu ating nimic
+
+export function planActionClaim(outcome: ClaimActionOutcome): ClaimStep {
+  switch (outcome.status) {
+    case "won":
+    case "idempotent": return { kind: "proceed" };          // câștigător (sau retry propriu) → efecte sigure
+    // PIERDUT: altă acțiune (deny câștigat de un approve concurent sau invers) a produs deja rezultatul → NU emitem,
+    // NU consumăm, NU redirectăm (doar câștigătorul conduce clientul). Pagină locală: cererea a fost înlocuită.
+    case "lost":        return { kind: "terminal", outcome: { kind: "local_error", error: "access_denied", reason: `acțiune concurentă a câștigat: ${outcome.winner}` } };
+    case "unavailable": return { kind: "terminal", outcome: { kind: "unavailable", reason: "arbitrarea acțiunii indisponibilă" } };
+  }
+}
 
 // ── Etapa 1: după verify+decide ─────────────────────────────────────────────────────────────────────
 export type ConsentActionStep =

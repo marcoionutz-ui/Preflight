@@ -4,6 +4,7 @@
 import {
   classifyTxnCreate, classifyTxnConsume, classifyTxnCas, authzTxnKey,
   classifyTxnConsumeIssue, AUTHZ_TXN_CONSUME_ISSUE_LUA,
+  classifyActionClaim, authzActionClaimKey, AUTHZ_TXN_ACTION_CLAIM_LUA, isAuthzTxnAction,
 } from "./authzTxnStore";
 
 let passed = 0, failed = 0;
@@ -72,6 +73,38 @@ check("20. ⭐⭐⭐ coliziunea (return -2) e ÎNAINTE de DEL → txn NU se ște
   const iDel = L.indexOf("DEL");
   return iCollisionReturn > -1 && iDel > -1 && iCollisionReturn < iDel;
 })());
+
+// ── ACTION CLAIM (arbitrare atomică approve/deny) ──────────────────────────────────────────────────
+check("21. ⭐⭐⭐ claim 'won' → won", classifyActionClaim("won", "approve") === "won");
+check("22. ⭐⭐⭐ claim 'idempotent' → idempotent (retry aceeași acțiune)", classifyActionClaim("idempotent", "approve") === "idempotent");
+check("23. ⭐⭐⭐ claim cu acțiunea CELUILALT → lost_to (am pierdut)", (() => {
+  const r = classifyActionClaim("deny", "approve");
+  return typeof r === "object" && r.lost_to === "deny";
+})());
+check("23b. ⭐⭐ claim simetric: approve câștigător văzut de deny → lost_to approve", (() => {
+  const r = classifyActionClaim("approve", "deny");
+  return typeof r === "object" && r.lost_to === "approve";
+})());
+check("23c. ⭐⭐ defensiv: string == myAction → idempotent (nu lost_to fals)", classifyActionClaim("approve", "approve") === "idempotent");
+check("24. ⭐⭐⭐ claim null → invalid (fail-closed → 503)", classifyActionClaim(null, "approve") === "invalid");
+check("24b. ⭐⭐⭐ claim undefined → invalid", classifyActionClaim(undefined, "approve") === "invalid");
+check("24c. ⭐⭐⭐ claim '' (gol) → invalid (NU lost_to)", classifyActionClaim("", "approve") === "invalid");
+check("24d. ⭐⭐ claim număr → invalid", classifyActionClaim(1, "approve") === "invalid");
+check("24e. ⭐⭐⭐ claim 'bogus' (acțiune NEcunoscută/corupție) → invalid → 503 (NU câștigător fantomă care blochează txn 10 min)",
+  classifyActionClaim("bogus", "approve") === "invalid");
+check("24f. ⭐⭐ isAuthzTxnAction: doar approve/deny → true; restul → false",
+  isAuthzTxnAction("approve") && isAuthzTxnAction("deny") && !isAuthzTxnAction("bogus") && !isAuthzTxnAction("won") && !isAuthzTxnAction(null));
+check("25. ⭐ cheia de claim = mcp:authz_claim:<id> (namespace DISTINCT de txn)",
+  authzActionClaimKey("t1") === "mcp:authz_claim:t1" && authzActionClaimKey("t1") !== authzTxnKey("t1"));
+
+// ── Lua CLAIM: SET NX pe cheia de claim; won/idempotent/other-action ──
+const CL = AUTHZ_TXN_ACTION_CLAIM_LUA;
+check("26. ⭐⭐⭐ Lua claim: SET NX (KEYS[1] ARGV[1] NX EX ARGV[2]) → 'won' pe reușită",
+  /SET',\s*KEYS\[1\],\s*ARGV\[1\],\s*'NX',\s*'EX',\s*ARGV\[2\]/.test(CL) && /if ok then return 'won'/.test(CL));
+check("27. ⭐⭐⭐ Lua claim: pe eșec (deja revendicată) → GET; cur == ARGV[1] → 'idempotent'; altfel întoarce acțiunea câștigătoare",
+  /GET',\s*KEYS\[1\]/.test(CL) && /cur == ARGV\[1\] then return 'idempotent'/.test(CL) && /return cur\s*$/.test(CL.trim()));
+check("28. ⭐⭐⭐ Lua claim NU atinge cheia txn (mcp:authz_txn) — doar cheia de claim (fără efecte pe txn)",
+  !/authz_txn/.test(CL));
 
 console.log("\n" + passed + " passed, " + failed + " failed");
 if (failed > 0) process.exit(1);
