@@ -114,6 +114,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.26.0",
+    "@preflight/config-env": "*",
     "@preflight/risk-layer": "*",
     "@preflight/schema": "*",
     "@supabase/ssr": "^0.12.3",
