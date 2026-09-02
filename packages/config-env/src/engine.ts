@@ -145,6 +145,49 @@ export function flagMustBeOffInProd(label: string): Validate {
   };
 }
 
+// ── liste CSV de tokeni cunoscuți (ex. chain list) — generic, parametrizat pe (allowed, normalize) ──
+/**
+ * Tokenii dintr-un CSV care NU se rezolvă la un membru cunoscut și de-aceea sunt DROPAȚI TĂCUT la runtime.
+ * Oglindește EXACT logica per-token a consumatorilor (`chains.ts`, `parseExpectedChains`): `split(",")`, per token
+ * `trim().toLowerCase()`, apoi `normalize(...)`, apoi test de apartenență. Fiecare ROL își trece propriul `(allowed,
+ * normalize)` — worker-ul EVM folosește ids literale (`normalize` = identitate: `eth` NU se mapează la `ethereum`),
+ * MCP health folosește `normalizeChainId` (alias-tolerant). Setul valid se normalizează la fel ca la consumatori
+ * (`allowed.map(normalize)`). Tokenii goli (virgulă în plus) sunt săriți (dropați tăcut, nu-i raportăm). Rezultat
+ * dedup, lowercase, ordine de apariție.
+ */
+export function unknownCsvTokens(
+  raw: string,
+  allowed: readonly string[],
+  normalize: (s: string) => string = (s) => s,
+): string[] {
+  const valid = new Set(allowed.map((c) => normalize(c)));
+  const out: string[] = [];
+  for (const part of raw.split(",")) {
+    const t = part.trim().toLowerCase();
+    if (t === "") continue; // token gol → dropat tăcut de consumatori, nu-l semnalăm
+    if (!valid.has(normalize(t)) && !out.includes(t)) out.push(t);
+  }
+  return out;
+}
+
+/**
+ * Validator de formă pentru un câmp CSV-de-tokeni-cunoscuți (ex. `ENABLED_CHAINS`/`HEALTH_EXPECTED_CHAINS`): pe un
+ * câmp OPȚIONAL, tokeni necunoscuți prezenți → `warning` (nu crapă). Prinde clasa de footgun „un chain scris greșit
+ * e IGNORAT tăcut la runtime → chain nepornit/nemonitorizat". `allowed`+`normalize` vin din vocabularul ROLULUI.
+ *
+ * NU ecouă VALORILE din env în mesaj (fix cgpt 12.2c-1): un env poate conține secret/injecție, iar mesajul ajunge în
+ * log-ul de boot prin `formatEnvValidation`. Raportează doar CÂMPUL, NUMĂRUL de necunoscute și OPȚIUNILE PERMISE
+ * (setul canonic din cod, sigur de afișat). Tokenii bruți rămân disponibili programatic prin `unknownCsvTokens`.
+ */
+export function csvKnownTokens(label: string, allowed: readonly string[], normalize?: (s: string) => string): Validate {
+  return (value) => {
+    const n = unknownCsvTokens(value, allowed, normalize).length;
+    return n === 0
+      ? null
+      : `${label} — ${n} token(i) necunoscut(i), IGNORAȚI la runtime (permise: ${allowed.join("/")})`;
+  };
+}
+
 /**
  * Rulează un set de câmpuri peste snapshot. Colectează TOATE problemele/avertismentele (nu short-circuit).
  * Câmp obligatoriu absent → problem missing; prezent + invalid → problem invalid. Câmp opțional absent → nimic;

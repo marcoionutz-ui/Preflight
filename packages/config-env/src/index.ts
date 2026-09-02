@@ -11,6 +11,8 @@ export {
   nonNegativeInt,
   boolFlag,
   flagMustBeOffInProd,
+  unknownCsvTokens,
+  csvKnownTokens,
   runFieldSpecs,
   detectUnexpected,
   validateEnv,

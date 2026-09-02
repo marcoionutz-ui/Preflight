@@ -5,7 +5,7 @@
  */
 import {
   validateEnv, runFieldSpecs, detectUnexpected, formatEnvValidation,
-  absoluteUrl, redisUrl, nonEmpty, nonNegativeInt, boolFlag, flagMustBeOffInProd, present, isProd,
+  absoluteUrl, redisUrl, nonEmpty, nonNegativeInt, boolFlag, flagMustBeOffInProd, unknownCsvTokens, csvKnownTokens, present, isProd,
   type FieldSpec, type EnvSnapshot, type EnvValidation,
 } from "../src/engine";
 
@@ -197,6 +197,51 @@ check("38. ⭐⭐ boolFlag ca validate pe câmp OPȚIONAL → present+bad → wa
   const spec: FieldSpec[] = [{ name: "TOGGLE", required: () => false, validate: boolFlag }];
   const r = runFieldSpecs(spec, { TOGGLE: "treu" }, false);
   return r.problems.length === 0 && r.warnings.length === 1 && r.warnings[0].name === "TOGGLE";
+})());
+
+// ── csvKnownTokens / unknownCsvTokens (liste de chain, 12.2c-1) ───────────────────────
+// worker-style: normalize = identitate, ids literale (eth NU → ethereum; id-ul e bsc).
+const CHAINS = ["base", "arbitrum", "bsc", "ethereum"] as const;
+// MCP-style: replica EXACTĂ a `normalizeChainId` din @preflight/schema — mapează DOAR eth→ethereum, restul pass-through
+// (verificat în schema/src/index.ts: `c === "eth" ? "ethereum" : c`). `bnb` NU → `bsc` (canonic e `bsc`).
+const norm = (s: string): string => (s === "eth" ? "ethereum" : s);
+
+check("39. ⭐⭐⭐ worker-style: 'base,arbitrum' → 0 necunoscute", unknownCsvTokens("base,arbitrum", CHAINS).length === 0);
+check("40. ⭐⭐⭐ worker-style: 'base,bnb' → 'bnb' necunoscut (canonic e bsc; nici worker nici normalizeChainId nu mapează bnb)", (() => {
+  const u = unknownCsvTokens("base,bnb", CHAINS);
+  return u.length === 1 && u[0] === "bnb";
+})());
+check("41. ⭐⭐ worker-style: ' base , ARBITRUM ' (spații+case) → trim+lower → 0 necunoscute", unknownCsvTokens(" base , ARBITRUM ", CHAINS).length === 0);
+check("42. ⭐⭐ token gol ('base,,arbitrum') sărit → 0 necunoscute (dropat tăcut de consumatori)", unknownCsvTokens("base,,arbitrum", CHAINS).length === 0);
+check("43. ⭐⭐ dedup: 'base,base,foo,foo' → ['foo'] o singură dată", (() => {
+  const u = unknownCsvTokens("base,base,foo,foo", CHAINS);
+  return u.length === 1 && u[0] === "foo";
+})());
+check("44. ⭐⭐⭐ normalizeChainId REAL (fix cgpt): 'eth,bnb' → doar 'bnb' necunoscut (eth→ethereum; bnb NU → bsc)", (() => {
+  const u = unknownCsvTokens("eth,bnb", CHAINS, norm);
+  return u.length === 1 && u[0] === "bnb";
+})());
+check("45. ⭐⭐⭐ MCP-style normalize: 'eth,foo' → doar 'foo' necunoscut", (() => {
+  const u = unknownCsvTokens("eth,foo", CHAINS, norm);
+  return u.length === 1 && u[0] === "foo";
+})());
+check("46. ⭐⭐⭐ PARITATE rol: 'eth' e necunoscut worker-style DAR cunoscut MCP-style (singura diferență reală = eth)", (() => {
+  return unknownCsvTokens("eth", CHAINS).length === 1 && unknownCsvTokens("eth", CHAINS, norm).length === 0;
+})());
+check("47. ⭐⭐ csvKnownTokens: toate cunoscute → null; necunoscut → detaliu cu numărul + opțiunile permise", (() => {
+  const v = csvKnownTokens("ENABLED_CHAINS", CHAINS);
+  const msg = v("base,foo", false) ?? "";
+  return v("base,arbitrum", false) === null && msg.includes("ENABLED_CHAINS") && msg.includes("base/arbitrum/bsc/ethereum");
+})());
+check("48. ⭐⭐⭐ csvKnownTokens NU ecouă VALOAREA din env în mesaj (fix cgpt: anti-leak în boot-log)", (() => {
+  const v = csvKnownTokens("ENABLED_CHAINS", CHAINS);
+  const msg = v("base,sup3rs3cr3t_t0ken", false) ?? "";
+  return msg !== "" && !msg.includes("sup3rs3cr3t") && /1 token/.test(msg); // raportează 1 necunoscut, fără să-l afișeze
+})());
+check("49. ⭐⭐⭐ csvKnownTokens ca validate pe câmp OPȚIONAL → present+necunoscut → warning (nu problem)", (() => {
+  const spec: FieldSpec[] = [{ name: "ENABLED_CHAINS", required: () => false, validate: csvKnownTokens("ENABLED_CHAINS", CHAINS) }];
+  const r = runFieldSpecs(spec, { ENABLED_CHAINS: "base,foo" }, false);
+  return r.problems.length === 0 && r.warnings.length === 1 && r.warnings[0].name === "ENABLED_CHAINS";
 })());
 
 // ── formatare ───────────────────────────────────────────────────────────────────────
