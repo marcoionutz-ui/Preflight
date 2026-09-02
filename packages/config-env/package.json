@@ -1,0 +1,17 @@
+{
+  "name": "@preflight/config-env",
+  "version": "1.0.0",
+  "private": true,
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
+    "test:config-env": "tsx scripts/engine.test.ts",
+    "test": "npm run test:config-env"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "tsx": "^4.22.2",
+    "typescript": "^5"
+  }
+}
