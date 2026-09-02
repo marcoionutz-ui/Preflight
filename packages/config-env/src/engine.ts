@@ -12,14 +12,23 @@
  * `problems` (boot crapă). Surplus pe rol (prefixe care aparțin altui rol) → `warnings`, NU crapă. Obligativitatea
  * unui câmp poate depinde de mediu (`required(prod)`). `""`/whitespace == absent. Ieșirea e DETERMINISTĂ
  * (surplusul se iterează sortat) ca log-urile de boot să fie stabile între reporniri.
+ *
+ * Categorie de securitate (Marco 2026-09-02): un flag de dev/bypass (`MCP_DEV_AUTH_BYPASS`, `*_INTEGRATION_ALLOW`)
+ * truthy în producție → `problem` `forbidden` (boot crapă), NU warning — modelat prin `FieldSpec.forbid`
+ * (`flagMustBeOffInProd`). E defense-in-depth peste runtime (care deja ignoră bypass-ul în prod): îl face ZGOMOTOS
+ * la pornire în loc de tăcut-ignorat, și prinde și cazul în care cineva slăbește ulterior gardul de runtime.
  */
 
 export type EnvSnapshot = Record<string, string | undefined>;
 
-/** O problemă care OPREȘTE boot-ul: o variabilă obligatorie lipsește sau are formă invalidă. */
+/**
+ * O problemă care OPREȘTE boot-ul. `missing` = obligatoriu absent; `invalid` = prezent dar formă greșită;
+ * `forbidden` = prezent cu o valoare NEPERMISĂ în mediul curent (ex. un flag de dev/bypass truthy în prod) —
+ * valoarea e bine-formată, dar politica o interzice, deci nu e nici missing nici invalid.
+ */
 export type EnvProblem = {
   name: string;
-  kind: "missing" | "invalid";
+  kind: "missing" | "invalid" | "forbidden";
   detail: string;
 };
 
@@ -41,11 +50,15 @@ export type Validate = (value: string, prod: boolean) => string | null;
  * Specificația unui câmp. `required(prod)` decide dacă absența e `problem` (obligatoriu) sau ignorată (opțional).
  * `validate` (opțional) verifică forma unei valori PREZENTE — pe un câmp obligatoriu → `problem` `invalid`;
  * pe un câmp opțional → `warning` (prezent dar malformat).
+ * `forbid` (opțional) verifică o valoare PREZENTĂ împotriva unei POLITICI de mediu — non-null → `problem` `forbidden`
+ * ÎNTOTDEAUNA (INDEPENDENT de `required`, spre deosebire de `validate` care se degradează la warning pe opțional).
+ * Cazul canonic: un flag de dev/bypass care nu are voie truthy în producție. Absent → nimic (categoria e „OFF sau absent").
  */
 export type FieldSpec = {
   name: string;
   required: (prod: boolean) => boolean;
   validate?: Validate;
+  forbid?: Validate;
 };
 
 /** `production` strict — Next/Node setează `NODE_ENV=production` la build/rulare de prod. */
@@ -100,6 +113,38 @@ export function nonNegativeInt(label: string): Validate {
   };
 }
 
+// ── flag-uri boolean (dev/bypass, toggle-uri) — vocabular canonic partajat de roluri ──
+/** Tokenii recunoscuți ca „aprins". Set INTERN: schimbarea lui derivă politica peste tot deodată. */
+const FLAG_TRUTHY = new Set(["1", "true", "yes", "on"]);
+/** Tokenii recunoscuți ca „stins" (dezactivare INTENȚIONATĂ). `""` nu ajunge aici (filtrat de `present`). */
+const FLAG_FALSY = new Set(["0", "false", "no", "off"]);
+
+/**
+ * Flag boolean opțional: valoarea prezentă trebuie să fie un token bool recunoscut (`1/0/true/false/yes/no/on/off`,
+ * trim + case-insensitive). Pe un câmp opțional un token NErecunoscut (typo `treu`, `enabled`) → `warning`, NU crapă —
+ * dar îl face vizibil la boot (clasa de footgun „flag scris greșit tratat tăcut ca off"). Nu impune valoarea, doar forma.
+ */
+export const boolFlag: Validate = (value) => {
+  const v = value.trim().toLowerCase();
+  if (FLAG_TRUTHY.has(v) || FLAG_FALSY.has(v)) return null;
+  return `token boolean nerecunoscut (așteptat unul din: 1/0/true/false/yes/no/on/off)`;
+};
+
+/**
+ * Politică pentru `FieldSpec.forbid`: un flag care în PRODUCȚIE trebuie să fie OFF sau absent. Semantică FAIL-LOUD
+ * (aliniată doctrinei `authCodeCutover`): în prod, orice valoare prezentă care NU e un token falsy explicit
+ * (`0/false/no/off`) → interzisă — asta prinde nu doar `1/true` ci și un typo (`treu`) sau gunoi, ca un bypass „aproape
+ * setat" în prod să oprească boot-ul ZGOMOTOS în loc să fie tratat tăcut ca off. În non-prod → mereu permis (dev-ul îl
+ * folosește legitim). Absența e permisă de `runFieldSpecs` (forbid rulează doar pe valori prezente).
+ */
+export function flagMustBeOffInProd(label: string): Validate {
+  return (value, prod) => {
+    if (!prod) return null;
+    if (FLAG_FALSY.has(value.trim().toLowerCase())) return null;
+    return `${label} nu are voie activ în producție (flag de dev/bypass — setează-l OFF sau scoate-l)`;
+  };
+}
+
 /**
  * Rulează un set de câmpuri peste snapshot. Colectează TOATE problemele/avertismentele (nu short-circuit).
  * Câmp obligatoriu absent → problem missing; prezent + invalid → problem invalid. Câmp opțional absent → nimic;
@@ -125,6 +170,13 @@ export function runFieldSpecs(
       const detail = err.trim() === "" ? "formă invalidă" : err; // detaliu gol → mesaj generic, tot eroare
       if (req) problems.push({ name: spec.name, kind: "invalid", detail });
       else     warnings.push({ name: spec.name, detail: `${detail} (opțional — ignorat)` });
+    }
+    // Politică de mediu: `forbid` non-null → `problem` `forbidden` ÎNTOTDEAUNA (INDEPENDENT de `required` —
+    // un flag de bypass e opțional, dar prezent-truthy-în-prod trebuie să OPREASCĂ boot-ul, nu să dea doar warning).
+    const forbidden = spec.forbid ? spec.forbid(raw, prod) : null;
+    if (forbidden !== null) {
+      const detail = forbidden.trim() === "" ? "valoare nepermisă în acest mediu" : forbidden;
+      problems.push({ name: spec.name, kind: "forbidden", detail });
     }
   }
   return { problems, warnings };

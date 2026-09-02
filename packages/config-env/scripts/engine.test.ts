@@ -5,7 +5,7 @@
  */
 import {
   validateEnv, runFieldSpecs, detectUnexpected, formatEnvValidation,
-  absoluteUrl, redisUrl, nonEmpty, nonNegativeInt, present, isProd,
+  absoluteUrl, redisUrl, nonEmpty, nonNegativeInt, boolFlag, flagMustBeOffInProd, present, isProd,
   type FieldSpec, type EnvSnapshot, type EnvValidation,
 } from "../src/engine";
 
@@ -150,6 +150,53 @@ check("24d. ⭐⭐ null RĂMÂNE valid (nu regresăm succesul): validator → nu
 check("25. detectUnexpected direct: doar prefixele, sortat", (() => {
   const w = detectUnexpected({ WORKER_B: "1", WORKER_A: "1", KEEP: "1" }, PREFIXES, "syn");
   return w.length === 2 && w[0].name === "WORKER_A" && w[1].name === "WORKER_B";
+})());
+
+// ── forbid / must-be-OFF-in-prod (categorie de securitate, decizie Marco 2026-09-02) ──
+// câmp OPȚIONAL cu `forbid`: un flag de dev/bypass care nu are voie activ în prod.
+const BYPASS: FieldSpec[] = [{ name: "DEV_BYPASS", required: () => false, forbid: flagMustBeOffInProd("DEV_BYPASS") }];
+function pkind(v: EnvValidation, name: string): string | undefined {
+  return v.ok ? undefined : v.problems.find((p) => p.name === name)?.kind;
+}
+
+check("28. ⭐⭐⭐ forbid: flag truthy în PROD → problem kind 'forbidden' (boot crapă)", (() => {
+  const v = validateEnv("syn", BYPASS, [], { NODE_ENV: "production", DEV_BYPASS: "1" });
+  return v.ok === false && pkind(v, "DEV_BYPASS") === "forbidden";
+})());
+check("29. ⭐⭐⭐ forbid e PROBLEM chiar dacă câmpul e OPȚIONAL (NU warning)", (() => {
+  const v = validateEnv("syn", BYPASS, [], { NODE_ENV: "production", DEV_BYPASS: "true" });
+  return v.ok === false && !wnames(v).includes("DEV_BYPASS");
+})());
+check("30. ⭐⭐⭐ forbid: OFF explicit în prod ('0'/'false'/'off') → ok (dezactivare intenționată permisă)", (() => {
+  return validateEnv("syn", BYPASS, [], { NODE_ENV: "production", DEV_BYPASS: "0" }).ok === true
+    && validateEnv("syn", BYPASS, [], { NODE_ENV: "production", DEV_BYPASS: "false" }).ok === true
+    && validateEnv("syn", BYPASS, [], { NODE_ENV: "production", DEV_BYPASS: "off" }).ok === true;
+})());
+check("31. ⭐⭐⭐ forbid: absent în prod → ok (categoria e „OFF SAU absent\")", validateEnv("syn", BYPASS, [], { NODE_ENV: "production" }).ok === true);
+check("32. ⭐⭐⭐ forbid: truthy în DEV → ok (dev-ul folosește bypass-ul legitim)", validateEnv("syn", BYPASS, [], { NODE_ENV: "development", DEV_BYPASS: "1" }).ok === true);
+check("33. ⭐⭐⭐ forbid FAIL-LOUD: gunoi/typo în prod ('treu') → forbidden (nu tratat tăcut ca off)", (() => {
+  const v = validateEnv("syn", BYPASS, [], { NODE_ENV: "production", DEV_BYPASS: "treu" });
+  return v.ok === false && pkind(v, "DEV_BYPASS") === "forbidden";
+})());
+check("34. forbid direct (runFieldSpecs): prod truthy → 1 problem forbidden, 0 warning", (() => {
+  const r = runFieldSpecs(BYPASS, { DEV_BYPASS: "yes" }, true);
+  return r.problems.length === 1 && r.problems[0].kind === "forbidden" && r.warnings.length === 0;
+})());
+check("35. ⭐ forbidden apare în formatEnvValidation (✗ + nume)", (() => {
+  const s = formatEnvValidation(validateEnv("syn", BYPASS, [], { NODE_ENV: "production", DEV_BYPASS: "1" }));
+  return /✗/.test(s) && /DEV_BYPASS/.test(s) && /forbidden/.test(s);
+})());
+
+// ── boolFlag (validare de formă pt. toggle-uri opționale) ─────────────────────────────
+check("36. boolFlag: tokeni recunoscuți (case/trim) → null", (() =>
+  boolFlag("1", false) === null && boolFlag("0", false) === null && boolFlag("TRUE", false) === null
+  && boolFlag(" off ", false) === null && boolFlag("Yes", false) === null && boolFlag("NO", false) === null)());
+check("37. boolFlag: token nerecunoscut → detaliu", (() =>
+  boolFlag("treu", false) !== null && boolFlag("2", false) !== null && boolFlag("enabled", false) !== null)());
+check("38. ⭐⭐ boolFlag ca validate pe câmp OPȚIONAL → present+bad → warning (nu problem)", (() => {
+  const spec: FieldSpec[] = [{ name: "TOGGLE", required: () => false, validate: boolFlag }];
+  const r = runFieldSpecs(spec, { TOGGLE: "treu" }, false);
+  return r.problems.length === 0 && r.warnings.length === 1 && r.warnings[0].name === "TOGGLE";
 })());
 
 // ── formatare ───────────────────────────────────────────────────────────────────────

@@ -9,6 +9,8 @@ export {
   absoluteUrl,
   redisUrl,
   nonNegativeInt,
+  boolFlag,
+  flagMustBeOffInProd,
   runFieldSpecs,
   detectUnexpected,
   validateEnv,
