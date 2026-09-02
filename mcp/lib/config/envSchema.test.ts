@@ -47,7 +47,7 @@ function warningNames(v: ReturnType<typeof validateMcpEnv>): string[] {
 }
 
 function main(): void {
-console.log("PH-12 12.2a — validateMcpEnv (env fail-fast, pur)");
+console.log("PH-12 12.2a/12.2e-2 — validateMcpEnv (env fail-fast + inventar opționale, pur)");
 
 // ── happy paths ──────────────────────────────────────────────────────────────────
 check("1. ⭐⭐⭐ dev complet valid → ok (fără PUBLIC_BASE_URL)", validateMcpEnv(devEnv()).ok === true);
@@ -157,12 +157,69 @@ check("24. ⭐ formatEnvValidation(fail) listează câmpul lipsă", (() => {
   const s = formatEnvValidation(validateMcpEnv(devEnv({ REDIS_URL: undefined })));
   return /FAIL/.test(s) && /REDIS_URL/.test(s);
 })());
-check("25. ⭐ catalogul expune exact 5 câmpuri (4 mereu + PUBLIC_BASE_URL prod-only)", MCP_ENV_FIELDS.length === 5);
-check("26. ⭐⭐ exact 1 câmp e prod-only (PUBLIC_BASE_URL); restul required mereu", (() => {
+check("25. ⭐ catalog: 5 de bază + 7 inventar (12.2e-2) = 12 câmpuri", MCP_ENV_FIELDS.length === 12);
+check("26. ⭐⭐ exact 1 câmp e prod-only (PUBLIC_BASE_URL); 4 required mereu; restul opționale", (() => {
   const prodOnly = MCP_ENV_FIELDS.filter((f) => f.required(true) && !f.required(false));
   const always   = MCP_ENV_FIELDS.filter((f) => f.required(true) && f.required(false));
   return prodOnly.length === 1 && prodOnly[0].name === "PUBLIC_BASE_URL" && always.length === 4;
 })());
+
+// ── 12.2e-2 inventar: securitate must-be-OFF-in-prod (forbid) ──────────────────────
+for (const flag of ["MCP_DEV_AUTH_BYPASS", "QUOTA_INTEGRATION_ALLOW", "PH4_INTEGRATION_ALLOW"]) {
+  check(`27.${flag} ⭐⭐⭐ truthy în PROD → problem 'forbidden' (boot crapă)`, (() => {
+    const v = validateMcpEnv(prodEnv({ [flag]: "1" }));
+    return v.ok === false && v.problems.some((p) => p.name === flag && p.kind === "forbidden");
+  })());
+  check(`28.${flag} ⭐⭐ truthy în DEV → ok (dev-ul folosește flag-ul legitim)`, validateMcpEnv(devEnv({ [flag]: "1" })).ok === true);
+  check(`29.${flag} ⭐⭐ OFF explicit ('0') în PROD → ok (dezactivare intenționată)`, validateMcpEnv(prodEnv({ [flag]: "0" })).ok === true);
+}
+check("30. ⭐⭐⭐ fail-loud: MCP_DEV_AUTH_BYPASS='treu' (typo) în PROD → forbidden (nu tăcut off)", (() => {
+  const v = validateMcpEnv(prodEnv({ MCP_DEV_AUTH_BYPASS: "treu" }));
+  return v.ok === false && v.problems.some((p) => p.name === "MCP_DEV_AUTH_BYPASS" && p.kind === "forbidden");
+})());
+check("31. ⭐⭐ bypass absent în PROD → ok (categoria e „OFF SAU absent\")", validateMcpEnv(prodEnv()).ok === true);
+
+// ── 12.2e-2 inventar: toggle-uri strict 0/1 (present + altceva → warning, NU crapă) ──
+check("32. ⭐⭐⭐ HEALTH_WS_ENABLED='false' → warning (runtime îl ține ON pe !== '0')", (() => {
+  const v = validateMcpEnv(devEnv({ HEALTH_WS_ENABLED: "false" }));
+  return v.ok === true && warningNames(v).includes("HEALTH_WS_ENABLED");
+})());
+check("33. ⭐⭐ HEALTH_WS_ENABLED='0' → ok, fără warning", (() => {
+  const v = validateMcpEnv(devEnv({ HEALTH_WS_ENABLED: "0" }));
+  return v.ok === true && !warningNames(v).includes("HEALTH_WS_ENABLED");
+})());
+check("34. ⭐⭐⭐ DEMO_TRUST_XFF='true' → warning (runtime îl tratează OFF pe !== '1')", (() => {
+  const v = validateMcpEnv(devEnv({ DEMO_TRUST_XFF: "true" }));
+  return v.ok === true && warningNames(v).includes("DEMO_TRUST_XFF");
+})());
+check("35. ⭐⭐ DEMO_TRUST_XFF='1' → ok, fără warning", (() => {
+  const v = validateMcpEnv(devEnv({ DEMO_TRUST_XFF: "1" }));
+  return v.ok === true && !warningNames(v).includes("DEMO_TRUST_XFF");
+})());
+check("35b. ⭐⭐⭐ HEALTH_WS_ENABLED=' 0 ' (spații) → warning (fix cgpt: runtime compară BRUT, ' 0 ' !== '0' → WS ON)", (() => {
+  const v = validateMcpEnv(devEnv({ HEALTH_WS_ENABLED: " 0 " }));
+  return v.ok === true && warningNames(v).includes("HEALTH_WS_ENABLED");
+})());
+check("35c. ⭐⭐⭐ DEMO_TRUST_XFF=' 1 ' (spații) → warning (runtime ' 1 ' !== '1' → trust OFF)", (() => {
+  const v = validateMcpEnv(devEnv({ DEMO_TRUST_XFF: " 1 " }));
+  return v.ok === true && warningNames(v).includes("DEMO_TRUST_XFF");
+})());
+
+// ── 12.2e-2 inventar: flag-uri PH-2 (boolFlag — token bool nerecunoscut → warning) ──
+check("36. ⭐⭐⭐ PH2_RESOURCE_OWNER_AUTHORIZE='treu' → warning (typo → OFF silent la runtime)", (() => {
+  const v = validateMcpEnv(devEnv({ PH2_RESOURCE_OWNER_AUTHORIZE: "treu" }));
+  return v.ok === true && warningNames(v).includes("PH2_RESOURCE_OWNER_AUTHORIZE");
+})());
+check("37. ⭐⭐ PH2_RESOURCE_OWNER_AUTHORIZE='1' → ok, fără warning", (() => {
+  const v = validateMcpEnv(devEnv({ PH2_RESOURCE_OWNER_AUTHORIZE: "1" }));
+  return v.ok === true && !warningNames(v).includes("PH2_RESOURCE_OWNER_AUTHORIZE");
+})());
+check("38. ⭐⭐ PH2_REJECT_LEGACY_AUTHCODE='off' → ok (token bool recunoscut)", (() => {
+  const v = validateMcpEnv(devEnv({ PH2_REJECT_LEGACY_AUTHCODE: "off" }));
+  return v.ok === true && !warningNames(v).includes("PH2_REJECT_LEGACY_AUTHCODE");
+})());
+check("39. ⭐⭐⭐ inventarul NU regresează happy-path: prod complet valid + zero flag-uri → ok", validateMcpEnv(prodEnv()).ok === true);
+check("40. ⭐ exact 3 câmpuri `forbid` (must-be-OFF-in-prod)", MCP_ENV_FIELDS.filter((f) => typeof f.forbid === "function").length === 3);
 
 console.log("\n" + passed + " passed, " + failed + " failed");
 if (failed > 0) process.exit(1);
