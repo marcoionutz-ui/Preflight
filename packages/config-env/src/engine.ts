@@ -113,6 +113,26 @@ export function nonNegativeInt(label: string): Validate {
   };
 }
 
+/**
+ * Număr FINIT peste un prag, oglindind parserele `Number()`-based ale workerilor (indexer `confirmationDepth`
+ * `Number(raw)` finite `>= 0`; indexer `intEnv`/solana `SOLANA_*_MS` finite `> 0`). Deliberat MAI PERMISIV decât
+ * `nonNegativeInt`: runtime-ul folosește `Number(...)`, deci acceptă `1e3`/`0x10`/zecimale — validatorul TREBUIE să
+ * accepte exact ce runtime-ul acceptă, altfel ar warn-ui pe o valoare pe care runtime-ul o consumă corect (fals-pozitiv).
+ * Semnalează DOAR ce runtime-ul RESPINGE (și de-aceea cade TĂCUT pe default): `NaN`/`Infinity` sau sub prag. `gt` =
+ * strict `>` (respinge zero/negativ, ex. timeout MS), `gte` = `>=` (permite zero, ex. confirmation depth = dezactivat).
+ * Exact unul din `gt`/`gte`. NU ecouă valoarea (doar câmpul + pragul, statice). `present` a filtrat whitespace-only.
+ */
+export function finiteNumber(label: string, bound: { gt: number } | { gte: number }): Validate {
+  return (value) => {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return `${label} — nu e număr finit (IGNORAT la runtime, se folosește default)`;
+    if ("gt" in bound) {
+      return n > bound.gt ? null : `${label} — trebuie număr finit > ${bound.gt} (IGNORAT la runtime, se folosește default)`;
+    }
+    return n >= bound.gte ? null : `${label} — trebuie număr finit ≥ ${bound.gte} (IGNORAT la runtime, se folosește default)`;
+  };
+}
+
 // ── flag-uri boolean (dev/bypass, toggle-uri) — vocabular canonic partajat de roluri ──
 /** Tokenii recunoscuți ca „aprins". Set INTERN: schimbarea lui derivă politica peste tot deodată. */
 const FLAG_TRUTHY = new Set(["1", "true", "yes", "on"]);

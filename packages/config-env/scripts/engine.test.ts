@@ -5,7 +5,7 @@
  */
 import {
   validateEnv, runFieldSpecs, detectUnexpected, formatEnvValidation,
-  absoluteUrl, redisUrl, nonEmpty, nonNegativeInt, boolFlag, exactFlag, flagMustBeOffInProd, unknownCsvTokens, csvKnownTokens, present, isProd,
+  absoluteUrl, redisUrl, nonEmpty, nonNegativeInt, finiteNumber, boolFlag, exactFlag, flagMustBeOffInProd, unknownCsvTokens, csvKnownTokens, present, isProd,
   type FieldSpec, type EnvSnapshot, type EnvValidation,
 } from "../src/engine";
 
@@ -89,6 +89,25 @@ check("15b. ⭐⭐⭐ nonNegativeInt HARDENED (fix cgpt): respinge 1e3/0x10/floa
     && nn("1.0000000000000001", false) !== null  // zecimală care Number-rotunjește la 1
     && nn("9007199254740993", false) !== null    // > MAX_SAFE_INTEGER (rotunjire)
     && nn(" 42 ", false) === null;          // trim aplicat, valid
+})());
+check("15c. ⭐⭐⭐ finiteNumber({gt:0}) oglindește Number()-based (indexer intEnv/solana MS): '4000'/'0.5'/'1e3' ok; '0'/'-1'/'x' → detaliu", (() => {
+  const v = finiteNumber("T", { gt: 0 });
+  return v("4000", false) === null && v("0.5", false) === null && v("1e3", false) === null // Number acceptă exponent → runtime la fel
+    && v("0", false) !== null && v("-1", false) !== null && v("x", false) !== null && v("Infinity", false) !== null;
+})());
+check("15d. ⭐⭐⭐ finiteNumber({gte:0}) (indexer confirmationDepth: 0 = dezactivat, VALID): '0'/'6' ok; '-1'/'x' → detaliu", (() => {
+  const v = finiteNumber("D", { gte: 0 });
+  return v("0", false) === null && v("6", false) === null && v("-1", false) !== null && v("nope", false) !== null;
+})());
+check("15e. ⭐⭐ finiteNumber tolerează spații ca Number() (' 42 ' → ok) și NU ecouă valoarea în mesaj", (() => {
+  const v = finiteNumber("T", { gt: 0 });
+  const msg = v("-99", false) ?? "";
+  return v(" 42 ", false) === null && msg !== "" && !msg.includes("-99") && msg.includes("T");
+})());
+check("15f. ⭐⭐ finiteNumber ca validate pe câmp OPȚIONAL → present+invalid → warning (nu problem)", (() => {
+  const spec: FieldSpec[] = [{ name: "SOLANA_WS_STALL_MS", required: () => false, validate: finiteNumber("SOLANA_WS_STALL_MS", { gt: 0 }) }];
+  const r = runFieldSpecs(spec, { SOLANA_WS_STALL_MS: "0" }, false);
+  return r.problems.length === 0 && r.warnings.length === 1 && r.warnings[0].name === "SOLANA_WS_STALL_MS";
 })());
 check("16. nonEmpty pe valoare prezentă → null", nonEmpty("anything", false) === null);
 

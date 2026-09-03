@@ -9,6 +9,7 @@ export {
   absoluteUrl,
   redisUrl,
   nonNegativeInt,
+  finiteNumber,
   boolFlag,
   exactFlag,
   flagMustBeOffInProd,
