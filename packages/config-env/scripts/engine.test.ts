@@ -5,7 +5,7 @@
  */
 import {
   validateEnv, runFieldSpecs, detectUnexpected, formatEnvValidation,
-  absoluteUrl, redisUrl, nonEmpty, nonNegativeInt, boolFlag, flagMustBeOffInProd, unknownCsvTokens, csvKnownTokens, present, isProd,
+  absoluteUrl, redisUrl, nonEmpty, nonNegativeInt, boolFlag, exactFlag, flagMustBeOffInProd, unknownCsvTokens, csvKnownTokens, present, isProd,
   type FieldSpec, type EnvSnapshot, type EnvValidation,
 } from "../src/engine";
 
@@ -197,6 +197,29 @@ check("38. ⭐⭐ boolFlag ca validate pe câmp OPȚIONAL → present+bad → wa
   const spec: FieldSpec[] = [{ name: "TOGGLE", required: () => false, validate: boolFlag }];
   const r = runFieldSpecs(spec, { TOGGLE: "treu" }, false);
   return r.problems.length === 0 && r.warnings.length === 1 && r.warnings[0].name === "TOGGLE";
+})());
+
+// ── exactFlag (byte-exact, oglindește `=== "1"` / `=== "true"` / `!== "false"`) ────────
+check("38b. ⭐⭐⭐ exactFlag(['0','1']): tokeni recunoscuți → null; alt token → detaliu", (() => {
+  const v = exactFlag("INDEXER_ENABLE_BSC", ["0", "1"]);
+  return v("1", false) === null && v("0", false) === null && v("true", false) !== null && v("2", false) !== null;
+})());
+check("38c. ⭐⭐⭐ exactFlag NU face trim (runtime compară BRUT): ' 1 ' → detaliu deși '1' e recunoscut", (() => {
+  const v = exactFlag("INDEXER_ENABLE_BSC", ["0", "1"]);
+  return v(" 1 ", false) !== null && v("1 ", false) !== null;
+})());
+check("38d. ⭐⭐⭐ exactFlag NU face lowercase: 'TRUE' ∉ ['true','false'] → detaliu (runtime `!== \"false\"`)", (() => {
+  const v = exactFlag("INDEXER_DRY_RUN", ["true", "false"]);
+  return v("true", false) === null && v("false", false) === null && v("TRUE", false) !== null && v("0", false) !== null;
+})());
+check("38e. ⭐⭐ exactFlag NU ecouă valoarea în mesaj (anti-leak); listează DOAR tokenii recunoscuți", (() => {
+  const msg = exactFlag("INDEXER_ENABLE_BSC", ["0", "1"])("s3cr3t", false) ?? "";
+  return msg !== "" && !msg.includes("s3cr3t") && msg.includes("0/1") && msg.includes("INDEXER_ENABLE_BSC");
+})());
+check("38f. ⭐⭐ exactFlag ca validate pe câmp OPȚIONAL → present+bad → warning (nu problem)", (() => {
+  const spec: FieldSpec[] = [{ name: "INDEXER_ENABLE_BSC", required: () => false, validate: exactFlag("INDEXER_ENABLE_BSC", ["0", "1"]) }];
+  const r = runFieldSpecs(spec, { INDEXER_ENABLE_BSC: "yes" }, false);
+  return r.problems.length === 0 && r.warnings.length === 1 && r.warnings[0].name === "INDEXER_ENABLE_BSC";
 })());
 
 // ── csvKnownTokens / unknownCsvTokens (liste de chain, 12.2c-1) ───────────────────────

@@ -131,6 +131,26 @@ export const boolFlag: Validate = (value) => {
 };
 
 /**
+ * Flag opțional pe care runtime-ul îl compară STRICT, BYTE-EXACT cu un mic set de tokeni (nu bool permisiv, nu trim):
+ * un cod ca `x === "1"` / `x === "true"` / `x !== "false"` recunoaște EXACT acei literali și tratează TĂCUT orice
+ * altceva drept celălalt pol. `exactFlag(label, recognized)` oglindește asta: prezent + valoare ∉ `recognized`
+ * (comparație byte-exact, FĂRĂ trim/lowercase) → `warning`. Generalizează `strictZeroOne` (0/1) la orice vocabular:
+ *   - `INDEXER_ENABLE_*` (`=== "1"`)                 → `exactFlag(name, ["0","1"])`
+ *   - `INDEXER_DRY_RUN` (`!== "false"`, default dry)  → `exactFlag(name, ["true","false"])` (`=0` NU dezactivează dry!)
+ *   - `INDEXER_SKIP_TO_LATEST`/`SOLANA_BACKFILL_*`    → vocabularul lor byte-exact
+ * FĂRĂ trim (blocker cgpt 12.2e-2): runtime-ul compară `process.env.X` BRUT, deci `" 1 "` cu spații NU se potrivește la
+ * runtime → un trim aici ar aproba tăcut o valoare pe care runtime-ul o interpretează invers. NU ecouă valoarea (doar
+ * câmpul + tokenii recunoscuți, statici din cod). `present` a filtrat deja whitespace-only ca absent.
+ */
+export function exactFlag(label: string, recognized: readonly string[]): Validate {
+  const allowed = new Set(recognized);
+  return (value) =>
+    allowed.has(value)
+      ? null
+      : `${label} — runtime recunoaște DOAR ${recognized.join("/")} byte-exact (spații/alt token → interpretat implicit invers)`;
+}
+
+/**
  * Politică pentru `FieldSpec.forbid`: un flag care în PRODUCȚIE trebuie să fie OFF sau absent. Semantică FAIL-LOUD
  * (aliniată doctrinei `authCodeCutover`): în prod, orice valoare prezentă care NU e un token falsy explicit
  * (`0/false/no/off`) → interzisă — asta prinde nu doar `1/true` ci și un typo (`treu`) sau gunoi, ca un bypass „aproape

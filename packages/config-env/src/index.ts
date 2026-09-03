@@ -10,6 +10,7 @@ export {
   redisUrl,
   nonNegativeInt,
   boolFlag,
+  exactFlag,
   flagMustBeOffInProd,
   unknownCsvTokens,
   csvKnownTokens,
