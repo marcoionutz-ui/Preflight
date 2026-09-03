@@ -11,10 +11,16 @@
  * 12.2e-2 (inventar opționale): pe lângă cele 5 câmpuri de bază, catalogul acoperă acum și (a) flag-urile de
  * securitate must-be-OFF-in-prod (`MCP_DEV_AUTH_BYPASS`, `QUOTA_INTEGRATION_ALLOW`, `PH4_INTEGRATION_ALLOW` → `forbid`)
  * și (b) opționalele validate-when-present (`HEALTH_WS_ENABLED`, `DEMO_TRUST_XFF` strict 0/1; flag-urile PH-2 via
- * `boolFlag`). Fiecare validator OGLINDEȘTE parserul real din runtime (nu o regulă paralelă). Variabilele de tip
- * chain-list (`HEALTH_EXPECTED_CHAINS`/`ENABLED_CHAINS`) sunt AMÂNATE la 12.2c (validator de chain-token partajat cu
- * workerii, pe vocabularul canonic din `@preflight/schema` — `bsc`, nu `bnb` — via `parseExpectedChains`). `PORT` NU
- * intră (codul MCP nu-l citește; e al lui Next/Railway).
+ * `boolFlag`). Fiecare validator OGLINDEȘTE parserul real din runtime (nu o regulă paralelă). `PORT` NU intră (codul
+ * MCP nu-l citește; e al lui Next/Railway).
+ *
+ * 12.2c-mcp (chain-list): `HEALTH_EXPECTED_CHAINS`/`ENABLED_CHAINS` validate cu `csvKnownTokens` pe vocabularul REAL
+ * folosit de `readHealthSignals` — `PREFLIGHT_EVM_CHAINS` + `normalizeChainId` (alias `eth`→`ethereum`; canonic `bsc`).
+ * Runtime: `HEALTH_EXPECTED_CHAINS ?? ENABLED_CHAINS ?? "base,arbitrum"` → `parseExpectedChains` (dropă tăcut tokenii
+ * necunoscuți). Deci validatorul warn-uiește pe un chain scris greșit (ex. `bnb`/`polygon`) care altfel n-ar fi monitorizat.
+ * În plus (selecție efectivă goală): rezolvăm lista EFECTIVĂ cu ACEEAȘI precedență `??` + `parseExpectedChains` REAL; dacă
+ * iese goală (override prezent-dar-vid blochează fallback-ul), semnalăm un WARNING — runtime-ul ar da health strict `503`
+ * fără chain-uri, dar tăcut. NU `problem` (nu oprim MCP-ul), NU ecouăm valoarea brută.
  */
 
 import {
@@ -24,12 +30,16 @@ import {
   nonEmpty,
   boolFlag,
   flagMustBeOffInProd,
+  csvKnownTokens,
   formatEnvValidation,
   type Validate,
   type FieldSpec,
   type EnvSnapshot,
   type EnvValidation,
+  type EnvWarning,
 } from "@preflight/config-env";
+import { PREFLIGHT_EVM_CHAINS, normalizeChainId } from "@preflight/schema";
+import { parseExpectedChains } from "../health/liveness";
 import { resolvePublicBaseUrl } from "../oauth/baseUrl";
 
 // Re-export pentru consumatorii care importau aceste tipuri/funcții din envSchema (compat + un singur punct de intrare MCP).
@@ -90,6 +100,10 @@ export const MCP_ENV_FIELDS: readonly FieldSpec[] = [
   // care la runtime cade tăcut OFF (`PH2_RESOURCE_OWNER_AUTHORIZE`) sau fail-closed (`PH2_REJECT_LEGACY_AUTHCODE`).
   { name: "PH2_RESOURCE_OWNER_AUTHORIZE", required: () => false, validate: boolFlag },
   { name: "PH2_REJECT_LEGACY_AUTHCODE",   required: () => false, validate: boolFlag },
+  // Chain-list (health expected chains): AMBELE consultate de `readHealthSignals` (HEALTH_EXPECTED_CHAINS ?? ENABLED_CHAINS
+  // ?? default) prin `parseExpectedChains` cu ACELAȘI vocabular. Token de chain necunoscut → warning (dropat tăcut la runtime).
+  { name: "HEALTH_EXPECTED_CHAINS", required: () => false, validate: csvKnownTokens("HEALTH_EXPECTED_CHAINS", PREFLIGHT_EVM_CHAINS, normalizeChainId) },
+  { name: "ENABLED_CHAINS",         required: () => false, validate: csvKnownTokens("ENABLED_CHAINS", PREFLIGHT_EVM_CHAINS, normalizeChainId) },
 ] as const;
 
 /**
@@ -98,7 +112,34 @@ export const MCP_ENV_FIELDS: readonly FieldSpec[] = [
  */
 export const MCP_UNEXPECTED_PREFIXES: readonly string[] = ["ALCHEMY_", "INDEXER_"] as const;
 
-/** Validează env-ul pentru rolul MCP. Discriminat: `ok:true` (+ warnings) sau `ok:false` (+ problems + warnings). */
+/**
+ * Lista EFECTIVĂ de chain-uri așteptate de health, rezolvată cu EXACT precedența runtime-ului (`readHealthSignals`):
+ * `HEALTH_EXPECTED_CHAINS ?? ENABLED_CHAINS ?? "base,arbitrum"` → `parseExpectedChains` (parserul REAL din `liveness`,
+ * cu ACELAȘI vocabular `PREFLIGHT_EVM_CHAINS` + `normalizeChainId`). `??` prinde DOAR null/undefined: un override PREZENT
+ * dar vid (`""`/whitespace/`",,"`) BLOCHEAZĂ fallback-ul → `parseExpectedChains("")` → `[]`. Ambele absente → default.
+ */
+function effectiveExpectedChains(env: EnvSnapshot): string[] {
+  const raw = env.HEALTH_EXPECTED_CHAINS ?? env.ENABLED_CHAINS ?? "base,arbitrum";
+  return parseExpectedChains(raw, PREFLIGHT_EVM_CHAINS, normalizeChainId);
+}
+
+/**
+ * Validează env-ul pentru rolul MCP. Discriminat: `ok:true` (+ warnings) sau `ok:false` (+ problems + warnings).
+ *
+ * 12.2c-mcp (selecție efectivă goală): pe lângă câmpuri, semnalăm cazul în care lista EFECTIVĂ de chain-uri iese GOALĂ
+ * deși câmpurile trec (ex. `HEALTH_EXPECTED_CHAINS=""` peste un `ENABLED_CHAINS=base` valid — `??` lasă `""` să blocheze
+ * fallback-ul). La runtime asta dă `expectedChains=[]`: fără evaluare per-chain și strict health `503`, dar TĂCUT. Corect
+ * aici e WARNING (o config suspectă), NU `problem` — nu oprim MCP-ul și nu inventăm un flag nou. Mesajul NU ecouă valoarea
+ * brută (anti-leak). Ambele absente → default `base,arbitrum` (≠ gol) → fără avertisment.
+ */
 export function validateMcpEnv(env: EnvSnapshot): EnvValidation {
-  return validateEnv("mcp", MCP_ENV_FIELDS, MCP_UNEXPECTED_PREFIXES, env);
+  const base = validateEnv("mcp", MCP_ENV_FIELDS, MCP_UNEXPECTED_PREFIXES, env);
+  if (effectiveExpectedChains(env).length > 0) return base;
+  const emptySelection: EnvWarning = {
+    name: "HEALTH_EXPECTED_CHAINS",
+    detail:
+      "selecție efectivă de chain-uri goală (override prezent-dar-vid blochează fallback-ul) — " +
+      "health ar raporta 0 chain-uri așteptate (strict 503). Setează un chain valid sau lasă variabila NEdefinită pentru default.",
+  };
+  return { ...base, warnings: [...base.warnings, emptySelection] };
 }

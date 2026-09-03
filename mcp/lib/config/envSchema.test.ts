@@ -157,7 +157,7 @@ check("24. ⭐ formatEnvValidation(fail) listează câmpul lipsă", (() => {
   const s = formatEnvValidation(validateMcpEnv(devEnv({ REDIS_URL: undefined })));
   return /FAIL/.test(s) && /REDIS_URL/.test(s);
 })());
-check("25. ⭐ catalog: 5 de bază + 7 inventar (12.2e-2) = 12 câmpuri", MCP_ENV_FIELDS.length === 12);
+check("25. ⭐ catalog: 5 bază + 7 inventar (12.2e-2) + 2 chain-list (12.2c-mcp) = 14 câmpuri", MCP_ENV_FIELDS.length === 14);
 check("26. ⭐⭐ exact 1 câmp e prod-only (PUBLIC_BASE_URL); 4 required mereu; restul opționale", (() => {
   const prodOnly = MCP_ENV_FIELDS.filter((f) => f.required(true) && !f.required(false));
   const always   = MCP_ENV_FIELDS.filter((f) => f.required(true) && f.required(false));
@@ -220,6 +220,68 @@ check("38. ⭐⭐ PH2_REJECT_LEGACY_AUTHCODE='off' → ok (token bool recunoscut
 })());
 check("39. ⭐⭐⭐ inventarul NU regresează happy-path: prod complet valid + zero flag-uri → ok", validateMcpEnv(prodEnv()).ok === true);
 check("40. ⭐ exact 3 câmpuri `forbid` (must-be-OFF-in-prod)", MCP_ENV_FIELDS.filter((f) => typeof f.forbid === "function").length === 3);
+
+// ── 12.2c-mcp: chain-list validate-when-present (PREFLIGHT_EVM_CHAINS + normalizeChainId) ──
+check("41. ⭐⭐⭐ HEALTH_EXPECTED_CHAINS='base,arbitrum' → ok, fără warning", (() => {
+  const v = validateMcpEnv(devEnv({ HEALTH_EXPECTED_CHAINS: "base,arbitrum" }));
+  return v.ok === true && !warningNames(v).includes("HEALTH_EXPECTED_CHAINS");
+})());
+check("42. ⭐⭐⭐ HEALTH_EXPECTED_CHAINS='base,bnb' → warning (bnb necunoscut; canonic e bsc)", (() => {
+  const v = validateMcpEnv(devEnv({ HEALTH_EXPECTED_CHAINS: "base,bnb" }));
+  return v.ok === true && warningNames(v).includes("HEALTH_EXPECTED_CHAINS");
+})());
+check("43. ⭐⭐⭐ HEALTH_EXPECTED_CHAINS='eth' → ok (normalizeChainId eth→ethereum), fără warning", (() => {
+  const v = validateMcpEnv(devEnv({ HEALTH_EXPECTED_CHAINS: "eth" }));
+  return v.ok === true && !warningNames(v).includes("HEALTH_EXPECTED_CHAINS");
+})());
+check("44. ⭐⭐ ENABLED_CHAINS='base,polygon' pe MCP → warning (polygon necunoscut)", (() => {
+  const v = validateMcpEnv(devEnv({ ENABLED_CHAINS: "base,polygon" }));
+  return v.ok === true && warningNames(v).includes("ENABLED_CHAINS");
+})());
+check("45. ⭐⭐ ENABLED_CHAINS 'bsc' (canonic) → ok, fără warning", (() => {
+  const v = validateMcpEnv(devEnv({ ENABLED_CHAINS: "bsc" }));
+  return v.ok === true && !warningNames(v).includes("ENABLED_CHAINS");
+})());
+check("46. ⭐⭐⭐ mesajul chain-list NU ecouă valoarea ('polygon' nu apare) — anti-leak", (() => {
+  const s = formatEnvValidation(validateMcpEnv(devEnv({ HEALTH_EXPECTED_CHAINS: "base,polygon" })));
+  return !/polygon/.test(s) && /HEALTH_EXPECTED_CHAINS/.test(s);
+})());
+
+// ── 12.2c-mcp: selecție EFECTIVĂ goală (override prezent-dar-vid blochează fallback-ul `??`) → WARNING, NU problem ──
+// Runtime `readHealthSignals`: `HEALTH_EXPECTED_CHAINS ?? ENABLED_CHAINS ?? "base,arbitrum"`. `??` prinde doar null/undef,
+// deci un `HEALTH_EXPECTED_CHAINS=""` PREZENT oprește fallback-ul → `parseExpectedChains("")` → [] → health strict 503 tăcut.
+for (const [label, override] of [["gol", ""], ["whitespace", "   "], ["doar virgule", ",,"]] as const) {
+  check(`47.${label} ⭐⭐⭐ HEALTH_EXPECTED_CHAINS=${JSON.stringify(override)} peste ENABLED_CHAINS=base → warning (selecție efectivă goală), ok rămâne true`, (() => {
+    const v = validateMcpEnv(devEnv({ HEALTH_EXPECTED_CHAINS: override, ENABLED_CHAINS: "base" }));
+    return v.ok === true && warningNames(v).includes("HEALTH_EXPECTED_CHAINS");
+  })());
+}
+check("48. ⭐⭐⭐ ENABLED_CHAINS=\"\" singur (fără HEALTH_EXPECTED_CHAINS) → warning (fallback blocat, expectedChains=[])", (() => {
+  // `HEALTH_EXPECTED_CHAINS` absent → `?? ENABLED_CHAINS` → `""` prezent → blochează `?? "base,arbitrum"` → [].
+  const v = validateMcpEnv(devEnv({ ENABLED_CHAINS: "" }));
+  return v.ok === true && warningNames(v).includes("HEALTH_EXPECTED_CHAINS");
+})());
+check("49. ⭐⭐⭐ ambele absente → default 'base,arbitrum' → FĂRĂ avertisment de selecție goală", (() => {
+  const v = validateMcpEnv(devEnv()); // niciun override de chain
+  return v.ok === true && !warningNames(v).includes("HEALTH_EXPECTED_CHAINS");
+})());
+check("50. ⭐⭐⭐ override VALID ('bsc') peste fallback gol (ENABLED_CHAINS=\"\") → FĂRĂ avertisment de selecție goală", (() => {
+  const v = validateMcpEnv(devEnv({ HEALTH_EXPECTED_CHAINS: "bsc", ENABLED_CHAINS: "" }));
+  return v.ok === true && !warningNames(v).includes("HEALTH_EXPECTED_CHAINS");
+})());
+check("51. ⭐⭐ selecția goală e WARNING, NU problem (ok rămâne true, boot-ul NU crapă)", (() => {
+  const v = validateMcpEnv(devEnv({ HEALTH_EXPECTED_CHAINS: "" }));
+  return v.ok === true;
+})());
+check("52. ⭐⭐⭐ warning-ul de selecție goală NU ecouă valoarea brută (anti-leak: 'polygon' din override nu apare)", (() => {
+  // override cu DOAR tokeni necunoscuți → selecție efectivă goală ȘI valoare brută sensibilă de mascat.
+  const s = formatEnvValidation(validateMcpEnv(devEnv({ HEALTH_EXPECTED_CHAINS: "polygon,foobar" })));
+  return !/polygon/.test(s) && !/foobar/.test(s) && /HEALTH_EXPECTED_CHAINS/.test(s);
+})());
+check("53. ⭐⭐ selecție goală NU regresează required: env cu REDIS_URL lipsă + override gol → ok:false (problem) + warning coexistă", (() => {
+  const v = validateMcpEnv(devEnv({ REDIS_URL: undefined, HEALTH_EXPECTED_CHAINS: "" }));
+  return v.ok === false && v.problems.some((p) => p.name === "REDIS_URL") && warningNames(v).includes("HEALTH_EXPECTED_CHAINS");
+})());
 
 console.log("\n" + passed + " passed, " + failed + " failed");
 if (failed > 0) process.exit(1);
