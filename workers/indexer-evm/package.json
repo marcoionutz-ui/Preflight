@@ -3,18 +3,19 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "dev": "tsx --env-file=../../.env.local src/index.ts",
-    "start": "tsx src/index.ts",
+    "dev": "tsx --env-file=../../.env.local src/bootstrap.ts",
+    "start": "tsx src/bootstrap.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
     "test:c5": "tsx scripts/confirmationDepth.test.ts",
-    "test": "npm run test:rpc && npm run test:c5 && npm run test:c4 && npm run test:c3 && npm run test:c2 && npm run test:c1 && npm run test:u3 && npm run test:env",
+    "test": "npm run test:rpc && npm run test:c5 && npm run test:c4 && npm run test:c3 && npm run test:c2 && npm run test:c1 && npm run test:u3 && npm run test:env && npm run test:boot",
     "test:c4": "tsx scripts/cursorFailClosed.test.ts",
     "test:c3": "tsx scripts/reprice.test.ts",
     "test:c2": "tsx scripts/enrichQueue.test.ts",
     "test:c1": "tsx scripts/registryAtomic.test.ts",
     "test:rpc": "tsx scripts/rpcTimeout.test.ts",
     "test:u3": "tsx scripts/quotePrices.test.ts",
-    "test:env": "tsx scripts/envSchema.test.ts"
+    "test:env": "tsx scripts/envSchema.test.ts",
+    "test:boot": "tsx scripts/bootGuard.test.ts"
   },
   "dependencies": {
     "@preflight/config-env": "*",
