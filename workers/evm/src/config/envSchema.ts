@@ -21,7 +21,7 @@ import {
   validateEnv,
   redisUrl,
   csvKnownTokens,
-  type Validate,
+  wsUrl,
   type FieldSpec,
   type EnvSnapshot,
   type EnvValidation,
@@ -40,18 +40,8 @@ export const CHAIN_WS_ENV: Readonly<Record<string, string>> = {
   ethereum: "ALCHEMY_ETH_WS",
 } as const;
 
-/**
- * URL WebSocket: `ws://` sau `wss://` cu host și FĂRĂ fragment. `ws` 8.20.1 respinge explicit un URL cu `#fragment`
- * (lib/websocket.js) → un URL cu hash ar duce workerul în retry-uri pe o configurație invalidă, nu într-o conexiune.
- */
-const wsUrl = (label: string): Validate => (value) => {
-  let u: URL;
-  try { u = new URL(value.trim()); } catch { return `${label} nu e un URL valid`; }
-  if (u.protocol !== "ws:" && u.protocol !== "wss:") return `${label} trebuie ws:// sau wss://`;
-  if (u.hostname === "") return `${label} fără host`;
-  if (u.hash !== "") return `${label} nu poate avea fragment (#...) — clientul ws îl respinge`;
-  return null;
-};
+// `wsUrl` (ws/wss + host + fără #fragment) a fost PROMOVAT în `@preflight/config-env` (12.2c-3-engine3) — sursă unică,
+// refolosit de worker-evm + solana. Semantica e IDENTICĂ cu cea locală de dinainte (clientul `ws` 8.20.1 respinge `#fragment`).
 
 /**
  * `wsEnabled` efectiv (oglindește `mode.ts`): `(PREFLIGHT_MODE ?? "LIVE").toUpperCase()`; DOAR `DEV` are `wsEnabled:false`,

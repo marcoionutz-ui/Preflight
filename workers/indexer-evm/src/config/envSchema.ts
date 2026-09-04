@@ -38,10 +38,10 @@
 import {
   validateEnv,
   redisUrl,
-  absoluteUrl,
+  fetchHttpUrl,
   exactFlag,
   finiteNumber,
-  type Validate,
+  positiveIntStrict,
   type FieldSpec,
   type EnvSnapshot,
   type EnvValidation,
@@ -87,32 +87,6 @@ const NUMERIC_GT0_FIELDS = [
 ] as const;
 
 /**
- * URL RPC HTTP: `absoluteUrl` (http(s), host, https în prod) + INTERZICE credențialele în URL. `Request`/`fetch` aruncă
- * pe `user:pass@host` ÎNAINTE de orice conexiune (credențialele în URL nu sunt permise), deci un RPC cu credențiale ar
- * eșua la prima cerere, nu ar degrada grațios. NU ecouă valoarea (fără scurgere de credențiale în boot-log).
- */
-const rpcHttpUrl = (label: string): Validate => (value, prod) => {
-  const base = absoluteUrl(label)(value, prod);
-  if (base !== null) return base;
-  const u = new URL(value.trim()); // absoluteUrl a garantat deja că parsează
-  if (u.username !== "" || u.password !== "") return `${label} nu poate conține credențiale în URL (user:pass@…) — clientul fetch le respinge`;
-  return null;
-};
-
-/**
- * Întreg pentru un câmp `parseInt(v,10)`-based (`INDEXER_RPC_TIMEOUT_MS`, `rpc.ts`), prag `> 0`. Cere cifre CURATE
- * (`/^\d+$/`): `parseInt` ar trunchia `1e3`→1, `15abc`→15, `1.5`→1 — valori pe care operatorul le crede altceva → le
- * respingem la boot în loc să lăsăm runtime-ul să folosească un ms tăiat. NU ecouă valoarea.
- */
-const parseIntMs = (label: string): Validate => (value) => {
-  const t = value.trim();
-  if (!/^\d+$/.test(t)) return `${label} — trebuie întreg zecimal din cifre curate (parseInt taie '1e3'→1, '15abc'→15)`;
-  const n = Number(t);
-  if (!Number.isSafeInteger(n) || n <= 0) return `${label} — trebuie întreg > 0`;
-  return null;
-};
-
-/**
  * Chain-urile care INDEXEAZĂ efectiv (oglindește `factories.ts`). `base` mereu; restul pe `INDEXER_ENABLE_<CHAIN>=1`
  * (byte-exact). Ordine stabilă (base întâi). Setul nu e niciodată gol (base garantează ≥1) → fără caz de selecție goală.
  */
@@ -143,12 +117,12 @@ export function indexerEvmEnvFields(env: EnvSnapshot): FieldSpec[] {
     fields.push({ name, required: () => false, validate: finiteNumber(name, { gt: 0 }) });
   }
   fields.push(
-    { name: "INDEXER_RPC_TIMEOUT_MS",     required: () => false, validate: parseIntMs("INDEXER_RPC_TIMEOUT_MS") },
+    { name: "INDEXER_RPC_TIMEOUT_MS",     required: () => false, validate: positiveIntStrict("INDEXER_RPC_TIMEOUT_MS") },
     { name: "INDEXER_CONFIRMATION_DEPTH", required: () => false, validate: finiteNumber("INDEXER_CONFIRMATION_DEPTH", { gte: 0 }) },
   );
   for (const chain of enabledIndexerChains(env)) {
     const rpcEnv = CHAIN_RPC_ENV[chain];
-    fields.push({ name: rpcEnv, required: () => true, validate: rpcHttpUrl(rpcEnv) });
+    fields.push({ name: rpcEnv, required: () => true, validate: fetchHttpUrl(rpcEnv) });
     const depthEnv = `INDEXER_CONFIRMATION_DEPTH_${chain.toUpperCase()}`;
     fields.push({ name: depthEnv, required: () => false, validate: finiteNumber(depthEnv, { gte: 0 }) });
   }

@@ -99,6 +99,38 @@ export function redisUrl(label = "REDIS_URL"): Validate {
 }
 
 /**
+ * URL HTTP consumat de `fetch`/`Request` (ex. RPC): `absoluteUrl` (http(s), host, https în prod) + INTERZICE
+ * credențialele în URL. Constructorul `Request` aruncă pe `user:pass@host` ÎNAINTE de orice conexiune, deci un endpoint
+ * cu credențiale ar eșua la prima cerere, nu ar degrada grațios. NU ecouă valoarea (fără scurgere de credențiale în boot-log).
+ * (Promovat din indexer-evm la 12.2c-3-engine3; consumat de indexer RPC + solana RPC.)
+ */
+export function fetchHttpUrl(label: string): Validate {
+  return (value, prod) => {
+    const base = absoluteUrl(label)(value, prod);
+    if (base !== null) return base;
+    const u = new URL(value.trim()); // absoluteUrl a garantat deja că parsează
+    if (u.username !== "" || u.password !== "") return `${label} nu poate conține credențiale în URL (user:pass@…) — clientul fetch le respinge`;
+    return null;
+  };
+}
+
+/**
+ * URL WebSocket: `ws://` sau `wss://` cu host și FĂRĂ fragment. Clientul `ws` (8.20.1) respinge explicit un URL cu
+ * `#fragment` (lib/websocket.js) → ar duce în retry-uri pe o config invalidă, nu într-o conexiune. `label` pentru mesaj.
+ * (Promovat din worker-evm la 12.2c-3-engine3; consumat de worker-evm WS + solana `SOLANA_WS_URL`.)
+ */
+export function wsUrl(label: string): Validate {
+  return (value) => {
+    let u: URL;
+    try { u = new URL(value.trim()); } catch { return `${label} nu e un URL valid`; }
+    if (u.protocol !== "ws:" && u.protocol !== "wss:") return `${label} trebuie ws:// sau wss://`;
+    if (u.hostname === "") return `${label} fără host`;
+    if (u.hash !== "") return `${label} nu poate avea fragment (#...) — clientul ws îl respinge`;
+    return null;
+  };
+}
+
+/**
  * Întreg zecimal ≥ 0 (ex. PORT). Sintaxă zecimală EXPLICITĂ (`/^\d+$/` după trim) + `Number.isSafeInteger`:
  * respinge `1e3`/`0x10` (pe care `parseInt(...,10)` le taie diferit), zecimalele care rotunjesc la întreg
  * (`1.0000000000000001`) și magnitudinile peste sigur (`9007199254740993`). Limitele specifice (ex. intervalul
@@ -130,6 +162,23 @@ export function finiteNumber(label: string, bound: { gt: number } | { gte: numbe
       return n > bound.gt ? null : `${label} — trebuie număr finit > ${bound.gt} (IGNORAT la runtime, se folosește default)`;
     }
     return n >= bound.gte ? null : `${label} — trebuie număr finit ≥ ${bound.gte} (IGNORAT la runtime, se folosește default)`;
+  };
+}
+
+/**
+ * Întreg zecimal STRICT pozitiv pentru un câmp `parseInt(v,10)`-based (`INDEXER_RPC_TIMEOUT_MS`, `SOLANA_BACKFILL_MAX_
+ * ACCOUNTS`), prag `> 0`. Cere cifre CURATE (`/^\d+$/`) fiindcă `parseInt` ar trunchia `1e3`→1, `15abc`→15, `1.5`→1 —
+ * valori pe care operatorul le crede altceva → le respingem la boot în loc să lăsăm runtime-ul să folosească un întreg
+ * tăiat. Deosebit de `finiteNumber` (`Number()`-based, tolerează `1e3`=1000): alege-l DOAR când parserul runtime e
+ * `parseInt`. NU ecouă valoarea. (Promovat din indexer-evm la 12.2c-3-engine3.)
+ */
+export function positiveIntStrict(label: string): Validate {
+  return (value) => {
+    const t = value.trim();
+    if (!/^\d+$/.test(t)) return `${label} — trebuie întreg zecimal din cifre curate (parseInt taie '1e3'→1, '15abc'→15)`;
+    const n = Number(t);
+    if (!Number.isSafeInteger(n) || n <= 0) return `${label} — trebuie întreg > 0`;
+    return null;
   };
 }
 

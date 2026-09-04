@@ -5,7 +5,7 @@
  */
 import {
   validateEnv, runFieldSpecs, detectUnexpected, formatEnvValidation,
-  absoluteUrl, redisUrl, nonEmpty, nonNegativeInt, finiteNumber, boolFlag, exactFlag, flagMustBeOffInProd, unknownCsvTokens, csvKnownTokens, present, isProd,
+  absoluteUrl, redisUrl, fetchHttpUrl, wsUrl, nonEmpty, nonNegativeInt, finiteNumber, positiveIntStrict, boolFlag, exactFlag, flagMustBeOffInProd, unknownCsvTokens, csvKnownTokens, present, isProd,
   type FieldSpec, type EnvSnapshot, type EnvValidation,
 } from "../src/engine";
 
@@ -108,6 +108,32 @@ check("15f. ⭐⭐ finiteNumber ca validate pe câmp OPȚIONAL → present+inval
   const spec: FieldSpec[] = [{ name: "SOLANA_WS_STALL_MS", required: () => false, validate: finiteNumber("SOLANA_WS_STALL_MS", { gt: 0 }) }];
   const r = runFieldSpecs(spec, { SOLANA_WS_STALL_MS: "0" }, false);
   return r.problems.length === 0 && r.warnings.length === 1 && r.warnings[0].name === "SOLANA_WS_STALL_MS";
+})());
+// ── fetchHttpUrl (absoluteUrl + fără credențiale) — promovat 12.2c-3-engine3 ──────────
+check("15g. ⭐⭐⭐ fetchHttpUrl: URL fără credențiale → null; user:pass@ → detaliu (Request le respinge)", (() => {
+  const v = fetchHttpUrl("RPC");
+  return v("https://rpc.example.test/v2/key", false) === null
+    && v("https://user:pass@rpc.example.test", false) !== null
+    && v("https://token@rpc.example.test", false) !== null; // doar username
+})());
+check("15h. ⭐⭐ fetchHttpUrl moștenește absoluteUrl (http în prod → detaliu) + NU ecouă valoarea", (() => {
+  const v = fetchHttpUrl("RPC");
+  const prodHttp = v("http://rpc.example.test", true);
+  const credMsg = v("https://user:s3cr3t@rpc.example.test", false) ?? "";
+  return prodHttp !== null && !credMsg.includes("s3cr3t") && credMsg.includes("RPC");
+})());
+// ── wsUrl (ws/wss + host + fără #fragment) — promovat 12.2c-3-engine3 ─────────────────
+check("15i. ⭐⭐⭐ wsUrl: wss valid → null; http → detaliu; #fragment → detaliu; fără host → detaliu", (() => {
+  const v = wsUrl("WS");
+  return v("wss://x.example.test/v2/k", false) === null && v("ws://localhost:8546", false) === null
+    && v("https://x.example.test", false) !== null && v("wss://x.example.test/v2#frag", false) !== null;
+})());
+// ── positiveIntStrict (parseInt-based, cifre curate > 0) — promovat 12.2c-3-engine3 ───
+check("15j. ⭐⭐⭐ positiveIntStrict: '15000'/' 42 ' → null; '1e3'/'15abc'/'1.5'/'0'/'-1' → detaliu", (() => {
+  const v = positiveIntStrict("T");
+  return v("15000", false) === null && v(" 42 ", false) === null
+    && v("1e3", false) !== null && v("15abc", false) !== null && v("1.5", false) !== null
+    && v("0", false) !== null && v("-1", false) !== null;
 })());
 check("16. nonEmpty pe valoare prezentă → null", nonEmpty("anything", false) === null);
 
