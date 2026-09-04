@@ -129,11 +129,15 @@ check("15i. ⭐⭐⭐ wsUrl: wss valid → null; http → detaliu; #fragment →
     && v("https://x.example.test", false) !== null && v("wss://x.example.test/v2#frag", false) !== null;
 })());
 // ── positiveIntStrict (parseInt-based, cifre curate > 0) — promovat 12.2c-3-engine3 ───
-check("15j. ⭐⭐⭐ positiveIntStrict: '15000'/' 42 ' → null; '1e3'/'15abc'/'1.5'/'0'/'-1' → detaliu", (() => {
+check("15j. ⭐⭐⭐ positiveIntStrict (default trim): '15000'/' 42 ' → null; '1e3'/'15abc'/'1.5'/'0'/'-1' → detaliu", (() => {
   const v = positiveIntStrict("T");
   return v("15000", false) === null && v(" 42 ", false) === null
     && v("1e3", false) !== null && v("15abc", false) !== null && v("1.5", false) !== null
     && v("0", false) !== null && v("-1", false) !== null;
+})());
+check("15k. ⭐⭐⭐ positiveIntStrict({trim:false}) oglindește intEnv-ul cozilor solana (RAW /^d+$/): '5' → null; ' 5 ' → detaliu", (() => {
+  const v = positiveIntStrict("Q", { trim: false });
+  return v("5", false) === null && v("1000", false) === null && v(" 5 ", false) !== null && v("1e3", false) !== null;
 })());
 check("16. nonEmpty pe valoare prezentă → null", nonEmpty("anything", false) === null);
 

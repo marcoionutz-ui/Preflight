@@ -166,18 +166,22 @@ export function finiteNumber(label: string, bound: { gt: number } | { gte: numbe
 }
 
 /**
- * Întreg zecimal STRICT pozitiv pentru un câmp `parseInt(v,10)`-based (`INDEXER_RPC_TIMEOUT_MS`, `SOLANA_BACKFILL_MAX_
- * ACCOUNTS`), prag `> 0`. Cere cifre CURATE (`/^\d+$/`) fiindcă `parseInt` ar trunchia `1e3`→1, `15abc`→15, `1.5`→1 —
- * valori pe care operatorul le crede altceva → le respingem la boot în loc să lăsăm runtime-ul să folosească un întreg
- * tăiat. Deosebit de `finiteNumber` (`Number()`-based, tolerează `1e3`=1000): alege-l DOAR când parserul runtime e
- * `parseInt`. NU ecouă valoarea. (Promovat din indexer-evm la 12.2c-3-engine3.)
+ * Întreg zecimal STRICT pozitiv (cifre CURATE `/^\d+$/` + `Number.isSafeInteger` + `> 0`), prag `> 0`. Pentru câmpuri pe
+ * care runtime-ul le respinge dacă nu-s cifre curate: `parseInt(v,10)` ar trunchia `1e3`→1/`15abc`→15/`1.5`→1, sau un
+ * `intEnv` strict `/^\d+$/` le respinge din start. Deosebit de `finiteNumber` (`Number()`-based, tolerează `1e3`=1000):
+ * alege-l DOAR când parserul runtime NU e `Number()`. NU ecouă valoarea. (Promovat din indexer-evm la 12.2c-3-engine3.)
+ *
+ * `opts.trim` (default `true`) — dacă parserul runtime aplică `.trim()`/leading-ws-skip (`parseInt`) înainte de test,
+ * validatorul trimuiește la fel; dacă runtime testează `/^\d+$/` pe valoarea BRUTĂ (ex. `intEnv`-ul cozilor solana, care
+ * respinge `" 5 "`), treci `trim:false` ca `" 5 "` să fie semnalat exact cum îl respinge runtime-ul (blocker cgpt 12.2c-3b).
  */
-export function positiveIntStrict(label: string): Validate {
+export function positiveIntStrict(label: string, opts: { trim?: boolean } = {}): Validate {
+  const doTrim = opts.trim ?? true;
   return (value) => {
-    const t = value.trim();
-    if (!/^\d+$/.test(t)) return `${label} — trebuie întreg zecimal din cifre curate (parseInt taie '1e3'→1, '15abc'→15)`;
+    const t = doTrim ? value.trim() : value;
+    if (!/^\d+$/.test(t)) return `${label} — trebuie întreg din cifre curate${doTrim ? "" : " (fără spații)"} (respins la runtime, se folosește default)`;
     const n = Number(t);
-    if (!Number.isSafeInteger(n) || n <= 0) return `${label} — trebuie întreg > 0`;
+    if (!Number.isSafeInteger(n) || n <= 0) return `${label} — trebuie întreg > 0 (se folosește default)`;
     return null;
   };
 }
