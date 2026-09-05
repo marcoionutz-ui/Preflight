@@ -6,6 +6,7 @@
  * surplus pe rol → warning (nu problem), `""` == absent, uniune discriminată, colectare (nu short-circuit).
  */
 import { validateMcpEnv, formatEnvValidation, MCP_ENV_FIELDS, type EnvSnapshot } from "./envSchema";
+import { validateBuildEnv, formatBuildEnv } from "./buildEnvCheck";
 import { isBaseUrlFailClosed } from "../oauth/baseUrl";
 
 let passed = 0, failed = 0;
@@ -14,27 +15,35 @@ function check(name: string, cond: boolean): void {
   else      { failed++; console.log("  FAIL " + name); }
 }
 
-/** Env MINIM valid pentru dev (fără PUBLIC_BASE_URL — opțional în dev). */
+// RUNTIME-env: instrumentation validează DOAR câmpurile citite proaspăt din process.env la runtime. `NEXT_PUBLIC_*` NU
+// sunt aici (build-frozen — vezi secțiunea BUILD-env de mai jos + `validateMcpBuildEnv`).
+/** Env MINIM valid de runtime pentru dev (fără PUBLIC_BASE_URL — opțional în dev). */
 function devEnv(over: EnvSnapshot = {}): EnvSnapshot {
   return {
     NODE_ENV: "development",
-    NEXT_PUBLIC_SUPABASE_URL: "https://proj.supabase.co",
-    NEXT_PUBLIC_SUPABASE_ANON_KEY: "anon-key-123",
     SUPABASE_SERVICE_ROLE_KEY: "service-role-456",
     REDIS_URL: "redis://127.0.0.1:6379",
     ...over,
   };
 }
 
-/** Env MINIM valid pentru prod (PUBLIC_BASE_URL obligatoriu + https peste tot). */
+/** Env MINIM valid de runtime pentru prod (PUBLIC_BASE_URL obligatoriu + https). */
 function prodEnv(over: EnvSnapshot = {}): EnvSnapshot {
+  return {
+    NODE_ENV: "production",
+    SUPABASE_SERVICE_ROLE_KEY: "service-role-456",
+    REDIS_URL: "rediss://redis.internal:6379",
+    PUBLIC_BASE_URL: "https://preflight.jackspools.lol",
+    ...over,
+  };
+}
+
+/** Env MINIM valid de BUILD (NEXT_PUBLIC_*, înghețate la `next build`). Build-ul de deploy rulează cu NODE_ENV=production. */
+function buildEnv(over: EnvSnapshot = {}): EnvSnapshot {
   return {
     NODE_ENV: "production",
     NEXT_PUBLIC_SUPABASE_URL: "https://proj.supabase.co",
     NEXT_PUBLIC_SUPABASE_ANON_KEY: "anon-key-123",
-    SUPABASE_SERVICE_ROLE_KEY: "service-role-456",
-    REDIS_URL: "rediss://redis.internal:6379",
-    PUBLIC_BASE_URL: "https://preflight.jackspools.lol",
     ...over,
   };
 }
@@ -57,8 +66,8 @@ check("3. ⭐ ok NU poartă cheia `problems` (uniune discriminată)", (() => {
   return v.ok === true && !("problems" in v);
 })());
 
-// ── required lipsă (dev: 4 obligatorii) ────────────────────────────────────────────
-for (const name of ["NEXT_PUBLIC_SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_ANON_KEY", "SUPABASE_SERVICE_ROLE_KEY", "REDIS_URL"]) {
+// ── required lipsă (dev: 2 obligatorii runtime — NEXT_PUBLIC_* sunt build-env, testate separat mai jos) ──
+for (const name of ["SUPABASE_SERVICE_ROLE_KEY", "REDIS_URL"]) {
   check(`4.${name} ⭐⭐⭐ lipsă în dev → problem missing`, (() => {
     const v = validateMcpEnv(devEnv({ [name]: undefined }));
     return v.ok === false && v.problems.some((p) => p.name === name && p.kind === "missing");
@@ -105,15 +114,8 @@ check("13. ⭐⭐⭐ REDIS_URL cu schemă greșită (http://) → invalid", (() 
   return v.ok === false && v.problems.some((p) => p.name === "REDIS_URL" && p.kind === "invalid");
 })());
 check("14. ⭐⭐ REDIS_URL rediss:// (TLS) → ok", validateMcpEnv(devEnv({ REDIS_URL: "rediss://host:6379" })).ok === true);
-check("15. ⭐⭐⭐ NEXT_PUBLIC_SUPABASE_URL non-URL → invalid", (() => {
-  const v = validateMcpEnv(devEnv({ NEXT_PUBLIC_SUPABASE_URL: "proj.supabase.co" }));
-  return v.ok === false && v.problems.some((p) => p.name === "NEXT_PUBLIC_SUPABASE_URL" && p.kind === "invalid");
-})());
-check("16. ⭐⭐ SUPABASE_URL http în PROD → invalid; http în DEV → ok", (() => {
-  const vp = validateMcpEnv(prodEnv({ NEXT_PUBLIC_SUPABASE_URL: "http://proj.supabase.co" }));
-  const vd = validateMcpEnv(devEnv({ NEXT_PUBLIC_SUPABASE_URL: "http://proj.supabase.co" }));
-  return vp.ok === false && vp.problems.some((p) => p.name === "NEXT_PUBLIC_SUPABASE_URL") && vd.ok === true;
-})());
+// (fostele 15/16 — validarea NEXT_PUBLIC_SUPABASE_URL — s-au MUTAT în secțiunea BUILD-env de mai jos: runtime-ul nu le
+//  mai atinge, fiind înghețate în bundle la build.)
 
 // ── "" == absent ───────────────────────────────────────────────────────────────────
 check("17. ⭐⭐⭐ REDIS_URL = \"\" (setat gol de deploy) → tratat ca lipsă, NU invalid", (() => {
@@ -157,11 +159,11 @@ check("24. ⭐ formatEnvValidation(fail) listează câmpul lipsă", (() => {
   const s = formatEnvValidation(validateMcpEnv(devEnv({ REDIS_URL: undefined })));
   return /FAIL/.test(s) && /REDIS_URL/.test(s);
 })());
-check("25. ⭐ catalog: 5 bază + 7 inventar (12.2e-2) + 2 chain-list (12.2c-mcp) = 14 câmpuri", MCP_ENV_FIELDS.length === 14);
-check("26. ⭐⭐ exact 1 câmp e prod-only (PUBLIC_BASE_URL); 4 required mereu; restul opționale", (() => {
+check("25. ⭐ catalog runtime: 3 bază + 7 inventar (12.2e-2) + 2 chain-list (12.2c-mcp) = 12 câmpuri (NEXT_PUBLIC_* mutate în build-env)", MCP_ENV_FIELDS.length === 12);
+check("26. ⭐⭐ exact 1 câmp e prod-only (PUBLIC_BASE_URL); 2 required mereu (service-role + REDIS_URL); restul opționale", (() => {
   const prodOnly = MCP_ENV_FIELDS.filter((f) => f.required(true) && !f.required(false));
   const always   = MCP_ENV_FIELDS.filter((f) => f.required(true) && f.required(false));
-  return prodOnly.length === 1 && prodOnly[0].name === "PUBLIC_BASE_URL" && always.length === 4;
+  return prodOnly.length === 1 && prodOnly[0].name === "PUBLIC_BASE_URL" && always.length === 2;
 })());
 
 // ── 12.2e-2 inventar: securitate must-be-OFF-in-prod (forbid) ──────────────────────
@@ -281,6 +283,59 @@ check("52. ⭐⭐⭐ warning-ul de selecție goală NU ecouă valoarea brută (a
 check("53. ⭐⭐ selecție goală NU regresează required: env cu REDIS_URL lipsă + override gol → ok:false (problem) + warning coexistă", (() => {
   const v = validateMcpEnv(devEnv({ REDIS_URL: undefined, HEALTH_EXPECTED_CHAINS: "" }));
   return v.ok === false && v.problems.some((p) => p.name === "REDIS_URL") && warningNames(v).includes("HEALTH_EXPECTED_CHAINS");
+})());
+
+// ── BUILD-env: NEXT_PUBLIC_* (înghețate la `next build`) — validateBuildEnv din buildEnvCheck (blocker cgpt P1) ──────
+// AUTONOM (fără @preflight/*) fiindcă `next.config.ts` îl importă relativ, iar transpilerul de config Next nu rezolvă
+// pachetele workspace. Regulile oglindesc motorul (absolute URL / nonEmpty).
+console.log("--- BUILD-env (NEXT_PUBLIC_*, validateBuildEnv din buildEnvCheck) ---");
+function buildProblems(v: ReturnType<typeof validateBuildEnv>): { name: string; kind: string }[] { return v.ok ? [] : v.problems; }
+check("B1. ⭐⭐⭐ build env complet valid → ok", validateBuildEnv(buildEnv()).ok === true);
+check("B2. ⭐⭐⭐ NEXT_PUBLIC_SUPABASE_URL lipsă → problem missing", (() => {
+  const v = validateBuildEnv(buildEnv({ NEXT_PUBLIC_SUPABASE_URL: undefined }));
+  return v.ok === false && buildProblems(v).some((p) => p.name === "NEXT_PUBLIC_SUPABASE_URL" && p.kind === "missing");
+})());
+check("B3. ⭐⭐⭐ NEXT_PUBLIC_SUPABASE_ANON_KEY lipsă → problem missing", (() => {
+  const v = validateBuildEnv(buildEnv({ NEXT_PUBLIC_SUPABASE_ANON_KEY: undefined }));
+  return v.ok === false && buildProblems(v).some((p) => p.name === "NEXT_PUBLIC_SUPABASE_ANON_KEY" && p.kind === "missing");
+})());
+check("B4. ⭐⭐⭐ NEXT_PUBLIC_SUPABASE_URL non-URL → invalid", (() => {
+  const v = validateBuildEnv(buildEnv({ NEXT_PUBLIC_SUPABASE_URL: "proj.supabase.co" }));
+  return v.ok === false && buildProblems(v).some((p) => p.name === "NEXT_PUBLIC_SUPABASE_URL" && p.kind === "invalid");
+})());
+check("B4b. ⭐⭐⭐ NEXT_PUBLIC_SUPABASE_URL cu credențiale → invalid (oglindește fetchHttpUrl anti-leak)", (() => {
+  const v = validateBuildEnv(buildEnv({ NEXT_PUBLIC_SUPABASE_URL: "https://user:pass@proj.supabase.co" }));
+  return v.ok === false && buildProblems(v).some((p) => p.name === "NEXT_PUBLIC_SUPABASE_URL" && p.kind === "invalid");
+})());
+check("B5. ⭐⭐ http la build PROD → invalid; la build DEV → ok (https obligatoriu doar în prod)", (() => {
+  const vp = validateBuildEnv(buildEnv({ NEXT_PUBLIC_SUPABASE_URL: "http://proj.supabase.co" }));
+  const vd = validateBuildEnv(buildEnv({ NODE_ENV: "development", NEXT_PUBLIC_SUPABASE_URL: "http://proj.supabase.co" }));
+  return vp.ok === false && buildProblems(vp).some((p) => p.name === "NEXT_PUBLIC_SUPABASE_URL") && vd.ok === true;
+})());
+check("B6. ⭐⭐ \"\" == absent și la build (deploy setează gol) → missing", (() => {
+  const v = validateBuildEnv(buildEnv({ NEXT_PUBLIC_SUPABASE_ANON_KEY: "" }));
+  return v.ok === false && buildProblems(v).some((p) => p.name === "NEXT_PUBLIC_SUPABASE_ANON_KEY" && p.kind === "missing");
+})());
+check("B7. ⭐ formatBuildEnv(ok) = „[env:mcp:build] OK\"; format fail NU ecouă valori", (() => {
+  const okStr = formatBuildEnv(validateBuildEnv(buildEnv()));
+  // http în prod → invalid; valoarea conține un host „sensibil" care NU trebuie să apară în output (anti-leak).
+  const failStr = formatBuildEnv(validateBuildEnv(buildEnv({ NEXT_PUBLIC_SUPABASE_URL: "http://secret.host" })));
+  return okStr.includes("[env:mcp:build] OK") && /FAIL/.test(failStr) && /NEXT_PUBLIC_SUPABASE_URL/.test(failStr) && !/secret\.host/.test(failStr);
+})());
+check("B8. ⭐ build validează DOAR NEXT_PUBLIC_* (un var necunoscut nu produce probleme)", (() => {
+  const v = validateBuildEnv(buildEnv({ SOME_OTHER_VAR: "x" }));
+  return v.ok === true;
+})());
+check("B9. ⭐⭐⭐ SEPARARE: build-env NU cere runtime-vars (REDIS_URL/service-role absente) → ok", (() => {
+  return validateBuildEnv(buildEnv()).ok === true; // fără REDIS_URL/SERVICE_ROLE — build nu le validează
+})());
+check("B10. ⭐⭐⭐ SEPARARE inversă: runtime-env (validateMcpEnv) NU cere NEXT_PUBLIC_* → ok fără ele", (() => {
+  const v = validateMcpEnv(devEnv()); // devEnv nu mai conține NEXT_PUBLIC_*
+  return v.ok === true;
+})());
+check("B11. ⭐⭐ runtime cu NEXT_PUBLIC_* prezente → NU le marchează surplus (nu-s prefix worker) → ok, fără warning pe ele", (() => {
+  const v = validateMcpEnv(devEnv({ NEXT_PUBLIC_SUPABASE_URL: "https://x.supabase.co", NEXT_PUBLIC_SUPABASE_ANON_KEY: "k" }));
+  return v.ok === true && !warningNames(v).includes("NEXT_PUBLIC_SUPABASE_URL") && !warningNames(v).includes("NEXT_PUBLIC_SUPABASE_ANON_KEY");
 })());
 
 console.log("\n" + passed + " passed, " + failed + " failed");

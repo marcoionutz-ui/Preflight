@@ -25,7 +25,6 @@
 
 import {
   validateEnv,
-  absoluteUrl,
   redisUrl,
   nonEmpty,
   boolFlag,
@@ -73,14 +72,19 @@ const strictZeroOne = (label: string): Validate => (value) =>
     : `${label} — runtime recunoaște DOAR 0/1 byte-exact (spații/altă valoare → interpretat implicit)`;
 
 /**
- * Câmpurile MCP. OBLIGATORII (azi cu `process.env.X!` → crash criptic la primul request dacă lipsesc):
- * cele patru chei Supabase/Redis. `PUBLIC_BASE_URL` obligatoriu DOAR în prod (anti-poisoning; confirmat lipsă
- * la recon PH-12 → fluxul resource-owner ar arunca fail-closed în prod).
+ * ── SEPARARE build-env vs runtime-env (blocker cgpt P1 12.2d-mcp) ──
+ * `NEXT_PUBLIC_*` sunt ÎNCORPORATE de Next în bundle la `next build` și rămân ÎNGHEȚATE: codul (client ȘI server)
+ * folosește literalul inline, NU `process.env` la runtime. Deci validarea lor aparține MOMENTULUI de build și trăiește
+ * ÎN AFARA acestui modul, în `./buildEnvCheck` (AUTONOM, fără `@preflight/*`) — importat de `next.config.ts` la
+ * `PHASE_PRODUCTION_BUILD`. AICI rămâne DOAR env-ul de RUNTIME (citit proaspăt din `process.env` la runtime-ul
+ * serverului), validat de `instrumentation.register()`.
+ *
+ * Câmpurile MCP de RUNTIME (azi cu `process.env.X!` → crash criptic la primul request dacă lipsesc). `PUBLIC_BASE_URL`
+ * obligatoriu DOAR în prod (anti-poisoning; confirmat lipsă la recon PH-12 → fluxul resource-owner ar arunca fail-closed
+ * în prod). `NEXT_PUBLIC_*` NU sunt aici — vezi `lib/config/buildEnvCheck.ts`.
  */
 export const MCP_ENV_FIELDS: readonly FieldSpec[] = [
-  // ── OBLIGATORII (azi `process.env.X!` → crash criptic la primul request dacă lipsesc) ──
-  { name: "NEXT_PUBLIC_SUPABASE_URL",      required: () => true,     validate: absoluteUrl("NEXT_PUBLIC_SUPABASE_URL") },
-  { name: "NEXT_PUBLIC_SUPABASE_ANON_KEY", required: () => true,     validate: nonEmpty },
+  // ── OBLIGATORII runtime (azi `process.env.X!` → crash criptic la primul request dacă lipsesc) ──
   { name: "SUPABASE_SERVICE_ROLE_KEY",     required: () => true,     validate: nonEmpty },
   { name: "REDIS_URL",                     required: () => true,     validate: redisUrl() },
   { name: "PUBLIC_BASE_URL",               required: (prod) => prod, validate: publicBaseUrl },
@@ -124,7 +128,7 @@ function effectiveExpectedChains(env: EnvSnapshot): string[] {
 }
 
 /**
- * Validează env-ul pentru rolul MCP. Discriminat: `ok:true` (+ warnings) sau `ok:false` (+ problems + warnings).
+ * Validează env-ul de RUNTIME pentru rolul MCP. Discriminat: `ok:true` (+ warnings) sau `ok:false` (+ problems + warnings).
  *
  * 12.2c-mcp (selecție efectivă goală): pe lângă câmpuri, semnalăm cazul în care lista EFECTIVĂ de chain-uri iese GOALĂ
  * deși câmpurile trec (ex. `HEALTH_EXPECTED_CHAINS=""` peste un `ENABLED_CHAINS=base` valid — `??` lasă `""` să blocheze
