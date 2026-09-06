@@ -21,7 +21,6 @@
     "test": "npm run test --workspaces --if-present"
   },
   "devDependencies": {
-    "railway": "^3.11.0",
     "typescript": "^5"
   }
 }
