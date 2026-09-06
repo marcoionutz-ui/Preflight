@@ -7,17 +7,20 @@ export default defineRailway(() => {
   PreflightRedis.deploy = { startCommand: "/bin/sh -c \"rm -rf $RAILWAY_VOLUME_MOUNT_PATH/lost+found/ && exec docker-entrypoint.sh redis-server --requirepass $REDIS_PASSWORD --save 60 1 --dir $RAILWAY_VOLUME_MOUNT_PATH\"" };
   PreflightRedis.networking = { privateNetworkEndpoint: "redis", tcpProxies: { "6379": {} } };
   const redisVolume = volume("redis-volume", { alerts: { usage: { "100": {}, "80": {}, "95": {} } }, allowOnlineResize: true, region: "europe-west4-drams3a", sizeMB: 5000 });
+  PreflightRedis.volumeMounts = { "/data": redisVolume };
   const WorkerSolana = service("Worker Solana", {
     source: Preflight,
-    build: "npm install --legacy-peer-deps",
+    build: "npm ci",
+    start: "npm run start --workspace=@preflight/indexer-solana",
     replicas: { "europe-west4-drams3a": 1 },
     networking: { privateNetworkEndpoint: "preflight-production-41cc" },
     env: { MCP_API_KEY: preserve(), MCP_EXPOSE_PERFORMANCE: preserve(), NEXT_PUBLIC_SUPABASE_ANON_KEY: preserve(), NEXT_PUBLIC_SUPABASE_URL: preserve(), REDIS_URL: preserve(), SOLANA_BACKFILL_ENABLED: preserve(), SOLANA_BACKFILL_MAX_ACCOUNTS: preserve(), SOLANA_RPC_URL: preserve(), SOLANA_WS_URL: preserve(), SUPABASE_SERVICE_ROLE_KEY: preserve() },
   });
   const PreflightMCP = service("Preflight MCP", {
     source: github("marcoionutz-ui/Preflight"),
-    build: "npm install --legacy-peer-deps && npm run build --workspace=mcp",
+    build: "npm ci && npm run build --workspace=mcp",
     start: "npm run start --workspace=mcp",
+    healthcheck: "/api/health",
     replicas: { "europe-west4-drams3a": 1 },
     domains: ["preflight.jackspools.lol"],
     networking: { privateNetworkEndpoint: "preflight" },
@@ -25,7 +28,7 @@ export default defineRailway(() => {
   });
   const WorkerEVM = service("Worker EVM", {
     source: Preflight,
-    build: "npm install --legacy-peer-deps",
+    build: "npm ci",
     start: "npm run start --workspace=@preflight/worker-evm",
     replicas: { "europe-west4-drams3a": 1 },
     networking: { privateNetworkEndpoint: "worker-evm" },
@@ -33,7 +36,7 @@ export default defineRailway(() => {
   });
   const IndexerEVM = service("Indexer EVM", {
     source: Preflight,
-    build: "npm install --legacy-peer-deps",
+    build: "npm ci",
     start: "npm run start --workspace=@preflight/indexer-evm",
     replicas: { "europe-west4-drams3a": 1 },
     networking: { privateNetworkEndpoint: "indexer-evm" },
