@@ -3,7 +3,7 @@
 **Base-first, real-time DEX intelligence for AI trading agents.**
 
 Preflight transforms noisy DEX activity on Base into compact, verifiable context that
-AI trading agents can query through MCP. Base is the launch network and default
+AI trading agents can query through MCP. Base is the launch network and primary
 deployment target. The same architecture also supports Arbitrum, BSC, Ethereum, and
 Solana as later expansion paths.
 
@@ -15,9 +15,11 @@ Solana as later expansion paths.
 
 Preflight is a working pre-launch system validated locally and in CI. Its production
 services are intentionally parked while public-beta hardening and the Base canary
-deployment are completed. The core Base path already exists end to end: discovery,
-indexing, Redis-backed state, compressed MCP reports, OAuth onboarding, quota controls,
-and service health checks.
+deployment are completed. The Base data path is implemented end to end: discovery,
+indexing, Redis-backed state, and 15 scope-gated MCP tools. The authenticated OAuth
+consent/token path and account-scoped quota model are implemented behind rollout
+flags; public-client registration, canary validation, and production cutover remain
+pre-launch work.
 
 ## Why Base
 
@@ -46,6 +48,16 @@ Base is the launch network and default product experience.
 - Does not recommend entries, exits, or position sizes
 
 Preflight describes `market state`, `pipeline state`, `flow quality`, `risk flags`, `freshness`, `coverage`, and `next verification step`.
+
+---
+
+## Why not query market APIs directly?
+
+Market-data APIs expose feeds and pair records. Preflight continuously combines those
+sources with its own indexers, tracks pipeline state, preserves provenance and
+freshness, and reduces the result to a bounded set of evidence an agent can evaluate
+through MCP. Human dashboards are designed to be scanned; Preflight is designed to be
+queried by agents.
 
 ---
 
@@ -98,8 +110,20 @@ tp_situation_report → tp_next_action → tp_candidate_brief → tp_late_move_c
 
 > Agents should not scan everything. Agents should ask where to look.
 
-Preflight pre-filters thousands of pairs so the agent only reasons about a handful.
-Fewer tool calls, fewer LLM tokens, and more focused context.
+Preflight reduces broad pair and market activity to a bounded set of candidates and
+evidence. The agent spends fewer tool calls and fewer LLM tokens on undifferentiated
+market scanning.
+
+---
+
+## Engineering confidence
+
+- More than 4,000 automated checks run through the workspace test suite
+- 156 test files are reachable from the aggregate release gate
+- CI typechecks every workspace, runs the full test suite, lints the MCP server, and
+  exercises the Redis-backed integration path
+- Authentication, quota, health, and external-data boundaries use explicit,
+  fail-closed state models
 
 ---
 
