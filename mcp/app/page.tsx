@@ -2,9 +2,9 @@
  * app/page.tsx
  *
  * Landing page. Static — no Redis reads, no report builders. The only
- * "proof" claims here point at /demo and /demo/pair, which are live and
- * cache-only. The JSON snippet below is a hand-written illustration of the
- * shape, explicitly labeled as such — never presented as a live sample.
+ * "proof" claims here point at /demo and /demo/pair, which are a cache-only
+ * product preview. The JSON snippet below is a hand-written illustration of
+ * the shape, explicitly labeled as such — never presented as a live sample.
  */
 
 import Link from "next/link";
@@ -29,7 +29,7 @@ export default function LandingPage() {
           </h1>
           <p style={styles.heroSub}>Preflight reports. The agent decides.</p>
           <div style={styles.ctaRow}>
-            <Link href="/demo" style={styles.ctaPrimary}>View Live Market Overview →</Link>
+            <Link href="/demo" style={styles.ctaPrimary}>View Market Overview — product preview →</Link>
           </div>
         </section>
 
@@ -64,27 +64,27 @@ export default function LandingPage() {
         <section style={styles.section}>
           <h2 style={styles.h2}>Base-first. Multichain-aware.</h2>
           <p style={styles.bodyText}>
-            Base is the home market. Arbitrum and BSC run on the same live indexer. Ethereum
-            is running as a shadow worker ahead of promotion. Solana is indexed separately —
-            sampled from observed swap activity, not a full firehose.
+            Base is the launch target. Arbitrum and BSC are implemented on the same indexer.
+            Ethereum runs as a shadow-worker path ahead of promotion. Solana is indexed
+            separately — sampled from observed swap activity, not a full firehose.
           </p>
           <div style={styles.chainBadges}>
-            <ChainBadge label="BASE" tier="LIVE" />
-            <ChainBadge label="ARBITRUM" tier="LIVE" />
-            <ChainBadge label="BSC" tier="LIVE" />
-            <ChainBadge label="ETHEREUM" tier="CACHED" />
+            <ChainBadge label="BASE" tier="IMPLEMENTED" />
+            <ChainBadge label="ARBITRUM" tier="IMPLEMENTED" />
+            <ChainBadge label="BSC" tier="IMPLEMENTED" />
+            <ChainBadge label="ETHEREUM" tier="SHADOW" />
             <ChainBadge label="SOLANA" tier="SAMPLED" />
           </div>
-          <Link href="/demo" style={styles.inlineLink}>See live coverage for every chain →</Link>
+          <Link href="/demo" style={styles.inlineLink}>See coverage for every chain →</Link>
         </section>
 
         {/* ── Illustrative JSON ────────────────────────────────────────────── */}
         <section style={styles.section}>
           <h2 style={styles.h2}>Example agent response shape</h2>
           <p style={styles.bodyText}>
-            Example shape only — not a live sample. Open any pair on the{" "}
-            <Link href="/demo" style={styles.inlineLink}>market overview</Link> to see the real,
-            live Agent JSON for that pair.
+            Example shape only — not a live sample. Open any pair in the{" "}
+            <Link href="/demo" style={styles.inlineLink}>market overview preview</Link> to see the
+            cache-backed Agent JSON Preflight produces for that pair.
           </p>
           <pre style={styles.jsonBlock}>{EXAMPLE_JSON}</pre>
         </section>
@@ -137,11 +137,11 @@ function FeatureCard({ title, text }: { title: string; text: string }) {
   );
 }
 
-function ChainBadge({ label, tier }: { label: string; tier: "LIVE" | "CACHED" | "SAMPLED" }) {
+function ChainBadge({ label, tier }: { label: string; tier: "IMPLEMENTED" | "SHADOW" | "SAMPLED" }) {
   const map: Record<string, React.CSSProperties> = {
-    LIVE:    styles.badgeGreen,
-    CACHED:  styles.badgeAmber,
-    SAMPLED: styles.badgeGray,
+    IMPLEMENTED: styles.badgeGreen,
+    SHADOW:      styles.badgeAmber,
+    SAMPLED:     styles.badgeGray,
   };
   return (
     <div style={styles.chainBadge}>

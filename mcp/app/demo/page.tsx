@@ -53,7 +53,7 @@ export default async function MarketOverviewPage() {
       <main style={styles.main}>
         <h1 style={styles.h1}>Market Overview</h1>
         <p style={styles.subtitle}>
-          Base-first. Multichain-aware. Coverage badges are honest about what&apos;s live vs. sampled —
+          Base-first. Multichain-aware. Coverage badges are honest about per-chain coverage —
           nothing here claims full firehose where it isn&apos;t.
         </p>
 
@@ -215,9 +215,9 @@ function MetaItem({ label, value }: { label: string; value: string }) {
 
 function CoverageBadge({ value }: { value: string }) {
   const map: Record<string, React.CSSProperties> = {
-    LIVE:   styles.badgeGreen,
-    CACHED: styles.badgeAmber,
-    SAMPLED: styles.badgeGray,
+    IMPLEMENTED: styles.badgeGreen,
+    SHADOW:      styles.badgeAmber,
+    SAMPLED:     styles.badgeGray,
   };
   return <div style={{ ...styles.badge, ...(map[value] ?? styles.badgeGray) }}>{value}</div>;
 }

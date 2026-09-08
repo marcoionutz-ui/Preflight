@@ -24,22 +24,25 @@ import { safeAgeSec } from "../mcp/freshness";
 import { sanitizeToolError } from "../mcp/errors";
 import { pairKey, reserveEstimatedFlag, type ReserveSource } from "@preflight/schema";
 
-export type ChainCoverageTier = "LIVE" | "CACHED" | "SAMPLED";
+export type ChainCoverageTier = "IMPLEMENTED" | "SHADOW" | "SAMPLED";
 
 // Architectural deployment status per chain — this is NOT derived from live
-// data, it reflects the INDEXER_PRIMARY gate status documented in the project
-// roadmap. Update when a chain's worker gets promoted (e.g. Ethereum shadow
-// → primary after the 7.0f soak period).
+// data, nor does it claim a running production service (services are parked
+// pre-launch). It reflects the INDEXER_PRIMARY gate status documented in the
+// project roadmap: IMPLEMENTED = primary indexer path built for that chain,
+// SHADOW = shadow-worker path ahead of promotion, SAMPLED = sampled coverage.
+// Update when a chain's worker gets promoted (e.g. Ethereum shadow → primary
+// after the 7.0f soak period).
 //
 // Keyed by the EXTERNAL short code ("eth"), matching the chain enum used
 // everywhere else in the MCP surface (tp_pair_context, tp_preflight_safety,
 // pair-context-report's ALLOWED_CHAINS). Redis itself stores pair_states with
 // chain:"ethereum" (see toRedisChainId below) — that's an internal-only detail.
 const CHAIN_COVERAGE: Record<string, ChainCoverageTier> = {
-  base:     "LIVE",
-  arbitrum: "LIVE",
-  bsc:      "LIVE",
-  eth:      "CACHED", // shadow worker, promotion gate soak (7.0f)
+  base:     "IMPLEMENTED",
+  arbitrum: "IMPLEMENTED",
+  bsc:      "IMPLEMENTED",
+  eth:      "SHADOW",  // shadow worker, promotion gate soak (7.0f)
   solana:   "SAMPLED", // swap-vault-delta sampling, not full firehose
 };
 
@@ -171,7 +174,7 @@ export async function buildMarketOverviewReport(topN = 5): Promise<MarketOvervie
 
       evmChains.push({
         chain:          externalChainId,
-        coverage:       CHAIN_COVERAGE[externalChainId] ?? "CACHED",
+        coverage:       CHAIN_COVERAGE[externalChainId] ?? "SHADOW",
         online:         freshnessSec !== null && freshnessSec < 300,
         trackedPairs:   stateVals.length,
         pipeline:       { watching: chainWatch, hot: chainHot, armed: chainArmed },

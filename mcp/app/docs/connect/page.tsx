@@ -79,8 +79,9 @@ export default async function ConnectDocsPage() {
       <main style={styles.main}>
         <h1 style={styles.h1}>Connect an agent to Preflight</h1>
         <p style={styles.subtitle}>
-          Preflight is a hosted MCP server. Any MCP-compatible client — Claude Desktop, Cursor,
-          or a custom agent — can call it over standard OAuth 2.0. No SDK, no separate gateway.
+          Preflight exposes an MCP server over standard OAuth 2.0 that any MCP-compatible client —
+          Claude Desktop, Cursor, or a custom agent — connects to: no SDK, no separate gateway.
+          The interface below is implemented; public credential registration opens with the beta.
         </p>
 
         {/* ── Endpoint ─────────────────────────────────────────────────────── */}
@@ -101,10 +102,11 @@ export default async function ConnectDocsPage() {
         {/* ── Interactive clients ─────────────────────────────────────────── */}
         <Section title="2. Interactive clients (Claude Desktop, Cursor)">
           <p style={styles.bodyText}>
-            Point the client at the endpoint. OAuth discovery, the{" "}
-            <Link href="/authorize" style={styles.inlineLink}>authorize</Link> screen, and PKCE
-            are handled automatically by the client during first connect:
+            Interactive public-client onboarding is being prepared for the beta. Until dynamic
+            client registration is enabled and validated end to end, connecting from the endpoint
+            URL alone is not supported.
           </p>
+          <p style={styles.bodyText}>The client configuration will take this shape:</p>
           <pre style={styles.codeBlock}>{claudeConfig}</pre>
         </Section>
 
@@ -148,14 +150,14 @@ export default async function ConnectDocsPage() {
         {/* ── Getting credentials ──────────────────────────────────────────── */}
         <Section title="5. Getting credentials">
           <p style={styles.bodyText}>
-            Client credentials are issued per account, starting on a free trial (
-            <code style={styles.inlineCode}>read:basic</code>).{" "}
-            <Link href="/signup" style={styles.inlineLink}>Get access →</Link>
+            Client credentials will be issued per account, starting on a free trial (
+            <code style={styles.inlineCode}>read:basic</code>). Public access opens with the beta.{" "}
+            <Link href="/signup" style={styles.inlineLink}>Request beta access →</Link>
           </p>
         </Section>
 
         <div style={styles.ctaRow}>
-          <Link href="/demo" style={styles.ctaPrimary}>See it running on live data →</Link>
+          <Link href="/demo" style={styles.ctaPrimary}>See the product preview →</Link>
         </div>
       </main>
 
