@@ -1,14 +1,30 @@
 # Preflight
 
-**Fast, cheap DEX context for AI trading agents.**
+**Base-first, real-time DEX intelligence for AI trading agents.**
 
-Preflight is a candidate intelligence layer for AI trading agents operating across EVM
-chains and Solana. It monitors DEX pair activity across Base, Arbitrum, and BSC in
-real-time (Ethereum running as a shadow worker, not yet promoted to primary), plus
-Solana pool/launch discovery via a separate indexer, compresses market state into
-agent-readable context, and exposes everything through an MCP tool interface.
+Preflight transforms noisy DEX activity on Base into compact, verifiable context that
+AI trading agents can query through MCP. Base is the launch network and default
+deployment target. The same architecture also supports Arbitrum, BSC, Ethereum, and
+Solana as later expansion paths.
 
 **Preflight reports. The agent decides.**
+
+---
+
+## Current status
+
+Preflight is a working pre-launch system validated locally and in CI. Its production
+services are intentionally parked while public-beta hardening and the Base canary
+deployment are completed. The core Base path already exists end to end: discovery,
+indexing, Redis-backed state, compressed MCP reports, OAuth onboarding, quota controls,
+and service health checks.
+
+## Why Base
+
+Base combines active onchain markets, low-cost execution, and a growing ecosystem of
+AI agents. Preflight's first public-beta configuration will run the complete
+discovery → intelligence → MCP flow on Base. Multichain support is an expansion path;
+Base is the launch network and default product experience.
 
 ---
 
@@ -65,7 +81,7 @@ tp_situation_report → tp_next_action → tp_candidate_brief → tp_late_move_c
 | Tool | What it returns |
 |------|-----------------|
 | `tp_situation_report` | Global market overview — pipeline state across all chains, ARMED first, coverage confidence |
-| `tp_next_action` | Routing signal — tells the agent which tool to call next and why |
+| `tp_next_action` | Routing context — tells the agent which tool to call next and why |
 | `tp_candidate_brief(pair)` | Full narrative case file for a specific pair — discovery provenance, flow, risk, sourceAgreement |
 | `tp_late_move_context(pair)` | Late-move evidence — detects HOT flapping, faded flow, distribution pressure, and elevated extension risk |
 | `tp_preflight_safety(pair)` | Contract/token safety check via GoPlus |
@@ -83,11 +99,11 @@ tp_situation_report → tp_next_action → tp_candidate_brief → tp_late_move_c
 > Agents should not scan everything. Agents should ask where to look.
 
 Preflight pre-filters thousands of pairs so the agent only reasons about a handful.
-Fewer tool calls. Fewer LLM tokens. Same (or better) context quality.
+Fewer tool calls, fewer LLM tokens, and more focused context.
 
 ---
 
-## Example output
+## Illustrative MCP output
 
 ```
 SITUATION REPORT — Base + Arbitrum + BSC
@@ -109,9 +125,9 @@ geckoHealth: OK | dexscreenerHealth: OK | wsHealth: ACTIVE
 - **Worker**: TypeScript, `tsx`, Alchemy WebSockets, GeckoTerminal, DexScreener
 - **State**: Redis (ephemeral pipeline state)
 - **Auth**: OAuth Authorization Code + PKCE, client credentials
-- **MCP**: Next.js MCP server via `mcp-handler`, deployed on Railway
+- **MCP**: Next.js MCP server via `mcp-handler`, designed for reproducible Railway deployment
 - **Persistent config**: Supabase (`oauth_clients`, usage logs)
-- **Chains**: Base, Arbitrum, BSC (live) — Ethereum (shadow worker, promotion gate soak) — Solana (live, sampled coverage via a separate indexer)
+- **Chains**: Base (public-beta launch target) — Arbitrum and BSC (implemented) — Ethereum (shadow-worker path) — Solana (implemented with sampled coverage via a separate indexer)
 
 ---
 
@@ -139,8 +155,8 @@ packages/risk-layer/        Shared risk primitives
 ## Running locally
 
 ```bash
-# Install
-npm install
+# Install exactly from the lockfile
+npm ci
 
 # Worker (Base only)
 ENABLED_CHAINS=base npm run dev --workspace=@preflight/worker-evm
@@ -187,4 +203,4 @@ GOPLUS_API_KEY
 
 ---
 
-*Base + Arbitrum + BSC live · Ethereum shadow · Solana live (sampled)*
+*Base-first public beta in preparation · multichain architecture implemented*
