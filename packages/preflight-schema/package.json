@@ -9,7 +9,8 @@
     "test:e32b": "tsx scripts/integrity.test.ts",
     "test:u9": "tsx scripts/normalizeLaunch.test.ts",
     "test:ph10": "tsx scripts/watchQueue.test.ts",
-    "test": "npm run test:e32b && npm run test:u9 && npm run test:ph10"
+    "test": "npm run test:e32b && npm run test:u9 && npm run test:ph10 && npm run test:ph12-hb",
+    "test:ph12-hb": "tsx scripts/heartbeat.test.ts"
   },
   "dependencies": {
     "@preflight/risk-layer": "*"

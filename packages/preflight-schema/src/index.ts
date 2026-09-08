@@ -1524,3 +1524,56 @@ export async function drainWatchQueue(
 }
 
 export const SCHEMA_VERSION = "preflight-schema-v2";  // B5: bump — schema per-chain post-B4 (marker de observabilitate; NU e gated la citire)
+
+// ── PH-12 12.4: Service liveness heartbeat — CONTRACT PARTAJAT writer↔reader ─────────────────────────────────
+// Formatul PE SÂRMĂ al heartbeat-ului de serviciu trăiește AICI (pachet partajat), NU în `mcp/` — altfel
+// publisherii (workers/indexer-evm, workers/solana) nu l-ar putea importa și writer-ul ar diverge de reader (drift).
+// Publisherii scriu prin `serializeHeartbeat`; reader-ul (mcp/lib/health) validează prin `parseHeartbeat`.
+// Cheia Redis (`serviceHeartbeat(role)`) + flag-urile de env (`HEALTH_EXPECT_*`) se adaugă în leaf 2; clasificatorul
+// (stări/praguri) rămâne în mcp (doar reader-ul clasifică). Roluri TIPIZATE (nu string arbitrar).
+export type ServiceRole = "indexer-evm" | "solana-worker";
+export const SERVICE_ROLES = ["indexer-evm", "solana-worker"] as const satisfies readonly ServiceRole[];
+
+// Versiune EXPLICITĂ a payload-ului. Bump doar cu migrare conștientă; `parseHeartbeat` respinge orice altă versiune.
+export const HEARTBEAT_VERSION = 1 as const;
+
+// Praguri de PROTOCOL (partajate cu publisherii worker — leaf 3): cât de des scrie heartbeat-ul și cât trăiește
+// cheia. `fresh`/`future-skew` sunt POLITICI de reader și rămân în mcp. Interval < ttl (heartbeat ≪ expirare).
+export const HEARTBEAT_INTERVAL_SEC = 30;  // publisherul scrie la fiecare 30s (SET EX)
+export const HEARTBEAT_TTL_SEC      = 300; // TTL-ul cheii; peste el cheia dispare → reader-ul o vede `missing`
+
+export interface HeartbeatPayload {
+  v:          typeof HEARTBEAT_VERSION;
+  service:    ServiceRole;
+  updated_at: number; // epoch MILISECUNDE (Date.now()) — ambii publisheri sunt Node → unitate comună
+}
+
+/**
+ * Serializează payload-ul de heartbeat pentru scriere în Redis (publisher). Format canonic, versionat.
+ * REFUZĂ un `now` nesincer (NaN / ±Infinity / ≤0): un timestamp invalid scris în Redis ar coborî reader-ul în
+ * `missing` fals sau ar trece de future-skew — mai bine aruncăm la sursă (fail-loud pe writer). PUR (`now` injectat).
+ */
+export function serializeHeartbeat(role: ServiceRole, now: number): string {
+  if (typeof now !== "number" || !Number.isFinite(now) || now <= 0) {
+    throw new Error(`[heartbeat] updated_at invalid (așteptat epoch-ms finit > 0): ${String(now)}`);
+  }
+  const payload: HeartbeatPayload = { v: HEARTBEAT_VERSION, service: role, updated_at: now };
+  return JSON.stringify(payload);
+}
+
+/**
+ * Parsează + VALIDEAZĂ FAIL-CLOSED payload-ul citit din Redis. Orice abatere → `null` (JSON invalid, ne-obiect,
+ * `v` necunoscut, `service` nepotrivit, `updated_at` ne-numeric/non-finit/≤0). Caller-ul mapează `null` la un
+ * heartbeat absent. NU aruncă (spre deosebire de writer) — un reader trebuie să supraviețuiască oricărei valori.
+ */
+export function parseHeartbeat(raw: string | null | undefined, expectedRole: ServiceRole): HeartbeatPayload | null {
+  if (raw == null) return null;
+  let obj: unknown;
+  try { obj = JSON.parse(raw); } catch { return null; }
+  if (typeof obj !== "object" || obj === null) return null;
+  const o = obj as Record<string, unknown>;
+  if (o.v !== HEARTBEAT_VERSION) return null;
+  if (o.service !== expectedRole) return null;
+  if (typeof o.updated_at !== "number" || !Number.isFinite(o.updated_at) || o.updated_at <= 0) return null;
+  return { v: HEARTBEAT_VERSION, service: expectedRole, updated_at: o.updated_at };
+}

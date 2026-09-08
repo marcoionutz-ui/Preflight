@@ -4,8 +4,10 @@
  * Clasificator PUR (frunză, zero I/O) peste semnalele deja citite din Redis. Wiring-ul Redis (`readHealthSignals`)
  * + ruta HTTP (`app/api/health/route.ts`) sunt separate.
  *
- * SCOPE (cgpt #6): acest health acoperă DOAR serviciul web `mcp` + worker-ul `evm`. NU verifică indexerele /
- * Solana — nu raportează implicit sănătatea întregului produs multichain. `scope` e expus în body + runbook.
+ * SCOPE (cgpt #6, extins 12.4): baza acoperă serviciul web `mcp` + worker-ul `evm`. Din 12.4, când sunt AȘTEPTATE
+ * explicit (flag), health-ul acoperă CONDIȚIONAL și `indexer-evm` / `solana-worker` prin heartbeat Redis — iar
+ * `scope` (expus în body + runbook) se EXTINDE ca să numească exact serviciile monitorizate. Fără servicii așteptate,
+ * `scope` rămâne `mcp-web + evm-worker` (byte-compat). NU raportează implicit tot produsul multichain: doar ce e în scope.
  *
  * SEMANTICA CODULUI HTTP:
  *   - `GET /api/health`          → ținta Railway healthcheck: 200 cât timp web + Redis sunt ok; worker/WS-stale =
@@ -19,7 +21,23 @@
  * healthy / disabled — nu doar subscripțiile cross-kind.
  */
 
-export const HEALTH_SCOPE = "mcp-web + evm-worker"; // NU indexer/Solana
+import {
+  foldServiceChecks,
+  monitoredServiceRoles,
+  type ServiceHeartbeatCheck,
+  type ServiceHealthSection,
+} from "./heartbeat";
+
+export const HEALTH_SCOPE = "mcp-web + evm-worker"; // scope de BAZĂ; 12.4 îl EXTINDE cu serviciile monitorizate
+
+/**
+ * Extinde scope-ul de bază cu serviciile REALMENTE monitorizate (indexer-evm / solana-worker când sunt așteptate).
+ * Fără secțiune de servicii (sau toate `disabled`) → scope-ul de bază neschimbat (byte-compat). PUR.
+ */
+function extendScope(base: string, section: ServiceHealthSection | undefined): string {
+  const roles = monitoredServiceRoles(section);
+  return roles.length ? `${base} + ${roles.join(" + ")}` : base;
+}
 export const HEALTH_WORKER_FRESH_SEC = 300;         // snapshot mai vechi pe un chain așteptat → stale
 export const HEALTH_WS_PONG_FRESH_SEC = 120;        // pong mai vechi (sau necunoscut) pe un socket „conectat" → suspect
 
@@ -92,6 +110,13 @@ export interface HealthSignals {
   expectedChains: string[];
   observedChains: string[];
   perChain:       PerChainHealth[];   // câte una per chain AȘTEPTAT
+  /**
+   * PH-12 12.4 — verdictele de heartbeat per serviciu (indexer-evm / solana-worker), deja clasificate de
+   * `readHealthSignals` (leaf 4) prin `classifyHeartbeat`. OPȚIONAL: caller-ii dinainte de 12.4 nu-l trimit →
+   * `computeLiveness` nu adaugă nimic (byte-compat). Când toate-s `disabled`, `foldServiceChecks` întoarce
+   * `undefined` → tot byte-compat (dublă siguranță).
+   */
+  services?:      ServiceHeartbeatCheck[];
 }
 
 export interface HealthCheck { ok: boolean; detail: string; }
@@ -100,7 +125,7 @@ export interface HealthReport {
   status:     HealthStatus;
   httpStatus: number;
   scope:      string;
-  checks:     { web: HealthCheck; redis: HealthCheck; worker: HealthCheck; ws: HealthCheck };
+  checks:     { web: HealthCheck; redis: HealthCheck; worker: HealthCheck; ws: HealthCheck; services?: HealthCheck };
   worstSnapshotAgeSec:  number | null;
   expectedChains:       string[];
   observedChains:       string[];
@@ -108,6 +133,11 @@ export interface HealthReport {
   wsStaleSubs:          string[];  // "chain:kind" suspected-stale (zombie subscription)
   wsUnavailableChains:  string[];  // wsState = disconnected (≠ zombie)
   wsUnknownChains:      string[];  // wsState = unknown (runtime lipsă/expirat)
+  /**
+   * PH-12 12.4 — starea per serviciu (indexer-evm / solana-worker). ABSENT (nu `[]`) când ambele-s explicit
+   * ne-așteptate → JSON byte-identic cu dinainte de 12.4. Prezent doar când ≥1 serviciu e așteptat.
+   */
+  services?:            ServiceHeartbeatCheck[];
 }
 
 export interface LivenessOpts { strict?: boolean; freshSec?: number; }
@@ -115,9 +145,14 @@ export interface LivenessOpts { strict?: boolean; freshSec?: number; }
 export function computeLiveness(sig: HealthSignals, opts: LivenessOpts = {}): HealthReport {
   const freshSec = opts.freshSec ?? HEALTH_WORKER_FRESH_SEC;
 
+  // Secțiunea de servicii (12.4): pliem verdictele deja clasificate. `undefined` când lipsesc / toate `disabled`
+  // → nu adăugăm nimic (byte-compat). Pe Redis-down serviciile așteptate vin `unavailable`; verdictul rămâne `down`.
+  const svc = sig.services ? foldServiceChecks(sig.services) : undefined;
+  const scope = extendScope(HEALTH_SCOPE, svc); // byte-compat: rămâne HEALTH_SCOPE când nu-s servicii monitorizate
+
   if (!sig.redisReachable) {
-    return {
-      status: "down", httpStatus: 503, scope: HEALTH_SCOPE,
+    const report: HealthReport = {
+      status: "down", httpStatus: 503, scope,
       checks: {
         web:    { ok: true,  detail: "web process responding" },
         redis:  { ok: false, detail: "redis unreachable" },
@@ -127,6 +162,8 @@ export function computeLiveness(sig: HealthSignals, opts: LivenessOpts = {}): He
       worstSnapshotAgeSec: null, expectedChains: sig.expectedChains, observedChains: sig.observedChains,
       staleChains: [], wsStaleSubs: [], wsUnavailableChains: [], wsUnknownChains: [],
     };
+    if (svc) { report.checks.services = svc.check as HealthCheck; report.services = svc.services; }
+    return report;
   }
 
   // Worker freshness pe chain-urile AȘTEPTATE (un chain fără snapshot = stale, nu sărit).
@@ -174,12 +211,17 @@ export function computeLiveness(sig: HealthSignals, opts: LivenessOpts = {}): He
         ? { ok: false, detail: `ws unhealthy on: ${wsProblemChains.join(", ")}` }
         : { ok: true, detail: `ws healthy on ${sig.expectedChains.join(", ")}` };
 
-  const degraded   = workerStale || wsProblem;
+  // 12.4: un serviciu așteptat `stale`/`missing` contribuie la `degraded` (nu 503 pe healthcheck-ul web decât în
+  // strict — aceeași politică: nu repornim un web sănătos pentru alt serviciu). `unavailable` NU ajunge aici (Redis-jos
+  // s-a întors deja `down` mai sus).
+  const svcDegraded = svc?.degraded ?? false;
+
+  const degraded   = workerStale || wsProblem || svcDegraded;
   const status: HealthStatus = degraded ? "degraded" : "ok";
   const httpStatus = status === "ok" ? 200 : (opts.strict ? 503 : 200);
 
-  return {
-    status, httpStatus, scope: HEALTH_SCOPE,
+  const report: HealthReport = {
+    status, httpStatus, scope,
     checks: {
       web:    { ok: true, detail: "web process responding" },
       redis:  { ok: true, detail: "redis reachable" },
@@ -191,4 +233,6 @@ export function computeLiveness(sig: HealthSignals, opts: LivenessOpts = {}): He
     observedChains: sig.observedChains,
     staleChains, wsStaleSubs, wsUnavailableChains, wsUnknownChains,
   };
+  if (svc) { report.checks.services = svc.check as HealthCheck; report.services = svc.services; }
+  return report;
 }
