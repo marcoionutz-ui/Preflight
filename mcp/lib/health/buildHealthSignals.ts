@@ -2,9 +2,11 @@
  * lib/health/buildHealthSignals.ts — PH-13 (asamblarea PURĂ a semnalelor de liveness din Redis).
  *
  * FRUNZĂ testabilă: Redis (client-like), cheile și primitivele WS D1c (`resolveWsRuntime`/`classifyWsSubs`) sunt
- * INJECTATE, iar tipurile grele (@preflight/schema, health-freshness) intră DOAR ca `import type` (erase la runtime),
- * ca testul să ruleze fără a atinge Redis/schema reale. Wiring-ul concret (client + chei + env) trăiește în
- * `readHealthSignals.ts`; clasificarea finală în `computeLiveness` (frunză pură).
+ * INJECTATE, iar tipurile grele din health-freshness intră DOAR ca `import type` (erase la runtime), ca testul să
+ * ruleze fără a atinge Redis-ul real. Din `@preflight/schema` importăm ȘI valoarea `SERVICE_ROLES` (o mică listă de
+ * roluri + tipul `ServiceRole`) — pachet pur, zero I/O, safe la runtime; clasificatorul de heartbeat rămâne pur în
+ * `./heartbeat`. Wiring-ul concret (client + chei + env) trăiește în `readHealthSignals.ts`; clasificarea finală în
+ * `computeLiveness` (frunză pură).
  *
  * EDGE (cgpt): dacă lista de chain-uri AȘTEPTATE e goală, `MGET(...[])` ar fi o comandă Redis fără chei (poate arunca)
  * și am raporta FALS `redis unreachable/down`. Contractul cere: lista goală → `redisReachable:true` (verificat cu un
@@ -12,6 +14,8 @@
  */
 import type { WsRuntimeRaw, WsSubMap, WsSubKind, WsRuntimeEntry } from "../mcp/health-freshness";
 import { deriveWsState, type HealthSignals, type PerChainHealth, type WsRuntimeView } from "./liveness";
+import { classifyHeartbeat, type ServiceHeartbeatCheck, type ServiceHeartbeatSignal } from "./heartbeat";
+import { SERVICE_ROLES, type ServiceRole } from "@preflight/schema";
 
 /** Subsetul de client Redis de care avem nevoie (ioredis îl satisface structural). */
 export interface HealthRedisLike {
@@ -34,6 +38,52 @@ export interface BuildHealthDeps {
   runtimeMaxAgeMs:  number;
   futureSkewMs:     number;
   pingTimeoutMs:    number;
+  // PH-12 12.4 leaf 4: liveness de SERVICIU (indexer-evm / solana). AȘTEPTAREA per rol (din env, `resolveServiceExpectations`)
+  // + cheia Redis (`serviceHeartbeatKey`) sunt INJECTATE, la fel ca restul (chei/chain-uri). Clasificatorul e pur (./heartbeat).
+  serviceExpectations: Record<ServiceRole, boolean>;
+  serviceHeartbeatKey: (role: ServiceRole) => string;
+}
+
+/**
+ * Clasifică AMBELE roluri de serviciu în `ServiceHeartbeatCheck[]` (ordine stabilă din `SERVICE_ROLES`). PUR.
+ * `reachable` = a reușit citirea cheilor de heartbeat (relevant DOAR pt. rolurile așteptate); `rawByRole` = valorile
+ * citite (sau null = cheie absentă/expirată). Un rol NE-așteptat → `disabled` (nu citim, nu penalizăm). Când toate-s
+ * `disabled`, `computeLiveness`/`foldServiceChecks` NU adaugă câmpul `services` → output byte-identic cu dinainte de 12.4.
+ */
+function classifyServices(
+  deps: BuildHealthDeps,
+  now: number,
+  reachable: boolean,
+  rawByRole: Map<ServiceRole, string | null> | null,
+): ServiceHeartbeatCheck[] {
+  return [...SERVICE_ROLES].map((role) => {
+    const expected = deps.serviceExpectations[role];
+    const sig: ServiceHeartbeatSignal = {
+      role,
+      expected,
+      redisReachable: expected ? reachable : true,          // irelevant când !expected
+      raw:            expected ? (rawByRole?.get(role) ?? null) : null,
+    };
+    return classifyHeartbeat(sig, now);
+  });
+}
+
+/**
+ * Citește heartbeat-urile rolurilor AȘTEPTATE (un MGET separat, doar pe cheile lor) și le clasifică. Dacă acel MGET
+ * eșuează DAR citirile de chain au reușit (Redis global sus), marcăm rolurile așteptate `unavailable` (necunoscut ≠ ok
+ * → `degraded`), NU „down" global. Fără rol așteptat → toate `disabled` fără vreo comandă Redis.
+ */
+async function readServiceHeartbeats(redis: HealthRedisLike, deps: BuildHealthDeps, now: number): Promise<ServiceHeartbeatCheck[]> {
+  const expectedRoles = [...SERVICE_ROLES].filter((r) => deps.serviceExpectations[r]);
+  if (expectedRoles.length === 0) return classifyServices(deps, now, true, null);
+  try {
+    const raws = await redis.mget(...expectedRoles.map(deps.serviceHeartbeatKey));
+    const rawByRole = new Map<ServiceRole, string | null>();
+    expectedRoles.forEach((r, i) => rawByRole.set(r, raws[i] ?? null));
+    return classifyServices(deps, now, true, rawByRole);
+  } catch {
+    return classifyServices(deps, now, false, null);
+  }
 }
 
 /** Promisiune cu deadline dur: dacă `p` nu se rezolvă în `ms`, respinge (PING bounded — nu atârnăm pe un Redis mort). */
@@ -66,15 +116,16 @@ function snapshotAge(raw: string | null, now: number): { ageSec: number | null; 
 
 export async function buildHealthSignals(deps: BuildHealthDeps): Promise<HealthSignals> {
   const { redis, chains, wsExpected, now } = deps;
-  if (!redis) return { redisReachable: false, wsExpected, expectedChains: chains, observedChains: [], perChain: [] };
+  if (!redis) return { redisReachable: false, wsExpected, expectedChains: chains, observedChains: [], perChain: [], services: classifyServices(deps, now, false, null) };
 
   // ── EDGE: nicio cheie de chain așteptat → NU rulăm MGET fără chei. Verificăm Redis cu PING bounded. ──
   if (chains.length === 0) {
     try {
       await withTimeout(redis.ping(), deps.pingTimeoutMs);
-      return { redisReachable: true, wsExpected, expectedChains: [], observedChains: [], perChain: [] };
+      // Chain-uri zero, DAR un serviciu poate fi așteptat → tot îl citim + raportăm (PING a dovedit Redis viu).
+      return { redisReachable: true, wsExpected, expectedChains: [], observedChains: [], perChain: [], services: await readServiceHeartbeats(redis, deps, now) };
     } catch {
-      return { redisReachable: false, wsExpected, expectedChains: [], observedChains: [], perChain: [] };
+      return { redisReachable: false, wsExpected, expectedChains: [], observedChains: [], perChain: [], services: classifyServices(deps, now, false, null) };
     }
   }
 
@@ -123,9 +174,9 @@ export async function buildHealthSignals(deps: BuildHealthDeps): Promise<HealthS
       });
     }
 
-    return { redisReachable: true, wsExpected, expectedChains: chains, observedChains, perChain };
+    return { redisReachable: true, wsExpected, expectedChains: chains, observedChains, perChain, services: await readServiceHeartbeats(redis, deps, now) };
   } catch {
     // Orice eroare Redis → fail-closed: inaccesibil → down/503.
-    return { redisReachable: false, wsExpected, expectedChains: chains, observedChains: [], perChain: [] };
+    return { redisReachable: false, wsExpected, expectedChains: chains, observedChains: [], perChain: [], services: classifyServices(deps, now, false, null) };
   }
 }
