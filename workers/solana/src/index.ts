@@ -45,6 +45,7 @@ import { fetchAmmV4Init } from "./discovery/ammV4Fetcher";
 import { isCpmmInitLog, fetchCpmmInit } from "./discovery/txFetcher";
 import { buildSolanaPool, writeSolanaPool, enrichPoolOnce } from "./discovery/pairWriter";
 import type { PreflightSolanaProgram } from "@preflight/schema";
+import { startServiceHeartbeat } from "@preflight/schema";
 import { runCpmmBackfill }          from "./discovery/backfillCpmm";
 import { handleClmmShadow, logClmmStats } from "./discovery/clmmShadow";
 import { handleSwapShadow, logSwapStats } from "./discovery/swapShadow";
@@ -494,6 +495,19 @@ async function main(): Promise<void> {
   const redis = getRedis();
   const pairsCount = await redis.zcard(KEY_PAIRS);
   console.log("[SOLANA] redis OK | indexed_pairs=" + pairsCount);
+
+  // ── PH-12 12.4 leaf 3: heartbeat de liveness de SERVICIU (proces viu) ───────────────────────────────
+  // 30s / TTL 300s prin primitiva PARTAJATĂ. INDEPENDENT de WS/discovery (programFreshness acoperă progresul).
+  // `redis` e non-null aici (getRedis aruncă fără URL). Fără shutdown graceful → intervalul moare cu procesul.
+  startServiceHeartbeat({
+    role:           "solana-worker",
+    writeHeartbeat: (w) => redis.set(w.key, w.value, "EX", w.ttlSec),
+    now:            () => Date.now(),
+    setInterval:    (fn, ms) => setInterval(fn, ms),
+    clearInterval:  (h) => clearInterval(h),
+    onError:        (e) => console.error("[SOLANA][HEARTBEAT]", e instanceof Error ? e.message : String(e)),
+  });
+
 
   let nodeVersion = "unknown";
   try {

@@ -30,6 +30,8 @@ import {
   getTotalPairsCount, getFreshPairs24h, repriceRecentPairs, drainEnrichQueue, repairEnrichQueue,
 } from "./discovery/pairRegistry";
 import { intEnv } from "./config/env";
+import { getRedis } from "./infra/redis";
+import { startServiceHeartbeat } from "@preflight/schema";
 
 const INDEXER_VERSION  = "0.2.0";
 const LOOP_INTERVAL_MS = 10_000;
@@ -314,6 +316,25 @@ async function mainLoop(): Promise<void> {
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// ── PH-12 12.4 leaf 3: heartbeat de liveness de SERVICIU (proces viu) ───────────────────────────────────
+// Scrie „proces viu" în Redis la fiecare 30s (TTL 300s) prin primitiva PARTAJATĂ `startServiceHeartbeat` — reader-ul
+// (mcp health) îl clasifică ok/stale/missing. INDEPENDENT de sync: un RPC blocat NU falsifică liveness-ul procesului
+// (health-ul per-chain, TTL 60s, acoperă progresul indexării). `getRedis()` null (REDIS_URL absent) → NU pornim (nu
+// putem scrie; reader-ul vede corect `missing`). Fără shutdown graceful aici → intervalul moare odată cu procesul.
+const heartbeatRedis = getRedis();
+if (heartbeatRedis) {
+  startServiceHeartbeat({
+    role:           "indexer-evm",
+    writeHeartbeat: (w) => heartbeatRedis.set(w.key, w.value, "EX", w.ttlSec),
+    now:            () => Date.now(),
+    setInterval:    (fn, ms) => setInterval(fn, ms),
+    clearInterval:  (h) => clearInterval(h),
+    onError:        (e) => console.error("[INDEXER][HEARTBEAT]", e instanceof Error ? e.message : String(e)),
+  });
+} else {
+  console.warn("[INDEXER][HEARTBEAT] REDIS_URL absent — heartbeat de serviciu dezactivat");
 }
 
 mainLoop().catch(err => {

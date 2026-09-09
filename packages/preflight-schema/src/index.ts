@@ -1592,3 +1592,66 @@ export function parseHeartbeat(raw: string | null | undefined, expectedRole: Ser
 export function serviceHeartbeatKey(role: ServiceRole): string {
   return `preflight:service_heartbeat:${role}`;
 }
+// ── PH-12 12.4 leaf 3: PRIMITIVA de PUBLISHER (partajată indexer-evm ↔ solana; pură, dependency-injected) ─────────
+// Compune cele 3 primitive deja acoperite (cheie + serializare + TTL) într-o singură scriere. Publisherul face
+// `SET write.key write.value EX write.ttlSec`. Trăiește AICI (nu în workeri) ca AMBII publisheri să scrie IDENTIC —
+// altfel unul ar putea folosi alt TTL / altă cheie și reader-ul (leaf 4) ar vedea drift.
+export interface HeartbeatWrite {
+  key:    string;
+  value:  string;
+  ttlSec: number;
+}
+export function buildHeartbeatWrite(role: ServiceRole, now: number): HeartbeatWrite {
+  // `serializeHeartbeat` e fail-loud pe `now` nesincer (NaN/±Inf/≤0) → o scriere invalidă nu ajunge NICIODATĂ în Redis.
+  return { key: serviceHeartbeatKey(role), value: serializeHeartbeat(role, now), ttlSec: HEARTBEAT_TTL_SEC };
+}
+
+// Deps INJECTATE (zero I/O real aici) → `startServiceHeartbeat` e pur/tsx-testabil, iar ambii workeri îl cablează cu
+// clientul lor real de Redis + `setInterval`-ul global. `writeHeartbeat` face SET-ul; erorile de Redis NU au voie să
+// urce din interval (un blip de Redis nu dărâmă workerul) → sunt rutate la `onError`.
+// Generic pe `THandle` = tipul handle-ului de timer, ca `setInterval`/`clearInterval` GLOBALE (Node: `NodeJS.Timeout`)
+// să se paseze DIRECT, fără cast/adaptor la call-site (blocker cgpt). `writeHeartbeat` întoarce `PromiseLike<unknown>`
+// fiindcă `ioredis.set()` dă `Promise<"OK">` (nu `Promise<void>`) — publisherii pasează `redis.set` fără wrapper.
+export interface HeartbeatPublisherDeps<THandle> {
+  role:           ServiceRole;
+  writeHeartbeat: (w: HeartbeatWrite) => void | PromiseLike<unknown>; // publisher: SET <key> <value> EX <ttlSec>
+  now:            () => number;                                       // Date.now injectat (determinism în test)
+  setInterval:    (fn: () => void, ms: number) => THandle;            // handle real de timer (nu opac → fără cast la clear)
+  clearInterval:  (handle: THandle) => void;
+  onError?:       (err: unknown) => void;                             // blip de Redis / clock stricat → aici, NU throw
+  intervalSec?:   number;                                             // default HEARTBEAT_INTERVAL_SEC (30s ≪ TTL 300s)
+}
+
+/**
+ * Pornește heartbeat-ul de serviciu: scrie IMEDIAT o dată (cheia există din prima, fără fereastră de `missing` la boot),
+ * apoi la fiecare `intervalSec` (default 30s). Fiindcă intervalul (30s) ≪ TTL (300s), un beat pierdut nu expiră cheia —
+ * reader-ul vede `stale` înainte de `missing`. Întoarce `stop()` idempotent (clear al intervalului). PUR (deps injectate).
+ * Orice eroare din `buildHeartbeatWrite` (clock stricat) sau din `writeHeartbeat` (Redis jos) → `onError`, NICIODATĂ throw
+ * din tick (altfel un `setInterval` cu callback care aruncă ar putea dărâma procesul / opri cadența).
+ */
+export function startServiceHeartbeat<THandle>(deps: HeartbeatPublisherDeps<THandle>): () => void {
+  const intervalSec = deps.intervalSec ?? HEARTBEAT_INTERVAL_SEC;
+
+  const beat = (): void => {
+    try {
+      const w = buildHeartbeatWrite(deps.role, deps.now());
+      const r = deps.writeHeartbeat(w);
+      // writeHeartbeat poate fi async (redis.set întoarce Promise) → prinde rejection-ul ca să nu devină unhandled.
+      if (r && typeof (r as PromiseLike<unknown>).then === "function") {
+        (r as PromiseLike<unknown>).then(undefined, (e) => deps.onError?.(e));
+      }
+    } catch (e) {
+      deps.onError?.(e);
+    }
+  };
+
+  beat(); // scriere imediată la pornire
+  const handle = deps.setInterval(beat, intervalSec * 1000);
+
+  let stopped = false;
+  return () => {
+    if (stopped) return;
+    stopped = true;
+    deps.clearInterval(handle);
+  };
+}
