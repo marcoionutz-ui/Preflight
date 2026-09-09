@@ -27,13 +27,17 @@ function devEnv(over: EnvSnapshot = {}): EnvSnapshot {
   };
 }
 
-/** Env MINIM valid de runtime pentru prod (PUBLIC_BASE_URL obligatoriu + https). */
+/** Env MINIM valid de runtime pentru prod (PUBLIC_BASE_URL obligatoriu + https; 12.4 leaf 2: HEALTH_EXPECT_* obligatorii 0/1). */
 function prodEnv(over: EnvSnapshot = {}): EnvSnapshot {
   return {
     NODE_ENV: "production",
     SUPABASE_SERVICE_ROLE_KEY: "service-role-456",
     REDIS_URL: "rediss://redis.internal:6379",
     PUBLIC_BASE_URL: "https://preflight.jackspools.lol",
+    // 12.4 leaf 2: producția TREBUIE să declare explicit așteptarea fiecărui serviciu (0/1). Fixture-ul reflectă
+    // realitatea „servicii parcate pre-launch": ambele declarate, ambele OFF (health rămâne onest „nu aștept nimic").
+    HEALTH_EXPECT_INDEXER_EVM: "0",
+    HEALTH_EXPECT_SOLANA_WORKER: "0",
     ...over,
   };
 }
@@ -159,11 +163,14 @@ check("24. ⭐ formatEnvValidation(fail) listează câmpul lipsă", (() => {
   const s = formatEnvValidation(validateMcpEnv(devEnv({ REDIS_URL: undefined })));
   return /FAIL/.test(s) && /REDIS_URL/.test(s);
 })());
-check("25. ⭐ catalog runtime: 3 bază + 7 inventar (12.2e-2) + 2 chain-list (12.2c-mcp) = 12 câmpuri (NEXT_PUBLIC_* mutate în build-env)", MCP_ENV_FIELDS.length === 12);
-check("26. ⭐⭐ exact 1 câmp e prod-only (PUBLIC_BASE_URL); 2 required mereu (service-role + REDIS_URL); restul opționale", (() => {
+check("25. ⭐ catalog runtime: 3 bază + 7 inventar (12.2e-2) + 2 chain-list (12.2c-mcp) + 2 HEALTH_EXPECT_* (12.4 leaf 2) = 14 câmpuri (NEXT_PUBLIC_* mutate în build-env)", MCP_ENV_FIELDS.length === 14);
+check("26. ⭐⭐ 3 câmpuri prod-only (PUBLIC_BASE_URL + 2 HEALTH_EXPECT_*); 2 required mereu (service-role + REDIS_URL); restul opționale", (() => {
   const prodOnly = MCP_ENV_FIELDS.filter((f) => f.required(true) && !f.required(false));
   const always   = MCP_ENV_FIELDS.filter((f) => f.required(true) && f.required(false));
-  return prodOnly.length === 1 && prodOnly[0].name === "PUBLIC_BASE_URL" && always.length === 2;
+  const prodOnlyNames = prodOnly.map((f) => f.name).sort();
+  return prodOnly.length === 3
+    && JSON.stringify(prodOnlyNames) === JSON.stringify(["HEALTH_EXPECT_INDEXER_EVM", "HEALTH_EXPECT_SOLANA_WORKER", "PUBLIC_BASE_URL"])
+    && always.length === 2;
 })());
 
 // ── 12.2e-2 inventar: securitate must-be-OFF-in-prod (forbid) ──────────────────────
@@ -283,6 +290,47 @@ check("52. ⭐⭐⭐ warning-ul de selecție goală NU ecouă valoarea brută (a
 check("53. ⭐⭐ selecție goală NU regresează required: env cu REDIS_URL lipsă + override gol → ok:false (problem) + warning coexistă", (() => {
   const v = validateMcpEnv(devEnv({ REDIS_URL: undefined, HEALTH_EXPECTED_CHAINS: "" }));
   return v.ok === false && v.problems.some((p) => p.name === "REDIS_URL") && warningNames(v).includes("HEALTH_EXPECTED_CHAINS");
+})());
+
+// ── PH-12 12.4 leaf 2: HEALTH_EXPECT_* (așteptare liveness per serviciu) — obligatoriu declarate 0/1 în PROD ─────────
+console.log("--- 12.4 leaf 2: HEALTH_EXPECT_INDEXER_EVM / HEALTH_EXPECT_SOLANA_WORKER ---");
+for (const flag of ["HEALTH_EXPECT_INDEXER_EVM", "HEALTH_EXPECT_SOLANA_WORKER"]) {
+  check(`54.${flag} ⭐⭐⭐ lipsă în PROD → problem missing (declarație obligatorie, fail-closed)`, (() => {
+    const v = validateMcpEnv(prodEnv({ [flag]: undefined }));
+    return v.ok === false && v.problems.some((p) => p.name === flag && p.kind === "missing");
+  })());
+  check(`55.${flag} ⭐⭐ '1' și '0' valide în prod → ok`, (() => {
+    return validateMcpEnv(prodEnv({ [flag]: "1" })).ok === true && validateMcpEnv(prodEnv({ [flag]: "0" })).ok === true;
+  })());
+  check(`56.${flag} ⭐⭐⭐ 'true'/gunoi în prod → problem invalid (NU cade tăcut pe „nu-i 1"=off)`, (() => {
+    const v = validateMcpEnv(prodEnv({ [flag]: "true" }));
+    return v.ok === false && v.problems.some((p) => p.name === flag && p.kind === "invalid");
+  })());
+  check(`57.${flag} ⭐⭐ '1 ' cu spațiu în prod → problem invalid (byte-exact, oglindește runtime)`, (() => {
+    const v = validateMcpEnv(prodEnv({ [flag]: "1 " }));
+    return v.ok === false && v.problems.some((p) => p.name === flag && p.kind === "invalid");
+  })());
+  check(`58.${flag} ⭐ absent în DEV → ok (nu penalizăm ce nu rulează local)`, (() => {
+    return validateMcpEnv(devEnv({ [flag]: undefined })).ok === true;
+  })());
+  check(`59.${flag} ⭐⭐ prezent malformat în DEV → warning (nu crapă), ok rămâne true`, (() => {
+    const v = validateMcpEnv(devEnv({ [flag]: "true" }));
+    return v.ok === true && warningNames(v).includes(flag);
+  })());
+}
+check("60. ⭐⭐⭐ ambele HEALTH_EXPECT_* lipsă în prod → 2 probleme missing distincte (colectare, nu short-circuit)", (() => {
+  const v = validateMcpEnv(prodEnv({ HEALTH_EXPECT_INDEXER_EVM: undefined, HEALTH_EXPECT_SOLANA_WORKER: undefined }));
+  return v.ok === false
+    && v.problems.some((p) => p.name === "HEALTH_EXPECT_INDEXER_EVM" && p.kind === "missing")
+    && v.problems.some((p) => p.name === "HEALTH_EXPECT_SOLANA_WORKER" && p.kind === "missing");
+})());
+check("61. ⭐ format fail NU ecouă valoarea flag-ului (anti-leak), dar numește câmpul", (() => {
+  const s = formatEnvValidation(validateMcpEnv(prodEnv({ HEALTH_EXPECT_INDEXER_EVM: "sekret-typo" })));
+  return /HEALTH_EXPECT_INDEXER_EVM/.test(s) && !/sekret-typo/.test(s);
+})());
+check("62. ⭐⭐ ambele flag-uri sunt PREZENTE în catalogul MCP_ENV_FIELDS (nu doar în test)", (() => {
+  const names = MCP_ENV_FIELDS.map((f) => f.name);
+  return names.includes("HEALTH_EXPECT_INDEXER_EVM") && names.includes("HEALTH_EXPECT_SOLANA_WORKER");
 })());
 
 // ── BUILD-env: NEXT_PUBLIC_* (înghețate la `next build`) — validateBuildEnv din buildEnvCheck (blocker cgpt P1) ──────

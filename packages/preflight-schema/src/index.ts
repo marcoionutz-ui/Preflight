@@ -1529,8 +1529,9 @@ export const SCHEMA_VERSION = "preflight-schema-v2";  // B5: bump — schema per
 // Formatul PE SÂRMĂ al heartbeat-ului de serviciu trăiește AICI (pachet partajat), NU în `mcp/` — altfel
 // publisherii (workers/indexer-evm, workers/solana) nu l-ar putea importa și writer-ul ar diverge de reader (drift).
 // Publisherii scriu prin `serializeHeartbeat`; reader-ul (mcp/lib/health) validează prin `parseHeartbeat`.
-// Cheia Redis (`serviceHeartbeat(role)`) + flag-urile de env (`HEALTH_EXPECT_*`) se adaugă în leaf 2; clasificatorul
-// (stări/praguri) rămâne în mcp (doar reader-ul clasifică). Roluri TIPIZATE (nu string arbitrar).
+// Cheia Redis (`serviceHeartbeatKey(role)`, mai jos — leaf 2) e tot AICI (partajată writer↔reader). Flag-urile de env
+// (`HEALTH_EXPECT_*`) sunt POLITICĂ de reader → trăiesc în mcp (`lib/health/heartbeat.ts` + `envSchema.ts`), nu în schema.
+// Clasificatorul (stări/praguri de reader) rămâne în mcp (doar reader-ul clasifică). Roluri TIPIZATE (nu string arbitrar).
 export type ServiceRole = "indexer-evm" | "solana-worker";
 export const SERVICE_ROLES = ["indexer-evm", "solana-worker"] as const satisfies readonly ServiceRole[];
 
@@ -1576,4 +1577,18 @@ export function parseHeartbeat(raw: string | null | undefined, expectedRole: Ser
   if (o.service !== expectedRole) return null;
   if (typeof o.updated_at !== "number" || !Number.isFinite(o.updated_at) || o.updated_at <= 0) return null;
   return { v: HEARTBEAT_VERSION, service: expectedRole, updated_at: o.updated_at };
+}
+
+/**
+ * Cheia Redis a heartbeat-ului de serviciu — CONTRACT PARTAJAT writer↔reader (leaf 2). Publisherii (indexer-evm /
+ * solana, leaf 3) scriu AICI prin `SET <key> <serializeHeartbeat(...)> EX ${HEARTBEAT_TTL_SEC}`; reader-ul (mcp/lib/health,
+ * leaf 4) o citește. Trăiește în schema (nu în mcp) din ACELAȘI motiv ca serialize/parse: altfel writer-ul și reader-ul
+ * ar deriva cheia independent și ar putea diverge (drift tăcut → reader citește o cheie pe care nimeni n-o scrie).
+ *
+ * Prefix `preflight:` — plan de DATE partajat worker→mcp, exact ca `preflight:agent_watch_*` din REDIS_KEYS; NU `mcp:`
+ * (acela e spațiul INTERN al serverului MCP: oauth/quota/refresh, scris și citit doar de mcp). `role` e deja o uniune
+ * constrânsă (`ServiceRole`), nu string arbitrar → fără normalizare; o cheie stabilă per rol, fără coliziune între roluri.
+ */
+export function serviceHeartbeatKey(role: ServiceRole): string {
+  return `preflight:service_heartbeat:${role}`;
 }

@@ -7,7 +7,7 @@
  * independent de mcp — ca leaf 3 (publisher) să se sprijine pe cod deja acoperit, fără să dubleze `30/300`.
  */
 import {
-  serializeHeartbeat, parseHeartbeat, SERVICE_ROLES, HEARTBEAT_VERSION,
+  serializeHeartbeat, parseHeartbeat, serviceHeartbeatKey, SERVICE_ROLES, HEARTBEAT_VERSION,
   HEARTBEAT_INTERVAL_SEC, HEARTBEAT_TTL_SEC,
   type ServiceRole,
 } from "../src/index";
@@ -60,6 +60,17 @@ check("20. parse: non-obiect (array) → null", parseHeartbeat("[]", "indexer-ev
 
 const roles: ServiceRole[] = [...SERVICE_ROLES];
 check("21. tip ServiceRole uzabil (compile + runtime)", roles.length === 2);
+
+// ── cheia Redis PARTAJATĂ writer↔reader (leaf 2) ───────────────────────────────
+check("22. ⭐ serviceHeartbeatKey('indexer-evm') === 'preflight:service_heartbeat:indexer-evm'",
+  serviceHeartbeatKey("indexer-evm") === "preflight:service_heartbeat:indexer-evm");
+check("23. ⭐ serviceHeartbeatKey('solana-worker') === 'preflight:service_heartbeat:solana-worker'",
+  serviceHeartbeatKey("solana-worker") === "preflight:service_heartbeat:solana-worker");
+check("24. ⭐⭐ chei DISTINCTE per rol (fără coliziune)", serviceHeartbeatKey("indexer-evm") !== serviceHeartbeatKey("solana-worker"));
+check("25. prefix `preflight:` (plan de date partajat, NU `mcp:` intern)",
+  SERVICE_ROLES.every(r => serviceHeartbeatKey(r).startsWith("preflight:service_heartbeat:")));
+check("26. ⭐ toate rolurile → chei unice (set size === roluri)",
+  new Set(SERVICE_ROLES.map(serviceHeartbeatKey)).size === SERVICE_ROLES.length);
 
 console.log("\n" + passed + " passed, " + failed + " failed");
 if (failed > 0) process.exit(1);

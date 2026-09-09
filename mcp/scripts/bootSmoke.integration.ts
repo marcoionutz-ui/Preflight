@@ -15,8 +15,9 @@
  * IZOLARE de `.env*` (blocker cgpt P1 „mascat de .env.local"): Next încarcă `.env`/`.env.local`/`.env.<NODE_ENV>` prin
  * `@next/env`, DAR nu suprascrie variabilele deja prezente în `process.env`. Deci NU ne bazăm pe ABSENȚA unei variabile
  * (pe care `.env.local` a lui Marco ar completa-o și ar MASCA testul); setăm explicit o valoare INVALIDĂ (precedența
- * `process.env` câștigă) și PINN-uim cele 6 variabile care pot flip-ui ok↔fail: 3 required (`REDIS_URL`,
- * `SUPABASE_SERVICE_ROLE_KEY`, `PUBLIC_BASE_URL`) + 3 forbid-in-prod (`MCP_DEV_AUTH_BYPASS`, `QUOTA_INTEGRATION_ALLOW`,
+ * `process.env` câștigă) și PINN-uim cele 8 variabile care pot flip-ui ok↔fail: 5 required (`REDIS_URL`,
+ * `SUPABASE_SERVICE_ROLE_KEY`, `PUBLIC_BASE_URL`, `HEALTH_EXPECT_INDEXER_EVM`, `HEALTH_EXPECT_SOLANA_WORKER` — ultimele
+ * două obligatorii-în-prod din 12.4 leaf 2) + 3 forbid-in-prod (`MCP_DEV_AUTH_BYPASS`, `QUOTA_INTEGRATION_ALLOW`,
  * `PH4_INTEGRATION_ALLOW` = "0"). Opționalele rămase produc doar warnings (non-fatale) → nu schimbă verdictul boot.
  *
  * OPT-IN (`.integration.ts`, nu `.test.ts` → nu-l cere gate-14; nu intră în lanțul `test` per-commit): rulează greu
@@ -50,8 +51,10 @@ const nextBin = resolveBin("next");
 const FORBID_OFF = { MCP_DEV_AUTH_BYPASS: "0", QUOTA_INTEGRATION_ALLOW: "0", PH4_INTEGRATION_ALLOW: "0" };
 // NEXT_PUBLIC_* valide (înghețate în bundle la build valid).
 const VALID_PUBLIC = { NEXT_PUBLIC_SUPABASE_URL: "https://proj.supabase.co", NEXT_PUBLIC_SUPABASE_ANON_KEY: "anon-key-123" };
-// Env server VALID de runtime (format-only; niciun backend chemat de register). Cele 3 required pinn-uite.
-const VALID_RUNTIME = { SUPABASE_SERVICE_ROLE_KEY: "service-role-456", REDIS_URL: "redis://127.0.0.1:6379", PUBLIC_BASE_URL: "https://preflight.jackspools.lol", ...FORBID_OFF };
+// Env server VALID de runtime (format-only; niciun backend chemat de register). Cele 5 required pinn-uite
+// (12.4 leaf 2: HEALTH_EXPECT_* sunt obligatorii în prod → declarate "0" ca scenariul VALID chiar să pornească, altfel
+// boot-guard-ul ar ieși non-zero pe „required lipsă" și D1/D3 ar pica pe motivul greșit).
+const VALID_RUNTIME = { SUPABASE_SERVICE_ROLE_KEY: "service-role-456", REDIS_URL: "redis://127.0.0.1:6379", PUBLIC_BASE_URL: "https://preflight.jackspools.lol", HEALTH_EXPECT_INDEXER_EVM: "0", HEALTH_EXPECT_SOLANA_WORKER: "0", ...FORBID_OFF };
 
 interface RunResult { status: number | null; signal: string | null; out: string; }
 
@@ -139,7 +142,9 @@ check("B3. ⭐⭐ build valid → marker build-guard OK", /\[BUILD\]\[mcp\] NEXT
 // NOTĂ Next: `next start` LEAGĂ portul ÎNAINTE ca `process.exit(1)` din register să se producă, deci un „nu a ascultat
 // NICIODATĂ" ar fi fals. Dovada guard-ului e alta: procesul IESE non-zero (C1 — nimic altceva nu iese pe un REDIS_URL
 // invalid; app-ul ar servi și ar eșua per-request) ȘI serverul NU RĂMÂNE ascultând după ce moare (C2).
-const badEnv = { NODE_ENV: "production", ...VALID_PUBLIC, SUPABASE_SERVICE_ROLE_KEY: "service-role-456", PUBLIC_BASE_URL: "https://preflight.jackspools.lol", REDIS_URL: "not-a-redis-url", ...FORBID_OFF };
+// Refolosim VALID_RUNTIME (toate obligatoriile valide, inclusiv HEALTH_EXPECT_*="0") și stricăm DOAR REDIS_URL — așa
+// singurul motiv de eșec e redis-ul (izolare: scenariul nu pică incidental pe alt required lipsă, ex. HEALTH_EXPECT_*).
+const badEnv = { NODE_ENV: "production", ...VALID_PUBLIC, ...VALID_RUNTIME, REDIS_URL: "not-a-redis-url" };
 const badStart = startNext(badEnv, portInvalid);
 // deadline INTERN (nit cgpt): dacă nu moare singur, îl omorâm noi — diagnosticul nu depinde de `timeout` din shell.
 const INVALID_DEADLINE_MS = 25_000;

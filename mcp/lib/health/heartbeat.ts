@@ -19,13 +19,13 @@
  *  · BYTE-COMPAT: `foldServiceChecks` întoarce `undefined` când toate-s `disabled` ⇒ `computeLiveness` nu adaugă
  *    niciun câmp `services`/`checks.services` ⇒ output byte-identic cu dinainte de 12.4.
  */
-import { parseHeartbeat, HEARTBEAT_TTL_SEC, type ServiceRole } from "@preflight/schema";
+import { parseHeartbeat, HEARTBEAT_TTL_SEC, SERVICE_ROLES, type ServiceRole } from "@preflight/schema";
 
 export type { ServiceRole } from "@preflight/schema";
-// Contract PE SÂRMĂ + praguri de PROTOCOL trăiesc în @preflight/schema (partajate cu publisherii worker); re-exportate
-// aici pt. conveniența consumatorilor de health (un singur punct de import pentru reader).
+// Contract PE SÂRMĂ + praguri de PROTOCOL + cheia Redis trăiesc în @preflight/schema (partajate cu publisherii worker);
+// re-exportate aici pt. conveniența consumatorilor de health (un singur punct de import pentru reader).
 export {
-  SERVICE_ROLES, serializeHeartbeat, parseHeartbeat, HEARTBEAT_VERSION,
+  SERVICE_ROLES, serializeHeartbeat, parseHeartbeat, serviceHeartbeatKey, HEARTBEAT_VERSION,
   HEARTBEAT_INTERVAL_SEC, HEARTBEAT_TTL_SEC, type HeartbeatPayload,
 } from "@preflight/schema";
 
@@ -37,10 +37,35 @@ export type ServiceHeartbeatState = "disabled" | "ok" | "stale" | "missing" | "u
 export const HEALTH_HEARTBEAT_FRESH_SEC       = 90;  // age ≤ 90s → ok. 3× interval ⇒ un beat pierdut nu flappează
 export const HEALTH_HEARTBEAT_FUTURE_SKEW_SEC = 30;  // toleranță de ceas; peste ea (viitor) → missing (fail-closed)
 
+// ── Leaf 2: maparea rol → flag env de AȘTEPTARE (politică de READER; sursă UNICĂ pt. envSchema + runtime) ──────
+// Un serviciu e „așteptat" DOAR când flag-ul lui e explicit „1". În producție `envSchema` cere DECLARAȚIE explicită
+// (0/1, obligatoriu) — altfel un serviciu real căzut, cu flag absent, ar aluneca tăcut în `disabled` (fals „ok"):
+// fail-OPEN, exact clasa pe care 12.4 o elimină. Numele câmpurilor sunt derivate DIN `SERVICE_ROLES` (un rol nou →
+// flag nou automat, fără drift între validator și runtime). `envSchema` importă ACEST map pentru specs-uri.
+export const HEALTH_EXPECT_ENV = {
+  "indexer-evm":   "HEALTH_EXPECT_INDEXER_EVM",
+  "solana-worker": "HEALTH_EXPECT_SOLANA_WORKER",
+} as const satisfies Record<ServiceRole, string>;
+
+/**
+ * Rezolvă AȘTEPTAREA per rol din env (PUR; snapshot injectat, zero I/O). `expected` DOAR pe „1" BYTE-EXACT (fără
+ * trim/lowercase) — OGLINDEȘTE `strictZeroOne` din envSchema, ca validatorul de boot și runtime-ul să vadă IDENTIC
+ * (un „ 1 " cu spații, pe care validatorul îl respinge, NU trebuie să treacă aici drept ON). Orice altceva — absent,
+ * „0", „true", gunoi — → `false` = `disabled`. În prod envSchema a garantat deja „0"/„1"; în dev un flag absent →
+ * serviciu ne-așteptat (default sigur: nu penalizăm ce nu rulează local). Feed pt. `ServiceHeartbeatSignal.expected` (leaf 4).
+ */
+export function resolveServiceExpectations(env: Record<string, string | undefined>): Record<ServiceRole, boolean> {
+  const out = {} as Record<ServiceRole, boolean>;
+  for (const role of SERVICE_ROLES) {
+    out[role] = env[HEALTH_EXPECT_ENV[role]] === "1";
+  }
+  return out;
+}
+
 // ── Semnalul brut per serviciu (produs de readHealthSignals, leaf 4) ──────────
 export interface ServiceHeartbeatSignal {
   role:           ServiceRole;
-  expected:       boolean;        // din flag-ul env (leaf 2). false → `disabled`
+  expected:       boolean;        // din `resolveServiceExpectations` (flag env, leaf 2). false → `disabled`
   redisReachable: boolean;        // citirea cheii ACESTUI serviciu a reușit? false → `unavailable` (NU citim `raw`)
   raw:            string | null;  // valoarea cheii din Redis; null = cheie lipsă/expirată (→ missing)
 }

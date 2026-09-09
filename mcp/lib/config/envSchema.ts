@@ -37,8 +37,9 @@ import {
   type EnvValidation,
   type EnvWarning,
 } from "@preflight/config-env";
-import { PREFLIGHT_EVM_CHAINS, normalizeChainId } from "@preflight/schema";
+import { PREFLIGHT_EVM_CHAINS, normalizeChainId, SERVICE_ROLES } from "@preflight/schema";
 import { parseExpectedChains } from "../health/liveness";
+import { HEALTH_EXPECT_ENV } from "../health/heartbeat";
 import { resolvePublicBaseUrl } from "../oauth/baseUrl";
 
 // Re-export pentru consumatorii care importau aceste tipuri/funcții din envSchema (compat + un singur punct de intrare MCP).
@@ -108,6 +109,18 @@ export const MCP_ENV_FIELDS: readonly FieldSpec[] = [
   // ?? default) prin `parseExpectedChains` cu ACELAȘI vocabular. Token de chain necunoscut → warning (dropat tăcut la runtime).
   { name: "HEALTH_EXPECTED_CHAINS", required: () => false, validate: csvKnownTokens("HEALTH_EXPECTED_CHAINS", PREFLIGHT_EVM_CHAINS, normalizeChainId) },
   { name: "ENABLED_CHAINS",         required: () => false, validate: csvKnownTokens("ENABLED_CHAINS", PREFLIGHT_EVM_CHAINS, normalizeChainId) },
+
+  // ── PH-12 12.4 leaf 2: AȘTEPTAREA de liveness per serviciu — OBLIGATORIU DECLARATĂ în PROD (0/1) ──
+  // Reader-ul (`resolveServiceExpectations`) tratează „așteptat" DOAR pe „1"; un serviciu real căzut fără flag ar aluneca
+  // tăcut în `disabled` (fals „ok") = fail-OPEN. Deci `required:(prod)=>prod` + `strictZeroOne`: absent în prod → problem
+  // `missing` (boot crapă loud, spune EXACT ce flag lipsește); typo/`true`/gunoi în prod → problem `invalid` (nu cade tăcut
+  // pe „nu-i 1" = off). În dev: absent → ok (nu penalizăm ce nu rulează local), prezent malformat → warning. Numele vin din
+  // `HEALTH_EXPECT_ENV` (sursă UNICĂ cu runtime-ul), generate din `SERVICE_ROLES` → un rol nou primește câmpul automat.
+  ...SERVICE_ROLES.map((role): FieldSpec => ({
+    name: HEALTH_EXPECT_ENV[role],
+    required: (prod: boolean) => prod,
+    validate: strictZeroOne(HEALTH_EXPECT_ENV[role]),
+  })),
 ] as const;
 
 /**

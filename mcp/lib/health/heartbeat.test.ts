@@ -9,6 +9,7 @@
  */
 import {
   serializeHeartbeat, parseHeartbeat, classifyHeartbeat, foldServiceChecks,
+  serviceHeartbeatKey, resolveServiceExpectations, HEALTH_EXPECT_ENV,
   HEALTH_HEARTBEAT_FRESH_SEC, HEARTBEAT_TTL_SEC, HEARTBEAT_INTERVAL_SEC,
   HEALTH_HEARTBEAT_FUTURE_SKEW_SEC, SERVICE_ROLES,
   type ServiceRole, type ServiceHeartbeatSignal, type ServiceHeartbeatCheck,
@@ -153,6 +154,31 @@ check("41. ⭐⭐⭐ Redis jos → status=down/503, services PREZENT & unavailab
 const downNoSvc = JSON.stringify(computeLiveness(baseSig({ redisReachable: false })));
 const downBothOff = JSON.stringify(computeLiveness(baseSig({ redisReachable: false, services: bothDisabled })));
 check("42. ⭐ BYTE-COMPAT pe Redis-down: fără services === ambele disabled", downNoSvc === downBothOff && !/"services"/.test(downBothOff));
+
+// ── leaf 2: cheia Redis (re-export din schema) + rezolvarea AȘTEPTĂRII din env ─────────────────────────────────
+check("43. cheia Redis re-exportată din schema: serviceHeartbeatKey('indexer-evm') corectă",
+  serviceHeartbeatKey("indexer-evm") === "preflight:service_heartbeat:indexer-evm");
+check("44. ⭐ HEALTH_EXPECT_ENV mapează exact cele 2 roluri la numele de flag",
+  HEALTH_EXPECT_ENV["indexer-evm"] === "HEALTH_EXPECT_INDEXER_EVM" && HEALTH_EXPECT_ENV["solana-worker"] === "HEALTH_EXPECT_SOLANA_WORKER");
+check("45. ⭐⭐ expected DOAR pe '1': {INDEXER=1, SOLANA=0} → indexer true, solana false",
+  (() => { const e = resolveServiceExpectations({ HEALTH_EXPECT_INDEXER_EVM: "1", HEALTH_EXPECT_SOLANA_WORKER: "0" }); return e["indexer-evm"] === true && e["solana-worker"] === false; })());
+check("46. ⭐ flag absent → false (disabled), NU crapă", (() => { const e = resolveServiceExpectations({}); return e["indexer-evm"] === false && e["solana-worker"] === false; })());
+check("47. ⭐⭐⭐ fail-closed byte-exact: '1 ' (spațiu) / 'true' / 'yes' → false (NU aluneca la ON)",
+  (() => {
+    const a = resolveServiceExpectations({ HEALTH_EXPECT_INDEXER_EVM: "1 " })["indexer-evm"];
+    const b = resolveServiceExpectations({ HEALTH_EXPECT_INDEXER_EVM: "true" })["indexer-evm"];
+    const c = resolveServiceExpectations({ HEALTH_EXPECT_INDEXER_EVM: "yes" })["indexer-evm"];
+    return a === false && b === false && c === false;
+  })());
+check("48. ⭐ '0' explicit → false", resolveServiceExpectations({ HEALTH_EXPECT_INDEXER_EVM: "0" })["indexer-evm"] === false);
+check("49. rezultatul acoperă EXACT rolurile din SERVICE_ROLES (fără chei în plus/lipsă)",
+  (() => { const e = resolveServiceExpectations({}); return JSON.stringify(Object.keys(e).sort()) === JSON.stringify([...SERVICE_ROLES].sort()); })());
+check("50. ⭐ expected din env alimentează classifyHeartbeat: {INDEXER=0} → disabled",
+  (() => {
+    const exp = resolveServiceExpectations({ HEALTH_EXPECT_INDEXER_EVM: "0", HEALTH_EXPECT_SOLANA_WORKER: "1" });
+    const c = classifyHeartbeat({ role: "indexer-evm", expected: exp["indexer-evm"], redisReachable: true, raw: null }, T0);
+    return c.state === "disabled";
+  })());
 
 console.log("\n" + passed + " passed, " + failed + " failed");
 if (failed > 0) process.exit(1);
