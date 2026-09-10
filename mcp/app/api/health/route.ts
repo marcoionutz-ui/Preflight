@@ -8,11 +8,13 @@
  *                                  (worker stale / WS-zombie) → alertă prin polling. Redis jos → 503 pe ambele.
  *
  * COALESCING (cgpt #5): endpoint-ul e neautentificat și poll-uit des (2 monitoare × interval scurt). Fără protecție,
- * FIECARE request = 2 operații Redis. Coalescăm în-proces: semnalele Redis sunt citite cel mult o dată la
- * `COALESCE_MS`, iar request-urile concurente care nimeresc un „miss" partajează ACEEAȘI citire în zbor (o singură
- * dublă-MGET, nu una per request). Clasificarea (`computeLiveness`) rulează per-request pe semnalele partajate, ca
- * `?strict=1` și non-strict să dea coduri HTTP diferite din același snapshot. Header-ul rămâne `no-store` — cache-ul
- * e strict SERVER-side (coalescing), clientul/proxy-ul nu trebuie să cacheze un semnal de sănătate.
+ * FIECARE request = o rafală mărginită de operații Redis (2 MGET-uri pe chain-uri + — 12.4 leaf 4 — încă un MGET
+ * CONDIȚIONAL pentru heartbeat-urile serviciilor așteptate, doar când vreun flag `HEALTH_EXPECT_*` e „1"). Coalescăm
+ * în-proces: semnalele Redis sunt citite cel mult o dată la `COALESCE_MS`, iar request-urile concurente care nimeresc
+ * un „miss" partajează ACEEAȘI citire în zbor (o singură rafală, nu una per request). Clasificarea (`computeLiveness`)
+ * rulează per-request pe semnalele partajate, ca `?strict=1` și non-strict să dea coduri HTTP diferite din același
+ * snapshot. Header-ul rămâne `no-store` — cache-ul e strict SERVER-side (coalescing), clientul/proxy-ul nu trebuie să
+ * cacheze un semnal de sănătate.
  */
 import { NextResponse } from "next/server";
 import { readHealthSignals } from "@/lib/health/readHealthSignals";

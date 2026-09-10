@@ -13,7 +13,11 @@ Both share one Redis. The worker has **no HTTP surface** — its liveness is obs
 
 ## Scope of the health endpoint (read this first)
 
-The health endpoint covers **only the `mcp` web service + the `evm` worker** (`scope: "mcp-web + evm-worker"`, echoed in every response body). It does **not** verify the Solana indexer or any other subsystem — a green health check is **not** a claim that the whole multichain product is healthy, only that the EVM path (web + worker + its WS ingestion) is. If/when other subsystems get their own liveness, extend the classifier and this scope string together.
+The health endpoint's **base** scope is the **`mcp` web service + the `evm` worker** (`scope: "mcp-web + evm-worker"`, echoed in every response body). The EVM worker's liveness is observed through snapshot/WS freshness (above); the web + Redis through the request itself.
+
+**Service heartbeats (12.4) extend this scope on demand.** Two additional long-lived services — the **EVM indexer** (`indexer-evm`) and the **Solana worker** (`solana-worker`) — publish a Redis heartbeat, and the health endpoint can monitor them *when explicitly told to* (see [Service liveness — heartbeats](#service-liveness--indexer--solana-workers-heartbeats)). When a service is expected, its role name is appended to the scope string (e.g. `mcp-web + evm-worker + indexer-evm`) and a `checks.services` section appears. When **no** service is expected, the scope string and body are **byte-identical to pre-12.4** — nothing is added.
+
+A green health check is a claim about **exactly the scope string in the body** — read it. It is **not** a blanket claim that the whole multichain product is healthy unless the services you care about are named there.
 
 ---
 
@@ -36,7 +40,7 @@ Configured via env, resolved in this order:
 
 ## Health endpoint (`GET /api/health`)
 
-Unauthenticated, cheap (two bounded Redis `MGET`s over the expected chains), `Cache-Control: no-store`. To keep an unauthenticated, frequently-polled endpoint from turning every request into two Redis ops, the reader is **coalesced in-process**: signals are read at most once per ~2s and concurrent requests share one in-flight read. The `no-store` header is unchanged — the coalescing is server-side only; clients/proxies must not cache a liveness signal.
+Unauthenticated, cheap (two bounded Redis `MGET`s over the expected chains, **plus at most one more** conditional `MGET` for service heartbeats — only when a `HEALTH_EXPECT_*` flag is `1`), `Cache-Control: no-store`. To keep an unauthenticated, frequently-polled endpoint from turning every request into a burst of Redis ops, the reader is **coalesced in-process**: signals are read at most once per ~2s and concurrent requests share one in-flight read. The `no-store` header is unchanged — the coalescing is server-side only; clients/proxies must not cache a liveness signal.
 
 ### Status values (body `status`)
 
@@ -71,8 +75,9 @@ A quiet-but-alive market is **not** turned into a zombie: a connected socket wit
 {
   "status": "ok" | "degraded" | "down",
   "httpStatus": 200 | 503,
-  "scope": "mcp-web + evm-worker",
+  "scope": "mcp-web + evm-worker",        // extended with monitored service roles, e.g. "... + indexer-evm"
   "checks": { "web": {...}, "redis": {...}, "worker": {...}, "ws": {...} },
+                                           // + "services": {...}  ONLY when a service is expected (see below)
   "worstSnapshotAgeSec": <number|null>,   // oldest snapshot among expected chains
   "expectedChains": [...],                 // chains we require (from env)
   "observedChains": [...],                 // expected chains that actually have a Redis footprint
@@ -80,11 +85,66 @@ A quiet-but-alive market is **not** turned into a zombie: a connected socket wit
   "wsStaleSubs": ["base:v2", ...],         // "chain:kind" suspected-stale (zombie) subscriptions
   "wsUnavailableChains": [...],            // wsState = disconnected
   "wsUnknownChains": [...],                // wsState = unknown (runtime missing/expired)
+  "services": [                            // ONLY present when ≥1 service is expected (byte-compat otherwise)
+    { "service": "indexer-evm", "state": "ok", "ageSec": 12, "detail": "..." }
+  ],
   "ts": "<ISO timestamp>"
 }
 ```
 
 Freshness threshold: worker snapshot older than **300s** on the weakest expected chain → worker stale (tunable: `HEALTH_WORKER_FRESH_SEC` in `mcp/lib/health/liveness.ts`).
+
+---
+
+## Service liveness — indexer & Solana workers (heartbeats)
+
+The EVM worker's liveness is inferred from the *freshness of the data it writes* (snapshots/runtime). The **EVM indexer** (`indexer-evm`) and the **Solana worker** (`solana-worker`) don't write chain snapshots the health endpoint reads, so 12.4 gives them a **direct heartbeat**: each publishes a small versioned payload to a dedicated Redis key every **30s** with a **300s TTL**. The health endpoint reads those keys and classifies each expected service.
+
+This is **opt-in and fail-closed**: a service is monitored **only** when its env flag is explicitly `1`. If a service is not expected, it is `disabled` (never read, never penalized) and the response is byte-identical to pre-12.4.
+
+### Enabling (env flags — required in prod)
+
+| Env (on the `mcp` service) | Meaning |
+|---|---|
+| `HEALTH_EXPECT_INDEXER_EVM` | `1` → expect the EVM indexer's heartbeat; `0` → don't monitor it. |
+| `HEALTH_EXPECT_SOLANA_WORKER` | `1` → expect the Solana worker's heartbeat; `0` → don't monitor it. |
+
+**In production both flags are *required* (must be `0` or `1`, byte-exact).** A missing or malformed flag in prod **fails the boot guard (exit 1)** — a real service that is down with an absent flag must never slip silently into `disabled` (fail-open). The runtime treats the flag as ON **only** on the byte-exact string `"1"` (no trim/lowercase — `" 1 "`, `"true"`, `"yes"` are all OFF, and the boot validator mirrors that exactly). In dev an absent flag = not expected (don't penalize what you don't run locally).
+
+**Turn a flag on only when that service actually publishes a heartbeat** (i.e. the worker is deployed with the 12.4 publisher). Expecting a service that never writes its key → permanent `missing` → permanent `degraded`.
+
+### Service states (body `services[].state`, `checks.services`)
+
+| `state` | Meaning | Contributes to |
+|---|---|---|
+| `ok` | Heartbeat present and fresh (age ≤ **90s** — 3× the 30s interval, so one missed beat doesn't flap). | — |
+| `stale` | Heartbeat present but old (age in `[90s, 300s)` — still in Redis, before TTL expiry). | `degraded` |
+| `missing` | Key absent/expired (TTL lapsed with no republish), **or** payload corrupt / wrong-version / clock-in-the-future beyond 30s skew (all fail-closed to `missing`, never a false `ok`). | `degraded` |
+| `unavailable` | The service key's read **failed** while the rest of Redis was reachable (partial failure) — state is *unknown*, which is **not** `ok`. | `degraded` |
+| `disabled` | Flag off — not expected. Not read, not penalized. | — (omitted from scope) |
+
+An expected service in `stale`/`missing`/`unavailable` makes overall `status: degraded` (HTTP **200** on plain `/api/health` — we don't restart a healthy web app for another service; **503** on `?strict=1`, so your uptime monitor alerts). When **global** Redis is down the verdict is `down`/503 (Redis dominates) and expected services show `unavailable` in the body.
+
+### Remediation
+
+- **`indexer-evm` / `solana-worker` = `missing`.** The service isn't writing its heartbeat: process down/crashed, Redis write failing, or the flag is on for a service that isn't actually deployed with the 12.4 publisher. Check: is that worker running? Is `REDIS_URL` reachable from it? Worker logs for `[INDEXER][HEARTBEAT]` / `[SOLANA][HEARTBEAT]` errors. If the service is intentionally not running, set its `HEALTH_EXPECT_*` flag to `0`.
+- **`stale`.** The service is alive but its heartbeat loop is lagging (event-loop blocked, Redis latency). Usually transient; persistent → inspect that worker.
+- **`unavailable`.** The heartbeat key read (`MGET`) failed though chain reads succeeded — a partial Redis problem (a transient error on that specific command). Note: key **eviction/expiry** shows up as `missing` (the key is simply gone), *not* `unavailable` — `unavailable` means the read itself errored. Cross-check with `status`: if only services are `unavailable` (chains fine) it's isolated to those reads.
+
+### Publisher (where the heartbeat comes from)
+
+Both workers call `startServiceHeartbeat` (shared, in `@preflight/schema`) once at startup: it writes immediately, then every `HEARTBEAT_INTERVAL_SEC` (30s), via `SET <key> <payload> EX <HEARTBEAT_TTL_SEC>` (300s). The key + payload + TTL are the **shared wire contract** in `@preflight/schema` (`serviceHeartbeatKey`, `serializeHeartbeat`, `buildHeartbeatWrite`) — imported by **both** the publishers (`workers/indexer-evm`, `workers/solana`) and the reader (`mcp`), so there's no drift. The indexer guards on a null Redis client (no client → doesn't start → reader honestly sees `missing`); the Solana worker's `getRedis()` throws without a URL, so its client is always non-null.
+
+### Proving it end-to-end on real Redis
+
+The pure suites (`heartbeat.test.ts`) and the injected-Redis suite (`buildHealthSignals.test.ts`) prove the classifier and flow without touching a real Redis. The **real-Redis proof** closes the loop against live infra:
+
+```
+# dev — requires a LOOPBACK Redis + explicit opt-in (safety gate: never touches a non-loopback/staging Redis):
+REDIS_URL=redis://127.0.0.1:6379 QUOTA_INTEGRATION_ALLOW=1 npm run test:ph12-hb-redis -w @preflight/mcp
+```
+
+It writes a heartbeat through the real wire contract, then asserts on a real Redis: `SET … EX` lands with the right key + **effective TTL ≈ 300s**, the payload round-trips through `parseHeartbeat`, the reader classifies `ok` → `stale` (old `updated_at`) → `missing` (corrupt payload, then key deleted), and a broken Redis client yields `unavailable` + `down`/503. **Safety gate:** it runs **only** when `REDIS_URL` is loopback **and** `QUOTA_INTEGRATION_ALLOW=1` — otherwise it skips cleanly (exit 0) without touching any Redis, and it never prints the URL. So it's safe in the plain `npm test` chain (skips → satisfies gate-14) and runs **for real** in `test:integration`, where CI provides a loopback `redis` service and sets the opt-in.
 
 ---
 
@@ -159,9 +219,11 @@ Implementation: lifecycle registry + ordered sequence in `workers/evm/src/lib/li
 | `?strict=1` = 503, `status: degraded`, `staleChains` set | Worker down/stale, or expected-chains mismatch | `worker-evm` running? `ENABLED_CHAINS` vs `HEALTH_EXPECTED_CHAINS`? worker logs | Restart worker (graceful) / align envs |
 | `wsStaleSubs` set, snapshots fresh | Zombie WS subscription | Worker WS/reconnect logs | Auto-heals; restart worker if persistent; check WS provider |
 | `wsUnavailableChains` / `wsUnknownChains` set | Socket disconnected / no runtime record | Worker WS logs; is the chain actually running? | Auto-reconnect; restart worker if persistent |
+| `checks.services.ok` false, a service `missing`/`stale` | Indexer/Solana worker not publishing heartbeat, or `HEALTH_EXPECT_*` on for an undeployed service | That worker running? `[INDEXER\|SOLANA][HEARTBEAT]` logs? should the flag be `0`? | Restart that worker (graceful) / set its `HEALTH_EXPECT_*=0` if intentionally off |
+| a service `unavailable`, chains fine | Heartbeat `MGET` errored while rest of Redis reachable (partial) — *not* eviction (that's `missing`) | transient Redis error on that command; `status` (only services affected?) | Usually transient; inspect Redis if persistent |
 | Demo pages return "busy" | Redis down or demo budget/rate hit | `/api/health`, demo limits | See PH-11 demo protection (`lib/demo/demoGuard.ts`) |
 | Redeploy hangs | (should not) shutdown deadline is 10s | Worker shutdown logs | Force-exit is automatic after 10s |
 
 ---
 
-*Health classifier: `mcp/lib/health/liveness.ts` (pure, tested). Signal reader: `mcp/lib/health/readHealthSignals.ts`. Endpoint (coalesced): `mcp/app/api/health/route.ts`. Graceful shutdown: `workers/evm/src/lib/lifecycle.ts` + `workers/evm/src/lib/shutdown.ts`, wired in `workers/evm/src/index.ts`.*
+*Health classifier: `mcp/lib/health/liveness.ts` (pure, tested). Signal reader (chains + service heartbeats): `mcp/lib/health/readHealthSignals.ts` → `mcp/lib/health/buildHealthSignals.ts`. Heartbeat classifier + env-flag policy: `mcp/lib/health/heartbeat.ts`. Shared wire contract (key/payload/TTL/publisher): `@preflight/schema`. Publishers: `workers/indexer-evm/src/index.ts`, `workers/solana/src/index.ts`. Endpoint (coalesced): `mcp/app/api/health/route.ts`. Real-Redis proof: `mcp/lib/health/heartbeatRealRedis.test.ts` (`npm run test:ph12-hb-redis -w @preflight/mcp`). Graceful shutdown: `workers/evm/src/lib/lifecycle.ts` + `workers/evm/src/lib/shutdown.ts`, wired in `workers/evm/src/index.ts`.*

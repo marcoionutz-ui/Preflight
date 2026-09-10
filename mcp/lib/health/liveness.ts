@@ -146,7 +146,9 @@ export function computeLiveness(sig: HealthSignals, opts: LivenessOpts = {}): He
   const freshSec = opts.freshSec ?? HEALTH_WORKER_FRESH_SEC;
 
   // Secțiunea de servicii (12.4): pliem verdictele deja clasificate. `undefined` când lipsesc / toate `disabled`
-  // → nu adăugăm nimic (byte-compat). Pe Redis-down serviciile așteptate vin `unavailable`; verdictul rămâne `down`.
+  // → nu adăugăm nimic (byte-compat). `unavailable` apare pe DOUĂ căi: Redis GLOBAL jos (→ `down` mai jos, domină) SAU
+  // doar citirea cheii de heartbeat a eșuat deși chain-urile s-au citit (leaf 4: `redisReachable:true` → ajunge în
+  // ramura de mai jos ca `degraded`, nu `down`).
   const svc = sig.services ? foldServiceChecks(sig.services) : undefined;
   const scope = extendScope(HEALTH_SCOPE, svc); // byte-compat: rămâne HEALTH_SCOPE când nu-s servicii monitorizate
 
@@ -211,9 +213,10 @@ export function computeLiveness(sig: HealthSignals, opts: LivenessOpts = {}): He
         ? { ok: false, detail: `ws unhealthy on: ${wsProblemChains.join(", ")}` }
         : { ok: true, detail: `ws healthy on ${sig.expectedChains.join(", ")}` };
 
-  // 12.4: un serviciu așteptat `stale`/`missing` contribuie la `degraded` (nu 503 pe healthcheck-ul web decât în
-  // strict — aceeași politică: nu repornim un web sănătos pentru alt serviciu). `unavailable` NU ajunge aici (Redis-jos
-  // s-a întors deja `down` mai sus).
+  // 12.4: un serviciu așteptat `stale`/`missing`/`unavailable` contribuie la `degraded` (nu 503 pe healthcheck-ul web
+  // decât în strict — aceeași politică: nu repornim un web sănătos pentru alt serviciu). `unavailable` POATE ajunge aici
+  // (leaf 4): când Redis GLOBAL e jos ne-am întors deja `down` mai sus, DAR când doar citirea cheii serviciului a picat
+  // (chain-urile s-au citit, `redisReachable:true`), rolul e `unavailable` iar verdictul onest e `degraded`, nu `down`.
   const svcDegraded = svc?.degraded ?? false;
 
   const degraded   = workerStale || wsProblem || svcDegraded;
