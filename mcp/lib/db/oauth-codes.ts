@@ -9,7 +9,7 @@
  * legitim (DoS de consum), iar single-use + anti-replay/concurență sunt garantate de CAD-ul din Lua.
  */
 
-import { createHash, randomBytes } from "crypto";
+import { randomBytes }             from "crypto";
 import { getRedis }                from "./redis";
 import { timingSafeStrEqual }      from "./constantTime";
 import {
@@ -28,6 +28,7 @@ import { mintToken, TOKEN_TTL_SEC, REFRESH_TTL_SEC, type TokenPayload } from "./
 import { newFamilyId, mintRefreshToken, familyKey } from "./oauth-refresh";
 import { finalizeUserTokenPayload, type UserTokenDraft } from "../oauth/tokenPayloadModel";
 import { finalizeUserRefreshPayload, type UserRefreshDraft } from "../oauth/refreshPayloadModel";
+import { deriveS256Challenge } from "../oauth/pkce";
 
 export type { AuthCodePayload } from "./oauthAtomic";
 
@@ -283,9 +284,9 @@ export function verifyCodeVerifier(verifier: string, challenge: string, method: 
   // downgrade risk without breaking anything currently in use.
   if (method !== "S256") return false;
 
-  const computed = createHash("sha256")
-    .update(verifier)
-    .digest("base64url");
+  // 12.5b-0 (blocker cgpt): derivarea S256 trăiește ACUM într-o singură funcție (`deriveS256Challenge` din
+  // lib/oauth/pkce.ts), folosită ȘI de generatorul de canary → imposibil de divergat formula. Comportament identic.
+  const computed = deriveS256Challenge(verifier);
   // E7: comparație constant-time a digesturilor PKCE, fără throw
   // dacă challenge-ul primit are altă lungime.
   return timingSafeStrEqual(computed, challenge);

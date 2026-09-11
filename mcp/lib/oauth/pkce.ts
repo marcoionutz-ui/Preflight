@@ -1,7 +1,10 @@
 /**
  * lib/oauth/pkce.ts — E1 (PKCE strict, RFC 7636).
  *
- * Frunză PURĂ (zero importuri; doar regex/string) → testabilă în tsx.
+ * Validatorii de format sunt PURI (doar regex/string). Singura funcție cu dependență e `deriveS256Challenge`
+ * (folosește `crypto` — vezi mai jos): e SURSA UNICĂ a derivării S256, împărtășită de `verifyCodeVerifier`
+ * (lib/db/oauth-codes.ts) ȘI de generatorul de canary (lib/mcp/canaryPkce.ts) — fără ea, cei doi ar duplica
+ * formula `sha256(verifier)→base64url` și ar putea diverge tăcut (12.5b-0, blocker cgpt).
  *
  * Restul hardening-ului PKCE (challenge obligatoriu la /authorize, S256-only, redirect_uri allowlist, plain
  * respins, .well-known S256) e deja în cod. Piesa care lipsea din scope-ul „PKCE hardening" e VALIDAREA DE FORMAT
@@ -9,6 +12,8 @@
  * satisfăcut de vreun verifier → cod emis degeaba), iar /token accepta orice `code_verifier` — inclusiv unul
  * mult sub minimul de entropie cerut de spec. Validăm ambele la formatul CANONIC, devreme, cu mesaje explicite.
  */
+
+import { createHash } from "crypto";
 
 export const PKCE_METHOD_S256 = "S256";
 
@@ -31,6 +36,16 @@ export function isValidCodeVerifier(v: string): boolean {
 /** `true` dacă `c` e un code_challenge S256 canonic (43 caractere base64url, fără padding). */
 export function isValidS256Challenge(c: string): boolean {
   return typeof c === "string" && S256_CHALLENGE_RE.test(c);
+}
+
+/**
+ * RFC 7636 §4.2 — derivarea CANONICĂ a code_challenge din verifier (S256): BASE64URL-fără-padding(SHA-256(verifier)).
+ * Node `digest("base64url")` produce base64url fără padding. SURSĂ UNICĂ: `verifyCodeVerifier` (server) recompută cu
+ * ea și o compară constant-time cu challenge-ul primit; generatorul de canary o folosește să producă exact ce va
+ * accepta serverul. O singură formulă → imposibil de divergat (blocker cgpt 12.5b-0).
+ */
+export function deriveS256Challenge(verifier: string): string {
+  return createHash("sha256").update(verifier).digest("base64url");
 }
 
 /**
