@@ -166,7 +166,7 @@ export function parseTokenResponse(raw: unknown): TokenResponseView | null {
 export function assertTokenResponse(raw: unknown, opts: { expectRefresh: boolean } = { expectRefresh: true }): GateResult {
   const t = parseTokenResponse(raw);
   if (t === null)                                        return fail("răspuns /token malformat (fail-closed)");
-  if (t.token_type.trim().toLowerCase() !== "bearer")    return fail(`token_type '${t.token_type}' (așteptat Bearer)`);
+  if (t.token_type.trim().toLowerCase() !== "bearer")    return fail("token_type invalid (așteptat Bearer)"); // NU ecoua valoarea (necontrolată — anti-leak, cgpt 12.5b-1)
   if (!Number.isInteger(t.expires_in) || t.expires_in <= 0) return fail(`expires_in ${t.expires_in} (așteptat întreg pozitiv)`);
   if (t.scope === null)                                  return fail("scope lipsă/gol în răspunsul /token");
   if (opts.expectRefresh && t.refresh_token === null)    return fail("refresh_token lipsă (fluxul user/auth-code trebuie să emită refresh)");

@@ -103,6 +103,8 @@ console.log("PH-12 12.5a — releaseGate (nucleu pur)");
   check("D5. ⭐ expires_in ne-număr → null", parseTokenResponse(okTokenBody({ expires_in: "3600" })) === null);
   check("D6. ⭐⭐ token valid → assert ok (cu refresh așteptat)", assertTokenResponse(okTokenBody()).ok === true);
   check("D7. ⭐⭐⭐ token_type non-Bearer → fail", assertTokenResponse(okTokenBody({ token_type: "mac" })).ok === false);
+  check("D7b. ⭐⭐⭐ ANTI-LEAK: reason NU ecouă valoarea token_type (necontrolată, poate purta secret)",
+    assertTokenResponse(okTokenBody({ token_type: "SECRETCODE" })).reason.indexOf("SECRETCODE") === -1);
   check("D8. ⭐ Bearer case-insensitive → ok", assertTokenResponse(okTokenBody({ token_type: "bearer" })).ok === true);
   check("D9. ⭐⭐ expires_in ≤ 0 → fail", assertTokenResponse(okTokenBody({ expires_in: 0 })).ok === false);
   check("D10. ⭐⭐ scope lipsă → fail", assertTokenResponse(okTokenBody({ scope: undefined })).ok === false);
