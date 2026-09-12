@@ -207,6 +207,9 @@ function canaryHostname(url: string): { host: string } | { reject: string } {
   if (u.protocol !== "http:" && u.protocol !== "https:") return { reject: `schemă '${u.protocol}' (doar http/https)` };
   if (u.username !== "" || u.password !== "")            return { reject: "conține credențiale în URL (user:pass@) — refuz" };
   const host = u.hostname.toLowerCase();  // hostname EXCLUDE portul → prod-ul cu `:443` nu mai scapă
+  // FQDN cu punct final (`host.tld.`) rezolvă la ACELAȘI domeniu, dar `!==` string-ul din allowlist → ar ocoli plasa
+  // de prod. Refuz orice hostname necanonic cu `.` final (fail-closed) — nu-l normalizez tăcut.
+  if (host.endsWith(".")) return { reject: "hostname necanonic (punct final) — refuz" };
   // HTTP clar (necriptat) permis DOAR pe loopback (Gate 1 complet local); orice host extern pe http → refuz (doar https).
   if (u.protocol === "http:" && !LOOPBACK_HOSTS.has(host)) return { reject: `HTTP clar pe host non-loopback (${host}) — în afara loopback cere https` };
   return { host };

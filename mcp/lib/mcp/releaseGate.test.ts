@@ -189,6 +189,10 @@ console.log("PH-12 12.5a — releaseGate (nucleu pur)");
   check("H3. ⭐⭐⭐ http://staging.example pe MCP (host extern, clar) → REFUZ", assertCanaryIsolation({ ...staging, mcpBaseUrl: "http://staging.example" }).ok === false);
   check("H4. ⭐⭐⭐ http://staging.example pe Supabase → REFUZ", assertCanaryIsolation({ ...staging, supabaseUrl: "http://staging.example" }).ok === false);
   check("H5. ⭐⭐⭐ ambele localhost pe HTTP (Gate 1 local) → izolat ok", assertCanaryIsolation({ mcpBaseUrl: "http://localhost:3000", supabaseUrl: "http://127.0.0.1:54321" }).ok === true);
+  // trailing-dot FQDN: rezolvă la același domeniu prod dar `!==` allowlist → nu trebuie să ocolească plasa.
+  check("H6. ⭐⭐⭐ mcpBaseUrl prod cu punct final (jackspools.lol.) → REFUZ (fail-closed necanonic)", assertCanaryIsolation({ ...staging, mcpBaseUrl: "https://preflight.jackspools.lol." }).ok === false);
+  check("H7. ⭐⭐⭐ Supabase prod cu punct final (…supabase.co.) → REFUZ", assertCanaryIsolation({ ...staging, supabaseUrl: "https://ipeyogzfgqypfkujraxm.supabase.co." }).ok === false);
+  check("H8. ⭐⭐ orice hostname cu punct final (chiar staging) → REFUZ (necanonic, nu-l normalizăm tăcut)", assertCanaryIsolation({ ...staging, mcpBaseUrl: "https://preflight-staging.up.railway.app." }).ok === false);
 }
 
 console.log("\n" + passed + " passed, " + failed + " failed");
