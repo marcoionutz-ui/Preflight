@@ -151,7 +151,10 @@ export function verifyCallback(
   }
 
   if (parsed.kind === "error") {
-    return { ok: false, reason: `authorization error: ${parsed.error}${parsed.error_description ? ` (${parsed.error_description})` : ""}` };
+    // Anti-leak (fix cgpt 4b, P2): reason COMPLET STATIC. ATÂT `error_description` (text liber) CÂT ȘI `error` sunt
+    // controlate de cine fabrică redirect-ul (`?error=SECRETCODE`) — un caller care loghează reason-ul le-ar scurge.
+    // Codul + descrierea rămân pe structura parsată (`parseCallbackParams`) pentru inspecție programatică; NU în motiv.
+    return { ok: false, reason: "authorization error returned by the authorization server" };
   }
 
   return { ok: true, code: parsed.code };

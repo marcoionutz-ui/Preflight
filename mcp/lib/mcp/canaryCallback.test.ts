@@ -76,8 +76,15 @@ check("B5. ⭐⭐ iss lipsă + requireIss:false → ok (relaxat explicit)",
 
 // error kind: gărzile state/iss se aplică ÎNAINTE (fix cgpt P2)
 const vErrGood = verifyCallback(errCb, { expectedState: "st3", issuer: ISS });
-check("B6. ⭐⭐⭐ error cu state+iss corecte → fail cu reason=eroarea de autorizare (nu sare peste verificare)",
-  vErrGood.ok === false && !vErrGood.ok && /access_denied/.test(vErrGood.reason));
+check("B6. ⭐⭐⭐ error cu state+iss corecte → fail cu reason STATIC (nu sare peste verificare)",
+  vErrGood.ok === false && !vErrGood.ok && /authorization error/i.test(vErrGood.reason));
+// Anti-leak (fix cgpt 4b, P2): reason COMPLET STATIC — nu ecouă nici error_description ('User denied'), nici codul OAuth.
+check("B6b. ⭐⭐⭐ error → reason NU conține error_description NICI codul OAuth (ambele attacker-controlled)",
+  vErrGood.ok === false && !vErrGood.ok && !/User denied/.test(vErrGood.reason) && !/access_denied/.test(vErrGood.reason));
+// cgpt P2: un `error` FABRICAT de atacator (?error=SECRETCODE) NU trebuie să ajungă niciodată în reason (log leak).
+const vErrSecret = verifyCallback(parseCallbackParams("error=SECRETCODE&state=st3&iss=" + encodeURIComponent(ISS)), { expectedState: "st3", issuer: ISS });
+check("B6c. ⭐⭐⭐ error=SECRETCODE (attacker-controlled) → reason NU conține SECRETCODE",
+  vErrSecret.ok === false && !vErrSecret.ok && !/SECRETCODE/.test(vErrSecret.reason));
 const vErrState = verifyCallback(errCb, { expectedState: "OTHER", issuer: ISS });
 check("B7. ⭐⭐⭐ error cu state GREȘIT → fail cu reason=state mismatch (posibil injectat), NU surfăsat orbește",
   vErrState.ok === false && !vErrState.ok && /state mismatch/.test(vErrState.reason));
