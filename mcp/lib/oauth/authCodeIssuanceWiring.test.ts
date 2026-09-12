@@ -26,15 +26,18 @@ check("3. ⭐⭐ ruta importă consumeCodeAndIssueUserWithRefresh (din oauth-cod
 
 // ── ruta: apelul planner-ului + flag din env ──────────────────────────────────
 check("4. ⭐⭐⭐ ruta cheamă planAuthCodeTokenIssuance({...})", /planAuthCodeTokenIssuance\(\{/.test(route));
-check("5. ⭐⭐⭐ rejectLegacy vine din isLegacyAuthCodeCutoverEnabled(process.env)", /rejectLegacy:\s*isLegacyAuthCodeCutoverEnabled\(process\.env\)/.test(route));
+// Acceptă atât inline (`rejectLegacy: isLegacy...`) cât și hoisted (`const rejectLegacy = isLegacy...`, refolosit de ambele branch-uri user/legacy).
+check("5. ⭐⭐⭐ rejectLegacy vine din isLegacyAuthCodeCutoverEnabled(process.env)", /rejectLegacy\s*[:=]\s*isLegacyAuthCodeCutoverEnabled\(process\.env\)/.test(route));
 check("6. ⭐⭐ planner primește clientId + credentialVersion (secret_rotated_at) + boundAudience",
   /clientId:\s*client\.client_id/.test(route) && /credentialVersion:\s*client\.secret_rotated_at/.test(route) && /audience:\s*boundAudience/.test(route));
 
 // ── ruta: dispecerizare pe plan.kind ──────────────────────────────────────────
 check("7. ⭐⭐⭐ reject → jsonError(400, plan.error, plan.reason) (invalid_grant din planner)",
   /plan\.kind === "reject"[\s\S]{0,80}jsonError\(400,\s*plan\.error,\s*plan\.reason\)/.test(route));
-check("8. ⭐⭐⭐ user → consumeCodeAndIssueUserWithRefresh(code, lookup.raw, plan.accessDraft, plan.refreshDraft)",
-  /plan\.kind === "user"[\s\S]{0,140}consumeCodeAndIssueUserWithRefresh\(code,\s*lookup\.raw,\s*plan\.accessDraft,\s*plan\.refreshDraft\)/.test(route));
+// Fork pe IDENTITATE (fix canary Gate 1): calea user e dispecerizată de `codeIdentity.kind === "user"` (înainte de
+// lookup-ul de client), NU de `plan.kind` — cod user = client DCR public (registration), nu `oauth_clients` legacy.
+check("8. ⭐⭐⭐ user (cod clasificat prin identity) → consumeCodeAndIssueUserWithRefresh(code, lookup.raw, plan.accessDraft, plan.refreshDraft)",
+  /codeIdentity\.kind === "user"/.test(route) && /consumeCodeAndIssueUserWithRefresh\(code,\s*lookup\.raw,\s*plan\.accessDraft,\s*plan\.refreshDraft\)/.test(route));
 check("9. ⭐⭐⭐ legacy → consumeCodeAndIssueWithRefresh(code, lookup.raw, plan.access)",
   /consumeCodeAndIssueWithRefresh\(code,\s*lookup\.raw,\s*plan\.access\)/.test(route));
 check("10. ⭐⭐ tratarea unavailable/already_used păstrată (503 / invalid_grant)",

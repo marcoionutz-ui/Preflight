@@ -87,8 +87,13 @@ check("33. ⭐⭐ token route: refresh grant roteste (rotateRefreshToken) + reus
 check("34. ⭐ token route: refresh grant verifica credential_version (rotatia secretului -> reauth)",
   /credential_version !== client\.secret_rotated_at[\s\S]{0,260}invalid_grant/.test(route));
 check("35. ⭐ token route: refresh grant aplica narrowScopes (fara escaladare)", /narrowScopes\(/.test(route));
-check("36. ⭐⭐ client_credentials NU emite refresh (issueToken direct, fara refresh_token in raspunsul cc)",
-  /issueToken\(\{/.test(route) && (route.match(/refresh_token:\s*\w+\.refreshToken/g) ?? []).length === 3); // emisii raspuns: auth_code + refresh client + refresh USER (10.5b); NU cc
+// Izolăm BLOCUL client_credentials (până la authorization_code) și verificăm DOAR acolo — robust la numărul de emisii
+// refresh din alte grant-uri (fork user/legacy pe auth-code adaugă legitim emisii; cc rămâne issueToken() fără refresh).
+const ccStart = route.indexOf('if (grant_type === "client_credentials")');
+const authCodeStart = route.indexOf('if (grant_type === "authorization_code")');
+const ccBlock = ccStart >= 0 && authCodeStart > ccStart ? route.slice(ccStart, authCodeStart) : "";
+check("36. ⭐⭐ client_credentials NU emite refresh (issueToken direct, fără refresh_token în blocul cc)",
+  ccStart >= 0 && authCodeStart > ccStart && /issueToken\(\{/.test(ccBlock) && !/refresh_token\s*:/.test(ccBlock));
 
 const oam = readFileSync("app/.well-known/oauth-authorization-server/route.ts", "utf8");
 const oamApi = readFileSync("app/api/.well-known/oauth-authorization-server/route.ts", "utf8");

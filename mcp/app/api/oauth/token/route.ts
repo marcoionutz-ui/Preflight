@@ -19,6 +19,9 @@ import { resolveBaseUrl }                   from "@/lib/oauth/baseUrl";
 import { validateResourceIndicator, canonicalResourceUri } from "@/lib/oauth/resource";
 import { planAuthCodeTokenIssuance }        from "@/lib/oauth/authCodeIssuancePlan";
 import { isLegacyAuthCodeCutoverEnabled }   from "@/lib/oauth/authCodeCutover";
+// PH-2 fix (canary Gate 1): calea de ACCESS auth-code trebuie să FORKEZE pe identitatea codului ca și calea de refresh —
+// un cod USER (DCR public) se validează pe registration, NU pe `oauth_clients` legacy. Clasificatorul e sursa unică (10.2).
+import { readAuthCodeIdentity }             from "@/lib/oauth/authGrantIssuance";
 // PH-2 step 10.5b: rotația refresh-ului USER (auth-code Claude.ai) — planner pur + deps I/O (grant/cont) + catalog scope.
 import { isUserRefresh, finalizeUserRefreshPayload, type UserRefreshPayload } from "@/lib/oauth/refreshPayloadModel";
 import { finalizeUserTokenPayload }         from "@/lib/oauth/tokenPayloadModel";
@@ -185,7 +188,74 @@ async function handlePost(req: NextRequest) {
     const valid = verifyCodeVerifier(code_verifier, payload.code_challenge, payload.code_challenge_method);
     if (!valid) return jsonError(400, "invalid_grant", "code_verifier mismatch");
 
-    // Verifică că clientul e încă activ. PH-9: discriminat — Supabase jos → 503 (retry), NU 401 invalid_client.
+    // PH-2 fix (canary Gate 1): CLASIFICĂ identitatea codului ÎNAINTE de orice lookup de client, apoi FORK — exact ca
+    // grantul de refresh. Un cod USER (subject_kind=user, embed la /authorize) aparține unui client DCR PUBLIC din
+    // `oauth_client_registrations`, NU tabelului legacy `oauth_clients`. `lookupClientById` pe un cod user ar da
+    // `unavailable` (tabel legacy jos → 503) sau `not_found` (client absent din legacy → 401), deci fluxul user n-ar
+    // putea NICIODATĂ emite. `readAuthCodeIdentity` (10.2) e sursa unică de clasificare (același verdict ca plannerul).
+    const codeIdentity = readAuthCodeIdentity(payload);
+    if (codeIdentity.kind === "corrupt") {
+      return jsonError(400, "invalid_grant", "Authorization code is malformed");
+    }
+    const rejectLegacy = isLegacyAuthCodeCutoverEnabled(process.env);
+
+    // ── Cod USER → verifică REGISTRATION-ul DCR public (activ + ne-expirat + client_id identic + authorization_code
+    //    permis), NU `oauth_clients`. Fără credential_version (client public, fără secret). `touchRegistration` la final. ──
+    if (codeIdentity.kind === "user") {
+      const regLookup = await getRegistrationByClientId(client_id);
+      const rgv = verifyUserRegistration(regLookup, { clientId: client_id, nowMs: Date.now(), requiredGrantType: "authorization_code" });
+      if (!rgv.ok && rgv.kind === "unavailable") {
+        return jsonError(503, "temporarily_unavailable", "Authorization service temporarily unavailable, please retry");
+      }
+      if (!rgv.ok) {
+        // Registration inexistentă/inactivă/expirată/grant nepermis → refuz ÎNAINTE de consum (codul NU se arde).
+        return jsonError(401, "invalid_client", "Client registration not found, inactive, or not allowed to authorize");
+      }
+
+      const plan = planAuthCodeTokenIssuance({
+        payload,
+        clientId:          client_id,
+        credentialVersion: "",             // ignorat pe forma user (client public, fără secret)
+        audience:          boundAudience,   // PH-3: token legat de resursa autorizată în cod
+        issuedAt:          Date.now(),
+        rejectLegacy,
+      });
+      if (plan.kind === "reject") {
+        return jsonError(400, plan.error, plan.reason);
+      }
+      // Identitatea a fost clasificată `user` de ACEEAȘI sursă → plannerul produce `user`; orice altceva = incoerență → fail-closed.
+      if (plan.kind !== "user") {
+        return jsonError(400, "invalid_grant", "authorization code identity/plan mismatch");
+      }
+
+      // Registration validă → consumă codul + emite ATOMIC (un singur EVAL: compare-and-delete blob + SET access/refresh/familie).
+      const issued = await consumeCodeAndIssueUserWithRefresh(code, lookup.raw, plan.accessDraft, plan.refreshDraft);
+      if (issued.status === "unavailable") {
+        return jsonError(503, "temporarily_unavailable", "Authorization service temporarily unavailable, please retry");
+      }
+      if (issued.status === "already_used") {
+        return jsonError(400, "invalid_grant", "Authorization code already used");
+      }
+
+      touchRegistration(client_id); // last_used_at pe REGISTRATION (shell DCR public; calea legacy scrie tabelul de clienți)
+
+      return new Response(
+        JSON.stringify({
+          access_token:  issued.token,
+          token_type:    "Bearer",
+          expires_in:    86_400,
+          refresh_token: issued.refreshToken, // PH-4
+          scope:         payload.scopes.join(" "),
+        }),
+        {
+          status:  200,
+          headers: { "Content-Type": "application/json", "Cache-Control": "no-store", "Pragma": "no-cache" },
+        },
+      );
+    }
+
+    // ── Cod LEGACY client-authorized (dinainte de cutover) → tabelul legacy `oauth_clients`, comportament de AZI
+    //    NESCHIMBAT (byte-compatible). PH-9: discriminat — Supabase jos → 503 (retry), NU 401 invalid_client. ──
     const clientLookup = await lookupClientById(client_id);
     if (clientLookup.status === "unavailable") {
       return jsonError(503, "temporarily_unavailable", "Authorization service temporarily unavailable, please retry");
@@ -195,29 +265,25 @@ async function handlePost(req: NextRequest) {
     }
     const client = clientLookup.client;
 
-    // PH-2 step 10.4: PLANIFICĂM emiterea PUR din identitatea codului (`planAuthCodeTokenIssuance`, 10.4b) + flagul de
-    // cutover (citit din env AICI → planner rămâne pur). `user` = cod cu subject_kind embed la /authorize → token USER
-    // (entitlement/quota pe ACCOUNT); `legacy` = cod client-authorized dinainte de cutover → forma de AZI; `reject` =
-    // corupt / legacy sub cutover / scopes murdare → invalid_grant. Ruta refuză mismatch-ul de client în planner.
     const plan = planAuthCodeTokenIssuance({
       payload,
       clientId:          client.client_id,
       credentialVersion: client.secret_rotated_at,
       audience:          boundAudience, // PH-3: token legat de resursa autorizată în cod
       issuedAt:          Date.now(),
-      rejectLegacy:      isLegacyAuthCodeCutoverEnabled(process.env),
+      rejectLegacy,
     });
     if (plan.kind === "reject") {
       return jsonError(400, plan.error, plan.reason);
     }
+    // Identitate `legacy_client` → planner `legacy`; orice altceva = incoerență → fail-closed (nu emitem forma greșită).
+    if (plan.kind !== "legacy") {
+      return jsonError(400, "invalid_grant", "authorization code identity/plan mismatch");
+    }
 
-    // E4 + U7 + PH-4: TOATĂ validarea a trecut → consumă codul ȘI emite access + REFRESH ATOMIC (un singur EVAL:
-    // compare-and-delete pe blob + SET access + SET refresh + SET familie). All-or-nothing: la eșec nimic nu se
-    // persistă → clientul reia cu ACELAȘI cod. Forma user și cea legacy folosesc ACELAȘI Lua; diferă doar payload-ul
-    // serializat (user: identitate, fără credential_version). Anti-replay/concurență = compare-and-delete.
-    const issued = plan.kind === "user"
-      ? await consumeCodeAndIssueUserWithRefresh(code, lookup.raw, plan.accessDraft, plan.refreshDraft)
-      : await consumeCodeAndIssueWithRefresh(code, lookup.raw, plan.access);
+    // E4 + U7 + PH-4: TOATĂ validarea a trecut → consumă codul ȘI emite access + REFRESH ATOMIC. All-or-nothing:
+    // la eșec nimic nu se persistă → clientul reia cu ACELAȘI cod. Anti-replay/concurență = compare-and-delete.
+    const issued = await consumeCodeAndIssueWithRefresh(code, lookup.raw, plan.access);
     if (issued.status === "unavailable") {
       return jsonError(503, "temporarily_unavailable", "Authorization service temporarily unavailable, please retry");
     }
