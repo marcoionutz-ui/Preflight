@@ -26,6 +26,7 @@ import {
 import { authzTxnKey, AUTHZ_TXN_CONSUME_ISSUE_LUA, classifyTxnConsumeIssue } from "./authzTxnStore";
 import { mintToken, TOKEN_TTL_SEC, REFRESH_TTL_SEC, type TokenPayload } from "./oauth-tokens";
 import { newFamilyId, mintRefreshToken, familyKey } from "./oauth-refresh";
+import { authCodeKey } from "./oauthStorageKeys";
 import { finalizeUserTokenPayload, type UserTokenDraft } from "../oauth/tokenPayloadModel";
 import { finalizeUserRefreshPayload, type UserRefreshDraft } from "../oauth/refreshPayloadModel";
 import { deriveS256Challenge } from "../oauth/pkce";
@@ -34,8 +35,10 @@ export type { AuthCodePayload } from "./oauthAtomic";
 
 const CODE_TTL_SEC = 5 * 60; // 5 minute
 
+// codeKey: DELEGAT spre sursa unică `authCodeKey` (12.5b-5a). Păstrat ca funcție locală `codeKey(code)` fiindcă
+// guard-ul de sursă `consumeIssueWiring.test` verifică apelurile Lua `codeKey(code)`. Formatul trăiește în oauthStorageKeys.
 function codeKey(code: string): string {
-  return `mcp:code:${code}`;
+  return authCodeKey(code);
 }
 
 export async function issueAuthCode(payload: AuthCodePayload): Promise<string | null> {

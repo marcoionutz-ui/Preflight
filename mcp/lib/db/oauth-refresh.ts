@@ -7,8 +7,9 @@
  * adevăr pentru rotație + reuse-detection.
  */
 
-import { createHash, randomBytes } from "crypto";
+import { randomBytes }            from "crypto";
 import { getRedis }                from "./redis";
+import { hashCredential, refreshTokenKey, refreshFamilyKey } from "./oauthStorageKeys";
 import { mintToken, TOKEN_TTL_SEC, REFRESH_TTL_SEC, type TokenPayload } from "./oauth-tokens";
 import {
   REFRESH_ROTATE_LUA, classifyRefreshRotate,
@@ -20,12 +21,10 @@ import {
 import { parseStoredRefresh, type AnyRefreshPayload } from "../oauth/refreshPayloadModel";
 import type { UserTokenPayload } from "../oauth/tokenPayloadModel";
 
-function refreshKey(hash: string): string { return `mcp:refresh:${hash}`; }
-export function familyKey(familyId: string): string { return `mcp:refresh_family:${familyId}`; }
-
-function hashRefresh(token: string): string {
-  return createHash("sha256").update(token).digest("hex");
-}
+// familyKey: re-export DELEGAT spre sursa unică `refreshFamilyKey` (12.5b-5a). Păstrat ca `export function familyKey`
+// fiindcă e importat de `oauth-codes` + `userAuth.integration` și verificat de guard-ul de sursă `refresh.test` (check
+// 28). Formatul cheii trăiește acum EXCLUSIV în `oauthStorageKeys` (fără prefix hardcodat aici).
+export function familyKey(familyId: string): string { return refreshFamilyKey(familyId); }
 
 /** Id de familie nou (lanț de rotație) — random, opac. */
 export function newFamilyId(): string { return randomBytes(16).toString("hex"); }
@@ -34,8 +33,8 @@ export function newFamilyId(): string { return randomBytes(16).toString("hex"); 
  *  PH-2 10.4c: generic pe payload — acceptă și `UserRefreshPayload` (finalizat), nu doar `RefreshPayload` client. */
 export function mintRefreshToken<T>(payload: T): { token: string; hash: string; key: string; value: string } {
   const token = randomBytes(32).toString("hex");
-  const hash  = hashRefresh(token);
-  return { token, hash, key: refreshKey(hash), value: JSON.stringify(payload) };
+  const hash  = hashCredential(token);            // hash-ul e cerut de Lua (pointer de familie); cheia vine din sursa unică
+  return { token, hash, key: refreshTokenKey(token), value: JSON.stringify(payload) };
 }
 
 export type RefreshLookup =
@@ -53,7 +52,7 @@ export async function peekRefreshToken(token: string): Promise<RefreshLookup> {
   const r = getRedis();
   if (!r) return { status: "unavailable" };
   try {
-    const raw = await r.get(refreshKey(hashRefresh(token)));
+    const raw = await r.get(refreshTokenKey(token));
     if (!raw) return { status: "absent" };
     // Citire DISCRIMINATĂ fail-closed: blob user→formă user, subject_kind absent→formă client, orice altceva→null.
     const payload = parseStoredRefresh(raw);
@@ -118,7 +117,7 @@ export async function rotateRefreshToken(
   const r = getRedis();
   if (!r) return { status: "unavailable" };
 
-  const oldHash = hashRefresh(oldToken);
+  const oldHash = hashCredential(oldToken);
   const access  = mintToken(accessPayload);
   const refresh = mintRefreshToken(newRefreshPayload);
   const famKey  = familyKey(newRefreshPayload.family_id);

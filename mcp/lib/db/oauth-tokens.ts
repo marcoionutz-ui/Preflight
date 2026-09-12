@@ -3,8 +3,9 @@
  * Access tokens + rate limiting — Redis, sesiuni temporare
  */
 
-import { createHash, randomBytes } from "crypto";
+import { randomBytes }            from "crypto";
 import { getRedis }                from "./redis";
+import { accessTokenKey }          from "./oauthStorageKeys";
 import { emergencyRateAllow, clearDegradedRate } from "../mcp/degraded";
 import { parseStoredToken }        from "../mcp/tokenGuard";
 import type { StoredTokenPayload } from "../oauth/tokenPayloadModel";
@@ -57,12 +58,6 @@ export type TokenValidation =
   | { status: "invalid" }
   | { status: "unavailable"; reason: string };
 
-// ── Token helpers ─────────────────────────────────────────────────────────────
-
-function hashToken(token: string): string {
-  return createHash("sha256").update(token).digest("hex");
-}
-
 // ── Issue ─────────────────────────────────────────────────────────────────────
 
 export async function issueToken(payload: TokenPayload): Promise<string | null> {
@@ -70,9 +65,9 @@ export async function issueToken(payload: TokenPayload): Promise<string | null> 
   if (!r) return null;
 
   const token = randomBytes(32).toString("hex");
-  const hash  = hashToken(token);
 
-  await r.set(`mcp:token:${hash}`, JSON.stringify(payload), "EX", TOKEN_TTL_SEC);
+  // Cheia (`mcp:token:<sha256>`) e construită prin sursa unică `accessTokenKey` (12.5b-5a) — fără prefix hardcodat.
+  await r.set(accessTokenKey(token), JSON.stringify(payload), "EX", TOKEN_TTL_SEC);
   return token;
 }
 
@@ -85,7 +80,7 @@ export async function issueToken(payload: TokenPayload): Promise<string | null> 
 // nu doar `TokenPayload` client-shaped. Doar `JSON.stringify` + hash; forma e garantată de builder-ul apelantului.
 export function mintToken<T>(payload: T): { token: string; key: string; value: string } {
   const token = randomBytes(32).toString("hex");
-  return { token, key: `mcp:token:${hashToken(token)}`, value: JSON.stringify(payload) };
+  return { token, key: accessTokenKey(token), value: JSON.stringify(payload) };
 }
 
 // ── Validate ──────────────────────────────────────────────────────────────────
@@ -96,7 +91,7 @@ export async function validateToken(token: string): Promise<TokenValidation> {
   if (!r) return { status: "unavailable", reason: "redis_unconfigured" };
 
   try {
-    const raw = await r.get(`mcp:token:${hashToken(token)}`);
+    const raw = await r.get(accessTokenKey(token));
     // Cheie absentă = token chiar inexistent/expirat → invalid (verificarea a reușit, răspunsul e „nu").
     if (!raw) return { status: "invalid" };
     // JSON invalid SAU formă invalidă (null / {} / scopes ne-string) → invalid, NU „valid cu payload null"
@@ -113,7 +108,7 @@ export async function validateToken(token: string): Promise<TokenValidation> {
 export async function revokeToken(token: string): Promise<void> {
   const r = getRedis();
   if (!r) return;
-  await r.del(`mcp:token:${hashToken(token)}`);
+  await r.del(accessTokenKey(token));
 }
 
 // ── Rate limit ────────────────────────────────────────────────────────────────

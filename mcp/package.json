@@ -117,7 +117,7 @@
     "test:integration": "npm run test:ph4-integration && npm run test:ph4-integration-down && npm run test:ph10-integration && npm run test:ph11-integration && npm run test:ph2-quota-atomic-integration && npm run test:ph2-usage-integration && npm run test:ph2-txnstore-integration && npm run test:ph2-txnstore-io-integration && npm run test:ph2-userauth-integration && npm run test:ph2-consumeissue-integration && npm run test:ph2-actionclaim-integration && npm run test:ph12-hb-redis && npm run test:ph12-canary-listener",
     "test:boot": "tsx scripts/bootGuard.test.ts",
     "test:boot-smoke": "tsx scripts/bootSmoke.integration.ts",
-    "test:ph12-canary": "tsx lib/mcp/canaryPkce.test.ts && tsx lib/mcp/canaryCallback.test.ts && tsx lib/mcp/canaryTokenClient.test.ts && tsx lib/mcp/canaryMcpClient.test.ts && tsx lib/mcp/canaryGate1.test.ts && tsx lib/mcp/canaryFetch.test.ts && tsx lib/mcp/canaryFixture.test.ts",
+    "test:ph12-canary": "tsx lib/mcp/canaryPkce.test.ts && tsx lib/mcp/canaryCallback.test.ts && tsx lib/mcp/canaryTokenClient.test.ts && tsx lib/mcp/canaryMcpClient.test.ts && tsx lib/mcp/canaryGate1.test.ts && tsx lib/mcp/canaryFetch.test.ts && tsx lib/mcp/canaryFixture.test.ts && tsx lib/mcp/canaryRedisCleanup.test.ts",
     "test:ph12-canary-listener": "tsx lib/mcp/canaryListener.integration.ts"
   },
   "dependencies": {
