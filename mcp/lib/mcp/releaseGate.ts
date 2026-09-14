@@ -38,6 +38,18 @@ export interface HealthReportView {
   scope:      string;
   checks:     { web: HealthCheckView; redis: HealthCheckView; worker: HealthCheckView; ws: HealthCheckView; services: HealthCheckView | null };
   services:   HealthServiceView[] | null;
+  // PH-12 12.5c (fix cgpt P1 #1): completitudinea per-CHAIN a raportului. Fără astea, un `/api/health?strict=1` verde
+  // pentru ALT chain (ex. arbitrum fresh, base absent) ar trece Gate 2 Base. Le păstrăm ca să cerem EXPLICIT base.
+  // ⭐ fix cgpt P1/P2 #3: distingem ABSENT (`undefined`) de PREZENT-GOL (`[]`). Sub `requireChains`, absența unei
+  // dovezi (staleChains/wsStaleSubs/... lipsă) e UNKNOWN → fail (nu „lista goală = curat"). Prezent-dar-malformat →
+  // `parseHealthReport` întoarce null (corupt). Byte-compat: apelurile FĂRĂ `requireChains` nu ating aceste câmpuri.
+  expectedChains:      string[] | undefined;
+  observedChains:      string[] | undefined;
+  staleChains:         string[] | undefined;
+  wsStaleSubs:         string[] | undefined;  // "chain:kind"
+  wsUnavailableChains: string[] | undefined;
+  wsUnknownChains:     string[] | undefined;
+  worstSnapshotAgeSec: number | null;         // null = absent SAU explicit null → sub requireChains ⇒ fail (nefresh)
 }
 
 function isObj(v: unknown): v is Record<string, unknown> {
@@ -46,6 +58,24 @@ function isObj(v: unknown): v is Record<string, unknown> {
 function asCheck(v: unknown): HealthCheckView | null {
   if (!isObj(v) || typeof v.ok !== "boolean") return null;
   return { ok: v.ok, detail: typeof v.detail === "string" ? v.detail : null };
+}
+/**
+ * Câmp array-de-string din raport, cu 3 stări discriminate: `"absent"` (câmp lipsă), `"corrupt"` (prezent dar
+ * non-array sau cu element non-string → tot raportul devine null), sau valoarea. ⭐ fix cgpt #3: absent ≠ `[]` — un
+ * consumator cu `requireChains` tratează absența ca UNKNOWN (fail), nu ca „listă goală = curat".
+ */
+function chainField(v: unknown): string[] | "absent" | "corrupt" {
+  if (v === undefined) return "absent";
+  if (!Array.isArray(v)) return "corrupt";
+  for (const e of v) if (typeof e !== "string") return "corrupt";
+  return v as string[];
+}
+/** Egalitate de MULȚIME (ordine-insensibilă, dedup) între două liste de string — pt. `expectedChains === cerut`. */
+function sameStringSet(a: readonly string[], b: readonly string[]): boolean {
+  const sa = new Set(a), sb = new Set(b);
+  if (sa.size !== sb.size) return false;
+  for (const x of sa) if (!sb.has(x)) return false;
+  return true;
 }
 
 /**
@@ -86,7 +116,35 @@ export function parseHealthReport(raw: unknown): HealthReportView | null {
     return null; // prezent dar non-array → corupt
   }
 
-  return { status, httpStatus: obj.httpStatus, scope: obj.scope, checks: { web, redis, worker, ws, services }, services: svcList };
+  // PH-12 12.5c: completitudinea per-chain. Corupt (prezent-invalid) → null pe tot raportul. Absent → `undefined`
+  // (distinct de `[]`): sub requireChains ⇒ fail (unknown), NU „curat".
+  const fields = {
+    expectedChains:      chainField(obj.expectedChains),
+    observedChains:      chainField(obj.observedChains),
+    staleChains:         chainField(obj.staleChains),
+    wsStaleSubs:         chainField(obj.wsStaleSubs),
+    wsUnavailableChains: chainField(obj.wsUnavailableChains),
+    wsUnknownChains:     chainField(obj.wsUnknownChains),
+  };
+  for (const f of Object.values(fields)) if (f === "corrupt") return null;
+  const asOpt = (f: string[] | "absent" | "corrupt"): string[] | undefined => (f === "absent" ? undefined : f as string[]);
+
+  let worstSnapshotAgeSec: number | null = null;
+  if (obj.worstSnapshotAgeSec === null || obj.worstSnapshotAgeSec === undefined) worstSnapshotAgeSec = null;
+  else if (typeof obj.worstSnapshotAgeSec === "number" && Number.isFinite(obj.worstSnapshotAgeSec)) worstSnapshotAgeSec = obj.worstSnapshotAgeSec;
+  else return null; // prezent dar non-număr → corupt
+
+  return {
+    status, httpStatus: obj.httpStatus, scope: obj.scope,
+    checks: { web, redis, worker, ws, services }, services: svcList,
+    expectedChains:      asOpt(fields.expectedChains),
+    observedChains:      asOpt(fields.observedChains),
+    staleChains:         asOpt(fields.staleChains),
+    wsStaleSubs:         asOpt(fields.wsStaleSubs),
+    wsUnavailableChains: asOpt(fields.wsUnavailableChains),
+    wsUnknownChains:     asOpt(fields.wsUnknownChains),
+    worstSnapshotAgeSec,
+  };
 }
 
 /**
@@ -109,7 +167,10 @@ export function assertReadiness(report: HealthReportView): GateResult {
  * unde `degraded`→503) + toate cele 4 check-uri de bază ok. Dacă aștepți roluri de serviciu monitorizate
  * (`expectedServiceRoles`), cere ȘI `checks.services.ok` + fiecare rol prezent în `scope` (extins de 12.4).
  */
-export function assertStrictHealthy(report: HealthReportView, opts: { expectedServiceRoles?: readonly string[] } = {}): GateResult {
+export function assertStrictHealthy(
+  report: HealthReportView,
+  opts: { expectedServiceRoles?: readonly string[]; requireChains?: readonly string[]; maxSnapshotAgeSec?: number } = {},
+): GateResult {
   if (report.status !== "ok")    return fail(`status ${report.status} (strict cere ok — worker/WS/servicii toate sănătoase)`);
   if (report.httpStatus !== 200) return fail(`httpStatus ${report.httpStatus} (strict-ok așteaptă 200)`);
   for (const [name, chk] of [["web", report.checks.web], ["redis", report.checks.redis], ["worker", report.checks.worker], ["ws", report.checks.ws]] as const) {
@@ -128,6 +189,39 @@ export function assertStrictHealthy(report: HealthReportView, opts: { expectedSe
       if (!entry)               return fail(`serviciul așteptat '${role}' NU e în report.services (health nu-l monitorizează)`);
       if (entry.state !== "ok") return fail(`serviciul '${role}' e '${entry.state}' (așteptat 'ok')`);
     }
+  }
+  // PH-12 12.5c (fix cgpt P1 #1): pentru Base canary NU e destul „status ok" — un health verde pentru ALT chain ar
+  // trece. Cerem EXPLICIT ca lista AȘTEPTATĂ să fie EXACT `requireChains` (nici mai mult — un `arbitrum` în plus ar
+  // cere alt worker) și, pentru FIECARE chain cerut: observat (amprentă worker), NU stale (snapshot fresh), și fără
+  // problemă WS (sub suspected-stale/disconnected/unknown → dovedit pe acel chain, nu doar global). Plus snapshot
+  // efectiv proaspăt (`worstSnapshotAgeSec < maxSnapshotAgeSec`). Astea sunt SPECIFICE pe chain, peste `checks.ws.ok`.
+  const need = opts.requireChains ?? [];
+  if (need.length > 0) {
+    const maxAge = opts.maxSnapshotAgeSec ?? 300;
+    if (!Number.isFinite(maxAge) || maxAge <= 0) return fail(`maxSnapshotAgeSec invalid (${maxAge}) — cere finit > 0`);
+    // ⭐ fix cgpt #3: ABSENȚA oricărei dovezi per-chain = UNKNOWN → fail (nu „listă goală = curat"). `[]` prezent e OK.
+    if (report.expectedChains      === undefined) return fail("raport fără expectedChains (dovadă absentă) — nu pot verifica chain-ul");
+    if (report.observedChains      === undefined) return fail("raport fără observedChains (dovadă absentă)");
+    if (report.staleChains         === undefined) return fail("raport fără staleChains (nu pot dovedi non-stale)");
+    if (report.wsStaleSubs         === undefined) return fail("raport fără wsStaleSubs (nu pot dovedi WS non-stale)");
+    if (report.wsUnavailableChains === undefined) return fail("raport fără wsUnavailableChains (nu pot dovedi WS conectat)");
+    if (report.wsUnknownChains     === undefined) return fail("raport fără wsUnknownChains (nu pot dovedi WS cunoscut)");
+    const expected = report.expectedChains, observed = report.observedChains, stale = report.staleChains;
+    const wsStale = report.wsStaleSubs, wsUnavail = report.wsUnavailableChains, wsUnknown = report.wsUnknownChains;
+
+    if (!sameStringSet(expected, need)) {
+      return fail(`expectedChains ${JSON.stringify(expected)} ≠ cerut ${JSON.stringify([...need])} (health monitorizează alte chain-uri)`);
+    }
+    for (const c of need) {
+      if (!observed.includes(c))                    return fail(`chain '${c}' nu e în observedChains (worker fără amprentă)`);
+      if (stale.includes(c))                        return fail(`chain '${c}' e stale (snapshot lipsă/prea vechi)`);
+      if (wsStale.some((s) => s.startsWith(`${c}:`))) return fail(`chain '${c}' are subscripții WS suspected-stale`);
+      if (wsUnavail.includes(c))                    return fail(`chain '${c}' WS disconnected`);
+      if (wsUnknown.includes(c))                    return fail(`chain '${c}' WS unknown (runtime lipsă/expirat)`);
+    }
+    if (report.worstSnapshotAgeSec === null)      return fail("worstSnapshotAgeSec null/absent (snapshot necunoscut) — strict cere snapshot fresh");
+    if (report.worstSnapshotAgeSec < 0)           return fail(`worstSnapshotAgeSec ${report.worstSnapshotAgeSec} negativ (skew)`);
+    if (report.worstSnapshotAgeSec >= maxAge)     return fail(`worstSnapshotAgeSec ${report.worstSnapshotAgeSec}s ≥ ${maxAge}s (snapshot stale)`);
   }
   return pass("strict healthy");
 }
