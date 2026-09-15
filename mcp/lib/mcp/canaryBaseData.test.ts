@@ -147,7 +147,7 @@ function baseHealthReport(over: Record<string, unknown> = {}): Record<string, un
 }
 const R = (o: Record<string, unknown> = {}) => parseHealthReport(baseHealthReport(o))!;
 
-check("C1. ⭐ parseHealthReport păstrează expectedChains/observedChains", (() => { const r = R(); return r.expectedChains[0] === "base" && r.observedChains[0] === "base"; })());
+check("C1. ⭐ parseHealthReport păstrează expectedChains/observedChains", (() => { const r = R(); return r.expectedChains?.[0] === "base" && r.observedChains?.[0] === "base"; })());
 check("C2. ⭐⭐ câmp de chain PREZENT dar corupt (observedChains cu non-string) → null (fail-closed)",
   parseHealthReport(baseHealthReport({ observedChains: ["base", 7] })) === null);
 check("C3. worstSnapshotAgeSec non-număr → null", parseHealthReport(baseHealthReport({ worstSnapshotAgeSec: "old" })) === null);
