@@ -102,7 +102,7 @@ export function vetGate2Targets(cfg: Partial<Gate2Config> | null | undefined): G
 
 export type WorkerStartCode = "spawn_failed" | "redis_unreachable" | "config";
 export type WorkerStopCode  = "stop_timeout" | "stop_failed";
-export type HealthFetchCode = "unreachable" | "malformed_json";
+export type HealthFetchCode = "unreachable" | "malformed_json" | "status_mismatch";
 
 export type WorkerStopResult  = { ok: true } | { ok: false; code: WorkerStopCode };
 export type WorkerStartResult = { ok: true; stop: (signal: AbortSignal) => Promise<WorkerStopResult> } | { ok: false; code: WorkerStartCode };
@@ -158,6 +158,9 @@ const STOP_MSG: Record<WorkerStopCode, string> = {
 const HEALTH_FETCH_MSG: Record<HealthFetchCode, string> = {
   unreachable:    "strict_health: /api/health?strict=1 inaccesibil (transport)",
   malformed_json: "strict_health: corpul /api/health nu e JSON valid",
+  // Statusul HTTP declarat în corp NU se potrivește cu statusul de transport REAL → server buggy/ostil; fail-closed
+  // (NU alegem un „câștigător", ceea ce ar masca inconsistența inversă). 12.5c-3b.
+  status_mismatch:"strict_health: httpStatus din corp ≠ statusul HTTP real (inconsistență transport/corp)",
 };
 
 export type Gate2Stage = "config" | "isolation" | "setup" | "start_worker" | "poll" | "stop_worker";
