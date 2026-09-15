@@ -14,6 +14,7 @@ import { getNativePrice, getNativeSymbolForChain } from "../infra/nativePrice";
 import { WORKER_VERSION } from "../config/constants";
 import { CHAINS } from "../config/chains";
 import { REDIS_KEYS, pairKey, splitPairKey, normalizeChainId, normalizePairAddress } from "@preflight/schema";
+import { canaryRunMarker } from "../lib/canaryMarker";
 import type { PreflightWorkerSnapshot } from "@preflight/schema";
 import { reserveSourceForRestore } from "../risk/liquidityClassify";
 
@@ -123,6 +124,10 @@ export async function saveMemoryToRedisStrict(): Promise<void> {
     (resByChain[chain] ??= {})[pairKey(chain, addr)] = liqCtx.reserveEth;
   }
   const savedAt = Date.now();
+  // PH-12 12.5c-4: marker de identitate a runului canary via primitiva CANONICĂ `canaryRunMarker()` (aceeași folosită de
+  // worker_runtime în pipeline/snapshots.ts). DORMANT în producție (fără `CANARY_RUN_ID` → `{}` → spread no-op → byte-compat).
+  // Bariera cere id-ul pe AMBELE payloaduri → un worker vechi/orfan care avansează savedAt fără id-ul curent PICĂ.
+  const canaryMark  = canaryRunMarker();
   const pipe    = r.pipeline();
   // Iterăm chain-urile RUNTIME-ului (CHAINS = ENABLED_CHAINS), nu doar cele cu date:
   // fiecare chain deținut primește o cheie proaspătă (chiar goală `{}`) → suprascrie
@@ -133,6 +138,7 @@ export async function saveMemoryToRedisStrict(): Promise<void> {
       savedAt,
       memory:         memByChain[chain] ?? {},
       poolReserveEth: resByChain[chain] ?? {},
+      ...canaryMark, // 12.5c-4: `{canaryRunId}` sub runnerul canary, altfel `{}` (spread no-op → JSON legacy)
     };
     pipe.set(REDIS_KEYS.workerSnapshot(chain), JSON.stringify(snapshot), "EX", 24 * 60 * 60);
   }

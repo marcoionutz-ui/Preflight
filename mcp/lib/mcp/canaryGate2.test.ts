@@ -467,6 +467,50 @@ check("P8. ⭐⭐ reason poll-fail NU conține tokenul (anti-leak)", r.ok === fa
     r.ok === false && r.stage === "start_worker" && /confirmat/.test(r.reason) && !/[Nn][Ee]confirmat/.test(r.reason));
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// GEN. Bariera de generație post-spawn (12.5c-4) — probele finale contează DOAR după barieră
+// ─────────────────────────────────────────────────────────────────────────────
+
+// GEN1 (DECISIV, fix cgpt): health/data/WS VERZI tot timpul (reziduu), dar generația NU avansează niciodată (ar avansa
+// abia la stop()) → Gate 2 ROȘU @ poll/generation. Bariera în poll împiedică falsul verde pe date pre-spawn.
+{
+  r = await runGate2(CFG_OK, (_t) => ({
+    startWorker: async (_s) => ({ ok: true, stop: async (_s2) => ({ ok: true }) }),
+    fetchHealth: async (_s) => ({ ok: true, body: healthBody() }),
+    mcpWorkerSnapshot: async (_t, _s) => okResult(baseWorkerData()),
+    mcpHealthCheck: async (_t, _s) => okResult(baseHealthData()),
+    checkGeneration: async (_s) => ({ ok: false, reason: "generație neavansată (reziduu pre-spawn)" }),
+  }), makeClock(), FAST);
+  check("GEN1. ⭐⭐⭐ probe vechi VERZI + generație NEavansată → Gate 2 ROȘU @ generation (barieră în poll)",
+    r.ok === false && r.stage === "poll" && r.probe === "generation");
+}
+
+// GEN2: generația avansează ÎN TIMPUL poll-ului (după câteva ticks) → Gate 2 VERDE (probele finale rulează după barieră).
+{
+  let gcalls = 0;
+  r = await runGate2(CFG_OK, (_t) => ({
+    startWorker: async (_s) => ({ ok: true, stop: async (_s2) => ({ ok: true }) }),
+    fetchHealth: async (_s) => ({ ok: true, body: healthBody() }),
+    mcpWorkerSnapshot: async (_t, _s) => okResult(baseWorkerData()),
+    mcpHealthCheck: async (_t, _s) => okResult(baseHealthData()),
+    checkGeneration: async (_s) => { gcalls++; return gcalls >= 3 ? { ok: true, reason: "avansat" } : { ok: false, reason: "încă nu" }; },
+  }), makeClock(), FAST);
+  check("GEN2. ⭐⭐⭐ generația avansează în poll → Gate 2 VERDE (probele finale după barieră)", r.ok === true);
+}
+
+// GEN3: barieră VERDE dar strict_health ROȘU → Gate 2 roșu @ strict_health (bariera nu maschează un health nesănătos).
+{
+  r = await runGate2(CFG_OK, (_t) => ({
+    startWorker: async (_s) => ({ ok: true, stop: async (_s2) => ({ ok: true }) }),
+    fetchHealth: async (_s) => ({ ok: true, body: healthBody({ status: "degraded" }) }),
+    mcpWorkerSnapshot: async (_t, _s) => okResult(baseWorkerData()),
+    mcpHealthCheck: async (_t, _s) => okResult(baseHealthData()),
+    checkGeneration: async (_s) => ({ ok: true, reason: "avansat" }),
+  }), makeClock(), FAST);
+  check("GEN3. ⭐⭐ barieră verde + strict_health roșu → Gate 2 roșu @ strict_health (nu mascat de barieră)",
+    r.ok === false && r.stage === "poll" && r.probe === "strict_health");
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
 })();

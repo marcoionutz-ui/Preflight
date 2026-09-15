@@ -33,6 +33,7 @@ import { writeCoverageSnapshot } from "./coverageSnapshot";
 import { writeTrendingSnapshots } from "../trending/trendingSnapshots";
 import { calculateMovers } from "../trending/trendingMovers";
 import { REDIS_KEYS, SCHEMA_VERSION, pairKey, splitPairKey, type PreflightDrop, type PreflightEvmChain } from "@preflight/schema";
+import { canaryRunMarker } from "../lib/canaryMarker";
 
 // E24: TTL-ul snapshot-urilor per-chain e derivat din intervalul de scan (≥ 2× interval, floor 120s), NU hardcodat
 // la 120s — altfel în DEV (scan 120s) cheia expiră exact la intervalul de rescriere → flap fals „chain mort".
@@ -57,6 +58,11 @@ export async function writeAllSnapshots(r: Redis): Promise<void> {
   // în pair_states), ca MCP-ul să deriveze wsConnectedChains/scanOnlyChains. Un worker
   // per-chain scrie doar cheile chain-urilor lui (CHAINS = runtime).
   const runtimeNow  = Date.now();
+  // PH-12 12.5c-4: marker de identitate a runului canary via primitiva CANONICĂ `canaryRunMarker()` (aceeași folosită de
+  // worker_snapshot în state/memory.ts). DORMANT în producție (fără `CANARY_RUN_ID` → `{}` → spread no-op → byte-compat).
+  // Bariera de generație cere EXACT acest id pe AMBELE payloaduri → dovadă că heartbeat-ul care avansează e al PROCESULUI
+  // pornit de acel run, nu al unui writer străin/reziduu.
+  const canaryMark  = canaryRunMarker();
   const runtimePipe = r.pipeline();
   const ageSec = (t: number | undefined): number | null =>
     typeof t === "number" ? Math.max(0, Math.round((runtimeNow - t) / 1000)) : null;
@@ -83,6 +89,8 @@ export async function writeAllSnapshots(r: Redis): Promise<void> {
       // Part B: granularitate per-subscripție (v2/v3/v4) — {confirmed, poolCount, confirmedAgeSec, lastMessageAgeSec}.
       wsSubs:      wsSubHealthForChain(c.id),
       updatedAt:   runtimeNow,
+      // 12.5c-4: marker de identitate — `{canaryRunId}` sub runnerul canary, altfel `{}` (spread no-op → JSON legacy).
+      ...canaryMark,
     }), "EX", SNAPSHOT_TTL_SEC);
   }
   await runtimePipe.exec();

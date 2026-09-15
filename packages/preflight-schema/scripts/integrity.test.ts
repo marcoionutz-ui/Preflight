@@ -16,6 +16,7 @@
 import {
   pairKey, splitPairKey, normalizeChainId, normalizePairAddress,
   REDIS_KEYS, PREFLIGHT_EVM_CHAINS,
+  type PreflightWorkerSnapshot, type PreflightWorkerRuntime,
 } from "../src/index";
 
 let passed = 0, failed = 0;
@@ -106,6 +107,19 @@ function main(): void {
     normalizeChainId("base") === "base" && REDIS_KEYS.risk("base", "0xToken") !== REDIS_KEYS.risk("ethereum", "0xToken"));
   check("6g. normalizePairAddress: EVM lowercase, Solana păstrat",
     normalizePairAddress("ethereum", "0xABC") === "0xabc" && normalizePairAddress("solana", "AbC") === "AbC");
+
+  // ── Invariant 7 (PH-12 12.5c-4): contractele canonice ACCEPTĂ canaryRunId opțional (doar contractul de TIP; proprietatea
+  //    de output — byte-compat vs. marker exact — e dovedită pe PRIMITIVA REALĂ în workers/evm/scripts/canaryMarker.test.ts,
+  //    NU oglindită aici). Fix cgpt rev6: nu mai reproducem tiparul de write local; verificăm doar că schema acceptă câmpul
+  //    (prezent ȘI absent → passthrough worker vechi). ──
+  const typedSnap: PreflightWorkerSnapshot = { version: "v1", savedAt: 1, memory: {}, poolReserveEth: {}, canaryRunId: "wrkT" };
+  const typedRt: PreflightWorkerRuntime   = { chain: "base", wsConnected: true, updatedAt: 1, canaryRunId: "wrkT" };
+  check("7a. contractele canonice acceptă canaryRunId opțional (compilează + valoare prezentă)",
+    typedSnap.canaryRunId === "wrkT" && typedRt.canaryRunId === "wrkT");
+  const legacySnap: PreflightWorkerSnapshot = { version: "v1", savedAt: 1, memory: {}, poolReserveEth: {} };
+  const legacyRt: PreflightWorkerRuntime   = { chain: "base", wsConnected: true, updatedAt: 1 };
+  check("7b. contractele rămân valide FĂRĂ câmp (opțional → passthrough worker vechi)",
+    legacySnap.canaryRunId === undefined && legacyRt.canaryRunId === undefined);
 
   console.log(`\n${passed} passed, ${failed} failed`);
   if (failed > 0) process.exit(1);

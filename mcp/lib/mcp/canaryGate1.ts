@@ -104,7 +104,7 @@ export interface AuthCodeBundle {
 export type ReadinessCode = "unreachable" | "not_ready" | "bad_status" | "malformed";
 export type ReadinessResult = { ok: true } | { ok: false; code: ReadinessCode };
 
-export type AuthorizeCode = "browser_failed" | "callback_error" | "state_mismatch" | "iss_mismatch" | "timeout" | "malformed";
+export type AuthorizeCode = "browser_failed" | "callback_error" | "state_mismatch" | "iss_mismatch" | "timeout" | "malformed" | "magic_link_unbound";
 export type AuthorizeOutcome = { ok: true; bundle: AuthCodeBundle } | { ok: false; code: AuthorizeCode };
 
 export type McpProbeCode = "unauthorized" | "rate_limited" | "unavailable" | "transport" | "bad_shape" | "protocol_error";
@@ -138,6 +138,7 @@ const AUTHORIZE_MSG: Record<AuthorizeCode, string> = {
   iss_mismatch:   "authorize: iss mismatch la callback (RFC 9207)",
   timeout:        "authorize: timeout așteptând callback-ul loopback",
   malformed:      "authorize: callback malformat (fail-closed)",
+  magic_link_unbound: "authorize: magic link NElegat de Supabase-ul vetat (origine/pathname greșit — posibil alt Supabase)",
 };
 const MCP_MSG: Record<McpProbeCode, string> = {
   unauthorized:   "token respins (401 unauthorized/invalid_token)",

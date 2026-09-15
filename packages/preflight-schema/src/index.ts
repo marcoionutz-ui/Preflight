@@ -336,6 +336,11 @@ export interface PreflightWorkerSnapshot {
   savedAt:        number;
   memory:         Record<string, PreflightMemoryEntry>;
   poolReserveEth: Record<string, number>;
+  // PH-12 12.5c-4: marker de identitate a runului canary. DORMANT în producție (scris DOAR când env-ul `CANARY_RUN_ID`
+  // e prezent — config închis al runnerului de release-gate; absent altfel → câmpul e omis, byte-compat). Bariera de
+  // generație a release-gate-ului cere ca AMBELE payloaduri (runtime + snapshot) să poarte EXACT id-ul rulării, dovedind
+  // că heartbeat-ul avansat e al procesului pornit de acel run. `?` → passthrough-safe (worker vechi nu-l publică).
+  canaryRunId?:   string;
 }
 
 // ── Signal types ──────────────────────────────────────────────────────────────
@@ -499,6 +504,9 @@ export interface PreflightWorkerRuntime {
     v4?: PreflightWsSubHealth;
   };
   updatedAt:   number;
+  // PH-12 12.5c-4: marker de identitate a runului canary — v. `PreflightWorkerSnapshot.canaryRunId`. DORMANT în producție
+  // (scris doar sub `CANARY_RUN_ID`); `?` → passthrough-safe. Bariera de generație îl cere pe AMBELE payloaduri.
+  canaryRunId?: string;
 }
 
 // ── Drop ──────────────────────────────────────────────────────────────────────

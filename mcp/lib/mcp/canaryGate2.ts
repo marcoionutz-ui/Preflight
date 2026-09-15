@@ -119,6 +119,13 @@ export interface Gate2Steps {
   fetchHealth:       (signal: AbortSignal) => Promise<HealthFetchResult>;
   mcpWorkerSnapshot: (accessToken: string, signal: AbortSignal) => Promise<McpCallResult>;
   mcpHealthCheck:    (accessToken: string, signal: AbortSignal) => Promise<McpCallResult>;
+  /**
+   * OPȚIONAL — bariera de GENERAȚIE post-spawn (12.5c-4). Când e injectată, probele strict_health/base_data/base_ws
+   * contează drept verzi DOAR după ce această probă e verde (timestampurile Redis worker_runtime/worker_snapshot au
+   * avansat strict față de baseline-ul pre-spawn). Fără ea (12.5c-3b standalone), poll-ul e neschimbat. Verde/roșu ca
+   * `GateResult` (fail-closed pe baseline corupt/indisponibil). Fluxul compus 12.5c-4 o construiește; Gate 2 doar o gatează.
+   */
+  checkGeneration?:  (signal: AbortSignal) => Promise<GateResult>;
 }
 
 /** Ceas injectat → polling/deadline-uri deterministe la test. */
@@ -164,7 +171,7 @@ const HEALTH_FETCH_MSG: Record<HealthFetchCode, string> = {
 };
 
 export type Gate2Stage = "config" | "isolation" | "setup" | "start_worker" | "poll" | "stop_worker";
-export type Gate2Probe = "strict_health" | "base_data" | "base_ws";
+export type Gate2Probe = "strict_health" | "base_data" | "base_ws" | "generation";
 
 const THREW: Record<Gate2Stage, string> = {
   config:       "config: parametri de timing invalizi (fail-closed)",
@@ -373,8 +380,8 @@ async function runPoll(
   const pollStart0 = o.nowOrNull();
   if (pollStart0 === null) return { ok: false, stage: "poll", reason: "clock.now() invalid la pornirea poll-ului (fail-closed)" };
   const pollStart = pollStart0;
-  let lastHealthAt = -Infinity, lastDataAt = -Infinity, lastWsAt = -Infinity;
-  let health: GateResult | null = null, data: GateResult | null = null, ws: GateResult | null = null;
+  let lastHealthAt = -Infinity, lastDataAt = -Infinity, lastWsAt = -Infinity, lastGenAt = -Infinity;
+  let health: GateResult | null = null, data: GateResult | null = null, ws: GateResult | null = null, gen: GateResult | null = null;
 
   // ⭐ fix cgpt: bound per-probă care ANULEAZĂ efectiv proba la expirare (abort + grace), PLAFONAT de timpul RĂMAS din
   // global — o probă pornită aproape de global folosește DOAR timpul rămas, nu tot `probeTmo` (global = deadline HARD).
@@ -412,6 +419,9 @@ async function runPoll(
   // ⭐ fix cgpt P2: diagnostic COERENT. Numim prima probă care PICĂ (sau e neevaluată); dacă TOATE-s verzi (dar am
   // depășit deadline-ul), NU acuzăm o probă verde — reason distinct, `probe` OMIS.
   const diagnose = (): { probe?: Gate2Probe; reason: string } => {
+    // ⭐ 12.5c-4: bariera de generație e PRIMA în diagnostic — dacă e activă și neverde, ea e cauza (probele finale au
+    // fost resetate intenționat până trece bariera; nu acuzăm „strict_health neevaluat").
+    if (steps.checkGeneration && (!gen || !gen.ok)) return { probe: "generation", reason: gen ? gen.reason : "generation: neevaluat (baseline neavansat post-spawn)" };
     if (!health)     return { probe: "strict_health", reason: "strict_health: neevaluat" };
     if (!health.ok)  return { probe: "strict_health", reason: health.reason };
     if (!data)       return { probe: "base_data", reason: "base_data: neevaluat" };
@@ -436,6 +446,25 @@ async function runPoll(
   };
 
   for (;;) {
+    // ⭐ 12.5c-4 — BARIERA DE GENERAȚIE (fix cgpt P1): când e injectată, probele finale (health/data/ws) contează DOAR
+    // DUPĂ ce timestampurile Redis au avansat strict față de baseline-ul pre-spawn. Cât timp bariera e roșie, RESETĂM
+    // probele finale (null) — ca să NU se acumuleze un „verde" pe date pre-generație (reziduu) și ca probele finale să
+    // se re-execute DUPĂ barieră. Un worker care avansează timestampurile abia la stop() → bariera nu devine verde în
+    // fereastra de poll → Gate 2 roșu. Baseline corupt/indisponibil → `checkGeneration` întoarce roșu (fail-closed).
+    if (steps.checkGeneration) {
+      const tg = tick(); if ("bail" in tg) return tg.bail;
+      const cg = steps.checkGeneration;
+      if (tg.now - lastGenAt >= o.healthEvery) { gen = await boundProbe("generation", (sig) => cg(sig)); lastGenAt = tg.now; }
+      if (!gen || !gen.ok) {
+        // barieră neîndeplinită → probele finale NU contează încă; resetăm ȘI cadențele ca, odată trecută bariera, să
+        // se RE-EXECUTE imediat pe date FRESH (nu un rezultat cache-uit dinainte de avansarea generației).
+        health = null; data = null; ws = null;
+        lastHealthAt = -Infinity; lastDataAt = -Infinity; lastWsAt = -Infinity;
+        await clock.sleep(o.healthEvery);
+        continue;
+      }
+    }
+
     // ⭐ fix cgpt P1: verific deadline-ul ÎNAINTE de FIECARE probă — dacă health consumă restul warm-up-ului, data și ws
     //   NU mai pornesc (nu pornim probe MCP într-o fereastră deja expirată). Post-eval re-check acoperă și falsul verde.
     const t0 = tick(); if ("bail" in t0) return t0.bail;

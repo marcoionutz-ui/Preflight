@@ -27,6 +27,7 @@
 import type {
   Gate2Steps, Gate2Targets, WorkerStartResult, WorkerStopResult, HealthFetchResult,
 } from "./canaryGate2";
+import type { GateResult } from "./releaseGate";
 import type { McpCallResult } from "./canaryMcpClient";
 import { callMcpTool } from "./canaryMcpClient";
 import type { FetchFn, FetchResponseLike } from "./canaryFetch";
@@ -72,11 +73,33 @@ export function mergeAbortSignals(...signals: (AbortSignal | undefined)[]): Abor
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
 
 /**
- * Prefixe de env care NU au voie să ajungă în procesul worker: variabilele runner-only care pot purta SECRETE de canary
- * (ex. `GATE2_ACCESS_TOKEN` = Bearer-ul Gate 2). Worker-ul nu are nevoie de ele; le stripuim din env-ul de spawn ca un
- * `baseEnv: {...process.env}` naiv să NU scurgă tokenul într-un proces copil. `GATE2_DEBUG` (tot runner-only) la fel.
+ * ⭐ ALLOWLIST (fix cgpt P1, corectură la denylist): worker-ul moștenește DIN `baseEnv` DOAR infrastructura de proces —
+ * NU un denylist pe sufixe (ar rata secrete cu nume neconvenționale ȘI ar putea elimina config legitim). Restul (secrete
+ * MCP/Supabase precum `SUPABASE_SERVICE_ROLE_KEY`, chei OAuth, `GATE2_ACCESS_TOKEN`) NU trece. Configul workerului se
+ * INJECTEAZĂ EXPLICIT: control keys (`REDIS_URL`/`ALCHEMY_BASE_WS`/`ENABLED_CHAINS`/`PREFLIGHT_MODE`) + `extraEnv`
+ * (`ALCHEMY_BASE_RPC` etc. aprobate de runner). Așa un `baseEnv:{...process.env}` naiv nu poate scurge NIMIC în copil.
  */
-export const WORKER_ENV_DENYLIST_PREFIXES: readonly string[] = ["GATE2_"];
+export const WORKER_ENV_INFRA_ALLOWLIST: readonly string[] = [
+  // ⭐ fix cgpt P1: NU include `NODE_OPTIONS` — poate injecta cod în copil prin `--require`/`--import` (capabilitate
+  // executabilă). Doar infra pasivă de proces.
+  "PATH", "HOME", "NODE_ENV",
+  "TMPDIR", "TEMP", "TMP",
+  "TZ", "LANG", "LC_ALL", "LC_CTYPE",
+  "PWD", "SHELL", "USER", "LOGNAME", "HOSTNAME", "TERM",
+  "NVM_DIR", "NVM_BIN", // WSL + nvm: găsirea node/tsx la `npx tsx`
+];
+
+/** `ALCHEMY_BASE_RPC` (opțional) valid: `https://` OBLIGATORIU, host prezent, FĂRĂ userinfo/#fragment. Cheia e în path (secret) → NU se ecouă. */
+function isWorkerRpcUrl(raw: string): boolean {
+  if (typeof raw !== "string" || raw.trim() === "") return false;
+  let u: URL;
+  try { u = new URL(raw); } catch { return false; }
+  if (u.protocol !== "https:") return false;
+  if (u.hostname === "") return false;
+  if (u.username !== "" || u.password !== "") return false;
+  if (u.hash !== "") return false;
+  return true;
+}
 
 /**
  * `ALCHEMY_BASE_WS` valid pentru cheia Alchemy: **`wss://` OBLIGATORIU** (cheia e în path — `ws://` clar ar trimite-o
@@ -94,6 +117,15 @@ function isWorkerWsUrl(raw: string): boolean {
   return true;
 }
 
+/**
+ * ⭐ fix cgpt P1 (rev4): `CANARY_RUN_ID` (marker de identitate a runului, injectat de runnerul compus) — token OPAC strict:
+ * `[A-Za-z0-9_-]`, 1..128. Refuză spații/newline/`=`/control chars → NU poate injecta o a doua variabilă în env-ul de boot
+ * și nu poate polua boot-log-ul. NU se ecouă valoarea (deși nu e secret, e disciplina anti-injecție a env-ului worker).
+ */
+function isCanaryRunId(raw: string): boolean {
+  return typeof raw === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(raw);
+}
+
 /** `REDIS_URL` acceptat DOAR pe loopback + schemă redis(s) — anti-prod (workerul nu pornește pe un Redis extern). */
 function isLoopbackRedisUrl(raw: string): boolean {
   let u: URL;
@@ -105,36 +137,42 @@ function isLoopbackRedisUrl(raw: string): boolean {
 export type WorkerEnvResult = { ok: true; env: Record<string, string> } | { ok: false; reason: string };
 
 /**
- * Construiește env-ul Worker Base pentru spawn: peste `baseEnv` (PATH/HOME/NODE_ENV… de la runner) suprapune EXACT
- * cheile de control — `ENABLED_CHAINS=base`, `PREFLIGHT_MODE=LIVE`, `ALCHEMY_BASE_WS`, `REDIS_URL` — ULTIMELE, ca un
- * `baseEnv`/`extraEnv` care ar conține din greșeală `ENABLED_CHAINS=base,arbitrum` (alt chain = alt cost RPC) SAU
- * `PREFLIGHT_MODE=DEV` (scan-only tăcut) să NU poată submina garanția leaf-ului. Fail-closed ÎNAINTE de orice spawn:
+ * Construiește env-ul Worker Base pentru spawn: din `baseEnv` trece DOAR `WORKER_ENV_INFRA_ALLOWLIST` (infra de proces —
+ * niciun secret MCP/Supabase), peste ea `extraEnv` (config aprobat de runner) apoi cheile de control — `ENABLED_CHAINS=
+ * base`, `PREFLIGHT_MODE=LIVE`, `ALCHEMY_BASE_WS`, `REDIS_URL` — ULTIMELE (SUPRASCRIU orice `extraEnv` ar conține din
+ * greșeală, ex. `ENABLED_CHAINS=base,arbitrum` = alt cost RPC, sau `PREFLIGHT_MODE=DEV` = scan-only tăcut). Fail-closed ÎNAINTE de orice spawn:
  *   - `ALCHEMY_BASE_WS` gol/invalid → `config` (fără el, LIVE ar rula base scan-only tăcut → date absente + nicio dovadă WS);
  *   - `REDIS_URL` non-loopback → `config` (anti-prod: nu pornim un consumator Alchemy pe Redis-ul de producție).
  * Mesajele NU ecouă valorile (secret/injecție în boot-log).
  */
 export function buildWorkerBaseEnv(
-  baseEnv:       Record<string, string>,
-  redisUrl:      string,
-  alchemyBaseWs: string,
-  extraEnv?:     Record<string, string>,
+  baseEnv:        Record<string, string>,
+  redisUrl:       string,
+  alchemyBaseWs:  string,
+  alchemyBaseRpc?: string, // ⭐ fix cgpt P1: SET ÎNCHIS de config aprobat (NU `extraEnv` free-form care ar ocoli allowlist-ul)
+  canaryRunId?:   string,  // ⭐ fix cgpt P1 (rev4): marker de identitate a runului — config ÎNCHIS, NU din baseEnv/allowlist
 ): WorkerEnvResult {
   if (!isWorkerWsUrl(alchemyBaseWs)) return { ok: false, reason: "ALCHEMY_BASE_WS lipsă/invalid (cere wss://, host, fără userinfo/#fragment) — LIVE ar rula base scan-only sau ar scurge cheia" };
   if (!isLoopbackRedisUrl(redisUrl)) return { ok: false, reason: "REDIS_URL non-loopback/schemă greșită — refuz (anti-prod)" };
-  const env: Record<string, string> = {
-    ...baseEnv,
-    ...(extraEnv ?? {}),
-    // Cheile de control — SUPRASCRIU orice ar veni din baseEnv/extraEnv (garanție: base-only, LIVE, WS real, Redis loopback).
-    ENABLED_CHAINS:  "base",
-    PREFLIGHT_MODE:  "LIVE",
-    ALCHEMY_BASE_WS: alchemyBaseWs,
-    REDIS_URL:       redisUrl,
-  };
-  // Strip runner-only secrets (GATE2_*) — un `baseEnv:{...process.env}` naiv ar căra `GATE2_ACCESS_TOKEN` (Bearer-ul
-  // Gate 2) în procesul worker. Worker-ul nu-l folosește; îl ținem AFARĂ din env-ul de spawn.
-  for (const k of Object.keys(env)) {
-    if (WORKER_ENV_DENYLIST_PREFIXES.some((p) => k.startsWith(p))) delete env[k];
+  // RPC opțional: dacă e furnizat, TREBUIE valid (https, host, fără userinfo/#fragment) — altfel config fail (NU ecouă cheia).
+  if (alchemyBaseRpc !== undefined && !isWorkerRpcUrl(alchemyBaseRpc)) return { ok: false, reason: "ALCHEMY_BASE_RPC invalid (cere https://, host, fără userinfo/#fragment)" };
+  // canaryRunId opțional: dacă e furnizat, TREBUIE token opac strict (anti-injecție env) — altfel config fail (NU ecouă valoarea).
+  if (canaryRunId !== undefined && !isCanaryRunId(canaryRunId)) return { ok: false, reason: "CANARY_RUN_ID invalid (cere [A-Za-z0-9_-], 1..128) — refuz injecția în env-ul worker" };
+  // ⭐ ALLOWLIST: din baseEnv trece DOAR infrastructura (nimic altceva — niciun secret, nici măcar config workerul citit
+  // din baseEnv). Peste ea, DOAR config-ul închis aprobat + cheile de control (care SUPRASCRIU orice).
+  const env: Record<string, string> = {};
+  for (const k of WORKER_ENV_INFRA_ALLOWLIST) {
+    if (typeof baseEnv[k] === "string") env[k] = baseEnv[k];
   }
+  env.ENABLED_CHAINS  = "base";        // control — base-only (cost)
+  env.PREFLIGHT_MODE  = "LIVE";        // control — WS-live (nu scan-only tăcut)
+  env.ALCHEMY_BASE_WS = alchemyBaseWs; // control — cheia validată
+  env.REDIS_URL       = redisUrl;      // control — loopback validat
+  if (alchemyBaseRpc !== undefined) env.ALCHEMY_BASE_RPC = alchemyBaseRpc; // config închis aprobat (RPC HTTP opțional)
+  // ⭐ CANARY_RUN_ID: injectat EXPLICIT ca set închis (nu din baseEnv). Workerul îl publică în heartbeat-ul worker_runtime;
+  //   bariera de generație a release-gate-ului cere EXACT acest id (dovada că heartbeat-ul avansat e al procesului nostru).
+  //   E DUPĂ allowlist → chiar dacă baseEnv-ul ar conține din greșeală un CANARY_RUN_ID, ăsta e cel autoritar (sau absent).
+  if (canaryRunId !== undefined) env.CANARY_RUN_ID = canaryRunId;
   return { ok: true, env };
 }
 
@@ -149,10 +187,11 @@ export interface WorkerLaunch {
   command:       string;
   args:          readonly string[];
   cwd:           string;
-  baseEnv:       Record<string, string>;  // env de bază pe care worker-ul îl primește (spawn înlocuiește process.env)
-  alchemyBaseWs: string;                   // ALCHEMY_BASE_WS (secret în path); validat înainte de spawn
-  extraEnv?:     Record<string, string>;   // opțional (ex. ALCHEMY_BASE_RPC) — NU poate suprascrie cheile de control
-  onDebugLine?:  (line: string) => void;   // debug OPT-IN (stderr redactat linie cu linie); fără el, stderr = ignore
+  baseEnv:        Record<string, string>;  // filtrat de buildWorkerBaseEnv la ALLOWLIST-ul de infra (niciun secret trece)
+  alchemyBaseWs:  string;                   // ALCHEMY_BASE_WS (secret în path); validat wss înainte de spawn
+  alchemyBaseRpc?: string;                  // ⭐ config ÎNCHIS opțional (RPC HTTP) — validat https; NU un `extraEnv` free-form
+  canaryRunId?:   string;                   // ⭐ marker de identitate a runului (config ÎNCHIS) — injectat ca CANARY_RUN_ID; validat token opac
+  onDebugLine?:   (line: string) => void;   // debug OPT-IN (stderr redactat linie cu linie); fără el, stderr = ignore
 }
 
 // ────────────────────────────── deps injectabile (spawn/stop/fetch + hooks runner) ──────────────────────────────
@@ -169,6 +208,8 @@ export interface Gate2StepsDeps {
   onSpawn?:      (proc: ManagedProc) => void;
   /** Hook: rezultatul REAL al stop-ului (cu `teardownConfirmed`) — runnerul latch-uiește din el, fără re-sondare pgid. */
   onStopResult?: (r: ManagedStopResult) => void;
+  /** 12.5c-4: bariera de generație post-spawn (construită de runnerul compus din baseline + citirea cheilor Redis). */
+  checkGeneration?: (signal: AbortSignal) => Promise<GateResult>;
 }
 
 // ────────────────────────────── maparea rezultatului de stop (3a → contractul Gate 2) ──────────────────────────────
@@ -233,8 +274,8 @@ export function makeGate2Steps(deps: Gate2StepsDeps, targets: Gate2Targets): Gat
     // Fereastra de start a orchestratorului deja închisă → NU pornim un consumator Alchemy (cost) degeaba.
     if (signal.aborted) return { ok: false, code: "spawn_failed" };
 
-    const envR = buildWorkerBaseEnv(launch.baseEnv, targets.redisUrl, launch.alchemyBaseWs, launch.extraEnv);
-    if (!envR.ok) return { ok: false, code: "config" }; // ALCHEMY_BASE_WS/REDIS_URL invalid — niciun proces pornit
+    const envR = buildWorkerBaseEnv(launch.baseEnv, targets.redisUrl, launch.alchemyBaseWs, launch.alchemyBaseRpc, launch.canaryRunId);
+    if (!envR.ok) return { ok: false, code: "config" }; // ALCHEMY_BASE_WS/REDIS_URL/RPC/CANARY_RUN_ID invalid — niciun proces pornit
 
     const spec: SpawnSpec = {
       command: launch.command, args: launch.args, cwd: launch.cwd, env: envR.env,
@@ -300,5 +341,7 @@ export function makeGate2Steps(deps: Gate2StepsDeps, targets: Gate2Targets): Gat
     fetchHealth,
     mcpWorkerSnapshot: mcpCall(SNAPSHOT_TOOL, { chain: "base" }),
     mcpHealthCheck:    mcpCall(HEALTH_TOOL, undefined),
+    // 12.5c-4: bariera de generație — passthrough din deps (runnerul compus o construiește; standalone n-o dă → undefined).
+    ...(deps.checkGeneration ? { checkGeneration: deps.checkGeneration } : {}),
   };
 }

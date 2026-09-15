@@ -147,6 +147,19 @@ async function main(): Promise<void> {
     check("19. ⭐⭐⭐ authorize code → stage authorize, exchange NU rulează", r.ok === false && !r.ok && r.stage === "authorize" && /state mismatch/.test(r.reason) && !spy.order.includes("exchange"));
   }
   {
+    // ⭐ fix cgpt P1 (12.5c-4): codul `bad_status` (din reconcileReadiness pt. status mismatch) e ÎN union-ul canonic →
+    // runGate1 mapează la un reason STATIC, non-gol (nu `undefined`).
+    const spy = newSpy();
+    const r = await runGate1(LOCAL, factory({ readiness: { ok: false, code: "bad_status" } }, spy));
+    check("18b. ⭐⭐⭐ readiness bad_status (status mismatch) → reason static non-gol prin runGate1", r.ok === false && !r.ok && r.stage === "readiness" && typeof r.reason === "string" && r.reason.length > 0 && /status HTTP/i.test(r.reason) && !spy.order.includes("authorize"));
+  }
+  {
+    // ⭐ fix cgpt P1 (12.5c-4): codul NOU `magic_link_unbound` (din runner) e ACUM în union+map → reason static non-gol.
+    const spy = newSpy();
+    const r = await runGate1(LOCAL, factory({ authorize: { ok: false, code: "magic_link_unbound" } }, spy));
+    check("19b. ⭐⭐⭐ authorize magic_link_unbound → reason static non-gol prin runGate1 (nu undefined)", r.ok === false && !r.ok && r.stage === "authorize" && typeof r.reason === "string" && r.reason.length > 0 && /magic link/i.test(r.reason) && !spy.order.includes("exchange"));
+  }
+  {
     const spy = newSpy();
     const r = await runGate1(LOCAL, factory({ exchange: { ok: false, stage: "http", status: 400, reason: "HTTP 400 invalid_grant SECRET" } }, spy));
     check("20. ⭐⭐⭐ exchange fail → stage exchange din stage+status; mcp NU rulează", r.ok === false && !r.ok && r.stage === "exchange" && r.reason === "exchange: /token a răspuns HTTP 400" && !spy.order.includes("mcp"));

@@ -100,15 +100,28 @@ async function main(): Promise<void> {
     check("A1b. ⭐⭐ baseEnv păstrat (PATH/HOME/NODE_ENV)", r.ok && r.env.PATH === "/usr/bin" && r.env.HOME === "/home/x" && r.env.NODE_ENV === "production");
   }
   {
-    // Cheile de control SUPRASCRIU orice ar veni din baseEnv/extraEnv (garanție base-only / LIVE / loopback).
+    // Cheile de control SUPRASCRIU orice ar veni din baseEnv (garanție base-only / LIVE / loopback). baseEnv poison
+    // (ENABLED_CHAINS/PREFLIGHT_MODE/REDIS) nici nu-i în allowlist → oricum dropat, apoi control keys pun valorile corecte.
     const poisoned = { ...BASE_ENV, ENABLED_CHAINS: "base,arbitrum", PREFLIGHT_MODE: "DEV", REDIS_URL: "redis://prod:6379" };
-    const r = buildWorkerBaseEnv(poisoned, TARGETS.redisUrl, ALCHEMY_WS, { PREFLIGHT_MODE: "DEV", ENABLED_CHAINS: "ethereum" });
-    check("A2. ⭐⭐⭐ cheile de control suprascriu baseEnv+extraEnv (ENABLED_CHAINS=base, LIVE, REDIS loopback)",
+    const r = buildWorkerBaseEnv(poisoned, TARGETS.redisUrl, ALCHEMY_WS);
+    check("A2. ⭐⭐⭐ cheile de control suprascriu orice din baseEnv (ENABLED_CHAINS=base, LIVE, REDIS loopback)",
       r.ok && r.env.ENABLED_CHAINS === "base" && r.env.PREFLIGHT_MODE === "LIVE" && r.env.REDIS_URL === TARGETS.redisUrl);
   }
   {
-    const r = buildWorkerBaseEnv(BASE_ENV, TARGETS.redisUrl, ALCHEMY_WS, { ALCHEMY_BASE_RPC: "https://base.example/v2/K" });
-    check("A3. ⭐⭐ extraEnv non-control păstrat (ALCHEMY_BASE_RPC)", r.ok && r.env.ALCHEMY_BASE_RPC === "https://base.example/v2/K");
+    // ⭐ config închis RPC: https valid → în env; invalid → config fail (fără leak); absent → skip.
+    const ok  = buildWorkerBaseEnv(BASE_ENV, TARGETS.redisUrl, ALCHEMY_WS, "https://base-mainnet.g.alchemy.com/v2/RPCKEY");
+    const abs = buildWorkerBaseEnv(BASE_ENV, TARGETS.redisUrl, ALCHEMY_WS);
+    check("A3. ⭐⭐⭐ ALCHEMY_BASE_RPC https valid → în env (config închis, NU extraEnv free-form)", ok.ok && ok.env.ALCHEMY_BASE_RPC === "https://base-mainnet.g.alchemy.com/v2/RPCKEY");
+    check("A3b. ⭐⭐ RPC absent → cheia lipsește din env (skip)", abs.ok && abs.env.ALCHEMY_BASE_RPC === undefined);
+    const rHttp = buildWorkerBaseEnv(BASE_ENV, TARGETS.redisUrl, ALCHEMY_WS, "http://x/v2/RPCKEY");
+    const rUser = buildWorkerBaseEnv(BASE_ENV, TARGETS.redisUrl, ALCHEMY_WS, "https://u:p@x/v2/RPCKEY");
+    const rFrag = buildWorkerBaseEnv(BASE_ENV, TARGETS.redisUrl, ALCHEMY_WS, "https://x/v2/RPCKEY#f");
+    check("A3c. ⭐⭐⭐ RPC http/userinfo/#fragment → config fail, fără leak", !rHttp.ok && !rUser.ok && !rFrag.ok && !/RPCKEY/.test((rUser).ok ? "" : (rUser).reason));
+  }
+  {
+    // ⭐ fix cgpt P1: NODE_OPTIONS NU e în allowlist → nu poate injecta cod (--require/--import) în copil.
+    const r = buildWorkerBaseEnv({ ...BASE_ENV, NODE_OPTIONS: "--require /evil.js" }, TARGETS.redisUrl, ALCHEMY_WS);
+    check("A3d. ⭐⭐⭐ NODE_OPTIONS din baseEnv → STRIPAT (fără capabilitate executabilă în copil)", r.ok && r.env.NODE_OPTIONS === undefined);
   }
   {
     const empty = buildWorkerBaseEnv(BASE_ENV, TARGETS.redisUrl, "");
@@ -139,11 +152,43 @@ async function main(): Promise<void> {
     check("A9. ⭐⭐⭐ reason NU ecouă secretul din ALCHEMY_BASE_WS (anti-leak)", !r.ok && !/SECRETKEY/.test(r.reason));
   }
   {
-    // ⭐ fix cgpt P1: tokenul Gate 2 (GATE2_*) NU are voie în env-ul worker-ului (un baseEnv:{...process.env} naiv l-ar căra).
-    const poisoned = { ...BASE_ENV, GATE2_ACCESS_TOKEN: "SECRET_BEARER", GATE2_DEBUG: "1" };
+    // ⭐ fix cgpt P1 (ALLOWLIST): din baseEnv trece DOAR infra; orice secret MCP/Supabase/GATE2 NU ajunge în worker.
+    const poisoned = {
+      ...BASE_ENV,
+      GATE2_ACCESS_TOKEN: "SECRET_BEARER", GATE2_DEBUG: "1",
+      SUPABASE_SERVICE_ROLE_KEY: "SR_SECRET", NEXT_PUBLIC_SUPABASE_URL: "http://x", SUPABASE_ANON_KEY: "ANON",
+      OAUTH_SIGNING_SECRET: "OS", SOME_WEIRD_TOKEN: "WT", MCP_ADMIN_PASSWORD: "PW",
+    };
     const r = buildWorkerBaseEnv(poisoned, TARGETS.redisUrl, ALCHEMY_WS);
-    check("A10. ⭐⭐⭐ GATE2_ACCESS_TOKEN + GATE2_* STRIPATE din env-ul worker-ului (anti-leak)",
-      r.ok && r.env.GATE2_ACCESS_TOKEN === undefined && r.env.GATE2_DEBUG === undefined && r.env.PATH === "/usr/bin");
+    const POISON_KEYS = ["GATE2_ACCESS_TOKEN", "GATE2_DEBUG", "SUPABASE_SERVICE_ROLE_KEY", "NEXT_PUBLIC_SUPABASE_URL", "SUPABASE_ANON_KEY", "OAUTH_SIGNING_SECRET", "SOME_WEIRD_TOKEN", "MCP_ADMIN_PASSWORD"];
+    const POISON_VALS = ["SECRET_BEARER", "SR_SECRET", "ANON", "OS", "WT", "PW"];
+    const keyLeak = r.ok && POISON_KEYS.some((k) => k in r.env);
+    const valLeak = r.ok && Object.values(r.env).some((v) => POISON_VALS.includes(v));
+    check("A10. ⭐⭐⭐ ALLOWLIST: niciun secret MCP/Supabase/GATE2 în env-ul worker-ului (nici cheie, nici valoare)",
+      r.ok && !keyLeak && !valLeak);
+    check("A10b. ⭐⭐⭐ infra PĂSTRATĂ (PATH/HOME/NODE_ENV) + control keys corecte",
+      r.ok && r.env.PATH === "/usr/bin" && r.env.HOME === "/home/x" && r.env.NODE_ENV === "production" && r.env.ENABLED_CHAINS === "base" && r.env.REDIS_URL === TARGETS.redisUrl);
+    const rc = buildWorkerBaseEnv({ ...BASE_ENV, RANDOM_CFG: "x" }, TARGETS.redisUrl, ALCHEMY_WS);
+    check("A10c. ⭐⭐ un var non-infra, NON-secret (ex. RANDOM_CFG) tot NU trece (allowlist, nu denylist)",
+      rc.ok && rc.env.RANDOM_CFG === undefined);
+
+    // ── A11. CANARY_RUN_ID (marker de identitate — config închis, anti-injecție) ──
+    const cid = buildWorkerBaseEnv(BASE_ENV, TARGETS.redisUrl, ALCHEMY_WS, undefined, "wrk0a1b2c3d");
+    check("A11. ⭐⭐⭐ CANARY_RUN_ID token valid → injectat în env (config închis)", cid.ok && cid.env.CANARY_RUN_ID === "wrk0a1b2c3d");
+    const cidAbs = buildWorkerBaseEnv(BASE_ENV, TARGETS.redisUrl, ALCHEMY_WS);
+    check("A11b. ⭐⭐ CANARY_RUN_ID absent → cheia lipsește din env (dormant în standalone/prod)", cidAbs.ok && cidAbs.env.CANARY_RUN_ID === undefined);
+    const cidSpace = buildWorkerBaseEnv(BASE_ENV, TARGETS.redisUrl, ALCHEMY_WS, undefined, "wrk abc");
+    const cidEq    = buildWorkerBaseEnv(BASE_ENV, TARGETS.redisUrl, ALCHEMY_WS, undefined, "wrk=EVIL");
+    const cidNl    = buildWorkerBaseEnv(BASE_ENV, TARGETS.redisUrl, ALCHEMY_WS, undefined, "wrk\nX=Y");
+    const cidEmpty = buildWorkerBaseEnv(BASE_ENV, TARGETS.redisUrl, ALCHEMY_WS, undefined, "");
+    check("A11c. ⭐⭐⭐ CANARY_RUN_ID cu spațiu/`=`/newline/gol → config fail (anti-injecție env)",
+      !cidSpace.ok && !cidEq.ok && !cidNl.ok && !cidEmpty.ok);
+    // ⭐ baseEnv NU poate injecta CANARY_RUN_ID (nu-i în allowlist); autoritar e DOAR argumentul închis.
+    const cidBase = buildWorkerBaseEnv({ ...BASE_ENV, CANARY_RUN_ID: "wrkFROMBASE" }, TARGETS.redisUrl, ALCHEMY_WS);
+    check("A11d. ⭐⭐⭐ CANARY_RUN_ID din baseEnv NU trece (allowlist) — doar setul închis e autoritar",
+      cidBase.ok && cidBase.env.CANARY_RUN_ID === undefined);
+    const cidBaseOverride = buildWorkerBaseEnv({ ...BASE_ENV, CANARY_RUN_ID: "wrkFROMBASE" }, TARGETS.redisUrl, ALCHEMY_WS, undefined, "wrkREAL");
+    check("A11e. ⭐⭐ chiar cu baseEnv poluat, id-ul injectat rămâne autoritar", cidBaseOverride.ok && cidBaseOverride.env.CANARY_RUN_ID === "wrkREAL");
   }
 
   // ────────────── B. mergeAbortSignals ──────────────
