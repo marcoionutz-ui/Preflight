@@ -12,8 +12,22 @@
  *     gol (ce folosește runnerul) neutralizează RE-adăugarea — chiar dacă un `workers/evm/.env` ar exista, NU e `cwd/.env`.
  *
  * IZOLARE (model `bootGuard.test.ts`): `cwd` injectat, env EXACT, `tsx` LOCAL (fără npx), Redis fake mini-RESP, `netGuard`
- * (preload) interceptează fetch-ul extern (DEV atinge price-feeds). SONDA (preload) citește `process.env` DUPĂ ce
- * `dotenv.config()` a rulat (setTimeout) și raportează un marker STATIC (boolean), niciodată valoarea secretului.
+ * (preload) interceptează fetch-ul extern (DEV atinge price-feeds). SONDA (preload) citește `process.env` legată de
+ * MARKERUL REAL post-dotenv al worker-ului — raportează un marker STATIC (boolean), niciodată valoarea secretului.
+ *
+ * SONDĂ CU DOUĂ HANDSHAKE-URI SEPARATE (fix cgpt: eliminat `setTimeout(1200)`, euristica „orice listener SIGTERM" ȘI
+ * presupunerea „markerul e în același tick sincron cu handler-ul"). Sonda interceptează `process.stdout.write`:
+ *   HANDSHAKE 1 (post-dotenv): la MARKERUL REAL `"Preflight Worker <ver> starting..."` (index l.29) — emis STRICT DUPĂ
+ *     `dotenv.config()` (bootstrap l.16 + index l.9) — citește O SINGURĂ dată `process.env` → vizibilitatea SENTINEL e
+ *     stabilă. Tot ATUNCI captează un BASELINE de handler-e `SIGTERM`: fiindcă e după marker, toate importurile STATICE
+ *     sunt deja evaluate → un eventual listener SIGTERM STRĂIN e deja inclus în baseline (nu-l confundă cu readiness).
+ *   HANDSHAKE 2 (shutdown-ready): emite markerul de sondă (→ harness-ul trimite SIGTERM) ABIA când numărul de handler-e
+ *     `SIGTERM` CREȘTE peste baseline-ul de la marker = `installGracefulShutdown` (l.117) a rulat efectiv. Markerul (l.29)
+ *     PRECEDE instalarea handler-ului (l.117) — chiar dacă între ele ar apărea un `await` top-level — deci NU presupunem
+ *     ordinea sincronă: așteptăm dovada instalării. Astfel SIGTERM-ul de teardown e garantat graceful (exit 0).
+ * Doar `index.ts` emite markerul; în procesul care NU-l rulează (ex. un launcher tsx) sonda tace (fără poluare
+ * cross-proces). Raport pe STDERR (≠ stdout → fără reintrare în hook), niciodată valoarea secretului. Gate `unref`-uit +
+ * deadline de siguranță → marker DISTINCT (`not_ready_deadline`), niciodată un `false` fabricat.
  *
  * CABLAT în gate (fix cgpt rev5): scriptul `test:ph12-dotenv-isolation` din `workers/evm/package.json` (înlănțuit și în
  * `npm test`-ul workspace-ului, lângă `test:boot`) → CI nu poate omite această proprietate de securitate. Rulare directă
@@ -98,14 +112,43 @@ globalThis.fetch = async (input, init) => {
   return new Response(JSON.stringify({ data: {}, result: null }), { status: 200, headers: { "content-type": "application/json" } });
 };
 `;
-// SONDA: după ce `dotenv.config()` (bootstrap + index) a rulat, citește process.env și raportează un BOOLEAN static.
-// setTimeout(1200ms) > timpul până index.ts își face `dotenv.config()`-ul. NICIODATĂ valoarea secretului în output.
+// SONDA (fix cgpt — DOUĂ handshake-uri SEPARATE). Hook pe `process.stdout.write`:
+//  H1 (post-dotenv): la markerul REAL "Preflight Worker " (index l.29, strict după `dotenv.config()`) citește env O
+//     SINGURĂ dată (`__captured`) ȘI captează baseline-ul de handler-e SIGTERM (după importurile statice → orice listener
+//     străin e deja în baseline).
+//  H2 (shutdown-ready): emite markerul de sondă PE STDERR (→ SIGTERM de la harness) ABIA când listenerCount("SIGTERM")
+//     CREȘTE peste baseline = `installGracefulShutdown` (l.117) a rulat → teardown graceful garantat (nu presupunem că
+//     l.29 și l.117 sunt în același tick). Gate `unref`-uit + deadline fail-closed cu marker DISTINCT.
 const PROBE_SRC = `
-setTimeout(() => {
-  const v = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  const visible = typeof v === "string" && v.indexOf("SENTINEL") !== -1;
-  console.error("${PROBE_MARKER}" + visible);
-}, 1200);
+let __emitted = false;
+let __captured = null;
+let __readyBaseline = -1;
+const __origWrite = process.stdout.write.bind(process.stdout);
+process.stdout.write = function (...args) {
+  try {
+    const chunk = args[0];
+    if (__captured === null && chunk != null) {
+      const s = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+      if (s.indexOf("Preflight Worker ") !== -1) {
+        const v = process.env.SUPABASE_SERVICE_ROLE_KEY;
+        __captured = typeof v === "string" && v.indexOf("SENTINEL") !== -1;
+        __readyBaseline = process.listenerCount("SIGTERM");
+      }
+    }
+  } catch {}
+  return __origWrite(...args);
+};
+const __deadline = Date.now() + 20000;
+(function __gate() {
+  if (__emitted) return;
+  if (__captured !== null && process.listenerCount("SIGTERM") > __readyBaseline) {
+    __emitted = true;
+    process.stderr.write("${PROBE_MARKER}" + __captured + "\\n");
+    return;
+  }
+  if (Date.now() > __deadline) { if (!__emitted) process.stderr.write("[ENVPROBE] not_ready_deadline\\n"); return; }
+  const __t = setTimeout(__gate, 25); if (__t && typeof __t.unref === "function") __t.unref();
+})();
 `;
 
 interface RunResult { out: string; sawProbe: boolean; visible: boolean | null; outcome: ProcOutcome; }
