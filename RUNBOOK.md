@@ -188,6 +188,70 @@ Recommended baseline: one Railway healthcheck on `/api/health`, plus one externa
 
 ---
 
+## Release gate — full-chain proof (`runReleaseGateLive.mjs`)
+
+The release gate proves the **entire** release chain end-to-end on a real stack, in a **single** runner — not two gates run separately. The chain is: `login → consent → token → MCP tool call on Base (real data) → refresh (rotation) → health`, composed as **Gate 1** (OAuth: login→consent→token→MCP→refresh→`mcp_rotated`) + **Gate 2** (Base product: worker Base WS-live + strict health + `tp_worker_snapshot`/`tp_health_check`), plus targeted teardown/cleanup of everything it created.
+
+It reduces the run to **six booleans** (`ReleaseParts`) and turns them into a structured, versioned **artifact** via the pure report layer (`mcp/lib/mcp/releaseGateReport.ts`), whose single source of the verdict is `composeReleaseVerdict` (`mcp/lib/mcp/releaseGateCompose.ts`). Decision and presentation cannot diverge.
+
+### Stages (the six signals, in diagnostic order)
+
+| Stage | Green means |
+|---|---|
+| `gate1` | Gate 1 green end-to-end (login→consent→token→MCP→refresh→rotation `mcp_rotated`) |
+| `at2_capture` | The rotated access token (AT2) was captured from a valid+ok refresh (rotation produced a new access) |
+| `gate2` | Gate 2 green with AT2 (worker Base + strict health + real data + WS subs + normal stop) |
+| `worker_cleanup` | Backstop: the runner's registry holds no possibly-orphaned worker group (independent of the normal stop) |
+| `redis_cleanup` | Targeted Redis cleanup complete (delete + proof of absence) |
+| `supabase_cleanup` | Supabase fixture cleaned with no residue |
+
+The verdict is **green only if all six are exactly `true`** (fail-closed). On failure it names the **first** red stage in the order above.
+
+### Running it (local WSL stack, cost-aware — never touches prod)
+
+Prerequisites: Docker + Supabase local (`:54321`) + Redis loopback + MCP dev on the ORIGIN with `HEALTH_EXPECTED_CHAINS=base` + `HEALTH_EXPECT_INDEXER_EVM=0` + `HEALTH_EXPECT_SOLANA_WORKER=0`; `ALCHEMY_BASE_WS` set (the gate refuses to run without it — Base would be scan-only). It is `.mjs` **opt-in** (excluded from `tsc`/`eslint`/`test`); it hits **real** paid Alchemy WS, live Supabase, a Playwright browser and real OAuth, so CI does **not** (and must not) run it.
+
+```
+set -a; . .env.local; set +a
+npx tsx runReleaseGateLive.mjs        # from ~/preflight/mcp
+```
+
+An anti-prod isolation net vets every target **before** anything runs: prod MCP hosts, the prod Supabase ref, non-loopback Redis, non-http schemes and credentials-in-URL are all refused.
+
+### The artifact
+
+The runner has a **single** emit/exit point and owns a **fixed output directory** for the whole run — `.release-gate/` under the cwd (created `0700`, and before reuse verified to be a real directory owned by the caller with no group/other access), taken under an exclusive lock (`.release-gate/.lock`). The artifact is always `.release-gate/report.json`; there is no configurable or arbitrary output path. A second concurrent run refuses (the lock is held); a stale lock left by a crash is reported for manual removal (`rm .release-gate/.lock`). At startup the runner stamps a **red placeholder** into the directory, so a crash, kill, or failed write leaves a red artifact on disk — **never a stale green** from a previous run. The real report is written **atomically** (temp file in the same owned dir, created with `O_EXCL` so a pre-planted temp symlink is not followed, then renamed, so a consumer never reads a partial file), and a human summary goes to **stderr**. Exit code is honest: **0 only on a canonical green**; red, malformed, or a failed artifact write → **1** (the process sets `process.exitCode` and drains, rather than calling `process.exit`, so the artifact and stderr are never truncated). If the final lock release fails, the run is downgraded to exit 1 **and** the artifact is rewritten red (or removed), so an incomplete cleanup never leaves a green artifact on disk. Owning a fixed, locked directory — instead of writing to a caller-supplied path — is what closes the file-handling races (delete/write/temp-symlink), concurrency, and crash consistency at once.
+
+Artifact shape (`ReleaseReportJson`, `version` is the schema discriminator):
+
+```json
+{
+  "version": 1,
+  "ok": false,
+  "malformed": false,
+  "blamedStage": "gate2",
+  "reason": "ROȘU @ gate2: Gate 2 — worker Base + strict health + date reale + WS subs",
+  "stages": [
+    { "id": "gate1", "ok": true },
+    { "id": "at2_capture", "ok": true },
+    { "id": "gate2", "ok": false },
+    { "id": "worker_cleanup", "ok": true },
+    { "id": "redis_cleanup", "ok": true },
+    { "id": "supabase_cleanup", "ok": true }
+  ]
+}
+```
+
+**Fail-closed by construction (no secret can leak into the artifact):** the report carries only enums + booleans; all human text is derived at render from static frozen maps. A run that ends without all six signals — **timeout, invalid config/prereq, or an exception before the signals exist** — emits a `malformed` red report (`malformed: true`, `ok: false`, empty `stages`, exit 1) rather than a misleading verdict. An orphaned worker group after the backstop stays explicit as `worker_cleanup` red and is echoed as a stderr warning to investigate manually (a possible Alchemy consumer left running).
+
+### Consuming the artifact (CI / monitor)
+
+Re-parse the JSON with `parseReleaseReportJson` (also in `releaseGateReport.ts`). It is **fail-closed**: it requires `version === 1`, reconstructs the canonical report from the stages via the same `composeReleaseVerdict`, and accepts the artifact **only if identical** — a tampered `reason`, a wrong `version`, or a broken `ok`/`blamedStage`/`stages` coherence all return `null`. A `null` means "do not trust this artifact", not "green".
+
+*Code: runner `mcp/runReleaseGateLive.mjs` (opt-in `.mjs`); report layer `mcp/lib/mcp/releaseGateReport.ts` (pure, tested); verdict source `mcp/lib/mcp/releaseGateCompose.ts` (pure, tested); artifact ownership primitives (owned+private dir, exclusive lock, atomic write) `mcp/lib/mcp/releaseGateArtifact.ts` (tested in CI + source-guard that the runner uses them). The runner's end-to-end wiring is proven only by a live run — the leaves are all tested hermetically.*
+
+---
+
 ## Graceful shutdown (worker)
 
 On **SIGTERM** or **SIGINT** (Railway redeploy, scale-down, Ctrl-C) the worker runs a **truly ordered** shutdown before exiting, so nothing is lost and no socket lingers:

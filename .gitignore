@@ -9,6 +9,8 @@
 !.yarn/plugins
 !.yarn/releases
 !.yarn/versions
+node_modules/
+mcp/node_modules/
 
 # testing
 /coverage
@@ -49,6 +51,7 @@ next-env.d.ts
 *.tsbuildinfo
 *:Zone.Identifier
 
-create-client.tsnode_modules/
+create-client.ts
 
-**/node_modules/
+# release-gate artifact dir (12.5d-2 runReleaseGateLive.mjs) — owned output dir + lock, opt-in local run, never committed
+.release-gate/
