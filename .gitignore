@@ -55,3 +55,13 @@ create-client.ts
 
 # release-gate artifact dir (12.5d-2 runReleaseGateLive.mjs) — owned output dir + lock, opt-in local run, never committed
 .release-gate/
+# local Supabase CLI state
+mcp/supabase/config.toml
+mcp/supabase/.temp/
+
+# generated workspace outputs
+coverage/
+dist/
+build/
+.turbo/
+*.log
