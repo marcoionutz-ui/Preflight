@@ -6,6 +6,7 @@ import {
   parseHealthReport, assertReadiness, assertStrictHealthy,
   parseTokenResponse, assertTokenResponse, assertRefreshRotation,
   assertCanaryIsolation, PROD_MCP_HOSTS, PROD_SUPABASE_REFS,
+  STAGING_SUPABASE_REFS, isProdSupabaseHost, isApprovedStagingSupabaseUrl,
 } from "./releaseGate";
 
 let passed = 0, failed = 0;
@@ -193,6 +194,31 @@ console.log("PH-12 12.5a — releaseGate (nucleu pur)");
   check("H6. ⭐⭐⭐ mcpBaseUrl prod cu punct final (jackspools.lol.) → REFUZ (fail-closed necanonic)", assertCanaryIsolation({ ...staging, mcpBaseUrl: "https://preflight.jackspools.lol." }).ok === false);
   check("H7. ⭐⭐⭐ Supabase prod cu punct final (…supabase.co.) → REFUZ", assertCanaryIsolation({ ...staging, supabaseUrl: "https://ipeyogzfgqypfkujraxm.supabase.co." }).ok === false);
   check("H8. ⭐⭐ orice hostname cu punct final (chiar staging) → REFUZ (necanonic, nu-l normalizăm tăcut)", assertCanaryIsolation({ ...staging, mcpBaseUrl: "https://preflight-staging.up.railway.app." }).ok === false);
+}
+
+// ── I. 12.6 leaf 2a: plasele ÎNGHEȚATE la runtime (P2 cgpt) + predicatele noi (prod dedup + staging POZITIV) ──
+{
+  // Freeze la RUNTIME (nu doar `readonly` TS): un `.push`/golire ar deschide o gaură în plasă.
+  check("I1. ⭐⭐⭐ PROD_MCP_HOSTS înghețat la runtime", Object.isFrozen(PROD_MCP_HOSTS));
+  check("I2. ⭐⭐⭐ PROD_SUPABASE_REFS înghețat la runtime", Object.isFrozen(PROD_SUPABASE_REFS));
+  check("I3. ⭐⭐⭐ STAGING_SUPABASE_REFS înghețat la runtime", Object.isFrozen(STAGING_SUPABASE_REFS));
+
+  // isProdSupabaseHost = predicat DEDUP folosit de assertCanaryIsolation.
+  check("I4. ⭐⭐ isProdSupabaseHost(ref prod) → true", isProdSupabaseHost("ipeyogzfgqypfkujraxm.supabase.co") === true);
+  check("I5. ⭐⭐ isProdSupabaseHost(ref necunoscut) → false", isProdSupabaseHost("stagingref123.supabase.co") === false);
+
+  // isApprovedStagingSupabaseUrl = plasă POZITIVĂ (NU !isProdSupabaseHost), clean-origin, fail-closed.
+  check("I6. ⭐⭐⭐ staging loopback (127.0.0.1) → true", isApprovedStagingSupabaseUrl("http://127.0.0.1:54321") === true);
+  check("I7. ⭐⭐ staging loopback (localhost) → true", isApprovedStagingSupabaseUrl("http://localhost:54321") === true);
+  check("I8. ⭐⭐⭐ ref PROD → NU staging", isApprovedStagingSupabaseUrl("https://ipeyogzfgqypfkujraxm.supabase.co") === false);
+  check("I9. ⭐⭐⭐ ref necunoscut (allowlist gol) → NU staging", isApprovedStagingSupabaseUrl("https://stagingref123.supabase.co") === false);
+  check("I10. ⭐⭐ origine murdară (path) → NU staging", isApprovedStagingSupabaseUrl("http://127.0.0.1:54321/rest/v1") === false);
+  check("I11. ⭐⭐ origine murdară (query) → NU staging", isApprovedStagingSupabaseUrl("http://127.0.0.1:54321/?x=1") === false);
+  check("I12. ⭐⭐ userinfo → NU staging", isApprovedStagingSupabaseUrl("http://user:pass@127.0.0.1:54321") === false);
+  check("I13. ⭐⭐ cloud pe http (non-loopback) → NU staging (doar https)", isApprovedStagingSupabaseUrl("http://stagingref123.supabase.co") === false);
+  check("I14. ⭐ undefined → NU staging", isApprovedStagingSupabaseUrl(undefined) === false);
+  check("I15. ⭐⭐ fragment (#x) → NU staging", isApprovedStagingSupabaseUrl("http://127.0.0.1:54321/#x") === false);
+  check("I16. ⭐⭐ host cu punct final (localhost.) → NU staging (necanonic)", isApprovedStagingSupabaseUrl("http://localhost.:54321") === false);
 }
 
 console.log("\n" + passed + " passed, " + failed + " failed");

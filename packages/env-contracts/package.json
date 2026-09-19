@@ -1,0 +1,21 @@
+{
+  "name": "@preflight/env-contracts",
+  "version": "1.0.0",
+  "private": true,
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
+    "test:contracts": "tsx scripts/contracts.test.ts",
+    "test": "npm run test:contracts"
+  },
+  "dependencies": {
+    "@preflight/config-env": "*",
+    "@preflight/schema": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "tsx": "^4.22.2",
+    "typescript": "^5"
+  }
+}

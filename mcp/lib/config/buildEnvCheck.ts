@@ -3,14 +3,21 @@
  *
  * AUTONOM — ZERO dependențe de workspace (`@preflight/*`). DE CE: `next.config.ts` e transpilat de Next cu un resolver
  * SEPARAT (`next-config-ts/transpile-config`) care NU rezolvă pachetele workspace — un import de `@preflight/schema`
- * din config eșuează cu `Cannot find module '../packages/preflight-schema/src'` și SPARGE tot `next build`. Deci
- * validatorul de build trăiește AICI, self-contained, importat RELATIV de `next.config.ts`.
+ * din config eșuează și SPARGE tot `next build`. Deci validatorul de build trăiește AICI, self-contained, importat
+ * RELATIV de `next.config.ts`.
  *
- * Regulile OGLINDESC motorul (`@preflight/config-env`) pentru cele 2 câmpuri de build, ca boot-check-ul de build să fie
- * echivalent cu validarea de runtime a aceluiași tip de câmp: `NEXT_PUBLIC_SUPABASE_URL` = URL absolut http(s), fără
- * credențiale, `https` obligatoriu în prod (`absoluteUrl`); `NEXT_PUBLIC_SUPABASE_ANON_KEY` = ne-gol (`nonEmpty`;
- * cheia publică anon, nu un secret). `""`/whitespace == absent. Sursă UNICĂ a build-env-ului (next.config + testul o folosesc).
+ * Regulile OGLINDESC motorul (`@preflight/config-env`) pentru cele 2 câmpuri de build: `NEXT_PUBLIC_SUPABASE_URL` = URL
+ * absolut http(s), fără credențiale, `https` obligatoriu în prod (`absoluteUrl`); `NEXT_PUBLIC_SUPABASE_ANON_KEY` = ne-gol
+ * (`nonEmpty`). `""`/whitespace == absent. Sursă UNICĂ a build-env-ului (next.config + testul o folosesc).
+ *
+ * 12.6 leaf 2a: `BUILD_ENV_FIELD_NAMES` = numele CANONICE ale câmpurilor de build, folosite DE validatorul însuși (numele
+ * din `problem.name`) ȘI de allowlist-ul de proveniență MCP din `bindRoleCaps` (`Caps.envKeys["mcp"]` = runtime ∪ build).
+ * O singură sursă → catalogul de proveniență nu poate drifta față de ce emite validatorul.
  */
+// 12.6 leaf 2a (P1 cgpt): trust-root ÎNGHEȚAT la runtime — golirea/mutarea ar putea rescrie ce validează `validateBuildEnv`
+// și ce allowlist de proveniență primește MCP în `bindRoleCaps`. `Object.freeze` (autonom, fără `@preflight/*`).
+export const BUILD_ENV_FIELD_NAMES = Object.freeze(["NEXT_PUBLIC_SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_ANON_KEY"] as const);
+
 export interface BuildEnvProblem { name: string; kind: "missing" | "invalid"; detail: string; }
 export type BuildEnvResult = { ok: true } | { ok: false; problems: BuildEnvProblem[] };
 
@@ -33,16 +40,18 @@ function checkAbsoluteUrl(value: string, prod: boolean): string | null {
 export function validateBuildEnv(env: Env): BuildEnvResult {
   const prod = isProd(env);
   const problems: BuildEnvProblem[] = [];
+  const [URL_FIELD, ANON_KEY_FIELD] = BUILD_ENV_FIELD_NAMES;
 
-  if (!present(env.NEXT_PUBLIC_SUPABASE_URL)) {
-    problems.push({ name: "NEXT_PUBLIC_SUPABASE_URL", kind: "missing", detail: "obligatoriu (se îngheață în bundle la build)" });
+  const urlValue = env[URL_FIELD];
+  if (!present(urlValue)) {
+    problems.push({ name: URL_FIELD, kind: "missing", detail: "obligatoriu (se îngheață în bundle la build)" });
   } else {
-    const err = checkAbsoluteUrl(env.NEXT_PUBLIC_SUPABASE_URL, prod);
-    if (err !== null) problems.push({ name: "NEXT_PUBLIC_SUPABASE_URL", kind: "invalid", detail: err });
+    const err = checkAbsoluteUrl(urlValue, prod);
+    if (err !== null) problems.push({ name: URL_FIELD, kind: "invalid", detail: err });
   }
 
-  if (!present(env.NEXT_PUBLIC_SUPABASE_ANON_KEY)) {
-    problems.push({ name: "NEXT_PUBLIC_SUPABASE_ANON_KEY", kind: "missing", detail: "obligatoriu (se îngheață în bundle la build)" });
+  if (!present(env[ANON_KEY_FIELD])) {
+    problems.push({ name: ANON_KEY_FIELD, kind: "missing", detail: "obligatoriu (se îngheață în bundle la build)" });
   }
 
   return problems.length === 0 ? { ok: true } : { ok: false, problems };

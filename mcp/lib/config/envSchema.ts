@@ -84,11 +84,14 @@ const strictZeroOne = (label: string): Validate => (value) =>
  * obligatoriu DOAR în prod (anti-poisoning; confirmat lipsă la recon PH-12 → fluxul resource-owner ar arunca fail-closed
  * în prod). `NEXT_PUBLIC_*` NU sunt aici — vezi `lib/config/buildEnvCheck.ts`.
  */
-export const MCP_ENV_FIELDS: readonly FieldSpec[] = [
+// 12.6 leaf 2a (P1 cgpt): trust-root de securitate — ÎNGHEȚAT PROFUND la runtime (nu doar `readonly` în TS). Golirea
+// array-ului sau mutarea unui `FieldSpec` ar putea elimina verificări MCP → adaptorul ar rămâne doar cu build-check-ul.
+// `Object.freeze` pe array ȘI pe fiecare `FieldSpec` (`.map(Object.freeze)`). `MANAGED`/validatoarele rămân neschimbate.
+export const MCP_ENV_FIELDS: readonly FieldSpec[] = Object.freeze([
   // ── OBLIGATORII runtime (azi `process.env.X!` → crash criptic la primul request dacă lipsesc) ──
   { name: "SUPABASE_SERVICE_ROLE_KEY",     required: () => true,     validate: nonEmpty },
   { name: "REDIS_URL",                     required: () => true,     validate: redisUrl() },
-  { name: "PUBLIC_BASE_URL",               required: (prod) => prod, validate: publicBaseUrl },
+  { name: "PUBLIC_BASE_URL",               required: (prod: boolean) => prod, validate: publicBaseUrl },
 
   // ── SECURITATE (decizie Marco 2026-09-02): flag de dev/bypass truthy în prod → `problem` `forbidden` (boot crapă). ──
   // `MCP_DEV_AUTH_BYPASS` e deja ignorat de runtime în prod (`resolveDevBypass`); `*_INTEGRATION_ALLOW` sunt DOAR opt-in de
@@ -121,13 +124,13 @@ export const MCP_ENV_FIELDS: readonly FieldSpec[] = [
     required: (prod: boolean) => prod,
     validate: strictZeroOne(HEALTH_EXPECT_ENV[role]),
   })),
-] as const;
+].map((f): FieldSpec => Object.freeze(f)));
 
 /**
  * Prefixe care aparțin rolurilor de WORKER, NU MCP. Prezența lor pe MCP = env ne-separat pe rol (recon PH-12
  * finding #6; confirmat de cod: MCP NU citește `ALCHEMY_*`/`INDEXER_*`). NU oprește boot-ul — doar `warning`.
  */
-export const MCP_UNEXPECTED_PREFIXES: readonly string[] = ["ALCHEMY_", "INDEXER_"] as const;
+export const MCP_UNEXPECTED_PREFIXES: readonly string[] = Object.freeze(["ALCHEMY_", "INDEXER_"] as const);
 
 /**
  * Lista EFECTIVĂ de chain-uri așteptate de health, rezolvată cu EXACT precedența runtime-ului (`readHealthSignals`):

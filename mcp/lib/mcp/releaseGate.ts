@@ -18,8 +18,20 @@
 // ── Identificatorii de PRODUCȚIE pe care canary-ul NU are voie să-i atingă (recon live 12.5, 2026-09-10) ──
 // Domeniile MCP de prod + ref-ul proiectului Supabase de prod (`<ref>.supabase.co`). Orice gate care primește
 // unul dintre acestea în config e REFUZAT înainte să ruleze — plasa care ține staging-ul departe de prod.
-export const PROD_MCP_HOSTS: readonly string[] = ["preflight.jackspools.lol", "preflight.up.railway.app"];
-export const PROD_SUPABASE_REFS: readonly string[] = ["ipeyogzfgqypfkujraxm"];
+// 12.6 leaf 2a (P1 cgpt): trust-root-uri ÎNGHEȚATE la runtime (nu doar `readonly` în TS) — un `.push`/golire ar putea
+// deschide o gaură în plasa anti-prod / anti-staging. `Object.freeze` pe fiecare listă.
+export const PROD_MCP_HOSTS: readonly string[] = Object.freeze(["preflight.jackspools.lol", "preflight.up.railway.app"]);
+export const PROD_SUPABASE_REFS: readonly string[] = Object.freeze(["ipeyogzfgqypfkujraxm"]);
+
+// ── 12.6 leaf 2a: predicat de PROD Supabase (DEDUP — folosit de `assertCanaryIsolation` ȘI de plasa de staging) ──
+export function isProdSupabaseHost(host: string): boolean {
+  const h = host.toLowerCase();
+  return PROD_SUPABASE_REFS.some((ref) => h === `${ref}.supabase.co` || h.startsWith(`${ref}.`));
+}
+
+// Staging POZITIV (12.6 leaf 2a): ref-uri de proiect Supabase de STAGING APROBATE. GOL până există proiectul cloud
+// staging izolat (recon 12.5: Gate 1 e complet local). Un ref necunoscut NU e staging (fail-closed) — vezi `isApprovedStagingSupabaseUrl`.
+export const STAGING_SUPABASE_REFS: readonly string[] = Object.freeze([]);
 
 export interface GateResult {
   ok: boolean;
@@ -327,10 +339,33 @@ export function assertCanaryIsolation(cfg: Partial<CanaryConfig> | null | undefi
 
   const sb = canaryHostname(supabaseUrl);
   if ("reject" in sb) return fail(`supabaseUrl ${sb.reject}`);
-  for (const ref of PROD_SUPABASE_REFS) {
-    if (sb.host === `${ref}.supabase.co` || sb.host.startsWith(`${ref}.`)) {
-      return fail(`supabaseUrl e Supabase-ul de PRODUCȚIE (ref ${ref}) — refuz`);
-    }
+  if (isProdSupabaseHost(sb.host)) {
+    const ref = PROD_SUPABASE_REFS.find((r) => sb.host === `${r}.supabase.co` || sb.host.startsWith(`${r}.`));
+    return fail(`supabaseUrl e Supabase-ul de PRODUCȚIE (ref ${ref}) — refuz`);
   }
   return pass("izolat de prod (http/https, fără credențiale, niciun marker de producție)");
+}
+
+/**
+ * Staging POZITIV (12.6 leaf 2a) — dovada AFIRMATIVĂ că un URL Supabase e un staging APROBAT (NU `!isProdSupabaseHost`,
+ * care ar lăsa un proiect necunoscut să treacă). Origine curată STRICTĂ: http(s), fără userinfo, pathname `/`, fără
+ * query/fragment/trailing-dot. Aprobat DOAR dacă: (cloud) host === `<ref>.supabase.co` cu ref ∈ `STAGING_SUPABASE_REFS`
+ * pe https; SAU (local) host loopback pe http(s). Ref necunoscut / ref prod / orice abatere de origine → false (fail-closed).
+ */
+export function isApprovedStagingSupabaseUrl(raw: string | undefined): boolean {
+  if (typeof raw !== "string" || raw.trim() === "") return false;
+  let u: URL;
+  try { u = new URL(raw); } catch { return false; }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return false;
+  if (u.username !== "" || u.password !== "") return false;
+  if (u.pathname !== "/") return false;          // origine curată: doar rădăcina
+  if (u.search !== "" || u.hash !== "") return false;
+  const host = u.hostname.toLowerCase();
+  if (host.endsWith(".")) return false;          // trailing-dot necanonic
+  if (LOOPBACK_HOSTS.has(host)) return true;      // local: http(s) pe loopback (stack local)
+  if (u.protocol !== "https:") return false;      // cloud: DOAR https
+  const m = /^([a-z0-9-]+)\.supabase\.co$/.exec(host);
+  if (m === null) return false;                   // cloud: DOAR <ref>.supabase.co exact
+  if (isProdSupabaseHost(host)) return false;     // niciodată prod
+  return STAGING_SUPABASE_REFS.includes(m[1]);    // ref exact aprobat
 }
