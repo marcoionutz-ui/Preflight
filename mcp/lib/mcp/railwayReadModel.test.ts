@@ -1,11 +1,12 @@
 /**
- * lib/mcp/railwayReadModel.test.ts — PH-12 12.6 leaf 2b-1: teste COMPORTAMENTALE pentru maparea snapshot Railway → RawState. rev2.
+ * lib/mcp/railwayReadModel.test.ts — PH-12 12.6 leaf 2b-1: teste COMPORTAMENTALE pentru maparea snapshot Railway → RawState. rev3.
  *
- * Acoperă lock-urile cgpt (rev1+rev2): identitate UUID (rename vs UUID greșit vs identity_drift); comandă BYTE-EXACT pe toate 5
- * (coliziune mcp-malicious, prefix/sufix shell, drift Redis); tuple activ/latest (matrice + latest roșu pe același id → unknown +
- * SLEEPING→true + FAILED/CRASHED/SKIPPED→unknown + active SUCCESS/latest FAILED→unknown); staged env-level + per-service → reject;
- * sealed→fără placeholder; nemapat→reject; rol absent/duplicat; parse EXACT (prototip, chei exacte, extra-key→malformed, getter care
- * aruncă, valoare ne-string); manifest anti-TOCTOU (getter valid-apoi-throw → malformed_manifest); anti-leak; frozen.
+ * Acoperă lock-urile (rev1+rev2 + schema-lock live 2b-2a): identitate UUID (rename vs UUID greșit); cross-check DISCRIMINAT pe
+ * `commandSource` (inline byte-exact pe toate 4 + config_file pe Solana: path exact, startCommand null; negative: path greșit,
+ * ambele absente, startCommand neașteptat pe config_file, manifest ≠ catalog); clasificator running revizuit (terminal non-running
+ * {REMOVED,FAILED,CRASHED,SKIPPED}→false, tranzitoriu→unknown, active sănătos + latest roșu/divergent→unknown, active absent +
+ * SUCCESS/SLEEPING→unknown); staged env-level + per-service → reject; sealed→fără placeholder; nemapat→reject; rol absent/duplicat;
+ * parse EXACT (prototip, chei exacte incl. railwayConfigFile, getter care aruncă); manifest anti-TOCTOU + commandSource; anti-leak; frozen.
  */
 
 import {
@@ -14,6 +15,7 @@ import {
   SERVICE_CROSSCHECK,
   type RailwayManifest,
   type RailwayServiceRead,
+  type CommandSource,
 } from "./railwayReadModel";
 import { SERVICE_IDS, parseRawState, type ServiceId } from "./profilePlan";
 
@@ -31,14 +33,31 @@ const UUID: Record<ServiceId, string> = {
   "indexer-evm": "svc-indexerevm-uuid",
   "solana-worker": "svc-solana-uuid",
 };
-const MANIFEST: RailwayManifest = Object.freeze({ projectId: PROJECT, environmentId: ENV, serviceIds: Object.freeze({ ...UUID }) });
+// commandSource canonic = oglindește catalogul (declarat explicit de runner). Solana = config_file, restul inline.
+const CMDSRC: Record<ServiceId, CommandSource> = {
+  redis: "inline", mcp: "inline", "worker-evm": "inline", "indexer-evm": "inline", "solana-worker": "config_file",
+};
+const MANIFEST: RailwayManifest = Object.freeze({
+  projectId: PROJECT, environmentId: ENV,
+  serviceIds: Object.freeze({ ...UUID }),
+  commandSource: Object.freeze({ ...CMDSRC }),
+});
 
 const D_OK = { id: "dep-1", status: "SUCCESS" };
+// startCommand/railwayConfigFile default din catalogul discriminat (inline → startCommand; config_file → configFile).
+function defaults(role: ServiceId): { startCommand: string | null; railwayConfigFile: string | null } {
+  const cc = SERVICE_CROSSCHECK[role];
+  return cc.commandSource === "inline"
+    ? { startCommand: cc.startCommand, railwayConfigFile: null }
+    : { startCommand: null, railwayConfigFile: cc.configFile };
+}
 function svc(role: ServiceId, over: Partial<RailwayServiceRead> = {}): RailwayServiceRead {
+  const d = defaults(role);
   return {
     serviceId: UUID[role],
     name: SERVICE_CROSSCHECK[role].name,
-    startCommand: SERVICE_CROSSCHECK[role].startCommand,
+    startCommand: d.startCommand,
+    railwayConfigFile: d.railwayConfigFile,
     activeDeployment: { ...D_OK },
     latestDeployment: { ...D_OK },
     hasStagedChanges: false,
@@ -50,50 +69,64 @@ function fullSnapshot(over: Partial<Record<ServiceId, Partial<RailwayServiceRead
   return { projectId: PROJECT, environmentId: ENV, hasStagedChanges: false, services: SERVICE_IDS.map((r) => svc(r, over[r] ?? {})) };
 }
 
-// ── A. happy path ───────────────────────────────────────────────────────────────────────────────────────────────
+// ── A. happy path (incl. Solana config_file) ────────────────────────────────────────────────────────────────────
 {
   const res = mapRailwaySnapshotToRawState(fullSnapshot(), MANIFEST);
   assert(res.ok === true, "A1: snapshot complet valid → ok");
   if (res.ok) {
     for (const r of SERVICE_IDS) assert(res.rawState[r]?.running === true, `A2: ${r} running:true`);
-    assert(res.diagnostics.length === 0, "A3: zero diagnostice pe happy path");
+    assert(res.diagnostics.length === 0, "A3: zero diagnostice pe happy path (incl. Solana config_file)");
     assert(parseRawState(res.rawState) !== null, "A4: rawState satisface contractul leaf 1");
   }
 }
 
-// ── B. clasificatorul running (matrice + latest roșu pe același id) ──────────────────────────────────────────────
+// ── B. clasificatorul running (revizuit: terminal non-running → false) ───────────────────────────────────────────
 {
   const d = (id: string, status: string) => ({ id, status });
   assert(classifyRunning(d("x", "SUCCESS"), d("x", "SUCCESS")) === true, "B1: activ SUCCESS coerent → true");
   assert(classifyRunning(d("x", "SLEEPING"), d("x", "SLEEPING")) === true, "B2: activ SLEEPING coerent → true (wakeable)");
   assert(classifyRunning(null, null) === false, "B3: fără activ + fără deployment → false");
-  assert(classifyRunning(null, d("x", "REMOVED")) === false, "B4: fără activ + latest REMOVED → false");
-  for (const s of ["INITIALIZING", "BUILDING", "DEPLOYING", "QUEUED", "WAITING", "REMOVING"]) assert(classifyRunning(d("x", s), d("x", s)) === "unknown", `B5: tranzitoriu ${s} → unknown`);
-  for (const s of ["FAILED", "CRASHED", "SKIPPED"]) assert(classifyRunning(null, d("x", s)) === "unknown", `B6: fără activ + latest ${s} → unknown (niciodată false)`);
-  for (const s of ["FAILED", "CRASHED", "SKIPPED"]) assert(classifyRunning(d("x", s), d("x", s)) === "unknown", `B6b: activ ${s} coerent → unknown`);
+  // REVIZIE: terminal non-running cu zero active → false (parcat startabil), NU unknown
+  for (const s of ["REMOVED", "FAILED", "CRASHED", "SKIPPED"]) assert(classifyRunning(null, d("x", s)) === false, `B4: fără activ + latest ${s} (terminal) → false`);
+  // tranzitorii: active prezent → unknown
+  for (const s of ["INITIALIZING", "BUILDING", "DEPLOYING", "QUEUED", "WAITING", "NEEDS_APPROVAL", "REMOVING"]) assert(classifyRunning(d("x", s), d("x", s)) === "unknown", `B5: tranzitoriu activ ${s} → unknown`);
+  // tranzitorii: fără activ → unknown (nu false — deployment în curs)
+  for (const s of ["INITIALIZING", "BUILDING", "DEPLOYING", "QUEUED", "WAITING", "NEEDS_APPROVAL", "REMOVING"]) assert(classifyRunning(null, d("x", s)) === "unknown", `B5b: tranzitoriu fără activ ${s} → unknown`);
+  // active prezent + status terminal coerent → unknown (nu false: un activ nu poate fi terminal sănătos)
+  for (const s of ["FAILED", "CRASHED", "SKIPPED", "REMOVED"]) assert(classifyRunning(d("x", s), d("x", s)) === "unknown", `B6: activ ${s} coerent → unknown`);
   assert(classifyRunning(d("a", "SUCCESS"), d("b", "FAILED")) === "unknown", "B7: activ SUCCESS + latest FAILED (divergență id) → unknown");
   assert(classifyRunning(d("a", "SUCCESS"), d("b", "SUCCESS")) === "unknown", "B8: id diferit (divergență) → unknown");
   assert(classifyRunning(d("x", "SUCCESS"), null) === "unknown", "B9: activ fără latest → unknown");
-  assert(classifyRunning(d("x", "REMOVED"), d("x", "REMOVED")) === "unknown", "B10: activ REMOVED coerent → unknown");
-  assert(classifyRunning(d("x", "WAT_NEW"), d("x", "WAT_NEW")) === "unknown", "B11: status necunoscut → unknown");
-  assert(classifyRunning(null, d("x", "SUCCESS")) === "unknown", "B12: fără activ + latest SUCCESS-neactiv → unknown");
-  // P1 rev2: latest roșu pe ACELAȘI id → unknown (nu doar activul contează)
+  assert(classifyRunning(d("x", "WAT_NEW"), d("x", "WAT_NEW")) === "unknown", "B10: status necunoscut activ → unknown");
+  assert(classifyRunning(null, d("x", "SUCCESS")) === "unknown", "B11: fără activ + latest SUCCESS (contradictoriu) → unknown");
+  assert(classifyRunning(null, d("x", "SLEEPING")) === "unknown", "B12: fără activ + latest SLEEPING (contradictoriu) → unknown");
+  assert(classifyRunning(null, d("x", "WAT_NEW")) === "unknown", "B12b: fără activ + latest status necunoscut → unknown (nu false)");
+  // latest roșu pe ACELAȘI id → unknown (nu doar activul contează)
   for (const s of ["CRASHED", "FAILED", "REMOVED"]) assert(classifyRunning(d("x", "SUCCESS"), d("x", s)) === "unknown", `B13: active SUCCESS + latest ${s} pe același id → unknown`);
   assert(classifyRunning(d("x", "SLEEPING"), d("x", "CRASHED")) === "unknown", "B14: active SLEEPING + latest CRASHED același id → unknown");
 }
 
-// ── C. running "unknown" → OMIS ─────────────────────────────────────────────────────────────────────────────────
+// ── C. running unknown → OMIS; terminal non-running parcat → running:false MAPAT ─────────────────────────────────
 {
   const res = mapRailwaySnapshotToRawState(fullSnapshot({ "worker-evm": { activeDeployment: { id: "a", status: "SUCCESS" }, latestDeployment: { id: "b", status: "FAILED" } } }), MANIFEST);
   assert(res.ok === true, "C1: ok");
   if (res.ok) {
-    assert(res.rawState["worker-evm"] === undefined, "C2: worker-evm OMIS (running unknown)");
+    assert(res.rawState["worker-evm"] === undefined, "C2: worker-evm OMIS (running unknown pe divergență id)");
     assert(res.diagnostics.some((x) => x.code === "running_unknown" && x.service === "worker-evm"), "C3: diagnostic running_unknown");
     assert(res.rawState["mcp"]?.running === true, "C4: restul rămân");
   }
-  // latest roșu pe același id → omis prin mapare
   const res2 = mapRailwaySnapshotToRawState(fullSnapshot({ mcp: { activeDeployment: { id: "s", status: "SUCCESS" }, latestDeployment: { id: "s", status: "CRASHED" } } }), MANIFEST);
   assert(res2.ok === true && res2.rawState["mcp"] === undefined, "C5: mcp latest CRASHED pe același id → OMIS");
+  // REVIZIE cheie: serviciu parcat cu latest FAILED + zero active → running:false MAPAT (nu omis)
+  const parkedFailed = mapRailwaySnapshotToRawState(fullSnapshot({ mcp: { activeDeployment: null, latestDeployment: { id: "old", status: "FAILED" } } }), MANIFEST);
+  assert(parkedFailed.ok === true, "C6: ok");
+  if (parkedFailed.ok) {
+    assert(parkedFailed.rawState["mcp"]?.running === false, "C7: MCP parcat (0 active + latest FAILED) → running:false MAPAT (revizie)");
+    assert(!parkedFailed.diagnostics.some((x) => x.code === "running_unknown" && x.service === "mcp"), "C8: fără running_unknown pe MCP parcat-failed");
+  }
+  // parcat fără deployment vreodată → false
+  const neverDeployed = mapRailwaySnapshotToRawState(fullSnapshot({ "indexer-evm": { activeDeployment: null, latestDeployment: null } }), MANIFEST);
+  assert(neverDeployed.ok === true && neverDeployed.rawState["indexer-evm"]?.running === false, "C9: 0 active + fără deployment → running:false");
 }
 
 // ── D. rename → mapează + service_renamed ───────────────────────────────────────────────────────────────────────
@@ -112,37 +145,55 @@ function fullSnapshot(over: Partial<Record<ServiceId, Partial<RailwayServiceRead
   assert(res.ok === false && res.reason === "unexpected_service", "E1: UUID necunoscut → unexpected_service");
 }
 
-// ── F. comandă BYTE-EXACT: drift, coliziune mcp-malicious, prefix/sufix shell, drift Redis ──────────────────────
+// ── F. cross-check DISCRIMINAT: inline byte-exact + config_file path exact ───────────────────────────────────────
 {
+  // inline (identice cu rev2)
   const drift = mapRailwaySnapshotToRawState(fullSnapshot({ "indexer-evm": { startCommand: "npm run start --workspace=@preflight/worker-evm" } }), MANIFEST);
   assert(drift.ok === true, "F1: ok (drift omite rolul)");
   if (drift.ok) assert(drift.rawState["indexer-evm"] === undefined && drift.diagnostics.some((x) => x.code === "identity_drift" && x.service === "indexer-evm"), "F2: indexer-evm identity_drift → OMIS");
-
   const nullCmd = mapRailwaySnapshotToRawState(fullSnapshot({ mcp: { startCommand: null } }), MANIFEST);
-  assert(nullCmd.ok === true && nullCmd.rawState["mcp"] === undefined, "F3: startCommand null → identity_drift → omis");
-
+  assert(nullCmd.ok === true && nullCmd.rawState["mcp"] === undefined, "F3: inline startCommand null → identity_drift → omis");
   const malicious = mapRailwaySnapshotToRawState(fullSnapshot({ mcp: { startCommand: "npm run start --workspace=mcp-malicious" } }), MANIFEST);
-  assert(malicious.ok === true && malicious.rawState["mcp"] === undefined, "F4: coliziune substring mcp-malicious → identity_drift (byte-exact respinge)");
-
+  assert(malicious.ok === true && malicious.rawState["mcp"] === undefined, "F4: coliziune substring mcp-malicious → identity_drift");
   const shellPrefix = mapRailwaySnapshotToRawState(fullSnapshot({ mcp: { startCommand: "echo pwn && npm run start --workspace=mcp" } }), MANIFEST);
   assert(shellPrefix.ok === true && shellPrefix.rawState["mcp"] === undefined, "F5: prefix shell → identity_drift");
   const shellSuffix = mapRailwaySnapshotToRawState(fullSnapshot({ mcp: { startCommand: "npm run start --workspace=mcp && curl evil" } }), MANIFEST);
   assert(shellSuffix.ok === true && shellSuffix.rawState["mcp"] === undefined, "F6: sufix shell → identity_drift");
-
   const redisDrift = mapRailwaySnapshotToRawState(fullSnapshot({ redis: { startCommand: "redis-server --requirepass X --save 60 1" } }), MANIFEST);
-  assert(redisDrift.ok === true && redisDrift.rawState["redis"] === undefined, "F7: comandă Redis diferită → identity_drift (Redis e verificat acum)");
-
-  // normalizare de whitespace: același conținut cu spații multiple → NU e drift
-  const wsRedis = mapRailwaySnapshotToRawState(fullSnapshot({ redis: { startCommand: "  " + SERVICE_CROSSCHECK["redis"].startCommand.replace(/ /g, "  ") + "  " } }), MANIFEST);
-  assert(wsRedis.ok === true && wsRedis.rawState["redis"]?.running === true, "F8: whitespace multiplu, conținut identic → NU drift");
-
-  // P1 rev3: newline NU e echivalent cu spațiul (separator de comenzi în shell) → drift
+  assert(redisDrift.ok === true && redisDrift.rawState["redis"] === undefined, "F7: comandă Redis diferită → identity_drift");
+  const ccRedis = SERVICE_CROSSCHECK["redis"];
+  const redisCanon = ccRedis.commandSource === "inline" ? ccRedis.startCommand : "";
+  // BYTE-EXACT: whitespace multiplu / trim ≠ canonicul verbatim → identity_drift (spre deosebire de rev2 care normaliza spațiile).
+  const wsRedis = mapRailwaySnapshotToRawState(fullSnapshot({ redis: { startCommand: "  " + redisCanon.replace(/ /g, "  ") + "  " } }), MANIFEST);
+  assert(wsRedis.ok === true && wsRedis.rawState["redis"] === undefined, "F8: byte-exact → spații multiple/trim ≠ canonic → identity_drift (omis)");
+  const wsExact = mapRailwaySnapshotToRawState(fullSnapshot({ redis: { startCommand: redisCanon } }), MANIFEST);
+  assert(wsExact.ok === true && wsExact.rawState["redis"]?.running === true, "F8b: startCommand EXACT canonic → mapat (running:true)");
   const nlInstead = mapRailwaySnapshotToRawState(fullSnapshot({ mcp: { startCommand: "npm run start\n--workspace=mcp" } }), MANIFEST);
-  assert(nlInstead.ok === true && nlInstead.rawState["mcp"] === undefined, "F9: newline în loc de spațiu → identity_drift (nu trece drept canonic)");
+  assert(nlInstead.ok === true && nlInstead.rawState["mcp"] === undefined, "F9: newline în loc de spațiu → identity_drift");
   const nlMalicious = mapRailwaySnapshotToRawState(fullSnapshot({ mcp: { startCommand: "npm run start --workspace=mcp\nrm -rf /" } }), MANIFEST);
   assert(nlMalicious.ok === true && nlMalicious.rawState["mcp"] === undefined, "F10: canonic + linie malițioasă → identity_drift");
   const tabInstead = mapRailwaySnapshotToRawState(fullSnapshot({ mcp: { startCommand: "npm run start\t--workspace=mcp" } }), MANIFEST);
   assert(tabInstead.ok === true && tabInstead.rawState["mcp"] === undefined, "F11: tab în loc de spațiu → identity_drift");
+
+  // config_file (Solana): happy deja acoperit de A. Negative:
+  const solWrongPath = mapRailwaySnapshotToRawState(fullSnapshot({ "solana-worker": { railwayConfigFile: "/workers/solana/OTHER.json" } }), MANIFEST);
+  assert(solWrongPath.ok === true && solWrongPath.rawState["solana-worker"] === undefined && solWrongPath.diagnostics.some((x) => x.code === "identity_drift" && x.service === "solana-worker"), "F12: config_file path greșit → identity_drift → omis");
+  const solNullPath = mapRailwaySnapshotToRawState(fullSnapshot({ "solana-worker": { railwayConfigFile: null } }), MANIFEST);
+  assert(solNullPath.ok === true && solNullPath.rawState["solana-worker"] === undefined, "F13: config_file cu railwayConfigFile null (ambele absente) → identity_drift");
+  const solHasStart = mapRailwaySnapshotToRawState(fullSnapshot({ "solana-worker": { startCommand: "npm run start --workspace=@preflight/indexer-solana" } }), MANIFEST);
+  assert(solHasStart.ok === true && solHasStart.rawState["solana-worker"] === undefined, "F14: config_file cu startCommand NEAȘTEPTAT (prezent) → identity_drift");
+  // inline cu railwayConfigFile setat (EVM/Indexer live) → NU contează pentru inline (verifică startCommand)
+  const inlineWithPath = mapRailwaySnapshotToRawState(fullSnapshot({ "worker-evm": { railwayConfigFile: "/workers/evm/railway.json" } }), MANIFEST);
+  assert(inlineWithPath.ok === true && inlineWithPath.rawState["worker-evm"]?.running === true, "F15: inline cu railwayConfigFile setat → ignorat (startCommand decide) → mapat");
+}
+
+// ── F2b. manifest commandSource ≠ catalog → malformed_manifest ──────────────────────────────────────────────────
+{
+  const wrongCs: RailwayManifest = { projectId: PROJECT, environmentId: ENV, serviceIds: { ...UUID }, commandSource: { ...CMDSRC, "solana-worker": "inline" } };
+  assert(mapRailwaySnapshotToRawState(fullSnapshot(), wrongCs).ok === false, "F16: commandSource declarat (inline pt Solana) ≠ catalog (config_file) → reject");
+  const wrongCs2: RailwayManifest = { projectId: PROJECT, environmentId: ENV, serviceIds: { ...UUID }, commandSource: { ...CMDSRC, mcp: "config_file" } };
+  const r16b = mapRailwaySnapshotToRawState(fullSnapshot(), wrongCs2);
+  assert(r16b.ok === false && r16b.reason === "malformed_manifest", "F17: commandSource declarat (config_file pt MCP) ≠ catalog (inline) → malformed_manifest");
 }
 
 // ── G. serviciu suplimentar → unexpected_service ────────────────────────────────────────────────────────────────
@@ -199,34 +250,38 @@ function fullSnapshot(over: Partial<Record<ServiceId, Partial<RailwayServiceRead
 
 // ── M. manifest malformat + anti-TOCTOU ─────────────────────────────────────────────────────────────────────────
 {
-  const dup: RailwayManifest = { projectId: PROJECT, environmentId: ENV, serviceIds: { ...UUID, mcp: UUID["redis"] } };
+  const dup: RailwayManifest = { projectId: PROJECT, environmentId: ENV, serviceIds: { ...UUID, mcp: UUID["redis"] }, commandSource: { ...CMDSRC } };
   assert(mapRailwaySnapshotToRawState(fullSnapshot(), dup).ok === false, "M1: UUID duplicat → reject");
-  const missing = { projectId: PROJECT, environmentId: ENV, serviceIds: { redis: "a", mcp: "b" } } as unknown as RailwayManifest;
-  assert(mapRailwaySnapshotToRawState(fullSnapshot(), missing).ok === false, "M2: manifest incomplet → reject");
-  const emptyUuid: RailwayManifest = { projectId: PROJECT, environmentId: ENV, serviceIds: { ...UUID, redis: "" } };
+  const missing = { projectId: PROJECT, environmentId: ENV, serviceIds: { redis: "a", mcp: "b" }, commandSource: { ...CMDSRC } } as unknown as RailwayManifest;
+  assert(mapRailwaySnapshotToRawState(fullSnapshot(), missing).ok === false, "M2: serviceIds incomplet → reject");
+  const emptyUuid: RailwayManifest = { projectId: PROJECT, environmentId: ENV, serviceIds: { ...UUID, redis: "" }, commandSource: { ...CMDSRC } };
   assert(mapRailwaySnapshotToRawState(fullSnapshot(), emptyUuid).ok === false, "M3: UUID gol → reject");
-  const extraRole = { projectId: PROJECT, environmentId: ENV, serviceIds: { ...UUID, ghost: "x" } } as unknown as RailwayManifest;
-  assert(mapRailwaySnapshotToRawState(fullSnapshot(), extraRole).ok === false, "M4: cheie ne-rol în manifest → reject");
+  const extraRole = { projectId: PROJECT, environmentId: ENV, serviceIds: { ...UUID, ghost: "x" }, commandSource: { ...CMDSRC } } as unknown as RailwayManifest;
+  assert(mapRailwaySnapshotToRawState(fullSnapshot(), extraRole).ok === false, "M4: cheie ne-rol în serviceIds → reject");
+  // commandSource lipsă / incomplet / valoare invalidă
+  const noCs = { projectId: PROJECT, environmentId: ENV, serviceIds: { ...UUID } } as unknown as RailwayManifest;
+  assert(mapRailwaySnapshotToRawState(fullSnapshot(), noCs).ok === false, "M4b: manifest fără commandSource → malformed (formă exactă)");
+  const csIncomplete = { projectId: PROJECT, environmentId: ENV, serviceIds: { ...UUID }, commandSource: { redis: "inline", mcp: "inline" } } as unknown as RailwayManifest;
+  assert(mapRailwaySnapshotToRawState(fullSnapshot(), csIncomplete).ok === false, "M4c: commandSource incomplet → reject");
+  const csBadVal = { projectId: PROJECT, environmentId: ENV, serviceIds: { ...UUID }, commandSource: { ...CMDSRC, mcp: "weird" } } as unknown as RailwayManifest;
+  assert(mapRailwaySnapshotToRawState(fullSnapshot(), csBadVal).ok === false, "M4d: valoare commandSource invalidă → reject");
 
-  // anti-TOCTOU: getter care întoarce valid o dată apoi aruncă la recitire → malformed_manifest, fără throw
+  // anti-TOCTOU: getter valid-apoi-throw pe projectId → malformed_manifest, fără throw
   let reads = 0;
-  const toctou: Record<string, unknown> = { environmentId: ENV, serviceIds: { ...UUID } };
+  const toctou: Record<string, unknown> = { environmentId: ENV, serviceIds: { ...UUID }, commandSource: { ...CMDSRC } };
   Object.defineProperty(toctou, "projectId", { enumerable: true, get() { reads++; if (reads >= 2) throw new Error("toctou"); return PROJECT; } });
   const r1 = mapRailwaySnapshotToRawState(fullSnapshot(), toctou);
   assert(r1.ok === false && r1.reason === "malformed_manifest", "M5: getter valid-apoi-throw pe projectId → malformed_manifest (fără throw)");
 
-  // getter care schimbă valoarea între citiri → malformed_manifest
   let reads2 = 0;
-  const changing: Record<string, unknown> = { projectId: PROJECT, serviceIds: { ...UUID } };
+  const changing: Record<string, unknown> = { projectId: PROJECT, serviceIds: { ...UUID }, commandSource: { ...CMDSRC } };
   Object.defineProperty(changing, "environmentId", { enumerable: true, get() { reads2++; return reads2 === 1 ? ENV : "MUTATED"; } });
   const r2 = mapRailwaySnapshotToRawState(fullSnapshot(), changing);
   assert(r2.ok === false && r2.reason === "malformed_manifest", "M6: getter care schimbă environmentId → malformed_manifest");
 
-  // manifest cu prototip arbitrar → reject
-  class Weird { projectId = PROJECT; environmentId = ENV; serviceIds = { ...UUID }; }
+  class Weird { projectId = PROJECT; environmentId = ENV; serviceIds = { ...UUID }; commandSource = { ...CMDSRC }; }
   assert(mapRailwaySnapshotToRawState(fullSnapshot(), new Weird()).ok === false, "M7: manifest cu prototip arbitrar → reject");
-  // P2 rev3: manifest cu cheie EXTRA → malformed (formă exactă)
-  const extraKey = { projectId: PROJECT, environmentId: ENV, serviceIds: { ...UUID }, sneaky: 1 } as unknown as RailwayManifest;
+  const extraKey = { projectId: PROJECT, environmentId: ENV, serviceIds: { ...UUID }, commandSource: { ...CMDSRC }, sneaky: 1 } as unknown as RailwayManifest;
   assert(mapRailwaySnapshotToRawState(fullSnapshot(), extraKey).ok === false, "M8: cheie extra pe manifest → malformed_manifest (formă exactă)");
 }
 
@@ -244,9 +299,12 @@ function fullSnapshot(over: Partial<Record<ServiceId, Partial<RailwayServiceRead
   assert(mapRailwaySnapshotToRawState(badDep, MANIFEST).ok === false, "N6: deployment fără status (cheie lipsă) → malformed");
   const missingSnapKey = { projectId: PROJECT, environmentId: ENV, services: fullSnapshot().services }; // fără hasStagedChanges
   assert(mapRailwaySnapshotToRawState(missingSnapKey, MANIFEST).ok === false, "N7: snapshot fără hasStagedChanges → malformed");
+  // railwayConfigFile de tip greșit → malformed
+  const badCfg = fullSnapshot({ mcp: { railwayConfigFile: 123 as unknown as string } });
+  assert(mapRailwaySnapshotToRawState(badCfg, MANIFEST).ok === false, "N8: railwayConfigFile ne-string/ne-null → malformed");
 }
 
-// ── O. EXACT: extra key pe snapshot/serviciu/deployment → malformed (inversat față de rev1) ──────────────────────
+// ── O. EXACT: extra/lipsă key pe snapshot/serviciu/deployment → malformed ────────────────────────────────────────
 {
   const s1 = fullSnapshot() as Record<string, unknown>; s1["someNewRailwayField"] = { nested: true };
   assert(mapRailwaySnapshotToRawState(s1, MANIFEST).ok === false, "O1: extra key pe snapshot → malformed (parse EXACT)");
@@ -254,9 +312,12 @@ function fullSnapshot(over: Partial<Record<ServiceId, Partial<RailwayServiceRead
   assert(mapRailwaySnapshotToRawState(s2, MANIFEST).ok === false, "O2: extra key pe serviciu → malformed");
   const s3 = fullSnapshot({ mcp: { activeDeployment: { id: "d", status: "SUCCESS", extra: 1 } as unknown as { id: string; status: string } } });
   assert(mapRailwaySnapshotToRawState(s3, MANIFEST).ok === false, "O3: extra key pe deployment → malformed");
+  // serviciu fără railwayConfigFile (cheie lipsă) → malformed (formă exactă)
+  const s3b = fullSnapshot(); delete (s3b.services[1] as unknown as Record<string, unknown>)["railwayConfigFile"];
+  assert(mapRailwaySnapshotToRawState(s3b, MANIFEST).ok === false, "O3b: serviciu fără railwayConfigFile → malformed");
   // serviciu cu prototip arbitrar → malformed
   const s4 = fullSnapshot();
-  class WeirdSvc { serviceId = UUID["mcp"]; name = SERVICE_CROSSCHECK["mcp"].name; startCommand = SERVICE_CROSSCHECK["mcp"].startCommand; activeDeployment = { ...D_OK }; latestDeployment = { ...D_OK }; hasStagedChanges = false; variables = {}; }
+  class WeirdSvc { serviceId = UUID["mcp"]; name = SERVICE_CROSSCHECK["mcp"].name; startCommand = defaults("mcp").startCommand; railwayConfigFile = null; activeDeployment = { ...D_OK }; latestDeployment = { ...D_OK }; hasStagedChanges = false; variables = {}; }
   s4.services[1] = new WeirdSvc() as unknown as RailwayServiceRead;
   assert(mapRailwaySnapshotToRawState(s4, MANIFEST).ok === false, "O4: serviciu cu prototip arbitrar → malformed");
 }

@@ -1,17 +1,18 @@
 /**
  * lib/mcp/railwayReadPlan.test.ts — PH-12 12.6 leaf 2b-1 (P2 cgpt): probe COMPUSE cu plannerul + caps REALE, plus guard de drift
- * între `SERVICE_CROSSCHECK` (railwayReadModel) și `.railway/railway.ts` (IaC baseline).
+ * între `SERVICE_CROSSCHECK` (railwayReadModel) și `.railway/railway.ts` (IaC baseline). rev3 (config_file discriminat).
  *
  * Rulează pe WSL (are `bindRoleCaps` = @preflight/env-contracts + envSchema + buildEnvCheck + releaseGate, toate PURE, zero I/O de
- * rețea; și `.railway/railway.ts` pe disc). Dovedește afirmațiile importante care nu se pot proba doar la nivel de mapare:
+ * rețea; și `.railway/railway.ts` pe disc). Dovedește afirmațiile care nu se pot proba doar la nivel de mapare:
  *   1) MCP cu `SUPABASE_SERVICE_ROLE_KEY` sealed (null) → mapare → `planFromRaw(..., "auth-canary", bindRoleCaps())` → plan BLOCAT
  *      prin validatorul canonic (env_missing), fără secret/placeholder în render.
  *   2) `identity_drift` pe un serviciu cerut de profil → rol OMIS → plan BLOCAT prin `state_unknown`.
- *   3) drift-guard: numele + comenzile din `SERVICE_CROSSCHECK` există în `.railway/railway.ts` (sursele nu pot diverge tăcut).
+ *   3) drift-guard DISCRIMINAT: inline → comanda din `SERVICE_CROSSCHECK` == `.railway/railway.ts`; config_file (Solana) → path-ul
+ *      config canonic exact + comanda din blocul IaC == canonicul (source-guard: sursele nu pot diverge tăcut).
  */
 
 import { readFileSync } from "node:fs";
-import { mapRailwaySnapshotToRawState, SERVICE_CROSSCHECK } from "./railwayReadModel";
+import { mapRailwaySnapshotToRawState, SERVICE_CROSSCHECK, type CommandSource } from "./railwayReadModel";
 import { bindRoleCaps } from "./profileCaps";
 import { planFromRaw, formatPlanLines, SERVICE_IDS, type ServiceId } from "./profilePlan";
 
@@ -24,16 +25,25 @@ const ENV = "env-uuid-prod-0001";
 const UUID: Record<ServiceId, string> = {
   redis: "svc-redis-uuid", mcp: "svc-mcp-uuid", "worker-evm": "svc-workerevm-uuid", "indexer-evm": "svc-indexerevm-uuid", "solana-worker": "svc-solana-uuid",
 };
-const MANIFEST = { projectId: PROJECT, environmentId: ENV, serviceIds: { ...UUID } };
+const CMDSRC: Record<ServiceId, CommandSource> = {
+  redis: "inline", mcp: "inline", "worker-evm": "inline", "indexer-evm": "inline", "solana-worker": "config_file",
+};
+const MANIFEST = { projectId: PROJECT, environmentId: ENV, serviceIds: { ...UUID }, commandSource: { ...CMDSRC } };
 
 const RUN = (id = "d1", status = "SUCCESS") => ({ id, status });
 const STOPPED_DEP = { active: null as { id: string; status: string } | null, latest: { id: "old", status: "REMOVED" } };
-type Over = { serviceId?: string; name?: string; startCommand?: string | null; active?: { id: string; status: string } | null; latest?: { id: string; status: string } | null; hasStagedChanges?: boolean; variables?: Record<string, string | null> };
+type Over = { serviceId?: string; name?: string; startCommand?: string | null; railwayConfigFile?: string | null; active?: { id: string; status: string } | null; latest?: { id: string; status: string } | null; hasStagedChanges?: boolean; variables?: Record<string, string | null> };
+function defaults(role: ServiceId): { startCommand: string | null; railwayConfigFile: string | null } {
+  const cc = SERVICE_CROSSCHECK[role];
+  return cc.commandSource === "inline" ? { startCommand: cc.startCommand, railwayConfigFile: null } : { startCommand: null, railwayConfigFile: cc.configFile };
+}
 function service(role: ServiceId, o: Over = {}) {
+  const d = defaults(role);
   return {
     serviceId: o.serviceId ?? UUID[role],
     name: o.name ?? SERVICE_CROSSCHECK[role].name,
-    startCommand: o.startCommand === undefined ? SERVICE_CROSSCHECK[role].startCommand : o.startCommand,
+    startCommand: o.startCommand === undefined ? d.startCommand : o.startCommand,
+    railwayConfigFile: o.railwayConfigFile === undefined ? d.railwayConfigFile : o.railwayConfigFile,
     activeDeployment: o.active === undefined ? RUN() : o.active,
     latestDeployment: o.latest === undefined ? RUN() : o.latest,
     hasStagedChanges: o.hasStagedChanges ?? false,
@@ -89,7 +99,7 @@ const caps = bindRoleCaps();
   const snap = snapshot([
     service("redis"),
     service("mcp", { variables: validMcp }),
-    service("worker-evm", { startCommand: "npm run start --workspace=@preflight/indexer-evm" }), // DRIFT
+    service("worker-evm", { startCommand: "npm run start --workspace=@preflight/indexer-evm" }), // DRIFT (inline)
     service("indexer-evm", STOPPED_DEP),
     service("solana-worker", STOPPED_DEP),
   ]);
@@ -105,22 +115,20 @@ const caps = bindRoleCaps();
   }
 }
 
-// ── 3. drift-guard: SERVICE_CROSSCHECK ↔ .railway/railway.ts, ASOCIAT (nume + comandă în ACELAȘI bloc) ───────────
+// ── 3. drift-guard DISCRIMINAT: SERVICE_CROSSCHECK ↔ .railway/railway.ts ─────────────────────────────────────────
 {
   let iac = "";
   try { iac = readFileSync(new URL("../../../.railway/railway.ts", import.meta.url), "utf8"); } catch { iac = ""; }
   assert(iac.length > 0, "3.0: .railway/railway.ts citit");
   // extrage valoarea REALĂ a PROPRIETĂȚII exacte `<key>: "…"` și o DEZ-ESCAPE-uiește (JSON.parse), NU normalizează lossy.
-  // Comparația de mai jos e EXACTĂ pe valoarea reală — consistentă cu modelul: `normalizeCommand` doar relaxează spații, deci
-  // egalitate EXACTĂ ⊂ egalitatea modelului → guard-ul nu poate da fals-pass (nu mai șterge backslash-uri, nu mai colapsează `\n`).
   // ANCORĂ STRUCTURALĂ: o cheie într-un obiect literal e MEREU precedată de `{` sau `,` (± whitespace) → `[{,]\s*<key>` ocolește
   // complet clasele de caractere (prefix identificator ASCII `restart`/`$start` SAU Unicode `östart` nu e precedat de `{`/`,`). Sufix blocat de `\s*:`.
   const extractStr = (blk: string, key: string): string | null => {
     const m = blk.match(new RegExp("[{,]\\s*" + key + '\\s*:\\s*"((?:\\\\.|[^"\\\\])*)"'));
     if (m === null) return null;
-    try { return JSON.parse('"' + m[1] + '"') as string; } catch { return null; } // dez-escape literal JS → valoarea reală
+    try { return JSON.parse('"' + m[1] + '"') as string; } catch { return null; }
   };
-  // NEGATIV: orice prefix „lipit" de cheie — identificator ASCII (`restart`,`x…`,`$…`,`_…`) SAU Unicode (`ö…`, `真…`) — NU trebuie pescuit.
+  // NEGATIV: orice prefix „lipit" de cheie — identificator ASCII SAU Unicode — NU trebuie pescuit.
   assert(extractStr('{ restart: "WRONG", start: "CANON" }', "start") === "CANON", "3.decoy: `restart` nu e pescuit ca `start`");
   assert(extractStr('{ xstartCommand: "WRONG", startCommand: "CANON" }', "startCommand") === "CANON", "3.decoy2: `xstartCommand` nu e pescuit ca `startCommand`");
   assert(extractStr('{ $start: "WRONG", start: "CANON" }', "start") === "CANON", "3.decoy3: `$start` nu e pescuit ca `start`");
@@ -128,7 +136,10 @@ const caps = bindRoleCaps();
   assert(extractStr('{ östart: "WRONG", start: "CANON" }', "start") === "CANON", "3.decoy5: identificator Unicode `östart` nu e pescuit ca `start`");
   assert(extractStr('{ 真start: "WRONG", start: "CANON" }', "start") === "CANON", "3.decoy6: identificator Unicode `真start` nu e pescuit ca `start`");
 
-  // Non-redis: `service("<name>", { … start: "<cmd>" … });` → valoarea `start` din blocul acelui nume TREBUIE să fie EXACT canonicul.
+  // Comanda canonică a Solanei trăiește în IaC (sursă de adevăr), chiar dacă runtime-ul folosește config_file live.
+  const SOLANA_IAC_START = "npm run start --workspace=@preflight/indexer-solana";
+
+  // Non-redis: valoarea `start` din blocul acelui nume TREBUIE să fie EXACT canonicul (inline din catalog, sau IaC-start pt Solana).
   for (const role of SERVICE_IDS) {
     if (role === "redis") continue;
     const cc = SERVICE_CROSSCHECK[role];
@@ -138,17 +149,37 @@ const caps = bindRoleCaps();
       const end = iac.indexOf("});", start);
       const block = iac.slice(start, end === -1 ? undefined : end);
       const val = extractStr(block, "start");
-      assert(val !== null && val === cc.startCommand, `3.cmd[${role}]: valoarea start din blocul „${cc.name}" e EXACT canonicul (fără sufix)`);
+      const expected = cc.commandSource === "inline" ? cc.startCommand : SOLANA_IAC_START;
+      assert(val !== null && val === expected, `3.cmd[${role}]: valoarea start din blocul „${cc.name}" e EXACT canonicul (fără sufix)`);
+    }
+  }
+
+  // config_file (Solana): source-guard INDEPENDENT — path-ul din catalog TREBUIE să fie un fișier REAL în repo, care conține
+  // comanda canonică (asociere service↔config dovedită din filesystem, NU catalog === literal-de-test).
+  {
+    const cc = SERVICE_CROSSCHECK["solana-worker"];
+    assert(cc.commandSource === "config_file", "3.sol.src: Solana e config_file în catalog");
+    if (cc.commandSource === "config_file") {
+      assert(cc.configFile === "/workers/solana/railway.json", "3.sol.path: configFile canonic exact (documentat în lock)");
+      const rel = cc.configFile.replace(/^\/+/, "");
+      let raw = "";
+      try { raw = readFileSync(new URL("../../../" + rel, import.meta.url), "utf8"); } catch { raw = ""; }
+      assert(raw.length > 0, `3.sol.file: fișierul de config „${cc.configFile}" există în repo`);
+      let parsed: { deploy?: { startCommand?: unknown } } | null = null;
+      try { parsed = JSON.parse(raw) as { deploy?: { startCommand?: unknown } }; } catch { parsed = null; }
+      const cfgStart = parsed?.deploy?.startCommand;
+      assert(typeof cfgStart === "string" && cfgStart === SOLANA_IAC_START, "3.sol.cmd: deploy.startCommand din fișierul de config == canonicul (asociere service↔config dovedită din filesystem)");
     }
   }
 
   // Redis: nume în `const <var> = redis("Preflight - Redis", …)`; comanda în `<var>.deploy = { startCommand: "…" }` → asociere prin variabilă, valoare EXACTĂ.
   {
     const cc = SERVICE_CROSSCHECK["redis"];
+    assert(cc.commandSource === "inline", "3.redis.src: Redis e inline");
     const m = iac.match(/const\s+(\w+)\s*=\s*redis\(\s*"Preflight - Redis"/);
     assert(m !== null, "3.redis.name: redis(\"Preflight - Redis\") prezent");
-    if (m) {
-      const dm = iac.match(new RegExp(m[1] + "\\.deploy\\s*=\\s*(\\{[\\s\\S]*?\\});")); // capturăm ȘI acoladele → ancora [{,] prinde prima proprietate
+    if (m && cc.commandSource === "inline") {
+      const dm = iac.match(new RegExp(m[1] + "\\.deploy\\s*=\\s*(\\{[\\s\\S]*?\\});"));
       assert(dm !== null, "3.redis.deploy: <var>.deploy prezent (asociat prin variabilă)");
       if (dm) {
         const val = extractStr(dm[1], "startCommand");
