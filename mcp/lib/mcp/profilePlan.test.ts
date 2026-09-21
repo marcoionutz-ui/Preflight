@@ -4,7 +4,7 @@
  */
 import {
   SERVICE_IDS, PROFILE_NAMES, PROFILES, parseRawState, buildObservation, planFromRaw,
-  planProfileTransition, planSummary, formatPlanLines,
+  planProfileTransition, planSummary, formatPlanLines, isGenuinePlan,
   type Caps, type RawState, type ServiceId, type ProfileName, type ServiceAction, type Observation, type TransitionPlan, type EnvValidation,
 } from "./profilePlan";
 
@@ -267,6 +267,30 @@ function applyPlan(raw: RawState, actions: readonly ServiceAction[]): RawState {
   const pBase = planTo("parked", "base-canary");
   const allSet = ["HEALTH_EXPECTED_CHAINS", "HEALTH_EXPECT_INDEXER_EVM", "HEALTH_EXPECT_SOLANA_WORKER", "PH2_RESOURCE_OWNER_AUTHORIZE", "ENABLED_CHAINS", "PREFLIGHT_MODE"];
   check("N1 fiecare cheie declarată de base-canary → set_env (derivat, zero drift)", pBase.admissible === true && allSet.every((k) => pBase.actions.some((a) => a.kind === "set_env" && a.key === k)));
+}
+
+// ── O. PROVENIENȚĂ: `isGenuinePlan` (registru WeakSet privat) — planurile EMISE de planner sunt genuine; copiile/fabricatele NU.
+//    Capability-bound pentru consumatorul de WRITE (2c-1 `railwayApplyPlan` acceptă DOAR planuri genuine). ──────────────
+{
+  const genuine = planTo("parked", "auth-canary"); // AdmissiblePlan
+  check("O1 plan admisibil emis → isGenuinePlan true", genuine.admissible === true && isGenuinePlan(genuine) === true);
+  const blocked = planTo("parked", "launch"); // BlockedPlan (launch nefinalizat) — TOT înregistrat (a doua cale de return)
+  check("O2 plan blocat emis → isGenuinePlan true", !blocked.admissible && isGenuinePlan(blocked) === true);
+  // Calea invalid_observation (observație neînregistrată) → plan blocat EMIS de planner → tot genuin (a treia cale de return).
+  const bogusObs = { target: "parked", services: {} } as unknown as Observation; // NU e în WeakSet-ul observațiilor
+  const pInvalidObs = planProfileTransition(bogusObs);
+  check("O3 plan din observație neînregistrată → isGenuinePlan true (planul e emis de planner)", !pInvalidObs.admissible && isGenuinePlan(pInvalidObs) === true);
+  // Spread/relabel al unui plan genuin → obiect NOU, absent din registru → false (identitate, nu formă).
+  check("O4 spread al unui plan genuin → isGenuinePlan false", isGenuinePlan({ ...(genuine as object) }) === false);
+  // Obiect fabricat cu forma corectă → false (validarea structurală NU dovedește proveniența).
+  check("O5 obiect fabricat {admissible:true,...} → false", isGenuinePlan({ admissible: true, target: "parked", actions: [] } as unknown) === false);
+  // Non-obiecte → false, fără throw.
+  check("O6 null → false", isGenuinePlan(null) === false);
+  check("O7 undefined → false", isGenuinePlan(undefined) === false);
+  check("O8 string → false", isGenuinePlan("parked") === false);
+  // Frontiera completă: `planFromRaw` produce tot planuri genuine.
+  const fr = planFromRaw(rawMatching("auth-canary"), "auth-canary", caps);
+  check("O9 planFromRaw → plan genuin", fr.ok === true && isGenuinePlan(fr.plan) === true);
 }
 
 console.log(failures === 0 ? "\nprofilePlan: ALL GREEN ✅" : `\nprofilePlan: ${failures} FAIL ❌`);

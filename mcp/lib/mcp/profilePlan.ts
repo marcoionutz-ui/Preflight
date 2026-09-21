@@ -279,6 +279,14 @@ function snapshot(obs: Observation, projected: boolean): StateSnapshot {
   return snap;
 }
 
+// Registru de identitate al PLANURILOR (analog cu REGISTRY-ul observațiilor): doar planurile emise de `planProfileTransition`
+// sunt „adevărate". Capability-bound pentru consumatorul de WRITE (2c): un `{...plan}` fabricat (spread + relabel, sau obiect
+// inventat) e un OBIECT NOU, absent din registru → respins la apply (`unregistered_plan`). Validarea structurală NU dovedește
+// proveniența; identitatea o dovedește.
+const PLAN_REGISTRY = new WeakSet<object>();
+export function isGenuinePlan(x: unknown): x is TransitionPlan { return typeof x === "object" && x !== null && PLAN_REGISTRY.has(x); }
+function registerPlan<T extends TransitionPlan>(p: T): T { PLAN_REGISTRY.add(p); return p; }
+
 /** Planner PUR, value-blind, UN SINGUR arg. Fail-closed. */
 export function planProfileTransition(observation: Observation): TransitionPlan {
   if (!isObservation(observation)) {
@@ -287,7 +295,7 @@ export function planProfileTransition(observation: Observation): TransitionPlan 
     try { claimed = (observation as { target?: unknown })?.target; } catch { claimed = undefined; }
     const target = parseProfileName(claimed) ?? PROFILE_NAMES[0];
     const empty = allUnknownSnapshot();
-    return deepFreeze({ admissible: false, target, before: empty, after: empty, blockers: [{ service: "__profile__", kind: "invalid_observation", key: "__identity__" }], preview: { lines: ["observație neînregistrată — respinsă"], starts: 0, stops: 0, setEnv: 0, unsetEnv: 0 } } as BlockedPlan);
+    return registerPlan(deepFreeze({ admissible: false, target, before: empty, after: empty, blockers: [{ service: "__profile__", kind: "invalid_observation", key: "__identity__" }], preview: { lines: ["observație neînregistrată — respinsă"], starts: 0, stops: 0, setEnv: 0, unsetEnv: 0 } } as BlockedPlan));
   }
   const target = observation.target;
   const profile = PROFILES[target];
@@ -319,8 +327,8 @@ export function planProfileTransition(observation: Observation): TransitionPlan 
   const before = snapshot(observation, false);
   const after = snapshot(observation, true);
   // deepFreeze: odată validat/întors, planul (inclusiv `actions`) e IMUTABIL — un consumator nu-l mai poate modifica.
-  if (blockers.length > 0) return deepFreeze({ admissible: false, target, before, after, blockers, preview: toPreview(proposed) } as BlockedPlan);
-  return deepFreeze({ admissible: true, target, before, after, actions: proposed, noop: proposed.length === 0, requiresConfirmation: proposed.some((a) => a.destructive) } as AdmissiblePlan);
+  if (blockers.length > 0) return registerPlan(deepFreeze({ admissible: false, target, before, after, blockers, preview: toPreview(proposed) } as BlockedPlan));
+  return registerPlan(deepFreeze({ admissible: true, target, before, after, actions: proposed, noop: proposed.length === 0, requiresConfirmation: proposed.some((a) => a.destructive) } as AdmissiblePlan));
 }
 
 // ── Frontieră completă ────────────────────────────────────────────────────────────────────────────────────────
