@@ -37,7 +37,7 @@
 
 import { SERVICE_IDS, type ServiceId } from "./profilePlan";
 import { SERVICE_CROSSCHECK } from "./railwayReadModel";
-import type { RailwayManifest, RailwaySnapshot, RailwayServiceRead, RailwayDeployment } from "./railwayReadModel";
+import type { RailwaySnapshot, RailwayServiceRead, RailwayDeployment } from "./railwayReadModel";
 
 // ── Endpoint & implicite/plafoane ────────────────────────────────────────────────────────────────────────────────
 const RAILWAY_ENDPOINT = "https://backboard.railway.com/graphql/v2";
