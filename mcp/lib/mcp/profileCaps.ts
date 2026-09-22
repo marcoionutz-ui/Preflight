@@ -15,6 +15,11 @@
  *
  * `envKeys` = allowlist de PROVENIENȚĂ (numele pe care validatorul le poate emite în `problem.name`), NU inventarul
  * complet al env-urilor citite indirect. Pentru MCP: `MCP_ENV_FIELDS` (runtime) ∪ `BUILD_ENV_FIELD_NAMES` (build).
+ *
+ * GENUINITATE Caps (leaf 2c-2b): `Caps` conține callback-uri (`validateService`/`isStagingSupabase`) care primesc env-ul LIVE.
+ * Consumatorul de WRITE (`railwayWriteReader.derivePreparedInputs`) rulează `planFromRaw` pe un RawState cu SECRETE → acceptă DOAR
+ * caps GENUINE. Registrul e PRIVAT AICI (fabrica de încredere): `bindRoleCaps()` înregistrează DUPĂ `deepFreeze`; NIMENI nu poate
+ * „mint-ui" din afară (nu exportăm nicio funcție de înregistrare). Un caps fabricat cu callback-uri care exfiltrează → NEgenuine → respins.
  */
 
 import type { Caps, EnvValidation, EnvProblem, ServiceEnvValidator } from "./profilePlan";
@@ -39,6 +44,11 @@ function deepFreeze<T>(value: T): T {
   }
   return value;
 }
+
+// Registru PRIVAT de genuinitate pentru `Caps` — DEȚINUT de fabrică. Nicio funcție de înregistrare NU e exportată → nimeni din afară
+// nu poate transforma un caps fabricat în „genuin". Doar `bindRoleCaps` (mai jos) adaugă.
+const CAPS_REGISTRY = new WeakSet<object>();
+export function isGenuineCaps(x: unknown): x is Caps { return typeof x === "object" && x !== null && CAPS_REGISTRY.has(x as object); }
 
 /** Canonic `EnvValidation` → forma planner-ului. Șterge `role`/`warnings`/`detail`; păstrează DOAR `{name,kind}`. */
 function normalize(v: CanonEnvValidation): EnvValidation {
@@ -78,7 +88,7 @@ const isStagingSupabase = (env: Readonly<Record<string, string>>): boolean =>
 
 /**
  * Construiește `Caps` din validatoarele + cataloagele CANONICE. Întregul obiect (incl. `envKeys` per rol) e înghețat
- * runtime. Leaf 2b/2c vor invoca `bindRoleCaps()` o dată și vor trece rezultatul lui `buildObservation`.
+ * runtime, apoi ÎNREGISTRAT PRIVAT ca genuin. Leaf 2b/2c vor invoca `bindRoleCaps()` o dată și vor trece rezultatul.
  */
 export function bindRoleCaps(): Caps {
   const caps: Caps = {
@@ -96,5 +106,7 @@ export function bindRoleCaps(): Caps {
     },
     isStagingSupabase,
   };
-  return deepFreeze(caps);
+  const frozen = deepFreeze(caps);
+  CAPS_REGISTRY.add(frozen as unknown as object); // înregistrare PRIVATĂ (după freeze) — genuinitate de producție
+  return frozen;
 }

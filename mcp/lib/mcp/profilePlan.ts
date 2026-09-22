@@ -286,6 +286,8 @@ function snapshot(obs: Observation, projected: boolean): StateSnapshot {
 const PLAN_REGISTRY = new WeakSet<object>();
 export function isGenuinePlan(x: unknown): x is TransitionPlan { return typeof x === "object" && x !== null && PLAN_REGISTRY.has(x); }
 function registerPlan<T extends TransitionPlan>(p: T): T { PLAN_REGISTRY.add(p); return p; }
+// NB: genuinitatea `Caps` NU trăiește aici — core-ul PUR nu trebuie să poată „mint-ui" capabilități de producție. Registrul + predicatul
+// aparțin FABRICII de încredere `bindRoleCaps` (leaf 2a, `profileCaps.ts`), care înregistrează PRIVAT. Reader-ul importă `isGenuineCaps` de acolo.
 
 /** Planner PUR, value-blind, UN SINGUR arg. Fail-closed. */
 export function planProfileTransition(observation: Observation): TransitionPlan {

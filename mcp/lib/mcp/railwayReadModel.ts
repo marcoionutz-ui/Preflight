@@ -42,9 +42,10 @@ import { SERVICE_IDS, parseRawState, type ServiceId, type RawState, type RawServ
 
 // ── Catalog de CROSS-CHECK (canonic, din cod; identitatea autoritară e UUID-ul din manifest) ────────────────────────
 // Discriminat pe `commandSource`: `inline` cară `startCommand` canonic; `config_file` cară `configFile` (path repo exact).
+// `gitBacked` = SURSĂ UNICĂ (§9.5.1): Git (deployV2+SHA) vs managed/image (Redis, fără SHA). Reader-ul WRITE îl citește DE AICI (nu un catalog paralel).
 export type CrossCheck =
-  | { readonly name: string; readonly commandSource: "inline"; readonly startCommand: string }
-  | { readonly name: string; readonly commandSource: "config_file"; readonly configFile: string };
+  | { readonly name: string; readonly commandSource: "inline"; readonly gitBacked: boolean; readonly startCommand: string }
+  | { readonly name: string; readonly commandSource: "config_file"; readonly gitBacked: boolean; readonly configFile: string };
 
 export type CommandSource = "inline" | "config_file";
 
@@ -52,14 +53,27 @@ export const SERVICE_CROSSCHECK: Readonly<Record<ServiceId, CrossCheck>> = Objec
   redis: Object.freeze({
     name: "Preflight - Redis",
     commandSource: "inline",
+    gitBacked: false, // managed/image (Docker Redis) — fără deploy Git/SHA
     startCommand: '/bin/sh -c "rm -rf $RAILWAY_VOLUME_MOUNT_PATH/lost+found/ && exec docker-entrypoint.sh redis-server --requirepass $REDIS_PASSWORD --save 60 1 --dir $RAILWAY_VOLUME_MOUNT_PATH"',
   }),
-  mcp: Object.freeze({ name: "Preflight MCP", commandSource: "inline", startCommand: "npm run start --workspace=mcp" }),
-  "worker-evm": Object.freeze({ name: "Worker EVM", commandSource: "inline", startCommand: "npm run start --workspace=@preflight/worker-evm" }),
-  "indexer-evm": Object.freeze({ name: "Indexer EVM", commandSource: "inline", startCommand: "npm run start --workspace=@preflight/indexer-evm" }),
+  mcp: Object.freeze({ name: "Preflight MCP", commandSource: "inline", gitBacked: true, startCommand: "npm run start --workspace=mcp" }),
+  "worker-evm": Object.freeze({ name: "Worker EVM", commandSource: "inline", gitBacked: true, startCommand: "npm run start --workspace=@preflight/worker-evm" }),
+  "indexer-evm": Object.freeze({ name: "Indexer EVM", commandSource: "inline", gitBacked: true, startCommand: "npm run start --workspace=@preflight/indexer-evm" }),
   // Worker Solana: comanda trăiește în fișierul de config din repo (câmpul instanță `startCommand` e null live). Identitate = path exact.
-  "solana-worker": Object.freeze({ name: "Worker Solana", commandSource: "config_file", configFile: "/workers/solana/railway.json" }),
+  "solana-worker": Object.freeze({ name: "Worker Solana", commandSource: "config_file", gitBacked: true, configFile: "/workers/solana/railway.json" }),
 } as Record<ServiceId, CrossCheck>);
+
+/**
+ * Cross-check DISCRIMINAT al identității COMENZII — BYTE-EXACT pe ambele ramuri. Helper CANONIC (sursă unică), reutilizat de
+ * mapper-ul 2b-1 ȘI de reader-ul WRITE 2c-2b (identitatea de execuție validată în ambele capete ale fence-ului).
+ *  • inline → `startCommand` prezent + byte-exact cu canonicul (nicio normalizare de whitespace: un spațiu/tab/newline în plus = drift);
+ *  • config_file → `startCommand === null` + `railwayConfigFile === configFile` canonic (byte-exact, e o cale).
+ * `name` NU intră aici (rename ≠ remapare — e strict diagnostic; autoritatea de identitate e UUID-ul din manifest).
+ */
+export function commandIdentityMatches(cc: CrossCheck, startCommand: string | null, railwayConfigFile: string | null): boolean {
+  if (cc.commandSource === "inline") return startCommand !== null && startCommand === cc.startCommand;
+  return startCommand === null && railwayConfigFile === cc.configFile;
+}
 
 // ── Statusuri de deployment (frozen) ────────────────────────────────────────────────────────────────────────────
 const RUNNING_STATUS: ReadonlySet<string> = new Set(["SUCCESS", "SLEEPING"]);                       // ambele + coerent → true
@@ -153,6 +167,20 @@ const SERVICE_KEYS = ["serviceId", "name", "startCommand", "railwayConfigFile", 
 const SNAPSHOT_KEYS = ["projectId", "environmentId", "hasStagedChanges", "services"] as const;
 const MANIFEST_KEYS = ["projectId", "environmentId", "serviceIds", "commandSource"] as const;
 const COMMAND_SOURCES: ReadonlySet<string> = new Set(["inline", "config_file"]);
+// Contract ALES pentru ID-urile de manifest (project/env/service): charset UUID + LUNGIME MINIMĂ 8 → un ID trivial-scurt ca `"x"` e refuzat.
+const MANIFEST_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
+/** Obiect PLAIN cu EXACT `keys` ca DATA-properties ENUMERABILE — refuză chei Symbol, proprietăți extra (inclusiv non-enumerabile) și accessor (get/set). */
+function isExactDataObject(o: unknown, keys: readonly string[]): o is Record<string, unknown> {
+  if (!isTrustedObject(o)) return false;
+  const own = Reflect.ownKeys(o); // include Symbol-uri ȘI non-enumerabile
+  if (own.length !== keys.length) return false;
+  for (const k of own) {
+    if (typeof k !== "string" || !keys.includes(k)) return false; // cheie Symbol / ne-așteptată → refuz
+    const d = Object.getOwnPropertyDescriptor(o, k);
+    if (!d || !d.enumerable || typeof d.get === "function" || typeof d.set === "function" || !("value" in d)) return false; // accessor/non-enum → refuz
+  }
+  return true;
+}
 
 function parseDeployment(v: unknown): RailwayDeployment | null | "err" {
   if (v === null) return null;
@@ -199,53 +227,69 @@ function parseSnapshot(raw: unknown): RailwaySnapshot | null {
 }
 
 // ── Manifest normalizat O SINGURĂ DATĂ (anti-TOCTOU): copie proprie imutabilă, double-read pe scalari ───────────
+/**
+ * Helper CANONIC de normalizare manifest — SURSĂ UNICĂ (mapper 2b-1 + reader WRITE 2c-2b). Întoarce EXCLUSIV structuri PLAIN
+ * DEEP-FROZEN (fără `Map`/`Set` exportate, care ar fi mutabile la runtime în ciuda tipului `Readonly*`). Fail-closed pe TOT.
+ *  • formă EXACTĂ (fără chei extra); double-read pe scalari (getter ne-determinist → respins);
+ *  • `serviceIds` = EXACT rolurile canonice, non-goale, UUID-uri UNICE (duplicat → null); `commandSource` = EXACT rolurile, enum valid;
+ *  • `byUuid` = reverse UUID→rol (dedup dovedit). NU aplică politica „commandSource == catalog" (o aplică fiecare consumator).
+ */
+export interface SharedManifest {
+  readonly projectId: string;
+  readonly environmentId: string;
+  readonly byRole: Readonly<Record<ServiceId, string>>;              // rol → UUID (plain, frozen)
+  readonly byUuid: Readonly<Record<string, ServiceId>>;             // UUID → rol (plain, frozen, dedup)
+  readonly commandSource: Readonly<Record<ServiceId, CommandSource>>; // rol → sursa declarată (plain, frozen)
+}
+export function normalizeManifestShared(m: unknown): SharedManifest | null {
+  if (!isExactDataObject(m, MANIFEST_KEYS)) return null; // formă EXACTĂ: DATA-properties, fără Symbol/extra/non-enum/accessor
+  const pid1 = m.projectId, pid2 = m.projectId;
+  const eid1 = m.environmentId, eid2 = m.environmentId;
+  // ID-uri STRICTE (charset + lungime ≥8): un UUID malformat/scurt → refuz ÎNAINTE de orice I/O, nu tardiv la scope.
+  if (typeof pid1 !== "string" || !MANIFEST_ID_RE.test(pid1) || pid1 !== pid2) return null;
+  if (typeof eid1 !== "string" || !MANIFEST_ID_RE.test(eid1) || eid1 !== eid2) return null;
+
+  const ids = m.serviceIds;
+  if (!isExactDataObject(ids, SERVICE_IDS)) return null; // EXACT rolurile ca DATA-properties (fără Symbol/extra/accessor)
+  const byRole: Record<string, string> = Object.create(null);
+  const byUuid: Record<string, ServiceId> = Object.create(null);
+  for (const role of SERVICE_IDS) {
+    const val = (ids as Record<string, unknown>)[role];
+    if (typeof val !== "string" || !MANIFEST_ID_RE.test(val)) return null; // UUID strict
+    if (Object.hasOwn(byUuid, val)) return null;                          // UUID duplicat între roluri → topologie ambiguă
+    byRole[role] = val; byUuid[val] = role;
+  }
+
+  const cs = m.commandSource;
+  if (!isExactDataObject(cs, SERVICE_IDS)) return null;
+  const commandSource: Record<string, CommandSource> = Object.create(null);
+  for (const role of SERVICE_IDS) {
+    const val = (cs as Record<string, unknown>)[role];
+    if (typeof val !== "string" || !COMMAND_SOURCES.has(val)) return null;
+    commandSource[role] = val as CommandSource;
+  }
+
+  return deepFreeze({
+    projectId: pid1, environmentId: eid1,
+    byRole: byRole as Record<ServiceId, string>,
+    byUuid, commandSource: commandSource as Record<ServiceId, CommandSource>,
+  });
+}
+
 interface NormManifest {
   readonly projectId: string;
   readonly environmentId: string;
   readonly reverse: ReadonlyMap<string, ServiceId>;                 // UUID → rol
   readonly commandSource: ReadonlyMap<ServiceId, CommandSource>;    // rol → sursa declarată
 }
+/** Vedere internă a mapper-ului (Map-uri pentru lookup) construită din normalizatorul PARTAJAT (sursă unică de validare). */
 function normalizeManifest(m: unknown): NormManifest | null {
-  if (!isTrustedObject(m) || !hasExactKeys(m, MANIFEST_KEYS)) return null; // formă EXACTĂ (fără chei extra)
-  // double-read pe scalari: un getter ne-determinist (valid o dată, apoi aruncă/schimbă) → respins.
-  const pid1 = m.projectId, pid2 = m.projectId;
-  const eid1 = m.environmentId, eid2 = m.environmentId;
-  if (typeof pid1 !== "string" || pid1.length === 0 || pid1 !== pid2) return null;
-  if (typeof eid1 !== "string" || eid1.length === 0 || eid1 !== eid2) return null;
-
-  const ids = m.serviceIds;
-  if (!isTrustedObject(ids)) return null;
-  const idEntries = Object.entries(ids); // o SINGURĂ evaluare
-  if (idEntries.length !== SERVICE_IDS.length) return null;
-  const forward = new Map<ServiceId, string>();
-  for (const [k, val] of idEntries) {
-    if (!(SERVICE_IDS as readonly string[]).includes(k)) return null; // cheie ne-rol
-    if (typeof val !== "string" || val.length === 0) return null;
-    forward.set(k as ServiceId, val);
-  }
-  if (forward.size !== SERVICE_IDS.length) return null;
-
-  const cs = m.commandSource;
-  if (!isTrustedObject(cs)) return null;
-  const csEntries = Object.entries(cs); // o SINGURĂ evaluare
-  if (csEntries.length !== SERVICE_IDS.length) return null;
-  const cmdSource = new Map<ServiceId, CommandSource>();
-  for (const [k, val] of csEntries) {
-    if (!(SERVICE_IDS as readonly string[]).includes(k)) return null;
-    if (typeof val !== "string" || !COMMAND_SOURCES.has(val)) return null;
-    cmdSource.set(k as ServiceId, val as CommandSource);
-  }
-  if (cmdSource.size !== SERVICE_IDS.length) return null;
-
+  const shared = normalizeManifestShared(m);
+  if (shared === null) return null;
   const reverse = new Map<string, ServiceId>();
-  for (const role of SERVICE_IDS) {
-    const uuid = forward.get(role);
-    if (uuid === undefined) return null;
-    if (reverse.has(uuid)) return null; // UUID duplicat între roluri → topologie ambiguă
-    reverse.set(uuid, role);
-    if (cmdSource.get(role) === undefined) return null; // fiecare rol trebuie să-și declare sursa
-  }
-  return { projectId: pid1, environmentId: eid1, reverse, commandSource: cmdSource };
+  const commandSource = new Map<ServiceId, CommandSource>();
+  for (const role of SERVICE_IDS) { reverse.set(shared.byRole[role], role); commandSource.set(role, shared.commandSource[role]); }
+  return { projectId: shared.projectId, environmentId: shared.environmentId, reverse, commandSource };
 }
 
 /**
@@ -282,17 +326,8 @@ export function mapRailwaySnapshotToRawState(rawSnapshot: unknown, manifest: unk
 
       if (svc.name !== cc.name) diagnostics.push({ code: "service_renamed", service: role }); // rename ≠ remapare (UUID e autoritatea)
 
-      // Cross-check DISCRIMINAT al identității comenzii — BYTE-EXACT pe ambele ramuri. UUID corect + identitate≠ → identity_drift → rol OMIS.
-      let identityOk: boolean;
-      if (cc.commandSource === "inline") {
-        // `startCommand` live e citit VERBATIM din Railway (fără reformatare) → egalitate BYTE-EXACTĂ (nicio normalizare de whitespace:
-        // un spațiu/tab/newline în plus schimbă șirul → drift; nu tolerăm nimic).
-        identityOk = svc.startCommand !== null && svc.startCommand === cc.startCommand;
-      } else {
-        // config_file: comanda NU e în câmpul instanță (trebuie null) + path-ul de config === canonicul EXACT (byte-exact, e o cale).
-        identityOk = svc.startCommand === null && svc.railwayConfigFile === cc.configFile;
-      }
-      if (!identityOk) { diagnostics.push({ code: "identity_drift", service: role }); continue; }
+      // Cross-check DISCRIMINAT al identității comenzii (helper canonic partajat cu reader-ul WRITE). UUID corect + identitate≠ → identity_drift → rol OMIS.
+      if (!commandIdentityMatches(cc, svc.startCommand, svc.railwayConfigFile)) { diagnostics.push({ code: "identity_drift", service: role }); continue; }
 
       const verdict = classifyRunning(svc.activeDeployment, svc.latestDeployment);
       if (verdict === "unknown") { diagnostics.push({ code: "running_unknown", service: role }); continue; }
