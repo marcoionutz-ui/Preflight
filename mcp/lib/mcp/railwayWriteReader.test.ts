@@ -17,7 +17,7 @@ import {
   readPrepareCapability, readWriteProgress, isGenuinePrepareCapability, isGenuineWriteProgress, derivePreparedInputs, isGenuinePreparedInputs,
   type PrepareResult, type ProgressResult,
 } from "./railwayWriteReader";
-import { QUERIES, type QueryName, type TransportResult, type GraphQLRequest, type GraphQLTransport, type TransportErrorCode } from "./railwayReadClient";
+import { type QueryName, type TransportResult, type GraphQLRequest, type GraphQLTransport, type TransportErrorCode } from "./railwayReadClient";
 import { SERVICE_CROSSCHECK, type RailwayManifest, type CommandSource } from "./railwayReadModel";
 import { SERVICE_IDS, type ServiceId } from "./profilePlan";
 import * as profilePlanNs from "./profilePlan";
