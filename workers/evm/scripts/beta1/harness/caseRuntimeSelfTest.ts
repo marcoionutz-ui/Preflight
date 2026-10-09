@@ -8,6 +8,14 @@
  *   - dă HARNESS_ERROR — niciodată CONTROL_FAILED sau „defect reprodus" — când o barieră, o gardă sau o
  *     precondiție nu e îndeplinită.
  *
+ * Felia 4 adaugă corpul CAZURILOR DE DEFECT, tot peste workerul fals:
+ *   F — fals fidel baseline-ului (are defectele) → DEFECT_REPRODUCED / PARTIAL_OBSERVED;
+ *   G — fals „reparat" pentru exact acel defect → DEFECT_NOT_REPRODUCED / PARTIAL_NOT_OBSERVED;
+ *   H — barieră, gardă sau montaj neîndeplinite → HARNESS_ERROR, niciodată „reprodus", fără observații;
+ *   I — manifestul, definițiile și tabelul de aici sunt coerente (pur);
+ *   J — nodul se poartă greșit după verificarea filtrului (martor suprimat, geamăn livrat, livrare forțată
+ *       refuzată sau dublată) → HARNESS_ERROR cu motivul EXACT al gărzii testate.
+ *
  * TERMINARE NECONFIRMATĂ: dacă supraveghetorul nu poate confirma că un proces de caz și grupul lui nu mai au
  * procese vii, lansatorul OPREȘTE imediat orice lansare următoare, păstrează cazul și PID-ul, iar cleanup-ul
  * mărginit din `finally` oprește procesul rămas și verifică rezultatul. Secțiunea E dovedește acest comportament.
@@ -18,7 +26,10 @@
 
 import path from "node:path";
 import { runCaseProcess, verdictFor, pidAlive, groupAlive, type RunnableCase, type SupervisorOptions } from "./supervisor";
-import type { CaseVerdict, Outcome } from "./caseProtocol";
+import { specProblem, type CaseVerdict, type CaseSpec, type CaseKind, type CaseSection, type Outcome } from "./caseProtocol";
+import { CASES } from "../cases/manifest";
+import { CONTROLS } from "../cases/controlDefs";
+import { DEFECTS } from "../cases/defectDefs";
 
 const FAKE_CASE = path.join(__dirname, "fixtures", "fakeRuntimeCase.ts");
 const OPTS: SupervisorOptions = { deadlineMs: 60_000, fixedEnv: { PREFLIGHT_MODE: "LIVE" } };
@@ -43,7 +54,7 @@ interface CleanupReport { stuck: StuckCase | null; killed: boolean; stillAlive: 
 
 interface Launcher {
   /** Lansează un proces de caz. Refuză (fără să pornească nimic) după o terminare neconfirmată. */
-  run(id: string, args: string[], extra?: Partial<SupervisorOptions>): Promise<CaseVerdict>;
+  run(id: string, args: string[], extra?: Partial<SupervisorOptions>, as?: { kind: CaseKind; section: CaseSection }): Promise<CaseVerdict>;
   /** Câte procese a ÎNCERCAT să pornească (apeluri efective la supraveghetor). */
   launches(): number;
   pids(): number[];
@@ -59,17 +70,18 @@ function makeLauncher(): Launcher {
   let launches = 0;
   let stuck: StuckCase | null = null;
   return {
-    async run(id, args, extra = {}) {
+    async run(id, args, extra = {}, as = { kind: "control", section: "filter" }) {
       if (stuck !== null) throw new UnconfirmedTermination(stuck.caseId, stuck.pid);
       launches++;
-      const c: RunnableCase = { id, kind: "control", section: "filter", file: FAKE_CASE, args };
+      const spec: CaseSpec = { id, kind: as.kind, section: as.section };
+      const c: RunnableCase = { ...spec, file: FAKE_CASE, args };
       const p = await runCaseProcess(c, { ...OPTS, ...extra });
       if (p.pid !== null) pids.push(p.pid);
       if (p.unreaped) {
         stuck = { caseId: id, pid: p.pid };
         throw new UnconfirmedTermination(id, p.pid);
       }
-      return verdictFor({ id, kind: "control", section: "filter" }, p);
+      return verdictFor(spec, p);
     },
     launches: () => launches,
     pids: () => [...pids],
@@ -91,11 +103,49 @@ function makeLauncher(): Launcher {
 const L = makeLauncher();
 const run = (id: string, args: string[]): Promise<CaseVerdict> => L.run(id, args);
 
+/** Felul și secțiunea fiecărui caz de defect — repetate aici (ca în manifest), NU citite din definiții. */
+const DEFECT_SPECS: Record<string, { kind: CaseKind; section: CaseSection }> = {
+  "M1": { kind: "defect", section: "filter" }, "M2": { kind: "defect", section: "filter" },
+  "D1": { kind: "defect", section: "filter" }, "T1": { kind: "defect", section: "filter" },
+  "T1-LP": { kind: "defect", section: "filter" }, "T2": { kind: "defect", section: "filter" },
+  "P1": { kind: "defect", section: "filter" },
+  "M1-FORCED": { kind: "defect", section: "forced" }, "T1-FORCED": { kind: "defect", section: "forced" },
+  "X1": { kind: "partial", section: "partial" },
+};
+/** Rulează corpul unui caz de defect peste workerul fals, cu defectul injectat (`none` = fals fidel baseline-ului). */
+const runDefect = (id: string, fault: string, tamper = ""): Promise<CaseVerdict> =>
+  L.run(id, [`--defect=${id}`, `--fault=${fault}`, ...(tamper ? [`--tamper=${tamper}`] : [])], {}, DEFECT_SPECS[id]);
+
 const why = (v: CaseVerdict): string => `${v.outcome}: ${v.reasons.join(" | ").slice(0, 300)}`;
 
+/** I. Manifestul, definițiile și tabelul de aici spun același lucru (pur: nu pornește niciun proces). */
+function manifestConsistency(): void {
+  console.log("I. manifestul și definițiile cazurilor sunt coerente");
+  const ids = CASES.map(c => c.id);
+  check("I1. manifestul nu are id-uri duplicate și nicio specificație incoerentă", new Set(ids).size === ids.length && CASES.every(c => specProblem(c) === null));
+  const controls = CASES.filter(c => c.kind === "control");
+  check("I2. controalele din manifest sunt exact cele definite (10), toate în «filter», în același fișier",
+    controls.length === 10 && JSON.stringify(controls.map(c => c.id).sort()) === JSON.stringify(Object.keys(CONTROLS).sort())
+      && controls.every(c => c.section === "filter" && c.file.endsWith("positiveControls.ts")));
+  const defects = CASES.filter(c => c.kind !== "control");
+  check("I3. cazurile de defect din manifest sunt exact cele definite (10), cu același fel și aceeași secțiune",
+    defects.length === 10 && JSON.stringify(defects.map(c => c.id).sort()) === JSON.stringify(Object.keys(DEFECTS).sort())
+      && defects.every(c => DEFECTS[c.id]?.kind === c.kind && DEFECTS[c.id]?.section === c.section && c.file.endsWith("defectCases.ts")));
+  check("I4. tabelul acestui self-test coincide cu definițiile",
+    JSON.stringify(Object.keys(DEFECT_SPECS).sort()) === JSON.stringify(Object.keys(DEFECTS).sort())
+      && Object.entries(DEFECT_SPECS).every(([id, sp]) => DEFECTS[id].kind === sp.kind && DEFECTS[id].section === sp.section));
+  const by = (section: CaseSection): string[] => defects.filter(c => c.section === section).map(c => c.id);
+  check("I5. secțiunile nu se amestecă: 7 prin filtru, 2 forțate, 1 parțial (X1, singurul de fel «partial»)",
+    by("filter").length === 7 && JSON.stringify(by("forced")) === '["M1-FORCED","T1-FORCED"]' && JSON.stringify(by("partial")) === '["X1"]'
+      && defects.filter(c => c.kind === "partial").length === 1);
+  check("I6. fiecare caz de defect numește un control pereche care există în manifest (X1: niciunul)",
+    Object.entries(DEFECTS).every(([id, d]) => id === "X1" || controls.some(c => c.id === d.pairedControl)));
+}
+
 async function main(): Promise<void> {
+  manifestConsistency();
   console.log("A. traseul bun, pe fiecare tip");
-  for (const control of ["C-V2-BUY", "C-V2-SELL", "C-V3-BUY", "C-V3-SELL", "C-V4-BUY", "C-V4-SELL", "C-STABLE-BUY", "C-STABLE-SELL"]) {
+  for (const control of ["C-V2-BUY", "C-V2-SELL", "C-V3-BUY", "C-V3-SELL", "C-V4-BUY", "C-V4-SELL", "C-STABLE-BUY", "C-STABLE-SELL", "D1-CONTROL", "P1-CONTROL"]) {
     const v = await run(control, [`--control=${control}`, "--fault=none"]);
     check(`A. ${control} peste workerul fals → CONTROL_OK, terminare confirmată`, v.outcome === "CONTROL_OK" && v.diagnostics?.terminationConfirmed === true && v.observations.swapsRecorded === 1, why(v));
   }
@@ -151,14 +201,113 @@ async function main(): Promise<void> {
     check(`${n}b. ${fault}: e SINGURUL motiv (fără el cazul ar fi fost CONTROL_OK), proces terminat singur cu cod 0`, v.reasons.length === 1 && v.diagnostics?.code === 0 && v.diagnostics.signal === null && !v.diagnostics.timedOut && v.diagnostics.terminationConfirmed, why(v));
   }
 
+  await defectCases();
+
   console.log("D. procese rămase");
   const all = [...new Set(L.pids())];
   const survivors = all.filter(alive);
-  check(`D1. niciunul dintre cele ${all.length} procese de caz nu mai e viu`, all.length >= 24 && survivors.length === 0);
+  check(`D1. niciunul dintre cele ${all.length} procese de caz nu mai e viu`, all.length === EXPECTED_PROCESSES && survivors.length === 0, `procese: ${all.length}, așteptate ${EXPECTED_PROCESSES}`);
   check("D2. lansatorul principal nu a întâlnit nicio terminare neconfirmată", L.stuck() === null);
   for (const pid of survivors) { try { process.kill(-pid, "SIGKILL"); } catch { /* deja oprit */ } }
 
   await unconfirmedRegression();
+}
+
+/** A 10 + B 3 + C 10 + C' 4 + F 10 + G 11 + H 9 + J 7. */
+const EXPECTED_PROCESSES = 64;
+
+/**
+ * F–H. Corpul CAZURILOR DE DEFECT (felia 4), peste workerul fals:
+ *   F — fals fidel baseline-ului (are defectele) → predicția se confirmă;
+ *   G — fals „reparat" pentru exact acel defect → predicția NU se confirmă (altfel „reprodus" ar fi verde fals);
+ *   H — barieră, gardă sau montaj neîndeplinite → HARNESS_ERROR, NICIODATĂ „reprodus", fără observații.
+ */
+async function defectCases(): Promise<void> {
+  const noObs = (v: CaseVerdict): boolean => Object.keys(v.observations).length === 0;
+
+  console.log("F. cazuri de defect peste workerul fals fidel baseline-ului → predicția se confirmă");
+  const confirm: Array<[string, Outcome, (o: Record<string, unknown>) => boolean]> = [
+    ["M1",        "DEFECT_REPRODUCED", o => o.swapsRecorded === 0 && o.logsSent === 1 && JSON.stringify(o.requestKinds) === '["v2"]'],
+    ["M2",        "DEFECT_REPRODUCED", o => o.requestsSeen === 0 && o.logsSent === 0 && o.swapsRecorded === 0],
+    ["D1",        "DEFECT_REPRODUCED", o => o.logsSent === 1 && o.logsReceived === 1 && o.swapsRecorded === 0 && o.metadataSource === "dexscreener"],
+    ["T1",        "DEFECT_REPRODUCED", o => o.logsSent === 0 && o.swapsRecorded === 0 && JSON.stringify(o.absentTopicsFoundInFilter) === "[]"],
+    ["T1-LP",     "DEFECT_REPRODUCED", o => o.logsSent === 1 && o.logsReceived === 1 && o.swapsRecorded === 0 && o.lpEventsRecorded === 1],
+    ["T2",        "DEFECT_REPRODUCED", o => o.logsSent === 1 && o.swapsRecorded === 0 && JSON.stringify(o.absentTopicsFoundInFilter) === "[]"],
+    ["P1",        "DEFECT_REPRODUCED", o => o.logsSent === 1 && o.logsReceived === 1 && o.swapsRecorded === 0 && o.priceEth === null],
+    ["M1-FORCED", "DEFECT_REPRODUCED", o => o.forcedSent === 1 && o.forcedReceived === 1 && o.swapsRecorded === 0 && typeof o.forcedNote === "string"],
+    ["T1-FORCED", "DEFECT_REPRODUCED", o => o.forcedSent === 1 && o.forcedReceived === 1 && o.swapsRecorded === 0 && typeof o.forcedNote === "string"],
+    ["X1",        "PARTIAL_OBSERVED",  o => o.dexTypeFromIndexer === "V3" && o.inV3Dexes === false && typeof o.notVerified === "string"],
+  ];
+  for (const [id, outcome, obsOk] of confirm) {
+    const v = await runDefect(id, "none");
+    check(`F. ${id} → ${outcome}, cu observațiile așteptate și terminare confirmată`,
+      v.outcome === outcome && v.reasons.length === 0 && obsOk(v.observations) && v.diagnostics?.terminationConfirmed === true && v.diagnostics.code === 0,
+      why(v) + " " + JSON.stringify(v.observations).slice(0, 400));
+  }
+
+  console.log("G. același caz peste un fals REPARAT pentru acel defect → predicția NU se confirmă");
+  const deny: Array<[string, string, Outcome, string]> = [
+    ["M1",        "fixed-map-route",      "DEFECT_NOT_REPRODUCED", "nu apare în nicio cerere de tip v2"],
+    ["M1",        "never-subscribes",     "DEFECT_NOT_REPRODUCED", "cereri eth_subscribe: 0"],
+    ["M2",        "fixed-v4-route",       "DEFECT_NOT_REPRODUCED", "poolId-ul APARE"],
+    ["D1",        "fixed-ds-quote",       "DEFECT_NOT_REPRODUCED", "swapuri înregistrate: 1"],
+    ["T1",        "fixed-pancake-topic",  "DEFECT_NOT_REPRODUCED", "A FOST trimis prin filtru"],
+    ["T1-LP",     "fixed-pancake-topic",  "DEFECT_NOT_REPRODUCED", "ESTE în filtrul cerut"],
+    ["T2",        "fixed-solidly-topic",  "DEFECT_NOT_REPRODUCED", "A FOST trimis prin filtru"],
+    ["P1",        "fixed-price-fallback", "DEFECT_NOT_REPRODUCED", "swapuri înregistrate: 1"],
+    ["M1-FORCED", "fixed-map-route",      "HARNESS_ERROR",         "montaj:"],
+    ["T1-FORCED", "fixed-pancake-topic",  "DEFECT_NOT_REPRODUCED", "swapuri înregistrate: 1"],
+    ["X1",        "fixed-v3-dexes",       "PARTIAL_NOT_OBSERVED",  "V3_DEXES CONȚINE"],
+  ];
+  for (const [id, fault, outcome, expect] of deny) {
+    const v = await runDefect(id, fault);
+    check(`G. ${id} + ${fault} → ${outcome} cu motivul așteptat`,
+      v.outcome === outcome && v.reasons.some(r => r.includes(expect)) && v.diagnostics?.terminationConfirmed === true && v.diagnostics.code === 0
+        && (outcome === "HARNESS_ERROR" ? noObs(v) : !noObs(v)),
+      why(v));
+  }
+
+  console.log("H. barieră, gardă sau montaj neîndeplinite într-un caz de defect → HARNESS_ERROR, niciodată «reprodus»");
+  const errors: Array<[string, string, string]> = [
+    ["M1", "handler-throws",            "[WS ERR"],            // martorul aruncă în handler; wsFlow rămâne gol ca la defect
+    ["D1", "handler-throws",            "[WS ERR"],            // swapul aruncă în handler; „neînregistrat" ar fi verde fals
+    ["P1", "async-handler",             "activeJobCount()"],
+    ["T1", "never-subscribes",          "montaj:"],
+    ["T2", "import-timer",              "timer creat la import"],
+    ["M2", "other-port",                "E1."],
+    ["X1", "import-fetch",              "fetch la import"],
+    ["P1", "before-exit-console-error", "la terminare: linie [WS ERR"],
+  ];
+  for (const [id, fault, expect] of errors) {
+    const v = await runDefect(id, fault);
+    check(`H. ${id} + ${fault} → HARNESS_ERROR cu motivul așteptat, fără observații`,
+      v.outcome === "HARNESS_ERROR" && v.reasons.some(r => r.includes(expect)) && noObs(v) && v.diagnostics?.terminationConfirmed === true && v.diagnostics.code === 0,
+      why(v));
+  }
+  {
+    const v = await L.run("M1", ["--defect=NU-EXISTA", "--fault=none"], {}, DEFECT_SPECS["M1"]);
+    check("H. caz de defect necunoscut → HARNESS_ERROR", v.outcome === "HARNESS_ERROR" && noObs(v), why(v));
+  }
+
+  // J. Nodul se poartă greșit DUPĂ capturarea și verificarea filtrului; workerul fals e cel fidel baseline-ului.
+  // Se cere motivul EXACT al gărzii testate: o altă gardă, redundantă, nu trebuie să poată ține locul ei.
+  console.log("J. martor, geamăn și livrare forțată provocate direct în nod → HARNESS_ERROR cu motivul exact al gărzii");
+  const tampered: Array<[string, string, string]> = [
+    ["M1",        "suppress-witness", "martorul nu a fost trimis exact o dată prin filtru"],
+    ["T2",        "suppress-witness", "martorul nu a fost trimis exact o dată prin filtru"],
+    ["D1",        "deliver-twin",     "geamănul negativ (topic străin) a fost trimis de nod"],
+    ["P1",        "deliver-twin",     "geamănul negativ (topic străin) a fost trimis de nod"],
+    ["M1-FORCED", "forced-inactive",  "deliverForced pe o subscripție care nu e activă la nod"],
+    ["M1-FORCED", "forced-missing",   ": trimis de 0 ori (se cere exact o dată)"],
+    ["T1-FORCED", "forced-double",    ": trimis de 2 ori (se cere exact o dată)"],
+  ];
+  for (const [id, tamper, expect] of tampered) {
+    const v = await runDefect(id, "none", tamper);
+    check(`J. ${id} + ${tamper} → HARNESS_ERROR cu motivul exact, singurul, fără observații`,
+      v.outcome === "HARNESS_ERROR" && v.reasons.length === 1 && v.reasons[0].includes(expect) && noObs(v)
+        && v.diagnostics?.terminationConfirmed === true && v.diagnostics.code === 0,
+      why(v));
+  }
 }
 
 /**

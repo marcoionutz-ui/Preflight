@@ -59,6 +59,11 @@ export interface SrcModules {
   manager:     typeof import("../../../src/ws/manager");
   lifecycle:   typeof import("../../../src/lib/lifecycle");
   nativePrice: typeof import("../../../src/infra/nativePrice");
+  // Felia 4 (cazurile de defect): normalizatorul DexScreener (D1), conversia din registrul indexerului și lista
+  // `V3_DEXES` (X1). Doar funcții pure și o constantă; niciun apel de rețea nu pleacă din ele.
+  dexscreener: typeof import("../../../src/sources/dexscreener");
+  indexed:     typeof import("../../../src/sources/indexed");
+  constants:   typeof import("../../../src/config/constants");
 }
 
 export type ScopedKind = "v2" | "v3" | "v4";
@@ -92,6 +97,12 @@ export interface CaseContext {
   awaitPromoted(kind: ScopedKind, request: CapturedRequest, snapshot: string): Promise<void>;
   /** Oferă loguri prin filtru, apoi bariera 5.2 (santinelă la destinație + `activeJobCount() === 0`). */
   deliver(logs: RpcLog[], tag: string): Promise<DeliveryReport>;
+  /**
+   * LIVRARE FORȚATĂ: trimite logurile OCOLIND filtrul, pe subscripția dată, apoi aceeași barieră 5.2. Arată doar ce
+   * face managerul cu un log care ar sosi totuși; NU dovedește nimic despre filtru sau despre un nod real.
+   * Rezultatele se raportează în secțiunea separată „forced".
+   */
+  deliverForced(logs: RpcLog[], subId: string, tag: string): Promise<DeliveryReport>;
 }
 
 /** Minimul folosit de harness din socketul `ws` al workerului. */
@@ -184,6 +195,13 @@ export interface RunCaseOptions {
    * eroare apărută exact în acea fereastră să poată fi injectată determinist. Cazurile reale NU îl setează.
    */
   selfTestDuringCleanup?: () => void;
+  /**
+   * DOAR pentru controalele proprii ale acestui runtime (felia 4): învelește nodul local văzut de barierele de
+   * livrare, ca un nod care se poartă greșit DUPĂ capturarea și verificarea filtrului (martor suprimat, geamăn
+   * livrat, livrare forțată refuzată sau dublată) să poată fi injectat determinist. Nodul real rămâne cel închis
+   * la final. Cazurile reale NU îl setează.
+   */
+  selfTestNodeTamper?: (node: LocalNode) => LocalNode;
 }
 
 /** Încărcarea REALĂ: import dinamic din `src/`, după instalarea gărzilor. */
@@ -196,6 +214,9 @@ async function loadRealSrc(): Promise<SrcModules> {
     manager:     await import("../../../src/ws/manager"),
     lifecycle:   await import("../../../src/lib/lifecycle"),
     nativePrice: await import("../../../src/infra/nativePrice"),
+    dexscreener: await import("../../../src/sources/dexscreener"),
+    indexed:     await import("../../../src/sources/indexed"),
+    constants:   await import("../../../src/config/constants"),
   };
 }
 
@@ -309,13 +330,40 @@ export function runCase(spec: CaseSpec, body: (ctx: CaseContext) => Promise<Case
     for (const [name, n] of Object.entries(sizes)) if (n !== 0) pre.push(`store nevid la pornire: ${name}=${n}`);
     if (pre.length > 0) throw new HarnessError("precondiții: " + pre.join("; "));
 
-    const theNode = node;
+    const theNode = options.selfTestNodeTamper ? options.selfTestNodeTamper(node) : node;
     const chain: ChainConfig = { id: CHAIN_ID, gecko: "base", weth: "0x4200000000000000000000000000000000000006", usdc: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", wsUrl: theNode.url };
 
     // ── 5. Barierele puse la dispoziția corpului ───────────────────────────────────────────────────────────
     const needSobs = (): SocketObserver => { if (!sobs) throw new HarnessError("barieră folosită înainte de connect()"); return sobs; };
     const tagOf = (f: SeenFrame): unknown => (f.json as { params?: { tag?: unknown } } | undefined)?.params?.tag;
     const txOf  = (f: SeenFrame): unknown => (f.json as { params?: { result?: { transactionHash?: unknown } } } | undefined)?.params?.result?.transactionHash;
+
+    /** Bariera 5.2, comună livrării prin filtru și celei forțate: santinelă la destinație + numărători egale. */
+    const settle = async (logs: RpcLog[], tag: string, sentBefore: number, kind: "log" | "forced-log"): Promise<DeliveryReport> => {
+      const o = needSobs();
+      theNode.sendSentinel(tag);
+      const sentinel = await o.waitForFrame(f => tagOf(f) === tag, DEADLINE_MS, `santinela „${tag}” la destinație`);
+      if (sentinel.probe !== 0) throw new HarnessError(`la santinelă activeJobCount() = ${sentinel.probe} (se cere 0)`);
+      const sentAll = theNode.sent().slice(sentBefore).filter(f => f.kind === "log" || f.kind === "forced-log");
+      if (sentAll.some(f => f.kind !== kind)) throw new HarnessError("cadre de alt fel decât cel cerut în aceeași livrare");
+      const sentNow = sentAll;
+      const frames = o.frames();
+      const perLog: DeliveryReport["perLog"] = {};
+      let logsReceived = 0;
+      for (const log of logs) {
+        const sent = sentNow.filter(f => f.marker === log.transactionHash).length;
+        const seen = frames.filter(f => txOf(f) === log.transactionHash);
+        if (seen.length !== sent) throw new HarnessError(`log ${log.transactionHash.slice(-6)}: trimis de ${sent} ori, văzut la client de ${seen.length} ori`);
+        for (const f of seen) {
+          if (f.seq >= sentinel.seq) throw new HarnessError("un log a sosit după santinelă");
+          if (f.probe !== 0) throw new HarnessError(`la primirea logului activeJobCount() = ${f.probe} (se cere 0)`);
+        }
+        perLog[log.transactionHash] = { sent, received: seen.length };
+        logsReceived += seen.length;
+      }
+      if (sentNow.length !== logsReceived) throw new HarnessError(`nodul a trimis ${sentNow.length} loguri, clientul a văzut ${logsReceived} dintre cele ale cazului`);
+      return { perLog, logsSent: sentNow.length, logsReceived };
+    };
 
     const ctx: CaseContext = {
       src: loaded, node: theNode, chain, cons,
@@ -362,28 +410,21 @@ export function runCase(spec: CaseSpec, body: (ctx: CaseContext) => Promise<Case
       },
 
       async deliver(logs: RpcLog[], tag: string): Promise<DeliveryReport> {
-        const o = needSobs();
         const sentBefore = theNode.sent().length;
         theNode.offerLogs(logs);
-        theNode.sendSentinel(tag);
-        const sentinel = await o.waitForFrame(f => tagOf(f) === tag, DEADLINE_MS, `santinela „${tag}" la destinație`);
-        if (sentinel.probe !== 0) throw new HarnessError(`la santinelă activeJobCount() = ${sentinel.probe} (se cere 0)`);
-        const sentNow = theNode.sent().slice(sentBefore).filter(s => s.kind === "log");
-        const frames = o.frames();
-        const perLog: DeliveryReport["perLog"] = {};
-        let logsReceived = 0;
+        return settle(logs, tag, sentBefore, "log");
+      },
+
+      async deliverForced(logs: RpcLog[], subId: string, tag: string): Promise<DeliveryReport> {
+        if (!theNode.subscriptions().some(sub => sub.subId === subId && sub.active)) throw new HarnessError("deliverForced pe o subscripție care nu e activă la nod");
+        const sentBefore = theNode.sent().length;
+        for (const log of logs) theNode.forceSend(log, subId);
+        const report = await settle(logs, tag, sentBefore, "forced-log");
         for (const log of logs) {
-          const sent = sentNow.filter(s => s.marker === log.transactionHash).length;
-          const seen = frames.filter(f => txOf(f) === log.transactionHash);
-          if (seen.length !== sent) throw new HarnessError(`log ${log.transactionHash.slice(-6)}: trimis de ${sent} ori, văzut la client de ${seen.length} ori`);
-          for (const f of seen) {
-            if (f.seq >= sentinel.seq) throw new HarnessError("un log a sosit după santinelă");
-            if (f.probe !== 0) throw new HarnessError(`la primirea logului activeJobCount() = ${f.probe} (se cere 0)`);
-          }
-          perLog[log.transactionHash] = { sent, received: seen.length };
-          logsReceived += seen.length;
+          const n = report.perLog[log.transactionHash].sent;
+          if (n !== 1) throw new HarnessError(`log forțat ${log.transactionHash.slice(-6)}: trimis de ${n} ori (se cere exact o dată)`);
         }
-        return { perLog, logsSent: sentNow.length, logsReceived };
+        return report;
       },
     };
 

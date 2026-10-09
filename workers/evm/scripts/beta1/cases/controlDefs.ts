@@ -16,6 +16,9 @@
  *
  * Fiecare caz include un geamăn negativ: un log cu topic străin, de la aceeași adresă, care NU trebuie trimis.
  * Valorile așteptate sunt constante scrise aici; nu se calculează cu funcții din `src/`.
+ *
+ * Felia 4 adaugă două controale PERECHE (`D1-CONTROL`, `P1-CONTROL`): același montaj și același log ca în cazul de
+ * defect, cu o singură variabilă schimbată. Ca orice control, rulează înaintea cazurilor de defect.
  */
 
 import { jsonEqual, type CaseContext, type CaseBodyResult, type ScopedKind } from "../harness/caseRuntime";
@@ -25,6 +28,7 @@ import {
   T_SWAP_V2, T_SWAP_V3, T_SWAP_V4, E18,
   geckoPool, swapV2Log, swapV3Log, swapV4Log, foreignLog, fixturesSelfCheck, type GeckoPoolRaw,
 } from "../harness/evmFixtures";
+import { POOL_D1, D1_SWAP, D1_TWIN } from "../harness/evmFixturesDefects";
 
 export interface ControlDef {
   /** Pool-ul brut (forma Gecko), trecut prin normalizatorul real. */
@@ -112,6 +116,17 @@ export const CONTROLS: Record<string, ControlDef> = {
     priceEth: 2_000, expected: { isBuy: false, ethAmount: 0.25, usdAmount: 500 }, linePrefix: "[V3 SWAP base] TKN SELL",
   },
 };
+
+// ── Controalele PERECHE ale cazurilor de defect (felia 4) ────────────────────────────────────────────────────
+// Același montaj și ACELAȘI log ca în cazul de defect; o singură variabilă diferă.
+/** Perechea lui D1: aceeași adresă și același log, dar metadate din normalizatorul Gecko (nu DexScreener). */
+CONTROLS["D1-CONTROL"] = {
+  raw: geckoPool(POOL_D1, "uniswap-v2-base", WETH_BASE, "WETH"), pair: POOL_D1, kind: "v2", admit: null, dexType: "V2",
+  swapTopic: T_SWAP_V2, swap: D1_SWAP, twin: D1_TWIN,
+  priceEth: PRICE, expected: { isBuy: true, ethAmount: 1, usdAmount: 2_500 }, linePrefix: "[V2 SWAP base] TKN BUY",
+};
+/** Perechea lui P1: montajul și logul din C-V3-BUY, cu prețul injectat (P1 îl pune `null`). */
+CONTROLS["P1-CONTROL"] = { ...CONTROLS["C-V3-BUY"] };
 
 export const CONTROL_IDS = Object.keys(CONTROLS);
 
