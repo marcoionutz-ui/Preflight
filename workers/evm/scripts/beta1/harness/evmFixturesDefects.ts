@@ -35,6 +35,10 @@ export const T_SWAP_PANCAKE_V3 = "0x19b47279256b2a23a1665c810c8d55a1758940ee0937
 export const T_SWAP_SOLIDLY = "0xb3e2773606abfd36b5bd91394b3a54d1398336c65005baf7bf7a05efeffaf75b";
 /** `Mint(address,address,int24,int24,uint128,uint256,uint256)` — Uniswap V3 și PancakeSwap V3 (aceeași semnătură) */
 export const T_MINT_V3 = "0x7a53080ba414158be7ec69b987b5fb7d07dee101fe85488f0853ae16239d0bde";
+/** `Mint(address,uint256,uint256)` — Uniswap V2 (felia D1: controlul LP de adăugare) */
+export const T_MINT_V2 = "0x4c209b5fc8ad50758f13e2e1088ba56a560dff690a1c6fef26394f4c03821c4f";
+/** `Burn(address,uint256,uint256,address)` — Uniswap V2 (felia D1: controlul LP de retragere) */
+export const T_BURN_V2 = "0xdccd412f0b1252819cb1fd330b93224ca42612892bb3f4f789976e6d81936496";
 
 // ── Pool în forma DexScreener (`/latest/dex/pairs/...`) ──────────────────────────────────────────────────────
 export interface DsPairRaw {
@@ -121,13 +125,37 @@ export function mintV3Log(pool: string, a: { amount0: bigint; amount1: bigint },
 export const D1_SWAP: RpcLog = swapV2Log(POOL_D1, { amount0In: E18, amount1In: 0n, amount0Out: 0n, amount1Out: 5n * E18 }, 0xd101);
 export const D1_TWIN: RpcLog = foreignLog(POOL_D1, null, 0xd102);
 
+/** V2 `Mint`: topics [sig, sender]; data = amount0, amount1. */
+export function mintV2Log(pool: string, a: { amount0: bigint; amount1: bigint }, n: number): RpcLog {
+  return { address: pool, topics: [T_MINT_V2, SENDER], data: "0x" + uint256Word(a.amount0) + uint256Word(a.amount1), transactionHash: txHash(n) };
+}
+
+/** V2 `Burn`: topics [sig, sender, to]; data = amount0, amount1. */
+export function burnV2Log(pool: string, a: { amount0: bigint; amount1: bigint }, n: number): RpcLog {
+  return { address: pool, topics: [T_BURN_V2, SENDER, SENDER], data: "0x" + uint256Word(a.amount0) + uint256Word(a.amount1), transactionHash: txHash(n) };
+}
+
+// ── Felia D1: logurile controalelor pe pool-ul DexScreener (WETH < TOKEN ⇒ WETH e token0, deci amount0 = WETH) ──
+/** D1-DS-SELL: vânzare de 0,5 WETH. */
+export const D1_SWAP_SELL: RpcLog = swapV2Log(POOL_D1, { amount0In: 0n, amount1In: 3n * E18, amount0Out: E18 / 2n, amount1Out: 0n }, 0xd103);
+export const D1_TWIN_SELL: RpcLog = foreignLog(POOL_D1, null, 0xd104);
+/** D1-DS-LP-ADD: `Mint` cu 1 WETH. */
+export const D1_MINT: RpcLog = mintV2Log(POOL_D1, { amount0: E18, amount1: 5n * E18 }, 0xd105);
+export const D1_TWIN_MINT: RpcLog = foreignLog(POOL_D1, null, 0xd106);
+/** D1-DS-LP-REMOVE: `Burn` cu 2 WETH, dintr-o rezervă de 20 ETH (liquidity.usd 100 000, preț 2500) ⇒ 10%. */
+export const D1_BURN: RpcLog = burnV2Log(POOL_D1, { amount0: 2n * E18, amount1: 10n * E18 }, 0xd107);
+export const D1_TWIN_BURN: RpcLog = foreignLog(POOL_D1, null, 0xd108);
+
 /** Controale proprii ale fixture-urilor de aici. Întoarce lista problemelor (goală = în regulă). */
 export function defectFixturesSelfCheck(): string[] {
   const p: string[] = [];
   for (const [name, t] of [["T_SWAP_PANCAKE_V3", T_SWAP_PANCAKE_V3], ["T_SWAP_SOLIDLY", T_SWAP_SOLIDLY], ["T_MINT_V3", T_MINT_V3]] as const) {
     if (!/^0x[0-9a-f]{64}$/.test(t)) p.push(`${name} nu e un topic valid`);
   }
-  if (new Set([T_SWAP_PANCAKE_V3, T_SWAP_SOLIDLY, T_MINT_V3]).size !== 3) p.push("topicuri identice");
+  if (new Set([T_SWAP_PANCAKE_V3, T_SWAP_SOLIDLY, T_MINT_V3, T_MINT_V2, T_BURN_V2]).size !== 5) p.push("topicuri identice");
+  for (const [name, l] of [["D1_MINT", D1_MINT], ["D1_BURN", D1_BURN]] as const) {
+    if (l.data.length !== 2 + 2 * 64 || l.topics.some(t => t.length !== 66)) p.push(`forma logului ${name}`);
+  }
   if (swapPancakeV3Log(POOL_PANCAKE_V3, { amount0: 1n, amount1: -1n }, 1).data.length !== 2 + 7 * 64) p.push("lungimea datelor PancakeSwap V3");
   if (swapSolidlyLog(POOL_AERO_V2, { amount0In: 1n, amount1In: 0n, amount0Out: 0n, amount1Out: 1n }, 1).data.length !== 2 + 4 * 64) p.push("lungimea datelor Solidly");
   const mint = mintV3Log(POOL_PANCAKE_V3, { amount0: 1n, amount1: 1n }, 1);

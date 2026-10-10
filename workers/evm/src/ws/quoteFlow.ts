@@ -120,13 +120,59 @@ export function getQuoteFlowAsEth(
   return { ok: true, ethAmount, usdAmount, isBuy: amt > 0n, quote: quoteMeta.symbol };
 }
 
+const EVM_ADDRESS_RE = /^0x[0-9a-f]{40}$/;
+
+const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+  typeof v === "object" && v !== null && !Array.isArray(v);
+
+const hasOwnKey = (o: object, k: string): boolean => Object.prototype.hasOwnProperty.call(o, k);
+
+/** Adresa EVM dintr-o latură DexScreener (`{ address, … }`), lowercase; `null` dacă lipsește sau e invalidă. */
+function dexScreenerSideAddress(side: unknown): string | null {
+  if (!isPlainObject(side) || typeof side.address !== "string") return null;
+  const a = side.address.trim().toLowerCase();
+  return EVM_ADDRESS_RE.test(a) ? a : null;
+}
+
+/**
+ * BETA-1 / D1: base/quote dintr-o pereche brută DexScreener (`normalizeDsPair` păstrează `_raw` = perechea API, unde
+ * `baseToken` / `quoteToken` sunt OBIECTE `{ address, name, symbol }`). CONSERVATOR: orice regulă încălcată →
+ * ambele goale (apelanții tratează `""` ca „nu înregistra"):
+ *   0. `baseToken` și `quoteToken` sunt obiecte (non-null, nu tablouri);
+ *   1. adresele, după `trim` + lowercase, sunt exact `0x` + 40 hex (fără curățare de prefixe, fără conversii);
+ *   2. adresele diferă;
+ *   3. `chainId` (DexScreener) e egal cu `pool.chain` — fără amestecarea chain-urilor; lipsa oricăruia → gol;
+ *   4. `pool.tokenAddress`, dacă există, e egal cu adresa base (normalizeDsPair îl derivă din ea);
+ *   5. fără ghicire: întoarce exact perechea declarată, neinversată; quote-ul îl recunoaște `getQuoteFlowAsEth`.
+ */
+function extractDexScreenerBaseQuote(
+  raw: Record<string, unknown>,
+  pool: { tokenAddress?: string; chain?: string },
+): { baseToken: string; quoteToken: string } {
+  const none = { baseToken: "", quoteToken: "" };
+  if (!isPlainObject(raw.baseToken) || !isPlainObject(raw.quoteToken)) return none;
+  const base  = dexScreenerSideAddress(raw.baseToken);
+  const quote = dexScreenerSideAddress(raw.quoteToken);
+  if (!base || !quote || base === quote) return none;
+  const chainId   = typeof raw.chainId === "string" ? raw.chainId.toLowerCase() : "";
+  const poolChain = typeof pool.chain === "string" ? pool.chain.toLowerCase() : "";
+  if (!chainId || !poolChain || chainId !== poolChain) return none;
+  const tokenAddress = typeof pool.tokenAddress === "string" ? pool.tokenAddress.toLowerCase() : "";
+  if (tokenAddress && tokenAddress !== base) return none;
+  return { baseToken: base, quoteToken: quote };
+}
+
 /**
  * Extrage baseToken + quoteToken dintr-un SourcePool. (Mutată din manager.ts — pură, testabilă izolat.)
- * INDEXER pools au _raw.baseToken / _raw.quoteToken direct (IndexedPair format).
- * Gecko pools au _raw.relationships.{base,quote}_token.data.id cu prefix rețea ("eth_0x…", "base_0x…").
+ * Forma lui `_raw` se decide O SINGURĂ DATĂ, în ordine, fără cădere pe forma următoare:
+ *   1. fără `_raw` → base = tokenAddress, quote gol;
+ *   2. IndexedPair: `_raw.baseToken` / `_raw.quoteToken` ȘIR nevid (INDEXER pools) — neschimbat;
+ *   3. DexScreener (BETA-1 / D1): `_raw` are CHEIE proprie `baseToken`, `quoteToken` sau `chainId`, indiferent de
+ *      valoare → numai regulile din `extractDexScreenerBaseQuote`; ramura Gecko NU mai e consultată;
+ *   4. Gecko: `_raw.relationships.{base,quote}_token.data.id` cu prefix rețea ("eth_0x…", "base_0x…") — neschimbat.
  */
 export function extractBaseQuote(
-  pool: { discoverySource?: string; _raw?: unknown; tokenAddress?: string },
+  pool: { discoverySource?: string; _raw?: unknown; tokenAddress?: string; chain?: string },
 ): { baseToken: string; quoteToken: string } {
   const raw = pool._raw as Record<string, unknown> | undefined;
   if (!raw) return { baseToken: pool.tokenAddress?.toLowerCase() ?? "", quoteToken: "" };
@@ -139,6 +185,13 @@ export function extractBaseQuote(
       baseToken:  indexedBase  || pool.tokenAddress?.toLowerCase() || "",
       quoteToken: indexedQuote,
     };
+  }
+
+  // BETA-1 / D1: forma DexScreener, clasificată după CHEI (înaintea validării valorilor), ca o pereche malformată
+  // (`baseToken: null`, `quoteToken: []` etc.) să nu poată cădea pe ramura Gecko și să producă adrese.
+  if (typeof raw === "object" && !Array.isArray(raw)
+      && (hasOwnKey(raw, "baseToken") || hasOwnKey(raw, "quoteToken") || hasOwnKey(raw, "chainId"))) {
+    return extractDexScreenerBaseQuote(raw, pool);
   }
 
   // Gecko format: relationships.{base,quote}_token.data.id are prefixul rețelei Gecko (chain.gecko, ex. "eth").

@@ -62,6 +62,12 @@ interface CommonDef {
   pairedControl: string;
   /** Predicția, în cuvinte — ajunge în observații. */
   prediction:    string;
+  /**
+   * Caz RETRAS după fixul defectului: nu mai e în manifest și nu e rulat de self-test. Definiția rămâne ca istoric.
+   * `marker` e stabil (scris înainte de commit); SHA-ul commitului care retrage cazul se trece ulterior în tracker.
+   * Rulat totuși pe codul reparat, cazul ar da onest DEFECT_NOT_REPRODUCED — nu e mascat ca eroare.
+   */
+  retired?:      { marker: string; replacedBy: string[] };
 }
 
 /** Pool urmărit → subscriere pe traseul real → loguri oferite prin filtru și/sau forțate. */
@@ -154,6 +160,8 @@ export const DEFECTS: Record<string, DefectDef> = {
 
   // ── §7.3 Metadata DexScreener (diagnostic §4.5) ────────────────────────────────────────────────────────────
   "D1": {
+    // Felia D1 (fixul §4.5): predicția „neînregistrat" e contrazisă de fix. Rolul trece la controalele D1-DS-*.
+    retired: { marker: "BETA1-D1-FIX", replacedBy: ["D1-DS-BUY", "D1-DS-SELL"] },
     shape: "deliver", kind: "defect", section: "filter", diagnosis: "§4.5", pairedControl: "D1-CONTROL",
     prediction: "pool V2 cu metadate din normalizatorul DexScreener: swapul e trimis și primit, dar NU e înregistrat",
     source: "dexscreener", raw: dsPair(POOL_D1, "uniswap"), pair: POOL_D1, dexType: "V2",
@@ -230,6 +238,8 @@ export const DEFECTS: Record<string, DefectDef> = {
 };
 
 export const DEFECT_IDS = Object.keys(DEFECTS);
+/** Cazurile ACTIVE (nerezolvate): singurele care pot sta în manifest și pe care le rulează self-testul. */
+export const ACTIVE_DEFECT_IDS = DEFECT_IDS.filter(id => DEFECTS[id].retired === undefined);
 
 // ── Unelte comune ────────────────────────────────────────────────────────────────────────────────────────────
 interface SubShape { kind: ScopedKind | null; addresses: string[]; topics0: string[]; topics1: string[]; }

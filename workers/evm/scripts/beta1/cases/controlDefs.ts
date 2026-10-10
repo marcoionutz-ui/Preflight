@@ -19,6 +19,11 @@
  *
  * Felia 4 adaugă două controale PERECHE (`D1-CONTROL`, `P1-CONTROL`): același montaj și același log ca în cazul de
  * defect, cu o singură variabilă schimbată. Ca orice control, rulează înaintea cazurilor de defect.
+ *
+ * Felia D1 (fixul §4.5) adaugă patru controale `D1-DS-*` pe un pool trecut prin `normalizeDsPair`: swap BUY și
+ * SELL, plus LP V2 `Mint` și `Burn` (schimbarea declarată: LP-ul pool-urilor DexScreener devine activ). Un control
+ * LP cere exact un eveniment în `lpEvents`, cu sensul și suma exacte, ZERO swapuri și linia exactă a workerului;
+ * la `Burn`, rezerva e verificată întâi (montaj), iar procentul retras e verificat prin linia exactă.
  */
 
 import { jsonEqual, type CaseContext, type CaseBodyResult, type ScopedKind } from "../harness/caseRuntime";
@@ -28,25 +33,37 @@ import {
   T_SWAP_V2, T_SWAP_V3, T_SWAP_V4, E18,
   geckoPool, swapV2Log, swapV3Log, swapV4Log, foreignLog, fixturesSelfCheck, type GeckoPoolRaw,
 } from "../harness/evmFixtures";
-import { POOL_D1, D1_SWAP, D1_TWIN } from "../harness/evmFixturesDefects";
+import {
+  POOL_D1, D1_SWAP, D1_TWIN, D1_SWAP_SELL, D1_TWIN_SELL, D1_MINT, D1_TWIN_MINT, D1_BURN, D1_TWIN_BURN, T_MINT_V2, T_BURN_V2,
+  dsPair, type DsPairRaw,
+} from "../harness/evmFixturesDefects";
 
 export interface ControlDef {
-  /** Pool-ul brut (forma Gecko), trecut prin normalizatorul real. */
-  raw:        GeckoPoolRaw;
+  /** Normalizatorul real prin care trece pool-ul brut. Implicit `gecko` (`normalizePool`). */
+  source?:    "gecko" | "dexscreener";
+  /** Pool-ul brut (forma Gecko sau DexScreener), trecut prin normalizatorul real. */
+  raw:        GeckoPoolRaw | DsPairRaw;
   /** Cheia perechii: adresa pool-ului sau poolId-ul V4. */
   pair:       string;
   kind:       ScopedKind;
   /** Harta în care cazul pune pool-ul ca precondiție; `null` pentru V2 (nu are hartă). */
   admit:      "v3" | "v4" | null;
   dexType:    "V2" | "V3" | "V4";
-  /** Topicul de swap care TREBUIE să fie în filtrul cerut. */
+  /** Topicul logului livrat (swap sau LP), care TREBUIE să fie în filtrul cerut. */
   swapTopic:  string;
+  /** Logul livrat prin filtru: un swap sau, pentru controalele LP, un `Mint` / `Burn`. */
   swap:       RpcLog;
   twin:       RpcLog;
   priceEth:   number;
-  expected:   { isBuy: boolean; ethAmount: number; usdAmount: number };
-  /** Începutul liniei de consolă scrise de worker la înregistrare. */
+  /** Pentru swap: ce trebuie înregistrat în `wsFlow`. Lipsește la controalele LP. */
+  expected?:  { isBuy: boolean; ethAmount: number; usdAmount: number };
+  /** Începutul liniei de consolă scrise de worker la înregistrare (swap sau LP). */
   linePrefix: string;
+  /**
+   * Control LP (felia D1): ce trebuie înregistrat în `lpEvents` — exact un eveniment, zero swapuri. `reserveEth` =
+   * rezerva pe care montajul o verifică ÎNAINTE de livrare (pusă de `updateMemory` → `updatePoolLiquidity`).
+   */
+  lp?:        { isAdd: boolean; ethAmount: number; reserveEth?: number };
 }
 
 const PRICE = 2_500;
@@ -128,6 +145,31 @@ CONTROLS["D1-CONTROL"] = {
 /** Perechea lui P1: montajul și logul din C-V3-BUY, cu prețul injectat (P1 îl pune `null`). */
 CONTROLS["P1-CONTROL"] = { ...CONTROLS["C-V3-BUY"] };
 
+// ── Felia D1: acceptarea fixului pe traseul real (design `BETA1_D1_FIX_DESIGN.md` rev3, §4.1) ──────────────────
+// Pool-ul trece prin `normalizeDsPair`. Pe baseline (fără fix), toate patru dau CONTROL_FAILED: metadatele
+// DexScreener nu sunt citite, deci nimic nu se înregistrează. După fix: CONTROL_OK. Logul BUY e același obiect
+// `D1_SWAP` ca în D1 (retras) și D1-CONTROL.
+const D1_DS = { source: "dexscreener" as const, raw: dsPair(POOL_D1, "uniswap"), pair: POOL_D1, kind: "v2" as const, admit: null, dexType: "V2" as const, priceEth: PRICE };
+CONTROLS["D1-DS-BUY"] = {
+  ...D1_DS, swapTopic: T_SWAP_V2, swap: D1_SWAP, twin: D1_TWIN,
+  expected: { isBuy: true, ethAmount: 1, usdAmount: 2_500 }, linePrefix: "[V2 SWAP base] TKN BUY",
+};
+CONTROLS["D1-DS-SELL"] = {
+  ...D1_DS, swapTopic: T_SWAP_V2, swap: D1_SWAP_SELL, twin: D1_TWIN_SELL,
+  expected: { isBuy: false, ethAmount: 0.5, usdAmount: 1_250 }, linePrefix: "[V2 SWAP base] TKN SELL",
+};
+CONTROLS["D1-DS-LP-ADD"] = {
+  ...D1_DS, swapTopic: T_MINT_V2, swap: D1_MINT, twin: D1_TWIN_MINT,
+  linePrefix: "[LP ADD base] TKN +1.000 ETH quote=WETH",
+  lp: { isAdd: true, ethAmount: 1 },
+};
+CONTROLS["D1-DS-LP-REMOVE"] = {
+  ...D1_DS, swapTopic: T_BURN_V2, swap: D1_BURN, twin: D1_TWIN_BURN,
+  // Procentul nu e stocat nicăieri altundeva: linia exactă e verificarea lui (2 / 20 ETH = 10,0%).
+  linePrefix: "[LP REMOVE base] TKN -2.000 ETH (quote=WETH) (10.0% of pool)",
+  lp: { isAdd: false, ethAmount: 2, reserveEth: 20 },
+};
+
 export const CONTROL_IDS = Object.keys(CONTROLS);
 
 const near = (a: number, b: number): boolean => Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(b));
@@ -159,8 +201,10 @@ export async function controlBody(def: ControlDef, ctx: CaseContext): Promise<Ca
 
   // ── Stare, prin funcțiile de producție ─────────────────────────────────────────────────────────────────────
   src.nativePrice.__setNativePriceForTest("ETH", def.priceEth);
-  const pool = src.normalize.normalizePool(def.raw, chain);
-  if (!pool) throw new Error("normalizePool a respins fixture-ul");
+  const pool = def.source === "dexscreener"
+    ? src.dexscreener.normalizeDsPair(def.raw, chain)
+    : src.normalize.normalizePool(def.raw, chain);
+  if (!pool) throw new Error("normalizatorul a respins fixture-ul");
   if (pool.pairAddress !== def.pair || pool.dexType !== def.dexType) {
     throw new Error(`normalizePool: pereche/tip neașteptate (${pool.dexType})`);
   }
@@ -169,6 +213,11 @@ export async function controlBody(def: ControlDef, ctx: CaseContext): Promise<Ca
   if (def.admit === "v4") st.v4PoolMap.set(chain.id, def.pair, pool);   // precondiție declarată (treapta 1)
   src.transitions.addWatchCandidate(def.pair, { chain: chain.id, addedAt: Date.now(), kind: "NORMAL" }, pool);
   if (!st.activeWatch.has(chain.id, def.pair) || !st.memory.has(chain.id, def.pair)) throw new Error("starea de urmărire nu a fost pusă");
+  if (def.lp?.reserveEth !== undefined) {
+    // Montaj: rezerva cunoscută, pusă pe traseul de producție (`updateMemory` → `updatePoolLiquidity`).
+    const reserve = st.poolLiquidity.get(chain.id, def.pair)?.reserveEth;
+    if (typeof reserve !== "number" || !near(reserve, def.lp.reserveEth)) throw new Error(`rezerva pool-ului: ${String(reserve)} (montajul cere ${def.lp.reserveEth} ETH)`);
+  }
 
   // ── Subscriere pe traseul real + barierele 5.1 ─────────────────────────────────────────────────────────────
   await ctx.connect();
@@ -176,6 +225,7 @@ export async function controlBody(def: ControlDef, ctx: CaseContext): Promise<Ca
   const requests = await ctx.clientBarrier("beta1-după-subscriere");
   const subs = requests.filter(r => r.method === "eth_subscribe");
   const observations: Record<string, unknown> = {
+    metadataSource: def.source ?? "gecko",
     mapAdmission: def.admit === null ? "fără hartă (V2)" : `pusă de caz în ${def.admit}PoolMap (precondiție, treapta 1)`,
     requestedFilters: subs.map(r => r.params),
     unsubscribes: requests.filter(r => r.method === "eth_unsubscribe").length,
@@ -204,16 +254,43 @@ export async function controlBody(def: ControlDef, ctx: CaseContext): Promise<Ca
 
   const reasons: string[] = [];
   if (d.perLog[def.twin.transactionHash].sent !== 0) reasons.push("geamănul negativ (topic străin) a fost trimis de nod");
-  if (d.perLog[def.swap.transactionHash].sent !== 1) reasons.push("swapul nu a fost trimis exact o dată prin filtru");
+  if (d.perLog[def.swap.transactionHash].sent !== 1) reasons.push("logul controlului nu a fost trimis exact o dată prin filtru");
   if (before !== 0) reasons.push("existau swapuri înregistrate înainte de livrare");
-  if (events.length !== 1) reasons.push(`swapuri înregistrate: ${events.length} (se cere exact 1)`);
-  else {
-    const e = events[0];
-    if (e.isBuy !== def.expected.isBuy) reasons.push(`direcție înregistrată: ${e.isBuy ? "BUY" : "SELL"}`);
-    if (!near(e.ethAmount, def.expected.ethAmount)) reasons.push(`sumă nativă înregistrată: ${e.ethAmount} (așteptat ${def.expected.ethAmount})`);
-    if (typeof e.usdAmount !== "number" || !near(e.usdAmount, def.expected.usdAmount)) reasons.push(`sumă USD înregistrată: ${String(e.usdAmount)} (așteptat ${def.expected.usdAmount})`);
+  if (def.lp) {
+    // Control LP: exact un eveniment LP, pe perechea controlului, cu sensul și suma exacte; ZERO swapuri.
+    // Verificările sunt GLOBALE (toate cheile `wsFlow` / `lpEvents`, toate liniile din consolă, orice chain): un
+    // swap sau un eveniment LP înregistrat sub altă pereche sau alt chain nu poate trece neobservat.
+    const lpEv = st.lpEvents.get(chain.id, def.pair) ?? [];
+    const lpTotal = [...st.lpEvents.values()].reduce((n, evs) => n + evs.length, 0);
+    const swapTotal = [...st.wsFlow.values()].reduce((n, evs) => n + evs.length, 0);
+    const consoleTexts = ctx.cons.lines().map(l => l.text);
+    const swapLinesAll = consoleTexts.filter(t => /\[V[234] SWAP [^\]]*\]/.test(t)).length;
+    const lpLines = consoleTexts.filter(t => /\b(?:V3 )?LP (?:ADD|REMOVE) [^\]]*\]/.test(t)).length;
+    Object.assign(observations, {
+      lpEventsRecorded: lpEv.length, lpEventsAllKeys: lpTotal, lpRecorded: lpEv.map(e => ({ isAdd: e.isAdd, ethAmount: e.ethAmount })),
+      lpLogLines: lpLines, swapsAllKeys: swapTotal, swapLogLinesAllChains: swapLinesAll,
+      reserveEth: st.poolLiquidity.get(chain.id, def.pair)?.reserveEth ?? null,
+    });
+    if (lpEv.length !== 1) reasons.push(`evenimente LP înregistrate: ${lpEv.length} (se cere exact 1)`);
+    else {
+      if (lpEv[0].isAdd !== def.lp.isAdd) reasons.push(`sens LP înregistrat: ${lpEv[0].isAdd ? "adăugare" : "retragere"}`);
+      if (!near(lpEv[0].ethAmount, def.lp.ethAmount)) reasons.push(`sumă nativă LP înregistrată: ${lpEv[0].ethAmount} (așteptat ${def.lp.ethAmount})`);
+      if (lpTotal !== 1) reasons.push(`evenimente LP pe toate cheile: ${lpTotal} (se cere exact 1, cel al perechii controlului)`);
+    }
+    if (swapTotal !== 0) reasons.push(`swapuri înregistrate în wsFlow, pe toate cheile: ${swapTotal} (se cer 0)`);
+    if (swapLinesAll !== 0) reasons.push(`linii de swap în consolă, pe toate chain-urile: ${swapLinesAll} (se cer 0)`);
+    if (lines !== 1 || lpLines !== 1) reasons.push(`linii LP în consolă: ${lpLines}, dintre care cu textul exact așteptat ${lines} (se cere exact 1 și 1)`);
+  } else {
+    if (!def.expected) throw new Error("control de swap fără valori așteptate");
+    if (events.length !== 1) reasons.push(`swapuri înregistrate: ${events.length} (se cere exact 1)`);
+    else {
+      const e = events[0];
+      if (e.isBuy !== def.expected.isBuy) reasons.push(`direcție înregistrată: ${e.isBuy ? "BUY" : "SELL"}`);
+      if (!near(e.ethAmount, def.expected.ethAmount)) reasons.push(`sumă nativă înregistrată: ${e.ethAmount} (așteptat ${def.expected.ethAmount})`);
+      if (typeof e.usdAmount !== "number" || !near(e.usdAmount, def.expected.usdAmount)) reasons.push(`sumă USD înregistrată: ${String(e.usdAmount)} (așteptat ${def.expected.usdAmount})`);
+    }
+    if (lines !== 1 || swapLines !== 1) reasons.push(`linii de swap în consolă: ${swapLines}, dintre care cu prefixul așteptat ${lines} (se cere exact 1 și 1)`);
   }
-  if (lines !== 1 || swapLines !== 1) reasons.push(`linii de swap în consolă: ${swapLines}, dintre care cu prefixul așteptat ${lines} (se cere exact 1 și 1)`);
   if (!st.wsLastMessageAt.has(chain.id)) reasons.push("wsLastMessageAt nu a fost marcat");
 
   return reasons.length === 0

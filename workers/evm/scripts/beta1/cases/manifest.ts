@@ -2,8 +2,9 @@
  * scripts/beta1/cases/manifest.ts — BETA-1: manifestul cazurilor rulate de supraveghetor.
  *
  * Felia 3: cele opt controale pozitive. Felia 4: două controale PERECHE și cazurile de defect din §7.2–§7.7 ale
- * designului. Supraveghetorul rulează ÎNTÂI toate controalele; un caz de defect se rulează și se interpretează
- * numai dacă toate cele zece controale au dat `CONTROL_OK`.
+ * designului. Felia D1 (fixul §4.5): patru controale `D1-DS-*` care afirmă comportamentul REPARAT; cazul D1 e
+ * RETRAS (marker `BETA1-D1-FIX`) și nu mai e rulat. Supraveghetorul rulează ÎNTÂI toate controalele; un caz de
+ * defect se rulează și se interpretează numai dacă toate cele 14 controale au dat `CONTROL_OK`.
  *
  * Secțiunile de raport nu se amestecă: `filter` (prin filtrul nodului local), `forced` (livrare forțată),
  * `partial` (X1). Un cod de ieșire 0 înseamnă „experiment valid, predicții confirmate" — adică defectele din
@@ -24,12 +25,13 @@ const CONTROL_IDS = [
   "C-V2-BUY", "C-V2-SELL", "C-V3-BUY", "C-V3-SELL", "C-V4-BUY", "C-V4-SELL", "C-STABLE-BUY", "C-STABLE-SELL",
   // Controalele pereche ale lui D1 și P1 (același log, o singură variabilă schimbată).
   "D1-CONTROL", "P1-CONTROL",
+  // Felia D1: acceptarea fixului pe traseul real — pool DexScreener; swap BUY/SELL, LP Mint/Burn.
+  "D1-DS-BUY", "D1-DS-SELL", "D1-DS-LP-ADD", "D1-DS-LP-REMOVE",
 ];
 
 const DEFECT_SPECS: Array<Pick<RunnableCase, "id" | "kind" | "section">> = [
   { id: "M1",        kind: "defect",  section: "filter"  },
   { id: "M2",        kind: "defect",  section: "filter"  },
-  { id: "D1",        kind: "defect",  section: "filter"  },
   { id: "T1",        kind: "defect",  section: "filter"  },
   { id: "T1-LP",     kind: "defect",  section: "filter"  },
   { id: "T2",        kind: "defect",  section: "filter"  },

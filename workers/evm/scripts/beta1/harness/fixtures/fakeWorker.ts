@@ -18,8 +18,16 @@ export const FAULTS = [
   "cleanup-console-error", "before-exit-console-error", "before-exit-transport-error", "exit-listener",
   // Felia 4 — variante „REPARATE": workerul fals NU mai are defectul respectiv, deci cazul de defect corespunzător
   // trebuie să dea DEFECT_NOT_REPRODUCED / PARTIAL_NOT_OBSERVED. Fără ele, „reprodus" ar putea fi un verde fals.
-  "fixed-map-route", "fixed-v4-route", "fixed-ds-quote", "fixed-pancake-topic", "fixed-solidly-topic",
+  "fixed-map-route", "fixed-v4-route", "fixed-pancake-topic", "fixed-solidly-topic",
   "fixed-price-fallback", "fixed-v3-dexes",
+  // Felia D1: falsul urmează produsul REPARAT (metadatele DexScreener sunt citite). Varianta veche, cu metadate
+  // necitibile, devine defect injectat: cu ea, controalele D1-DS-* trebuie să dea CONTROL_FAILED.
+  "ds-quote-unreadable",
+  // Defecte în LP-ul V2 al falsului, ca verificările controalelor LP să fie provocate direct.
+  "lp-percent-off", "lp-flip-side", "lp-no-reserve",
+  // Efecte LATERALE pe alte chei, pentru verificările globale ale controalelor LP: un swap înregistrat pe alt chain
+  // fără linie în consolă; o linie de swap pe alt chain fără înregistrare; un eveniment LP pe altă pereche.
+  "lp-extra-swap-silent", "lp-extra-swap-line", "lp-extra-lp-silent",
 ] as const;
 export type Fault = typeof FAULTS[number];
 
@@ -42,11 +50,12 @@ class FakePairMap<V> {
   set(c: string, a: string, v: V): this { this.m.set(this.k(c, a), v); return this; }
   has(c: string, a: string): boolean { return this.m.has(this.k(c, a)); }
   get size(): number { return this.m.size; }
+  values(): IterableIterator<V> { return this.m.values(); }
   addresses(): string[] { return [...this.m.keys()].map(k => k.slice(k.indexOf(":") + 1)); }
 }
 
-/** `quoteKnown: false` imită metadatele din care workerul nu poate citi base/quote (forma DexScreener). */
-interface FakePool { chain: string; pairAddress: string; symbol: string; dexType: string; dexId: string; priceUsd: number; stableQuote: boolean; quoteKnown: boolean; }
+/** `quoteKnown: false` imită metadatele din care workerul nu poate citi base/quote (`ds-quote-unreadable`). */
+interface FakePool { chain: string; pairAddress: string; symbol: string; dexType: string; dexId: string; priceUsd: number; reserveUsd: number; stableQuote: boolean; quoteKnown: boolean; }
 interface FakeSwap { ts: number; isBuy: boolean; ethAmount: number; usdAmount: number; }
 
 const signed = (hex64: string): bigint => { const x = BigInt("0x" + hex64); return x >= (1n << 255n) ? x - (1n << 256n) : x; };
@@ -75,7 +84,8 @@ export async function loadFakeSrc(fault: Fault): Promise<SrcModules> {
   const v4PoolMap = new FakePairMap<FakePool>();
   const watchedPoolCache = new FakePairMap<FakePool>();
   const wsFlow = new FakePairMap<FakeSwap[]>();
-  const lpEvents = new FakePairMap<Array<{ ts: number }>>();
+  const lpEvents = new FakePairMap<Array<{ ts: number; isAdd: boolean; ethAmount: number }>>();
+  const poolLiquidity = new FakePairMap<{ reserveEth: number }>();
   const empty = (): FakePairMap<unknown> => new FakePairMap<unknown>();
   // `V3_DEXES` al workerului fals: ca în baseline, NU conține `pancakeswap-v3` (id-ul din indexer).
   const V3_DEXES = new Set(["uniswap-v3", "uniswap-v3-base", "pancakeswap-v3-base", ...(fault === "fixed-v3-dexes" ? ["pancakeswap-v3"] : [])]);
@@ -166,10 +176,33 @@ export async function loadFakeSrc(fault: Fault): Promise<SrcModules> {
         if (amount0In === 0n && amount1In === 0n) return;           // ca în worker: swap fără intrare, ignorat
         pair = log.address; quoteDelta = amount0In > 0n ? amount0In : -amountOut; tag = "V2";
         pool = watchedPoolCache.get(chain.id, pair);
+      } else if (topic0 === T_MINT_V2 || topic0 === T_BURN_V2) {
+        // LP V2 (felia D1), ca în worker: sumă nativă din rezerva de quote (token0), rezerva pool-ului pentru procent.
+        const lpPool = watchedPoolCache.get(chain.id, log.address);
+        const lpMem = memory.get(chain.id, log.address);
+        if (!lpPool || !lpMem || !lpPool.quoteKnown || price === null) return;
+        const amt = BigInt("0x" + raw.slice(0, 64));
+        const quoteAmt = Number(amt) / (lpPool.stableQuote ? 1e6 : 1e18);
+        const eth = lpPool.stableQuote ? quoteAmt / price : quoteAmt;
+        const quoteSym = lpPool.stableQuote ? "USDC" : "WETH";
+        const isAdd = (topic0 === T_MINT_V2) !== (fault === "lp-flip-side");
+        lpEvents.set(chain.id, log.address, [...(lpEvents.get(chain.id, log.address) ?? []), { ts: Date.now(), isAdd, ethAmount: eth }]);
+        const OTHER = "0x" + "99".repeat(20);
+        if (fault === "lp-extra-swap-silent") wsFlow.set("arbitrum", OTHER, [{ ts: Date.now(), isBuy: true, ethAmount: 1, usdAmount: 2_500 }]);
+        if (fault === "lp-extra-swap-line") console.log(`[V2 SWAP arbitrum] ALT BUY (fals)`);
+        if (fault === "lp-extra-lp-silent") lpEvents.set(chain.id, OTHER, [{ ts: Date.now(), isAdd, ethAmount: eth }]);
+        if (isAdd) {
+          console.log(`[LP ADD ${chain.id}] ${lpMem.symbol} +${eth.toFixed(3)} ETH quote=${quoteSym}`);
+        } else {
+          const reserve = (poolLiquidity.get(chain.id, log.address)?.reserveEth ?? 0) * (fault === "lp-percent-off" ? 2 : 1);
+          console.log(`[LP REMOVE ${chain.id}] ${lpMem.symbol} -${eth.toFixed(3)} ETH (quote=${quoteSym})`
+            + (reserve > 0 ? ` (${((eth / reserve) * 100).toFixed(1)}% of pool)` : " (no reserve estimate)") + " ⚠️");
+        }
+        return;
       } else if (topic0 === T_MINT_V3) {
         // Log LP: sosit și procesat, fără niciun swap.
         if (v3PoolMap.has(chain.id, log.address) && memory.get(chain.id, log.address)) {
-          lpEvents.set(chain.id, log.address, [...(lpEvents.get(chain.id, log.address) ?? []), { ts: Date.now() }]);
+          lpEvents.set(chain.id, log.address, [...(lpEvents.get(chain.id, log.address) ?? []), { ts: Date.now(), isAdd: true, ethAmount: 0 }]);
           console.log(`[V3 LP ADD ${chain.id}] (fals)`);
         }
         return;
@@ -222,11 +255,19 @@ export async function loadFakeSrc(fault: Fault): Promise<SrcModules> {
   const fake = {
     stores: {
       memory, activeWatch, hotCandidates: empty(), armedEntries: empty(), v3PoolMap, v4PoolMap, watchedPoolCache,
-      wsFlow, lpEvents, poolLiquidity: empty(), scopedSubStore,
+      wsFlow, lpEvents, poolLiquidity, scopedSubStore,
       scopedConfirmedAt: new Map<string, number>(), lastImmediateSub: new Map<string, number>(),
       wsLastMessageAt, wsLastMessageAtByKind, wsLastPongAt, wsClients,
     },
-    memory: { updateMemory: (pool: FakePool): { symbol: string } => { const m = { symbol: pool.symbol }; memory.set(pool.chain, pool.pairAddress, m); return m; } },
+    memory: {
+      updateMemory: (pool: FakePool): { symbol: string } => {
+        const m = { symbol: pool.symbol };
+        memory.set(pool.chain, pool.pairAddress, m);
+        // Ca `updatePoolLiquidity`: rezerva nativă = reserveUsd / 2 / preț; fără preț, nimic.
+        if (pool.reserveUsd > 0 && price !== null && fault !== "lp-no-reserve") poolLiquidity.set(pool.chain, pool.pairAddress, { reserveEth: pool.reserveUsd / 2 / price });
+        return m;
+      },
+    },
     transitions: { addWatchCandidate: (pair: string, info: { chain: string }, pool?: FakePool): void => { activeWatch.set(info.chain, pair, info); if (pool) watchedPoolCache.set(info.chain, pair, pool); } },
     normalize: {
       normalizePool: (raw: { attributes: Record<string, unknown>; relationships: Record<string, unknown> }, chain: { id: string }): FakePool => {
@@ -236,19 +277,22 @@ export async function loadFakeSrc(fault: Fault): Promise<SrcModules> {
         return {
           chain: chain.id, pairAddress: address, symbol: String(raw.attributes.name).split("/")[0].trim(),
           dexType: address.length === 66 ? "V4" : V3_DEXES.has(dexId) ? "V3" : "V2", dexId,
-          priceUsd: Number(raw.attributes.base_token_price_usd), stableQuote: quoteId.includes(USDC), quoteKnown: true,
+          priceUsd: Number(raw.attributes.base_token_price_usd), reserveUsd: Number(raw.attributes.reserve_in_usd ?? 0),
+          stableQuote: quoteId.includes(USDC), quoteKnown: true,
         };
       },
     },
     dexscreener: {
-      // Forma DexScreener: base/quote sunt obiecte. Ca în baseline, workerul fals NU le poate citi la înregistrare.
-      normalizeDsPair: (raw: { pairAddress: string; dexId: string; priceUsd: string; baseToken: { symbol: string }; quoteToken: { address: string } }, chain: { id: string }): FakePool => {
+      // Forma DexScreener: base/quote sunt obiecte. Ca în produsul REPARAT (felia D1), workerul fals le citește;
+      // `ds-quote-unreadable` reproduce comportamentul de dinainte de fix.
+      normalizeDsPair: (raw: { pairAddress: string; dexId: string; priceUsd: string; liquidity?: { usd?: number }; baseToken: { symbol: string }; quoteToken: { address: string } }, chain: { id: string }): FakePool => {
         const address = String(raw.pairAddress).toLowerCase();
         return {
           chain: chain.id, pairAddress: address, symbol: raw.baseToken.symbol,
           dexType: address.length === 66 ? "V4" : V3_DEXES.has(raw.dexId) ? "V3" : "V2", dexId: raw.dexId,
           priceUsd: Number(raw.priceUsd), stableQuote: raw.quoteToken.address.toLowerCase().includes(USDC),
-          quoteKnown: fault === "fixed-ds-quote",
+          reserveUsd: Number(raw.liquidity?.usd ?? 0),
+          quoteKnown: fault !== "ds-quote-unreadable",
         };
       },
     },
@@ -257,7 +301,7 @@ export async function loadFakeSrc(fault: Fault): Promise<SrcModules> {
       toSourcePool: (pair: { chain: string; pairAddress: string; dexId: string; baseSymbol?: string; priceUsd?: number }): FakePool => ({
         chain: pair.chain, pairAddress: pair.pairAddress, symbol: pair.baseSymbol ?? "UNKNOWN",
         dexType: pair.dexId === "uniswap-v3" || pair.dexId === "pancakeswap-v3" ? "V3" : "V2", dexId: pair.dexId,
-        priceUsd: pair.priceUsd ?? 0, stableQuote: false, quoteKnown: true,
+        priceUsd: pair.priceUsd ?? 0, reserveUsd: 0, stableQuote: false, quoteKnown: true,
       }),
     },
     constants: { V3_DEXES },
