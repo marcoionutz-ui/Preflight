@@ -34,11 +34,19 @@ const spec: CaseSpec = defect
  *   forced-inactive  — nodul raportează toate subscripțiile ca inactive;
  *   forced-missing   — un log forțat nu e trimis deloc;
  *   forced-double    — un log forțat e trimis de două ori.
+ *   duplicate-delivery — (felia T1, CONTROALE) logurile oferite prin filtru sunt oferite de două ori: logul
+ *                      controlului e trimis și primit de două ori, prin filtru, pe subscripția activă.
  */
-const TAMPERS = ["", "suppress-witness", "deliver-twin", "forced-inactive", "forced-missing", "forced-double"] as const;
+const TAMPERS = ["", "suppress-witness", "deliver-twin", "forced-inactive", "forced-missing", "forced-double", "duplicate-delivery"] as const;
 const tamperArg = arg("tamper");
 
 function tamperNode(node: LocalNode): LocalNode {
+  if (tamperArg === "duplicate-delivery") {
+    if (defect) throw new Error("--tamper=duplicate-delivery se folosește doar pentru controale");
+    const t: LocalNode = { ...node };
+    t.offerLogs = (logs) => node.offerLogs(logs) + node.offerLogs(logs);
+    return t;
+  }
   if (!defect || defect.shape !== "deliver") throw new Error("--tamper cere un caz de defect cu livrare");
   const hashOf = (role: "witness" | "twin"): string => {
     const o = defect.offered.find(x => x.role === role);

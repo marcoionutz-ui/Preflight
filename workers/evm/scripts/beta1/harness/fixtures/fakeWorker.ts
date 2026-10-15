@@ -5,6 +5,11 @@
  * conectare, subscriere la 2,5/3/3,5 s după `open`, înregistrarea unui swap, închidere), ca ramurile de eșec ale
  * runtime-ului să poată fi exercitate cu defecte INJECTATE (`fault`). Un rezultat verde aici spune că runtime-ul
  * decide corect; nimic despre codul real din `src/`.
+ *
+ * Felia T1: falsul urmează produsul REPARAT — filtrul V3 conține topicul Swap PancakeSwap V3 (ordinea din
+ * `V3_SCOPED_TOPICS`), topicul e mapat la kind-ul `v3` (marcajul precede decodarea, doar pe subscripția activă),
+ * iar handlerul decodează cu regula exactă de 448 hex (Uniswap ≥ 128), refuzând tăcut restul. Comportamentul vechi
+ * devine defect injectat (`pancake-unsupported`).
  */
 
 import WebSocket from "ws";
@@ -18,7 +23,8 @@ export const FAULTS = [
   "cleanup-console-error", "before-exit-console-error", "before-exit-transport-error", "exit-listener",
   // Felia 4 — variante „REPARATE": workerul fals NU mai are defectul respectiv, deci cazul de defect corespunzător
   // trebuie să dea DEFECT_NOT_REPRODUCED / PARTIAL_NOT_OBSERVED. Fără ele, „reprodus" ar putea fi un verde fals.
-  "fixed-map-route", "fixed-v4-route", "fixed-pancake-topic", "fixed-solidly-topic",
+  // (Felia T1: `fixed-pancake-topic` a dispărut odată cu T1, T1-LP și T1-FORCED, retrase; falsul e acum reparat.)
+  "fixed-map-route", "fixed-v4-route", "fixed-solidly-topic",
   "fixed-price-fallback", "fixed-v3-dexes",
   // Felia D1: falsul urmează produsul REPARAT (metadatele DexScreener sunt citite). Varianta veche, cu metadate
   // necitibile, devine defect injectat: cu ea, controalele D1-DS-* trebuie să dea CONTROL_FAILED.
@@ -28,6 +34,15 @@ export const FAULTS = [
   // Efecte LATERALE pe alte chei, pentru verificările globale ale controalelor LP: un swap înregistrat pe alt chain
   // fără linie în consolă; o linie de swap pe alt chain fără înregistrare; un eveniment LP pe altă pereche.
   "lp-extra-swap-silent", "lp-extra-swap-line", "lp-extra-lp-silent",
+  // Felia T1 (design rev3, §4.1): comportamentul vechi (topicul Pancake lipsește din filtru și din handler); decodorul
+  // Pancake aruncă (→ `[WS ERR` → HARNESS_ERROR, regula runtime-ului); topicul Pancake nemapat la kind-ul `v3`.
+  "pancake-unsupported", "pancake-throws", "pancake-kind-unmapped",
+  // Efecte LATERALE la sosirea unui log Pancake (înaintea decodării, deci și pentru logul refuzat de SHORT): swap
+  // tăcut pe alt chain, eveniment LP tăcut pe altă pereche, linie de swap / LP pe alt chain fără înregistrare.
+  "short-swap-other-chain", "short-lp-other-pair", "short-swap-line-other-chain", "short-lp-line-other-chain",
+  "buy-extra-swap-other-chain",
+  // Swapul Pancake cu sumele negate înaintea clasificării; linia de swap Pancake fără câmpul `swapVariant`.
+  "buy-sign-negated", "buy-variant-missing",
 ] as const;
 export type Fault = typeof FAULTS[number];
 
@@ -59,6 +74,18 @@ interface FakePool { chain: string; pairAddress: string; symbol: string; dexType
 interface FakeSwap { ts: number; isBuy: boolean; ethAmount: number; usdAmount: number; }
 
 const signed = (hex64: string): bigint => { const x = BigInt("0x" + hex64); return x >= (1n << 255n) ? x - (1n << 256n) : x; };
+
+/** Decodorul swapurilor V3 al falsului, după contractul produsului reparat: `null` = refuz tăcut, fără excepții. */
+function fakeDecodeV3(topic0: string, data: unknown): { amount0: bigint; variant: "uniswap-v3" | "pancake-v3" } | null {
+  if (typeof data !== "string" || !data.startsWith("0x")) return null;
+  const hex = data.slice(2);
+  if (topic0 === T_PANCAKE_V3) {
+    if (hex.length !== 448 || !/^[0-9a-fA-F]*$/.test(hex)) return null;
+    return { amount0: signed(hex.slice(0, 64)), variant: "pancake-v3" };
+  }
+  if (hex.length < 128 || !/^[0-9a-fA-F]*$/.test(hex.slice(0, 128))) return null;
+  return { amount0: signed(hex.slice(0, 64)), variant: "uniswap-v3" };
+}
 
 /** Construiește un worker fals proaspăt. `fault` = singurul lucru stricat deliberat. */
 export async function loadFakeSrc(fault: Fault): Promise<SrcModules> {
@@ -106,6 +133,14 @@ export async function loadFakeSrc(fault: Fault): Promise<SrcModules> {
   let heartbeat: NodeJS.Timeout | null = null;
   let stable: NodeJS.Timeout | null = null;
 
+  // topic0 → kind (ca `TOPIC_TO_KIND` din produs). Topicul Pancake e mapat la `v3`, cu excepția defectelor injectate.
+  const pancakeKind = fault !== "pancake-kind-unmapped" && fault !== "pancake-unsupported";
+  const TOPIC_KIND: Record<string, "v2" | "v3" | "v4"> = {
+    [T_V4]: "v4", [T_V3]: "v3", [T_MINT_V3]: "v3", [T_BURN_V3]: "v3", [T_V2]: "v2", [T_MINT_V2]: "v2", [T_BURN_V2]: "v2",
+    ...(pancakeKind ? { [T_PANCAKE_V3]: "v3" as const } : {}),
+  };
+  const kindOf = (topic0: unknown): "v2" | "v3" | "v4" | null => (typeof topic0 === "string" ? TOPIC_KIND[topic0] ?? null : null);
+
   const connectChainWebSocket = (chain: { id: string; wsUrl: string }): void => {
     const ws = new WebSocket(chain.wsUrl);
     wsClients.set(chain.id, ws);
@@ -127,7 +162,8 @@ export async function loadFakeSrc(fault: Fault): Promise<SrcModules> {
       const key = `${chain.id}:${kind}`;
       scopedSubStore.pending.set(id, { key, snapshot: addrs.join(","), sentAt: Date.now() });
       scopedSubStore.latestReq.set(key, id);
-      const v3Topics = [T_V3, T_MINT_V3, T_BURN_V3, ...(fault === "fixed-pancake-topic" ? [T_PANCAKE_V3] : [])];
+      // Felia T1: ordinea din `V3_SCOPED_TOPICS`; `pancake-unsupported` = filtrul de dinainte de fix.
+      const v3Topics = fault === "pancake-unsupported" ? [T_V3, T_MINT_V3, T_BURN_V3] : [T_V3, T_PANCAKE_V3, T_MINT_V3, T_BURN_V3];
       const v2Topics = [T_V2, T_MINT_V2, T_BURN_V2, ...(fault === "fixed-solidly-topic" ? [T_SOLIDLY] : [])];
       const params = kind === "v4"
         ? ["logs", { address: POOL_MANAGER, topics: [[T_V4], addrs] }]
@@ -145,7 +181,7 @@ export async function loadFakeSrc(fault: Fault): Promise<SrcModules> {
     });
 
     const handle = (data: Buffer): void => {
-      const msg = JSON.parse(data.toString()) as { id?: unknown; result?: unknown; params?: { result?: { address: string; topics: string[]; data: string } } };
+      const msg = JSON.parse(data.toString()) as { id?: unknown; result?: unknown; params?: { subscription?: unknown; result?: { address: string; topics: string[]; data: string } } };
       if (typeof msg.id === "number" && scopedSubStore.pending.has(msg.id)) {
         const p = scopedSubStore.pending.get(msg.id) as { key: string; snapshot: string };
         scopedSubStore.pending.delete(msg.id);
@@ -157,18 +193,37 @@ export async function loadFakeSrc(fault: Fault): Promise<SrcModules> {
       const log = msg.params?.result;
       if (!log) return;
       wsLastMessageAt.set(chain.id, Date.now());
+      const topic0 = log.topics[0];
+      // Ca în produs: marcajul per-kind PRECEDE filtrarea pe topic și decodarea, doar pentru subscripția activă.
+      const kind = kindOf(topic0);
+      if (kind && scopedSubStore.active.get(`${chain.id}:${kind}`)?.subId === msg.params?.subscription) {
+        wsLastMessageAtByKind.set(`${chain.id}:${kind}`, Date.now());
+      }
       if (fault === "handler-throws") throw new Error("defect injectat în handler");
       const raw = log.data.slice(2);
-      const topic0 = log.topics[0];
       let pair: string, quoteDelta: bigint, tag: "V2" | "V3" | "V4";
       let pool: FakePool | undefined;
-      const asV3 = topic0 === T_V3 || (fault === "fixed-pancake-topic" && topic0 === T_PANCAKE_V3);
+      let variant: "uniswap-v3" | "pancake-v3" | null = null;
+      const isPancake = topic0 === T_PANCAKE_V3;
+      const asV3 = topic0 === T_V3 || (isPancake && fault !== "pancake-unsupported");
       const asV2 = topic0 === T_V2 || (fault === "fixed-solidly-topic" && topic0 === T_SOLIDLY);
       if (topic0 === T_V4) {
         pair = log.topics[1]; quoteDelta = -signed(raw.slice(0, 64)); tag = "V4";
         pool = v4PoolMap.get(chain.id, pair);                       // ca în worker: doar din hartă
       } else if (asV3) {
-        pair = log.address; quoteDelta = signed(raw.slice(0, 64)); tag = "V3";
+        if (isPancake) {
+          // Efecte laterale injectate, ÎNAINTEA decodării (deci și pentru logul trunchiat refuzat de SHORT).
+          const OTHER = "0x" + "99".repeat(20);
+          if (fault === "short-swap-other-chain" || fault === "buy-extra-swap-other-chain") wsFlow.set("arbitrum", OTHER, [{ ts: Date.now(), isBuy: true, ethAmount: 1, usdAmount: 2_500 }]);
+          if (fault === "short-lp-other-pair") lpEvents.set(chain.id, OTHER, [{ ts: Date.now(), isAdd: true, ethAmount: 1 }]);
+          if (fault === "short-swap-line-other-chain") console.log(`[V3 SWAP arbitrum] ALT BUY (fals)`);
+          if (fault === "short-lp-line-other-chain") console.log(`[LP ADD arbitrum] ALT +1.000 ETH quote=WETH (fals)`);
+          if (fault === "pancake-throws") throw new Error("decodor Pancake: excepție injectată");
+        }
+        const dec = fakeDecodeV3(topic0, log.data);
+        if (!dec) return;                                           // refuz tăcut, ca decodorul produsului
+        pair = log.address; quoteDelta = dec.amount0; tag = "V3"; variant = dec.variant;
+        if (isPancake && fault === "buy-sign-negated") quoteDelta = -quoteDelta;
         pool = v3PoolMap.get(chain.id, pair) ?? (fault === "fixed-map-route" ? watchedPoolCache.get(chain.id, pair) : undefined);
       } else if (asV2) {
         const amount0In = BigInt("0x" + raw.slice(0, 64)), amount1In = BigInt("0x" + raw.slice(64, 128));
@@ -207,7 +262,6 @@ export async function loadFakeSrc(fault: Fault): Promise<SrcModules> {
         }
         return;
       } else return;
-      wsLastMessageAtByKind.set(`${chain.id}:${tag.toLowerCase()}`, Date.now());
       const mem = memory.get(chain.id, pair);
       if (!mem || !pool) return;
       if (!pool.quoteKnown) return;                                 // base/quote necitibile → swap neînregistrat
@@ -223,7 +277,8 @@ export async function loadFakeSrc(fault: Fault): Promise<SrcModules> {
       events.push(event);
       if (fault === "double-record") events.push({ ...event });
       wsFlow.set(chain.id, pair, events);
-      console.log(`[${tag} SWAP ${chain.id}] ${mem.symbol} ${event.isBuy ? "BUY" : "SELL"} (fals)`);
+      const variantField = variant === null || (variant === "pancake-v3" && fault === "buy-variant-missing") ? "" : ` swapVariant=${variant}`;
+      console.log(`[${tag} SWAP ${chain.id}] ${mem.symbol} ${event.isBuy ? "BUY" : "SELL"} (fals)${variantField}`);
     };
 
     ws.on("message", (data: Buffer) => {

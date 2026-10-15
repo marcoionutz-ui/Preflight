@@ -24,6 +24,9 @@
  * Secțiuni de raport, care nu se amestecă: `filter` (prin filtrul nodului local), `forced` (livrare forțată: nu
  * dovedește nimic despre filtru sau despre un nod real), `partial` (X1: fără conectarea workerului și fără
  * subscriere; runtime-ul pornește totuși nodul local, ca pentru orice caz).
+ *
+ * Cazuri RETRASE (rămân aici ca istoric, nu sunt în manifest și nu sunt rulate): D1 (marker `BETA1-D1-FIX`);
+ * T1, T1-LP, T1-FORCED (marker `BETA1-T1-FIX`).
  */
 
 import type { CaseContext, CaseBodyResult, ScopedKind } from "../harness/caseRuntime";
@@ -35,7 +38,7 @@ import {
 } from "../harness/evmFixtures";
 import {
   POOL_D1, POOL_PANCAKE_V3, POOL_AERO_V2, POOL_INDEXED, T_SWAP_PANCAKE_V3, T_SWAP_SOLIDLY, T_MINT_V3, D1_SWAP, D1_TWIN,
-  dsPair, indexedPair, swapPancakeV3Log, swapSolidlyLog, mintV3Log, defectFixturesSelfCheck, type DsPairRaw,
+  PANCAKE_SWAP, dsPair, indexedPair, swapSolidlyLog, mintV3Log, defectFixturesSelfCheck, type DsPairRaw,
 } from "../harness/evmFixturesDefects";
 import { CONTROLS } from "./controlDefs";
 
@@ -124,7 +127,7 @@ const C_V4_BUY = CONTROLS["C-V4-BUY"];
 const v2Witness = (pool: string, n: number): RpcLog =>
   swapV2Log(pool, { amount0In: 0n, amount1In: 0n, amount0Out: 0n, amount1Out: 0n }, n);
 
-const PANCAKE_SWAP = swapPancakeV3Log(POOL_PANCAKE_V3, { amount0: E18, amount1: -5n * E18 }, 0x7101);
+// `PANCAKE_SWAP` (0x7101) vine din fixture: același obiect e logul controlului C-PANCAKE-BUY (felia T1).
 const PANCAKE_MINT = mintV3Log(POOL_PANCAKE_V3, { amount0: 2n * E18, amount1: 10n * E18 }, 0x7102);
 const SOLIDLY_SWAP = swapSolidlyLog(POOL_AERO_V2, { amount0In: E18, amount1In: 0n, amount0Out: 0n, amount1Out: 5n * E18 }, 0x7201);
 
@@ -175,7 +178,11 @@ export const DEFECTS: Record<string, DefectDef> = {
   },
 
   // ── §7.4 Topicuri per DEX (diagnostic §4.4) ────────────────────────────────────────────────────────────────
+  // Felia T1 (fixul §4.4, Pancake): predicțiile lui T1, T1-LP și T1-FORCED sunt contrazise de fix (topicul e în
+  // filtru, handlerul îl recunoaște). Rolul trece la controalele C-PANCAKE-*. T1-LP nu are înlocuitor: partea LP
+  // funcționa și înainte, iar predicția lui („topicul lipsește din filtru") devine falsă.
   "T1": {
+    retired: { marker: "BETA1-T1-FIX", replacedBy: ["C-PANCAKE-BUY", "C-PANCAKE-SELL"] },
     ...T1_MONTAGE, kind: "defect", section: "filter", diagnosis: "§4.4", pairedControl: "C-V3-BUY",
     prediction: "pool PancakeSwap V3 pe subscripția V3: topicul Swap PancakeSwap V3 lipsește din filtru; swapul nu e trimis; nimic înregistrat",
     routeIsPrediction: false, absentTopics: [T_SWAP_PANCAKE_V3],
@@ -183,6 +190,7 @@ export const DEFECTS: Record<string, DefectDef> = {
     forced: [],
   },
   "T1-LP": {
+    retired: { marker: "BETA1-T1-FIX", replacedBy: [] },
     ...T1_MONTAGE, kind: "defect", section: "filter", diagnosis: "§4.4", pairedControl: "C-V3-BUY",
     prediction: "același pool PancakeSwap V3: un log Mint e trimis și primit (log LP sosit), fără niciun swap înregistrat",
     routeIsPrediction: false, requiredTopics: [T_SWAP_V3, T_MINT_V3], absentTopics: [T_SWAP_PANCAKE_V3],
@@ -223,6 +231,7 @@ export const DEFECTS: Record<string, DefectDef> = {
     routeIsPrediction: false, offered: [], forced: [C_V3_BUY.swap],
   },
   "T1-FORCED": {
+    retired: { marker: "BETA1-T1-FIX", replacedBy: ["C-PANCAKE-BUY", "C-PANCAKE-SELL"] },
     ...T1_MONTAGE, kind: "defect", section: "forced", diagnosis: "§4.4", pairedControl: "C-V3-BUY",
     prediction: "montajul T1, cu swapul PancakeSwap V3 trimis OCOLIND filtrul: e primit și procesat, dar NU e înregistrat",
     routeIsPrediction: false, absentTopics: [T_SWAP_PANCAKE_V3], offered: [], forced: [PANCAKE_SWAP],

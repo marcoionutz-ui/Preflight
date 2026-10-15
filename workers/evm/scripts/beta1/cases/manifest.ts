@@ -3,8 +3,10 @@
  *
  * Felia 3: cele opt controale pozitive. Felia 4: două controale PERECHE și cazurile de defect din §7.2–§7.7 ale
  * designului. Felia D1 (fixul §4.5): patru controale `D1-DS-*` care afirmă comportamentul REPARAT; cazul D1 e
- * RETRAS (marker `BETA1-D1-FIX`) și nu mai e rulat. Supraveghetorul rulează ÎNTÂI toate controalele; un caz de
- * defect se rulează și se interpretează numai dacă toate cele 14 controale au dat `CONTROL_OK`.
+ * RETRAS (marker `BETA1-D1-FIX`) și nu mai e rulat. Felia T1 (fixul §4.4, Pancake): trei controale `C-PANCAKE-*`
+ * (BUY, SELL și forma trunchiată, refuzată tăcut); T1, T1-LP și T1-FORCED sunt RETRASE (marker `BETA1-T1-FIX`).
+ * Supraveghetorul rulează ÎNTÂI toate controalele; un caz de defect se rulează și se interpretează numai dacă toate
+ * cele 17 controale au dat `CONTROL_OK`.
  *
  * Secțiunile de raport nu se amestecă: `filter` (prin filtrul nodului local), `forced` (livrare forțată),
  * `partial` (X1). Un cod de ieșire 0 înseamnă „experiment valid, predicții confirmate" — adică defectele din
@@ -27,17 +29,16 @@ const CONTROL_IDS = [
   "D1-CONTROL", "P1-CONTROL",
   // Felia D1: acceptarea fixului pe traseul real — pool DexScreener; swap BUY/SELL, LP Mint/Burn.
   "D1-DS-BUY", "D1-DS-SELL", "D1-DS-LP-ADD", "D1-DS-LP-REMOVE",
+  // Felia T1: acceptarea fixului pe traseul real — pool PancakeSwap V3; swap BUY/SELL, formă trunchiată.
+  "C-PANCAKE-BUY", "C-PANCAKE-SELL", "C-PANCAKE-SHORT",
 ];
 
 const DEFECT_SPECS: Array<Pick<RunnableCase, "id" | "kind" | "section">> = [
   { id: "M1",        kind: "defect",  section: "filter"  },
   { id: "M2",        kind: "defect",  section: "filter"  },
-  { id: "T1",        kind: "defect",  section: "filter"  },
-  { id: "T1-LP",     kind: "defect",  section: "filter"  },
   { id: "T2",        kind: "defect",  section: "filter"  },
   { id: "P1",        kind: "defect",  section: "filter"  },
   { id: "M1-FORCED", kind: "defect",  section: "forced"  },
-  { id: "T1-FORCED", kind: "defect",  section: "forced"  },
   { id: "X1",        kind: "partial", section: "partial" },
 ];
 

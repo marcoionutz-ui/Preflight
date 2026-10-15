@@ -21,6 +21,13 @@
  * sens, rezervă de montaj); B11–B13 provoacă verificările GLOBALE (swap tăcut pe alt chain, linie de swap pe alt
  * chain, eveniment LP pe altă pereche). D1 e retras și nu mai e rulat (I7, I8).
  *
+ * Felia T1: A include controalele `C-PANCAKE-*` — falsul urmează produsul REPARAT (topicul Pancake în filtru și în
+ * handler, regula exactă de 448 hex, kind `v3`). K provoacă fiecare verificare a controalelor Pancake: comportamentul
+ * vechi (`pancake-unsupported`), efecte laterale pe alt chain / altă pereche, marcaj per-kind lipsă, livrare dublă,
+ * semn negat, câmp `swapVariant` lipsă → CONTROL_FAILED cu motivul exact; decodorul care aruncă → `[WS ERR` →
+ * HARNESS_ERROR (regula existentă a runtime-ului, neschimbată), iar o rulare cu el e invalidă (cod 3). T1, T1-LP și
+ * T1-FORCED sunt retrase (I8, I9) și nu mai sunt rulate.
+ *
  * TERMINARE NECONFIRMATĂ: dacă supraveghetorul nu poate confirma că un proces de caz și grupul lui nu mai au
  * procese vii, lansatorul OPREȘTE imediat orice lansare următoare, păstrează cazul și PID-ul, iar cleanup-ul
  * mărginit din `finally` oprește procesul rămas și verifică rezultatul. Secțiunea E dovedește acest comportament.
@@ -31,7 +38,7 @@
 
 import path from "node:path";
 import { runCaseProcess, verdictFor, pidAlive, groupAlive, type RunnableCase, type SupervisorOptions } from "./supervisor";
-import { specProblem, type CaseVerdict, type CaseSpec, type CaseKind, type CaseSection, type Outcome } from "./caseProtocol";
+import { specProblem, summarize, type CaseVerdict, type CaseSpec, type CaseKind, type CaseSection, type Outcome } from "./caseProtocol";
 import { CASES } from "../cases/manifest";
 import { CONTROLS } from "../cases/controlDefs";
 import { DEFECTS, ACTIVE_DEFECT_IDS } from "../cases/defectDefs";
@@ -110,14 +117,13 @@ const run = (id: string, args: string[]): Promise<CaseVerdict> => L.run(id, args
 
 /**
  * Felul și secțiunea fiecărui caz de defect ACTIV — repetate aici (ca în manifest), NU citite din definiții.
- * D1 e retras (felia D1, marker `BETA1-D1-FIX`): nu apare aici și nu e rulat.
+ * Retrase, deci absente de aici și nerulate: D1 (marker `BETA1-D1-FIX`); T1, T1-LP, T1-FORCED (`BETA1-T1-FIX`).
  */
 const DEFECT_SPECS: Record<string, { kind: CaseKind; section: CaseSection }> = {
   "M1": { kind: "defect", section: "filter" }, "M2": { kind: "defect", section: "filter" },
-  "T1": { kind: "defect", section: "filter" },
-  "T1-LP": { kind: "defect", section: "filter" }, "T2": { kind: "defect", section: "filter" },
+  "T2": { kind: "defect", section: "filter" },
   "P1": { kind: "defect", section: "filter" },
-  "M1-FORCED": { kind: "defect", section: "forced" }, "T1-FORCED": { kind: "defect", section: "forced" },
+  "M1-FORCED": { kind: "defect", section: "forced" },
   "X1": { kind: "partial", section: "partial" },
 };
 /** Rulează corpul unui caz de defect peste workerul fals, cu defectul injectat (`none` = fals fidel baseline-ului). */
@@ -132,19 +138,19 @@ function manifestConsistency(): void {
   const ids = CASES.map(c => c.id);
   check("I1. manifestul nu are id-uri duplicate și nicio specificație incoerentă", new Set(ids).size === ids.length && CASES.every(c => specProblem(c) === null));
   const controls = CASES.filter(c => c.kind === "control");
-  check("I2. controalele din manifest sunt exact cele definite (14), toate în «filter», în același fișier",
-    controls.length === 14 && JSON.stringify(controls.map(c => c.id).sort()) === JSON.stringify(Object.keys(CONTROLS).sort())
+  check("I2. controalele din manifest sunt exact cele definite (17), toate în «filter», în același fișier",
+    controls.length === 17 && JSON.stringify(controls.map(c => c.id).sort()) === JSON.stringify(Object.keys(CONTROLS).sort())
       && controls.every(c => c.section === "filter" && c.file.endsWith("positiveControls.ts")));
   const defects = CASES.filter(c => c.kind !== "control");
-  check("I3. cazurile de defect din manifest sunt exact cele ACTIVE (9), cu același fel și aceeași secțiune",
-    defects.length === 9 && JSON.stringify(defects.map(c => c.id).sort()) === JSON.stringify([...ACTIVE_DEFECT_IDS].sort())
+  check("I3. cazurile de defect din manifest sunt exact cele ACTIVE (6), cu același fel și aceeași secțiune",
+    defects.length === 6 && JSON.stringify(defects.map(c => c.id).sort()) === JSON.stringify([...ACTIVE_DEFECT_IDS].sort())
       && defects.every(c => DEFECTS[c.id]?.kind === c.kind && DEFECTS[c.id]?.section === c.section && c.file.endsWith("defectCases.ts")));
   check("I4. tabelul acestui self-test coincide cu definițiile ACTIVE",
     JSON.stringify(Object.keys(DEFECT_SPECS).sort()) === JSON.stringify([...ACTIVE_DEFECT_IDS].sort())
       && Object.entries(DEFECT_SPECS).every(([id, sp]) => DEFECTS[id].kind === sp.kind && DEFECTS[id].section === sp.section));
   const by = (section: CaseSection): string[] => defects.filter(c => c.section === section).map(c => c.id);
-  check("I5. secțiunile nu se amestecă: 6 prin filtru, 2 forțate, 1 parțial (X1, singurul de fel «partial»)",
-    by("filter").length === 6 && JSON.stringify(by("forced")) === '["M1-FORCED","T1-FORCED"]' && JSON.stringify(by("partial")) === '["X1"]'
+  check("I5. secțiunile nu se amestecă: 4 prin filtru, 1 forțat (M1-FORCED), 1 parțial (X1, singurul de fel «partial»)",
+    by("filter").length === 4 && JSON.stringify(by("forced")) === '["M1-FORCED"]' && JSON.stringify(by("partial")) === '["X1"]'
       && defects.filter(c => c.kind === "partial").length === 1);
   check("I6. fiecare caz de defect activ numește un control pereche care există în manifest (X1: niciunul)",
     ACTIVE_DEFECT_IDS.every(id => id === "X1" || controls.some(c => c.id === DEFECTS[id].pairedControl)));
@@ -152,8 +158,15 @@ function manifestConsistency(): void {
   check("I7. D1 e retras cu markerul stabil, lipsește din manifest și din tabel, iar înlocuitorii lui sunt controale în manifest",
     d1?.retired?.marker === "BETA1-D1-FIX" && !ids.includes("D1") && !("D1" in DEFECT_SPECS) && !ACTIVE_DEFECT_IDS.includes("D1")
       && d1.retired.replacedBy.length === 2 && d1.retired.replacedBy.every(r => controls.some(c => c.id === r)));
-  check("I8. singurul caz retras e D1",
-    JSON.stringify(Object.keys(DEFECTS).filter(id => DEFECTS[id].retired !== undefined)) === '["D1"]');
+  check("I8. cazurile retrase sunt exact D1, T1, T1-LP și T1-FORCED",
+    JSON.stringify(Object.keys(DEFECTS).filter(id => DEFECTS[id].retired !== undefined).sort()) === '["D1","T1","T1-FORCED","T1-LP"]');
+  const t1Ids = ["T1", "T1-LP", "T1-FORCED"];
+  const pancakeControls = ["C-PANCAKE-BUY", "C-PANCAKE-SELL"];
+  check("I9. T1, T1-LP și T1-FORCED sunt retrase cu markerul stabil BETA1-T1-FIX, lipsesc din manifest și din tabel; T1 și T1-FORCED sunt înlocuite de C-PANCAKE-BUY/SELL (în manifest), T1-LP fără înlocuitor",
+    t1Ids.every(id => DEFECTS[id]?.retired?.marker === "BETA1-T1-FIX" && !ids.includes(id) && !(id in DEFECT_SPECS) && !ACTIVE_DEFECT_IDS.includes(id))
+      && ["T1", "T1-FORCED"].every(id => JSON.stringify(DEFECTS[id].retired?.replacedBy) === JSON.stringify(pancakeControls))
+      && JSON.stringify(DEFECTS["T1-LP"].retired?.replacedBy) === "[]"
+      && [...pancakeControls, "C-PANCAKE-SHORT"].every(c => controls.some(m => m.id === c)));
 }
 
 async function main(): Promise<void> {
@@ -171,6 +184,24 @@ async function main(): Promise<void> {
       v.outcome === "CONTROL_OK" && v.diagnostics?.terminationConfirmed === true && v.observations.swapsRecorded === 0
         && v.observations.lpEventsRecorded === 1 && Array.isArray(lp) && lp[0].isAdd === isAdd
         && (isAdd || v.observations.reserveEth === 20), why(v));
+  }
+
+  // Felia T1: controalele Pancake — marcaj per-kind (nemarcat înainte, marcat după), verificări globale.
+  for (const control of ["C-PANCAKE-BUY", "C-PANCAKE-SELL"]) {
+    const v = await run(control, [`--control=${control}`, "--fault=none"]);
+    const o = v.observations;
+    check(`A. ${control} peste workerul fals → CONTROL_OK, base:v3 marcat doar după livrare, un swap pe toate cheile, linia cu swapVariant`,
+      v.outcome === "CONTROL_OK" && v.diagnostics?.terminationConfirmed === true && o.swapsRecorded === 1
+        && o.kindMarkedBefore === false && o.kindMarkedAfter === true && o.swapReceived === 1
+        && o.swapsAllKeys === 1 && o.lpEventsAllKeys === 0 && o.swapLogLinesAllChains === 1 && o.lpLogLines === 0 && o.lineFieldLines === 1, why(v));
+  }
+  {
+    const v = await run("C-PANCAKE-SHORT", ["--control=C-PANCAKE-SHORT", "--fault=none"]);
+    const o = v.observations;
+    check("A. C-PANCAKE-SHORT peste workerul fals → CONTROL_OK: trimis și primit o dată, base:v3 marcat, nimic înregistrat nicăieri",
+      v.outcome === "CONTROL_OK" && v.diagnostics?.terminationConfirmed === true && o.logsSent === 1 && o.swapReceived === 1
+        && o.kindMarkedBefore === false && o.kindMarkedAfter === true && o.swapsRecorded === 0 && o.swapsAllKeys === 0
+        && o.lpEventsAllKeys === 0 && o.swapLogLinesAllChains === 0 && o.lpLogLines === 0, why(v));
   }
 
   console.log("B. swap neînregistrat sau înregistrat greșit → CONTROL_FAILED");
@@ -261,6 +292,7 @@ async function main(): Promise<void> {
     check(`${n}b. ${fault}: e SINGURUL motiv (fără el cazul ar fi fost CONTROL_OK), proces terminat singur cu cod 0`, v.reasons.length === 1 && v.diagnostics?.code === 0 && v.diagnostics.signal === null && !v.diagnostics.timedOut && v.diagnostics.terminationConfirmed, why(v));
   }
 
+  await pancakeInjections();
   await defectCases();
 
   console.log("D. procese rămase");
@@ -273,8 +305,64 @@ async function main(): Promise<void> {
   await unconfirmedRegression();
 }
 
-/** A 14 + B 13 + C 10 + C' 4 + F 9 + G 10 + H 9 + J 6. */
-const EXPECTED_PROCESSES = 75;
+/** A 17 + B 13 + C 10 + C' 4 + K 15 + F 6 + G 7 + H 9 + J 6. */
+const EXPECTED_PROCESSES = 87;
+
+/**
+ * K. Felia T1: fiecare verificare a controalelor Pancake, provocată separat peste workerul fals, cu motivul EXACT
+ * (design `BETA1_T1_FIX_DESIGN.md` rev3, §4.1). Excepție: decodorul care aruncă produce o linie `[WS ERR` →
+ * HARNESS_ERROR, regula existentă a runtime-ului (neschimbată), iar rularea care îl conține e invalidă (cod 3).
+ */
+async function pancakeInjections(): Promise<void> {
+  console.log("K. controalele Pancake: injecții → CONTROL_FAILED cu motivul exact; decodor care aruncă → HARNESS_ERROR");
+  const exactly = (v: CaseVerdict, reasons: string[]): boolean => v.outcome === "CONTROL_FAILED" && JSON.stringify(v.reasons) === JSON.stringify(reasons);
+  const FILTER = "topicul de swap lipsește din poziția 0 a filtrului";
+  for (const control of ["C-PANCAKE-BUY", "C-PANCAKE-SELL", "C-PANCAKE-SHORT"]) {
+    const v = await run(control, [`--control=${control}`, "--fault=pancake-unsupported"]);
+    check(`K1. ${control} + pancake-unsupported (comportamentul vechi) → CONTROL_FAILED, singurul motiv: topicul lipsește din filtru`, exactly(v, [FILTER]), why(v));
+  }
+  const single: Array<[string, string, string, string]> = [
+    ["K2", "C-PANCAKE-SHORT", "short-swap-other-chain",      "swapuri înregistrate în wsFlow, pe toate cheile: 1 (se cer 0)"],
+    ["K3", "C-PANCAKE-SHORT", "short-lp-other-pair",         "evenimente LP pe toate cheile: 1 (se cer 0)"],
+    ["K4", "C-PANCAKE-SHORT", "short-swap-line-other-chain", "linii de swap în consolă, pe toate chain-urile: 1 (se cer 0)"],
+    ["K5", "C-PANCAKE-SHORT", "short-lp-line-other-chain",   "linii LP în consolă, pe toate chain-urile: 1 (se cer 0)"],
+    ["K6", "C-PANCAKE-SHORT", "pancake-kind-unmapped",       "wsLastMessageAtByKind nu a fost marcat pentru base:v3"],
+    ["K7", "C-PANCAKE-BUY",   "pancake-kind-unmapped",       "wsLastMessageAtByKind nu a fost marcat pentru base:v3"],
+    ["K8", "C-PANCAKE-BUY",   "buy-extra-swap-other-chain",  "swapuri înregistrate în wsFlow, pe toate cheile: 2 (se cere exact 1, cel al perechii controlului)"],
+    ["K9", "C-PANCAKE-BUY",   "buy-variant-missing",         "linia de swap nu conține câmpul swapVariant=pancake-v3"],
+  ];
+  for (const [n, control, fault, reason] of single) {
+    const v = await run(control, [`--control=${control}`, `--fault=${fault}`]);
+    check(`${n}. ${control} + ${fault} → CONTROL_FAILED cu motivul exact, singurul`, exactly(v, [reason]), why(v));
+  }
+  {
+    const v = await run("C-PANCAKE-BUY", ["--control=C-PANCAKE-BUY", "--fault=buy-sign-negated"]);
+    check("K10. C-PANCAKE-BUY + buy-sign-negated → CONTROL_FAILED cu direcția înregistrată SELL",
+      v.outcome === "CONTROL_FAILED" && v.reasons.includes("direcție înregistrată: SELL"), why(v));
+  }
+  const SENT = "logul controlului nu a fost trimis exact o dată prin filtru";
+  const RECEIVED = "logul controlului nu a fost primit exact o dată de worker";
+  {
+    const v = await run("C-PANCAKE-SHORT", ["--control=C-PANCAKE-SHORT", "--fault=none", "--tamper=duplicate-delivery"]);
+    check("K11. C-PANCAKE-SHORT + livrare dublă → CONTROL_FAILED, exact motivele de trimitere și recepție", exactly(v, [SENT, RECEIVED]), why(v));
+  }
+  {
+    const v = await run("C-PANCAKE-BUY", ["--control=C-PANCAKE-BUY", "--fault=none", "--tamper=duplicate-delivery"]);
+    check("K12. C-PANCAKE-BUY + livrare dublă → CONTROL_FAILED, cu motivele de trimitere și recepție",
+      v.outcome === "CONTROL_FAILED" && v.reasons.includes(SENT) && v.reasons.includes(RECEIVED), why(v));
+  }
+  {
+    const v = await run("C-PANCAKE-SHORT", ["--control=C-PANCAKE-SHORT", "--fault=pancake-throws"]);
+    check("K13. C-PANCAKE-SHORT + pancake-throws → HARNESS_ERROR, singurul motiv: linia [WS ERR (regula runtime-ului), fără observații",
+      v.outcome === "HARNESS_ERROR" && JSON.stringify(v.reasons) === JSON.stringify(["înainte de închidere: linie [WS ERR în captura de consolă"])
+        && Object.keys(v.observations).length === 0, why(v));
+    check("K13b. pancake-throws: procesul de caz s-a terminat singur, cu cod 0 (rezultat valid serializat), terminare confirmată",
+      v.diagnostics?.code === 0 && v.diagnostics.signal === null && !v.diagnostics.timedOut && v.diagnostics.terminationConfirmed, why(v));
+    const s = summarize([v]);
+    check("K13c. o rulare care conține acest HARNESS_ERROR e invalidă: cod 3",
+      s.exitCode === 3 && s.invalid.includes("C-PANCAKE-SHORT: HARNESS_ERROR"), JSON.stringify(s));
+  }
+}
 
 /**
  * F–H. Corpul CAZURILOR DE DEFECT (felia 4), peste workerul fals:
@@ -289,12 +377,9 @@ async function defectCases(): Promise<void> {
   const confirm: Array<[string, Outcome, (o: Record<string, unknown>) => boolean]> = [
     ["M1",        "DEFECT_REPRODUCED", o => o.swapsRecorded === 0 && o.logsSent === 1 && JSON.stringify(o.requestKinds) === '["v2"]'],
     ["M2",        "DEFECT_REPRODUCED", o => o.requestsSeen === 0 && o.logsSent === 0 && o.swapsRecorded === 0],
-    ["T1",        "DEFECT_REPRODUCED", o => o.logsSent === 0 && o.swapsRecorded === 0 && JSON.stringify(o.absentTopicsFoundInFilter) === "[]"],
-    ["T1-LP",     "DEFECT_REPRODUCED", o => o.logsSent === 1 && o.logsReceived === 1 && o.swapsRecorded === 0 && o.lpEventsRecorded === 1],
     ["T2",        "DEFECT_REPRODUCED", o => o.logsSent === 1 && o.swapsRecorded === 0 && JSON.stringify(o.absentTopicsFoundInFilter) === "[]"],
     ["P1",        "DEFECT_REPRODUCED", o => o.logsSent === 1 && o.logsReceived === 1 && o.swapsRecorded === 0 && o.priceEth === null],
     ["M1-FORCED", "DEFECT_REPRODUCED", o => o.forcedSent === 1 && o.forcedReceived === 1 && o.swapsRecorded === 0 && typeof o.forcedNote === "string"],
-    ["T1-FORCED", "DEFECT_REPRODUCED", o => o.forcedSent === 1 && o.forcedReceived === 1 && o.swapsRecorded === 0 && typeof o.forcedNote === "string"],
     ["X1",        "PARTIAL_OBSERVED",  o => o.dexTypeFromIndexer === "V3" && o.inV3Dexes === false && typeof o.notVerified === "string"],
   ];
   for (const [id, outcome, obsOk] of confirm) {
@@ -309,12 +394,9 @@ async function defectCases(): Promise<void> {
     ["M1",        "fixed-map-route",      "DEFECT_NOT_REPRODUCED", "nu apare în nicio cerere de tip v2"],
     ["M1",        "never-subscribes",     "DEFECT_NOT_REPRODUCED", "cereri eth_subscribe: 0"],
     ["M2",        "fixed-v4-route",       "DEFECT_NOT_REPRODUCED", "poolId-ul APARE"],
-    ["T1",        "fixed-pancake-topic",  "DEFECT_NOT_REPRODUCED", "A FOST trimis prin filtru"],
-    ["T1-LP",     "fixed-pancake-topic",  "DEFECT_NOT_REPRODUCED", "ESTE în filtrul cerut"],
     ["T2",        "fixed-solidly-topic",  "DEFECT_NOT_REPRODUCED", "A FOST trimis prin filtru"],
     ["P1",        "fixed-price-fallback", "DEFECT_NOT_REPRODUCED", "swapuri înregistrate: 1"],
     ["M1-FORCED", "fixed-map-route",      "HARNESS_ERROR",         "montaj:"],
-    ["T1-FORCED", "fixed-pancake-topic",  "DEFECT_NOT_REPRODUCED", "swapuri înregistrate: 1"],
     ["X1",        "fixed-v3-dexes",       "PARTIAL_NOT_OBSERVED",  "V3_DEXES CONȚINE"],
   ];
   for (const [id, fault, outcome, expect] of deny) {
@@ -328,9 +410,9 @@ async function defectCases(): Promise<void> {
   console.log("H. barieră, gardă sau montaj neîndeplinite într-un caz de defect → HARNESS_ERROR, niciodată «reprodus»");
   const errors: Array<[string, string, string]> = [
     ["M1", "handler-throws",            "[WS ERR"],            // martorul aruncă în handler; wsFlow rămâne gol ca la defect
-    ["T1-LP", "handler-throws",         "[WS ERR"],            // logul cazului aruncă în handler; „fără swap" ar fi verde fals
+    ["T2", "handler-throws",            "[WS ERR"],            // martorul V2 aruncă în handler; „netrimis, neînregistrat" ar fi verde fals
     ["P1", "async-handler",             "activeJobCount()"],
-    ["T1", "never-subscribes",          "montaj:"],
+    ["M1-FORCED", "never-subscribes",   "montaj:"],
     ["T2", "import-timer",              "timer creat la import"],
     ["M2", "other-port",                "E1."],
     ["X1", "import-fetch",              "fetch la import"],
@@ -356,7 +438,7 @@ async function defectCases(): Promise<void> {
     ["P1",        "deliver-twin",     "geamănul negativ (topic străin) a fost trimis de nod"],
     ["M1-FORCED", "forced-inactive",  "deliverForced pe o subscripție care nu e activă la nod"],
     ["M1-FORCED", "forced-missing",   ": trimis de 0 ori (se cere exact o dată)"],
-    ["T1-FORCED", "forced-double",    ": trimis de 2 ori (se cere exact o dată)"],
+    ["M1-FORCED", "forced-double",    ": trimis de 2 ori (se cere exact o dată)"],
   ];
   for (const [id, tamper, expect] of tampered) {
     const v = await runDefect(id, "none", tamper);

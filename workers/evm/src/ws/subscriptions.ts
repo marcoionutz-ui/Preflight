@@ -27,15 +27,22 @@ import {
   V4_POOL_MANAGERS, SWAP_V4_TOPIC, MODIFY_LIQUIDITY_V4_TOPIC, SHORT_WATCH_TTL_MS,
 } from "../config/constants";
 import { cleanEvmAddress } from "../sources/normalize";
+// BETA-1 / T1: topicurile de swap V3 stau în modulul PUR `quoteFlow` (lângă decodor); aici doar se re-exportă.
+import { SWAP_V3_TOPIC, SWAP_PANCAKE_V3_TOPIC } from "./quoteFlow";
 
 const SWAP_V2_TOPIC = "0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822";
-const SWAP_V3_TOPIC = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67";
 
-export { SWAP_V2_TOPIC, SWAP_V3_TOPIC };
+export { SWAP_V2_TOPIC, SWAP_V3_TOPIC, SWAP_PANCAKE_V3_TOPIC };
 export const MINT_V2_TOPIC = "0x4c209b5fc8ad50758f13e2e1088ba56a560dff690a1c6fef26394f4c03821c4f";
 export const BURN_V2_TOPIC = "0xdccd412f0b1252819cb1fd330b93224ca42612892bb3f4f789976e6d81936496";
 export const MINT_V3_TOPIC = "0x7a53080ba414158be7ec69b987b5fb7d07dee101fe85488f0853ae16239d0bde";
 export const BURN_V3_TOPIC = "0x0c396cd989a39f4459b5fa1aed6a9a8dcdbc45908acfd67e028cd568da98982c";
+
+/**
+ * BETA-1 / T1: poziția 0 a filtrului subscripției V3 — Swap Uniswap V3, Swap PancakeSwap V3, Mint, Burn (Mint și
+ * Burn au aceeași semnătură în ambele). Filtrul rămâne pe adrese: topicul în plus nu aduce loguri de la alte contracte.
+ */
+export const V3_SCOPED_TOPICS: readonly string[] = Object.freeze([SWAP_V3_TOPIC, SWAP_PANCAKE_V3_TOPIC, MINT_V3_TOPIC, BURN_V3_TOPIC]);
 
 /**
  * D3: trimite `eth_subscribe` cu rollback la eșec de transport. `ws.send` nu are rollback, iar dacă
@@ -196,7 +203,7 @@ export function subscribeV3Scoped(chain: ChainConfig): void {
   const plan = planScopedSubscribe(scopedSubStore, key, desired, nextScopedSubReqId(), now);
   if (plan.reqId == null) return; // deja activ pe acest snapshot / cerere identică proaspătă în zbor
 
-  sendScopedSubscribe(ws, plan.reqId, ["logs", { address: addrs, topics: [[SWAP_V3_TOPIC, MINT_V3_TOPIC, BURN_V3_TOPIC]] }], "V3");
+  sendScopedSubscribe(ws, plan.reqId, ["logs", { address: addrs, topics: [[...V3_SCOPED_TOPICS]] }], "V3");
   console.log(`[V3] Scoped subscribe req#${plan.reqId}: ${addrs.length} watched pools (${chain.id})`);
 }
 

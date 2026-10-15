@@ -4,6 +4,8 @@
  * Completează `evmFixtures.ts` (neschimbat) cu ce cer cazurile din §7.2–§7.7 ale designului: pool în forma
  * DexScreener, pereche în forma registrului indexerului, loguri ale altor DEX-uri și loguri LP.
  *
+ * Felia T1: logurile controalelor `C-PANCAKE-*` (swap PancakeSwap V3 complet, BUY/SELL, și forma trunchiată).
+ *
  * Ca în `evmFixtures.ts`: totul e scris INDEPENDENT de produs. Topicurile sunt keccak-256 al semnăturii din
  * comentariu; nu se citesc din constantele din `src/` și nu se calculează cu funcții din `src/`.
  *
@@ -16,7 +18,7 @@ import { TOKEN, WETH_BASE, E18, uint256Word, int256Word, swapV2Log, foreignLog }
 // ── Adrese ───────────────────────────────────────────────────────────────────────────────────────────────────
 /** Pool V2 folosit de D1 și de D1-CONTROL: aceeași adresă, același log; diferă doar sursa metadatelor. */
 export const POOL_D1 = "0x" + "d1".repeat(20);
-/** Pool PancakeSwap V3 (T1, T1-LP, T1-FORCED). */
+/** Pool PancakeSwap V3 (T1, T1-LP, T1-FORCED — retrase; controalele `C-PANCAKE-*`). */
 export const POOL_PANCAKE_V3 = "0x" + "ca".repeat(20);
 /** Pool Aerodrome clasic, pe ruta V2 (T2). */
 export const POOL_AERO_V2 = "0x" + "ae".repeat(20);
@@ -35,6 +37,8 @@ export const T_SWAP_PANCAKE_V3 = "0x19b47279256b2a23a1665c810c8d55a1758940ee0937
 export const T_SWAP_SOLIDLY = "0xb3e2773606abfd36b5bd91394b3a54d1398336c65005baf7bf7a05efeffaf75b";
 /** `Mint(address,address,int24,int24,uint128,uint256,uint256)` — Uniswap V3 și PancakeSwap V3 (aceeași semnătură) */
 export const T_MINT_V3 = "0x7a53080ba414158be7ec69b987b5fb7d07dee101fe85488f0853ae16239d0bde";
+/** `Burn(address,int24,int24,uint128,uint256,uint256)` — Uniswap V3 și PancakeSwap V3 (felia T1: lista exactă a filtrului V3) */
+export const T_BURN_V3 = "0x0c396cd989a39f4459b5fa1aed6a9a8dcdbc45908acfd67e028cd568da98982c";
 /** `Mint(address,uint256,uint256)` — Uniswap V2 (felia D1: controlul LP de adăugare) */
 export const T_MINT_V2 = "0x4c209b5fc8ad50758f13e2e1088ba56a560dff690a1c6fef26394f4c03821c4f";
 /** `Burn(address,uint256,uint256,address)` — Uniswap V2 (felia D1: controlul LP de retragere) */
@@ -146,13 +150,27 @@ export const D1_TWIN_MINT: RpcLog = foreignLog(POOL_D1, null, 0xd106);
 export const D1_BURN: RpcLog = burnV2Log(POOL_D1, { amount0: 2n * E18, amount1: 10n * E18 }, 0xd107);
 export const D1_TWIN_BURN: RpcLog = foreignLog(POOL_D1, null, 0xd108);
 
+// ── Felia T1: logurile controalelor `C-PANCAKE-*` pe POOL_PANCAKE_V3 (WETH < TOKEN ⇒ WETH e token0) ──────────────
+/** Cumpărare de 1 WETH (convenția POOL: amount0 pozitiv = WETH intrat în pool). ACELAȘI log ca în T1 (retras). */
+export const PANCAKE_SWAP: RpcLog = swapPancakeV3Log(POOL_PANCAKE_V3, { amount0: E18, amount1: -5n * E18 }, 0x7101);
+export const PANCAKE_TWIN: RpcLog = foreignLog(POOL_PANCAKE_V3, null, 0x7301);
+/** Vânzare de 0,5 WETH. */
+export const PANCAKE_SWAP_SELL: RpcLog = swapPancakeV3Log(POOL_PANCAKE_V3, { amount0: -(E18 / 2n), amount1: 3n * E18 }, 0x7302);
+export const PANCAKE_TWIN_SELL: RpcLog = foreignLog(POOL_PANCAKE_V3, null, 0x7303);
+/**
+ * Forma TRUNCHIATĂ: topicul Swap PancakeSwap V3, dar doar primele 5 cuvinte (320 hex) din logul de cumpărare —
+ * exact forma unui swap Uniswap V3. Decodorul reparat o refuză tăcut (cere exact 448 hex).
+ */
+export const PANCAKE_SHORT: RpcLog = { ...PANCAKE_SWAP, data: PANCAKE_SWAP.data.slice(0, 2 + 5 * 64), transactionHash: txHash(0x7304) };
+export const PANCAKE_TWIN_SHORT: RpcLog = foreignLog(POOL_PANCAKE_V3, null, 0x7305);
+
 /** Controale proprii ale fixture-urilor de aici. Întoarce lista problemelor (goală = în regulă). */
 export function defectFixturesSelfCheck(): string[] {
   const p: string[] = [];
-  for (const [name, t] of [["T_SWAP_PANCAKE_V3", T_SWAP_PANCAKE_V3], ["T_SWAP_SOLIDLY", T_SWAP_SOLIDLY], ["T_MINT_V3", T_MINT_V3]] as const) {
+  for (const [name, t] of [["T_SWAP_PANCAKE_V3", T_SWAP_PANCAKE_V3], ["T_SWAP_SOLIDLY", T_SWAP_SOLIDLY], ["T_MINT_V3", T_MINT_V3], ["T_BURN_V3", T_BURN_V3]] as const) {
     if (!/^0x[0-9a-f]{64}$/.test(t)) p.push(`${name} nu e un topic valid`);
   }
-  if (new Set([T_SWAP_PANCAKE_V3, T_SWAP_SOLIDLY, T_MINT_V3, T_MINT_V2, T_BURN_V2]).size !== 5) p.push("topicuri identice");
+  if (new Set([T_SWAP_PANCAKE_V3, T_SWAP_SOLIDLY, T_MINT_V3, T_MINT_V2, T_BURN_V2, T_BURN_V3]).size !== 6) p.push("topicuri identice");
   for (const [name, l] of [["D1_MINT", D1_MINT], ["D1_BURN", D1_BURN]] as const) {
     if (l.data.length !== 2 + 2 * 64 || l.topics.some(t => t.length !== 66)) p.push(`forma logului ${name}`);
   }
@@ -163,6 +181,12 @@ export function defectFixturesSelfCheck(): string[] {
   for (const [name, a] of [["POOL_D1", POOL_D1], ["POOL_PANCAKE_V3", POOL_PANCAKE_V3], ["POOL_AERO_V2", POOL_AERO_V2], ["POOL_INDEXED", POOL_INDEXED]] as const) {
     if (!/^0x[0-9a-f]{40}$/.test(a)) p.push(`${name} nu e o adresă validă`);
   }
+  // Felia T1: formele logurilor Pancake ale controalelor.
+  for (const [name, l] of [["PANCAKE_SWAP", PANCAKE_SWAP], ["PANCAKE_SWAP_SELL", PANCAKE_SWAP_SELL]] as const) {
+    if (l.data.length !== 2 + 7 * 64 || l.topics[0] !== T_SWAP_PANCAKE_V3) p.push(`forma logului ${name}`);
+  }
+  if (PANCAKE_SHORT.data.length !== 2 + 5 * 64 || PANCAKE_SHORT.topics[0] !== T_SWAP_PANCAKE_V3 || !PANCAKE_SWAP.data.startsWith(PANCAKE_SHORT.data)) p.push("forma logului PANCAKE_SHORT");
+  if (new Set([PANCAKE_SWAP, PANCAKE_TWIN, PANCAKE_SWAP_SELL, PANCAKE_TWIN_SELL, PANCAKE_SHORT, PANCAKE_TWIN_SHORT].map(l => l.transactionHash)).size !== 6) p.push("hash-uri de tranzacție Pancake duplicate");
   const ds = dsPair(POOL_D1, "uniswap");
   if (typeof ds.baseToken !== "object" || typeof ds.quoteToken !== "object") p.push("forma DexScreener: base/quote trebuie să fie obiecte");
   return p;

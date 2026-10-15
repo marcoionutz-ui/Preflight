@@ -6,7 +6,7 @@
 import WebSocket from "ws";
 import type { ChainConfig } from "../config/chains";
 import { isShuttingDown, beginJob, closeSocketsBounded } from "../lib/lifecycle";
-import { getQuoteFlowAsEth, toPoolConventionAmounts, extractBaseQuote, resolveLpNativeAmount } from "./quoteFlow";
+import { getQuoteFlowAsEth, toPoolConventionAmounts, extractBaseQuote, resolveLpNativeAmount, decodeV3SwapAmounts, int256FromWord } from "./quoteFlow";
 import { createReconnectManager, type BackoffConfig } from "./wsBackoff";
 import { startHeartbeat } from "./heartbeat";
 import {
@@ -27,6 +27,7 @@ import {
   subscribeV2Scoped,
   SWAP_V2_TOPIC,
   SWAP_V3_TOPIC,
+  SWAP_PANCAKE_V3_TOPIC,
   MINT_V2_TOPIC,
   BURN_V2_TOPIC,
   MINT_V3_TOPIC,
@@ -38,10 +39,7 @@ import {
   V4_POOL_MANAGERS,
 } from "../config/constants";
 
-function int256FromWord(hex64: string): bigint {
-  const x = BigInt("0x" + hex64);
-  return x >= (1n << 255n) ? x - (1n << 256n) : x;
-}
+// `int256FromWord` a fost mutată în ./quoteFlow (pură, lângă decodorul swapurilor V3 — BETA-1 / T1).
 
 // Part B: topic0 → kind subscripție (v2/v3/v4), pentru `wsLastMessageAtByKind`. Un log livrat = data stream viu
 // PT. ACEL KIND (distinge V2 mort tăcut de V3/V4 care curg — pe care agregatul per-chain `wsLastMessageAt` îl maschează).
@@ -49,6 +47,7 @@ const TOPIC_TO_KIND: Record<string, ScopedSubKind> = {
   [SWAP_V4_TOPIC]:              "v4",
   [MODIFY_LIQUIDITY_V4_TOPIC]:  "v4",
   [SWAP_V3_TOPIC]:              "v3",
+  [SWAP_PANCAKE_V3_TOPIC]:      "v3", // BETA-1 / T1: marcat și când decodorul refuză logul (marcajul precede decodarea)
   [MINT_V3_TOPIC]:              "v3",
   [BURN_V3_TOPIC]:              "v3",
   [SWAP_V2_TOPIC]:              "v2",
@@ -293,8 +292,8 @@ export function connectChainWebSocket(chain: ChainConfig): void {
         return;
       }
 
-      // ── V3 Swap ──────────────────────────────────────────────────────────
-      if (msg.params?.result?.topics?.[0] === SWAP_V3_TOPIC) {
+      // ── V3 Swap: Uniswap V3 și PancakeSwap V3 (BETA-1 / T1) ──────────────
+      if (msg.params?.result?.topics?.[0] === SWAP_V3_TOPIC || msg.params?.result?.topics?.[0] === SWAP_PANCAKE_V3_TOPIC) {
         const log3      = msg.params.result;
         const pairAddr3 = log3.address?.toLowerCase();
         if (!pairAddr3) return;
@@ -303,19 +302,18 @@ export function connectChainWebSocket(chain: ChainConfig): void {
         if (!pool3 || !mem3) return;
         if (isBlockedSymbol(mem3.symbol)) return;
 
-        const raw3 = log3.data?.slice(2) ?? "";
-        if (raw3.length < 128) return;
-
-        const amount0 = int256FromWord(raw3.slice(0,  64));
-        const amount1 = int256FromWord(raw3.slice(64, 128));
+        // Decodor pur: `null` (refuz tăcut) pentru date malformate sau o formă incompletă; nu aruncă niciodată.
+        const dec3 = decodeV3SwapAmounts(log3.topics?.[0], log3.data);
+        if (!dec3) return;
         const { baseToken: base3, quoteToken: quote3 } = extractBaseQuote(pool3);
 
-        const qflow3 = getQuoteFlowAsEth(chain, base3, quote3, amount0, amount1);
+        // Convenția POOL în ambele variante → direct, fără negare.
+        const qflow3 = getQuoteFlowAsEth(chain, base3, quote3, dec3.amount0, dec3.amount1);
         if (!qflow3.ok) return;
 
         if (qflow3.ethAmount > 0) {
           recordSwap(chain.id, pairAddr3, qflow3.isBuy, qflow3.ethAmount, qflow3.usdAmount);
-          console.log(`[V3 SWAP ${chain.id}] ${mem3.symbol} ${qflow3.isBuy ? "BUY" : "SELL"} quote=${qflow3.quote} nativeEq=${qflow3.ethAmount.toFixed(4)} usd=$${qflow3.usdAmount.toFixed(0)} tx=${log3.transactionHash}`);
+          console.log(`[V3 SWAP ${chain.id}] ${mem3.symbol} ${qflow3.isBuy ? "BUY" : "SELL"} quote=${qflow3.quote} nativeEq=${qflow3.ethAmount.toFixed(4)} usd=$${qflow3.usdAmount.toFixed(0)} tx=${log3.transactionHash} swapVariant=${dec3.variant}`);
           if (qflow3.isBuy && qflow3.ethAmount >= 0.005) {
             const flow3 = getWsFlow(chain.id, pairAddr3);
             if (flow3.hasData && flow3.pressure === "BUYING" && flow3.buys5m >= 5) {

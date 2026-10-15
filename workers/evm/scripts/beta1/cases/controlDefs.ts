@@ -24,6 +24,13 @@
  * SELL, plus LP V2 `Mint` și `Burn` (schimbarea declarată: LP-ul pool-urilor DexScreener devine activ). Un control
  * LP cere exact un eveniment în `lpEvents`, cu sensul și suma exacte, ZERO swapuri și linia exactă a workerului;
  * la `Burn`, rezerva e verificată întâi (montaj), iar procentul retras e verificat prin linia exactă.
+ *
+ * Felia T1 (fixul §4.4, design `BETA1_T1_FIX_DESIGN.md` rev3, §4.1) adaugă trei controale `C-PANCAKE-*` pe un pool
+ * `pancakeswap-v3-base` pus în `v3PoolMap` (precondiție, treapta 1): swap BUY și SELL (exact 448 hex) și forma
+ * TRUNCHIATĂ (320 hex), care trebuie refuzată tăcut. Toate trei cer: poziția 0 a filtrului exact lista V3 așteptată;
+ * logul trimis și primit exact o dată; `wsLastMessageAtByKind` nemarcat înainte și marcat după livrare pentru
+ * `base:v3`; verificări GLOBALE (toate cheile `wsFlow`/`lpEvents`, liniile de swap și LP pe orice chain). Absența
+ * liniilor `[WS ERR` NU e verificată aici: e invariant de validitate al cazului în runtime (→ HARNESS_ERROR).
  */
 
 import { jsonEqual, type CaseContext, type CaseBodyResult, type ScopedKind } from "../harness/caseRuntime";
@@ -35,7 +42,8 @@ import {
 } from "../harness/evmFixtures";
 import {
   POOL_D1, D1_SWAP, D1_TWIN, D1_SWAP_SELL, D1_TWIN_SELL, D1_MINT, D1_TWIN_MINT, D1_BURN, D1_TWIN_BURN, T_MINT_V2, T_BURN_V2,
-  dsPair, type DsPairRaw,
+  POOL_PANCAKE_V3, T_SWAP_PANCAKE_V3, T_MINT_V3, T_BURN_V3, PANCAKE_SWAP, PANCAKE_TWIN, PANCAKE_SWAP_SELL, PANCAKE_TWIN_SELL,
+  PANCAKE_SHORT, PANCAKE_TWIN_SHORT, dsPair, defectFixturesSelfCheck, type DsPairRaw,
 } from "../harness/evmFixturesDefects";
 
 export interface ControlDef {
@@ -64,6 +72,12 @@ export interface ControlDef {
    * rezerva pe care montajul o verifică ÎNAINTE de livrare (pusă de `updateMemory` → `updatePoolLiquidity`).
    */
   lp?:        { isAdd: boolean; ethAmount: number; reserveEth?: number };
+  /**
+   * Control Pancake (felia T1): `topics0` = lista EXACTĂ din poziția 0 a filtrului cerut; `lineField` = câmpul
+   * obligatoriu din linia de swap (BUY/SELL); `none` = forma trunchiată: nicio înregistrare, verificat global.
+   * Marcajul per-kind e obligatoriu pentru toate controalele cu `t1`.
+   */
+  t1?:        { topics0: string[]; lineField?: string; none?: true };
 }
 
 const PRICE = 2_500;
@@ -170,6 +184,31 @@ CONTROLS["D1-DS-LP-REMOVE"] = {
   lp: { isAdd: false, ethAmount: 2, reserveEth: 20 },
 };
 
+// ── Felia T1: acceptarea fixului pe traseul real (design `BETA1_T1_FIX_DESIGN.md` rev3, §4.1) ──────────────────
+// Pool PancakeSwap V3, pus în v3PoolMap (precondiție, treapta 1), cu montajul T1. Pe baseline (fără fix), toate trei
+// dau CONTROL_FAILED pe filtru: topicul Swap PancakeSwap V3 lipsește din poziția 0. După fix: CONTROL_OK. Logul
+// BUY e același obiect `PANCAKE_SWAP` ca în T1 (retras).
+const V3_TOPICS0 = [T_SWAP_V3, T_SWAP_PANCAKE_V3, T_MINT_V3, T_BURN_V3];
+const PCS = {
+  raw: geckoPool(POOL_PANCAKE_V3, "pancakeswap-v3-base", WETH_BASE, "WETH"), pair: POOL_PANCAKE_V3, kind: "v3" as const,
+  admit: "v3" as const, dexType: "V3" as const, swapTopic: T_SWAP_PANCAKE_V3, priceEth: PRICE,
+};
+CONTROLS["C-PANCAKE-BUY"] = {
+  ...PCS, swap: PANCAKE_SWAP, twin: PANCAKE_TWIN,
+  expected: { isBuy: true, ethAmount: 1, usdAmount: 2_500 }, linePrefix: "[V3 SWAP base] TKN BUY",
+  t1: { topics0: V3_TOPICS0, lineField: "swapVariant=pancake-v3" },
+};
+CONTROLS["C-PANCAKE-SELL"] = {
+  ...PCS, swap: PANCAKE_SWAP_SELL, twin: PANCAKE_TWIN_SELL,
+  expected: { isBuy: false, ethAmount: 0.5, usdAmount: 1_250 }, linePrefix: "[V3 SWAP base] TKN SELL",
+  t1: { topics0: V3_TOPICS0, lineField: "swapVariant=pancake-v3" },
+};
+CONTROLS["C-PANCAKE-SHORT"] = {
+  ...PCS, swap: PANCAKE_SHORT, twin: PANCAKE_TWIN_SHORT,
+  linePrefix: "[V3 SWAP base]",
+  t1: { topics0: V3_TOPICS0, none: true },
+};
+
 export const CONTROL_IDS = Object.keys(CONTROLS);
 
 const near = (a: number, b: number): boolean => Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(b));
@@ -187,6 +226,7 @@ function filterProblem(def: ControlDef, req: CapturedRequest): string | null {
   if (!Array.isArray(f.topics) || !Array.isArray(f.topics[0]) || !(f.topics[0] as unknown[]).includes(def.swapTopic)) {
     return "topicul de swap lipsește din poziția 0 a filtrului";
   }
+  if (def.t1 && !jsonEqual(f.topics[0], def.t1.topics0)) return "poziția 0 a filtrului V3 nu e exact lista așteptată (Swap Uniswap V3, Swap PancakeSwap V3, Mint, Burn)";
   if (def.kind === "v4" ? !jsonEqual(f.topics[1], [def.pair]) || f.topics.length !== 2 : f.topics.length !== 1) {
     return "pozițiile de topic ale filtrului nu sunt cele așteptate";
   }
@@ -196,7 +236,7 @@ function filterProblem(def: ControlDef, req: CapturedRequest): string | null {
 export async function controlBody(def: ControlDef, ctx: CaseContext): Promise<CaseBodyResult> {
   const { src, chain } = ctx;
   const st = src.stores;
-  const fx = fixturesSelfCheck();
+  const fx = [...fixturesSelfCheck(), ...(def.t1 ? defectFixturesSelfCheck() : [])];
   if (fx.length > 0) throw new Error("fixture invalide: " + fx.join("; "));
 
   // ── Stare, prin funcțiile de producție ─────────────────────────────────────────────────────────────────────
@@ -238,6 +278,8 @@ export async function controlBody(def: ControlDef, ctx: CaseContext): Promise<Ca
 
   // ── Livrare prin filtru + bariera 5.2 ──────────────────────────────────────────────────────────────────────
   const before = st.wsFlow.get(chain.id, def.pair)?.length ?? 0;
+  const kindKey = `${chain.id}:${def.kind}`;
+  const kindMarkedBefore = st.wsLastMessageAtByKind.has(kindKey);
   const d = await ctx.deliver([def.twin, def.swap], "beta1-după-loguri");
   const events = st.wsFlow.get(chain.id, def.pair) ?? [];
   const lines = ctx.cons.count(def.linePrefix);
@@ -256,7 +298,46 @@ export async function controlBody(def: ControlDef, ctx: CaseContext): Promise<Ca
   if (d.perLog[def.twin.transactionHash].sent !== 0) reasons.push("geamănul negativ (topic străin) a fost trimis de nod");
   if (d.perLog[def.swap.transactionHash].sent !== 1) reasons.push("logul controlului nu a fost trimis exact o dată prin filtru");
   if (before !== 0) reasons.push("existau swapuri înregistrate înainte de livrare");
-  if (def.lp) {
+  if (def.t1) {
+    // Control Pancake (felia T1): recepție exact o dată, marcaj per-kind, verificări GLOBALE.
+    const t1 = def.t1;
+    const swapTotal = [...st.wsFlow.values()].reduce((n, evs) => n + evs.length, 0);
+    const lpTotal = [...st.lpEvents.values()].reduce((n, evs) => n + evs.length, 0);
+    const consoleTexts = ctx.cons.lines().map(l => l.text);
+    const swapLinesAll = consoleTexts.filter(t => /\[V[234] SWAP [^\]]*\]/.test(t)).length;
+    const lpLines = consoleTexts.filter(t => /\b(?:V3 )?LP (?:ADD|REMOVE) [^\]]*\]/.test(t)).length;
+    const fieldLines = t1.lineField ? consoleTexts.filter(t => t.includes(def.linePrefix) && t.includes(t1.lineField as string)).length : null;
+    const kindMarkedAfter = st.wsLastMessageAtByKind.has(kindKey);
+    Object.assign(observations, {
+      swapReceived: d.perLog[def.swap.transactionHash].received,
+      kindMarkedBefore, kindMarkedAfter, swapsAllKeys: swapTotal, lpEventsAllKeys: lpTotal,
+      swapLogLinesAllChains: swapLinesAll, lpLogLines: lpLines, lineFieldLines: fieldLines,
+    });
+    if (d.perLog[def.swap.transactionHash].received !== 1) reasons.push("logul controlului nu a fost primit exact o dată de worker");
+    if (kindMarkedBefore) reasons.push(`wsLastMessageAtByKind era deja marcat pentru ${kindKey} înainte de livrare`);
+    if (!kindMarkedAfter) reasons.push(`wsLastMessageAtByKind nu a fost marcat pentru ${kindKey}`);
+    if (t1.none) {
+      // Forma trunchiată: NICIO înregistrare, nicăieri.
+      if (swapTotal !== 0) reasons.push(`swapuri înregistrate în wsFlow, pe toate cheile: ${swapTotal} (se cer 0)`);
+      if (lpTotal !== 0) reasons.push(`evenimente LP pe toate cheile: ${lpTotal} (se cer 0)`);
+      if (swapLinesAll !== 0) reasons.push(`linii de swap în consolă, pe toate chain-urile: ${swapLinesAll} (se cer 0)`);
+      if (lpLines !== 0) reasons.push(`linii LP în consolă, pe toate chain-urile: ${lpLines} (se cer 0)`);
+    } else {
+      if (!def.expected) throw new Error("control Pancake de swap fără valori așteptate");
+      if (events.length !== 1) reasons.push(`swapuri înregistrate: ${events.length} (se cere exact 1)`);
+      else {
+        const e = events[0];
+        if (e.isBuy !== def.expected.isBuy) reasons.push(`direcție înregistrată: ${e.isBuy ? "BUY" : "SELL"}`);
+        if (!near(e.ethAmount, def.expected.ethAmount)) reasons.push(`sumă nativă înregistrată: ${e.ethAmount} (așteptat ${def.expected.ethAmount})`);
+        if (typeof e.usdAmount !== "number" || !near(e.usdAmount, def.expected.usdAmount)) reasons.push(`sumă USD înregistrată: ${String(e.usdAmount)} (așteptat ${def.expected.usdAmount})`);
+        if (swapTotal !== 1) reasons.push(`swapuri înregistrate în wsFlow, pe toate cheile: ${swapTotal} (se cere exact 1, cel al perechii controlului)`);
+      }
+      if (lpTotal !== 0) reasons.push(`evenimente LP pe toate cheile: ${lpTotal} (se cer 0)`);
+      if (lines !== 1 || swapLinesAll !== 1) reasons.push(`linii de swap în consolă, pe toate chain-urile: ${swapLinesAll}, dintre care cu prefixul așteptat ${lines} (se cere exact 1 și 1)`);
+      else if (fieldLines !== 1) reasons.push(`linia de swap nu conține câmpul ${String(t1.lineField)}`);
+      if (lpLines !== 0) reasons.push(`linii LP în consolă, pe toate chain-urile: ${lpLines} (se cer 0)`);
+    }
+  } else if (def.lp) {
     // Control LP: exact un eveniment LP, pe perechea controlului, cu sensul și suma exacte; ZERO swapuri.
     // Verificările sunt GLOBALE (toate cheile `wsFlow` / `lpEvents`, toate liniile din consolă, orice chain): un
     // swap sau un eveniment LP înregistrat sub altă pereche sau alt chain nu poate trece neobservat.

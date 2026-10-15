@@ -6,7 +6,7 @@
  * CONVENȚIE DE SEMN (important):
  *   getQuoteFlowAsEth folosește convenția POOL (ca Uniswap V3): amount al
  *   tokenului quote POZITIV = quote plătit ÎN pool = BUY al tokenului base.
- *   - V3 Swap event emite deja delta pool-ului → se pasează direct.
+ *   - V3 Swap event emite deja delta pool-ului → se pasează direct (Uniswap V3 și PancakeSwap V3 — BETA-1 / T1).
  *   - V2 handler reconstruiește delta pool-ului din amountIn/amountOut → direct.
  *   - V4 Swap event emite delta din perspectiva SWAPPER-ului (negativ = plătit
  *     în pool, pozitiv = primit) — OPUS lui V3. Deci amounts V4 trebuie NEGATE
@@ -20,6 +20,58 @@
 
 import type { ChainConfig } from "../config/chains";
 import { getNativePrice }    from "../infra/nativePrice";
+
+// ── BETA-1 / T1: topicurile Swap V3 și decodarea pură a sumelor (Uniswap V3 și PancakeSwap V3) ─────────────────
+// Stau aici, nu în `subscriptions.ts`, ca decodorul să rămână pur (fără dependențele operaționale ale abonării);
+// `subscriptions.ts` le importă de aici și le re-exportă, deci importurile existente nu se schimbă.
+
+/** `Swap(address,address,int256,int256,uint160,uint128,int24)` — Uniswap V3. */
+export const SWAP_V3_TOPIC = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67";
+/** `Swap(address,address,int256,int256,uint160,uint128,int24,uint128,uint128)` — PancakeSwap V3 (+2 câmpuri de taxe). */
+export const SWAP_PANCAKE_V3_TOPIC = "0x19b47279256b2a23a1665c810c8d55a1758940ee09377d4f8d26497a3577dc83";
+
+/** Formatul evenimentului decodat — NU identitatea DEX-ului emitent (nu există gardă pe `dexId`). */
+export type V3SwapVariant = "uniswap-v3" | "pancake-v3";
+
+/** Uniswap V3: pragul de azi — cel puțin cele două cuvinte de sume; coada nu e inspectată (toleranță declarată). */
+const UNISWAP_V3_MIN_HEX = 128;
+/** PancakeSwap V3: forma completă a evenimentului, exact 7 cuvinte; trunchierea și surplusul sunt refuzate. */
+const PANCAKE_V3_EXACT_HEX = 448;
+const HEX_ONLY = /^[0-9a-fA-F]*$/;
+
+/** Un cuvânt de 32 de octeți (64 hex, fără `0x`) citit ca `int256` (complement față de doi). Mutată din manager.ts. */
+export function int256FromWord(hex64: string): bigint {
+  const x = BigInt("0x" + hex64);
+  return x >= (1n << 255n) ? x - (1n << 256n) : x;
+}
+
+/**
+ * Sumele unui `Swap` V3, în convenția POOL (delta soldului pool-ului — la fel în Uniswap V3 și PancakeSwap V3, deci
+ * se pasează direct la `getQuoteFlowAsEth`, fără negare). NU aruncă niciodată: orice intrare pe care nu o poate
+ * decoda sigur dă `null`, iar apelantul o ignoră tăcut. Reguli, în ordine:
+ *   0. `topic0` trebuie să fie exact (`===`) unul dintre cele două topicuri de swap;
+ *   1. `data` trebuie să fie șir; 2. trebuie să înceapă exact cu `0x`;
+ *   3. PancakeSwap V3: exact 448 de caractere după `0x`, TOATE hex;
+ *   4. Uniswap V3: cel puțin 128 de caractere după `0x`, primele 128 hex; restul nu e inspectat;
+ *   5. `amount0` = cuvântul 1, `amount1` = cuvântul 2, ambele `int256`.
+ */
+export function decodeV3SwapAmounts(
+  topic0: unknown,
+  data:   unknown,
+): { amount0: bigint; amount1: bigint; variant: V3SwapVariant } | null {
+  let variant: V3SwapVariant;
+  if (topic0 === SWAP_V3_TOPIC) variant = "uniswap-v3";
+  else if (topic0 === SWAP_PANCAKE_V3_TOPIC) variant = "pancake-v3";
+  else return null;
+  if (typeof data !== "string" || !data.startsWith("0x")) return null;
+  const hex = data.slice(2);
+  if (variant === "pancake-v3") {
+    if (hex.length !== PANCAKE_V3_EXACT_HEX || !HEX_ONLY.test(hex)) return null;
+  } else if (hex.length < UNISWAP_V3_MIN_HEX || !HEX_ONLY.test(hex.slice(0, UNISWAP_V3_MIN_HEX))) {
+    return null;
+  }
+  return { amount0: int256FromWord(hex.slice(0, 64)), amount1: int256FromWord(hex.slice(64, 128)), variant };
+}
 
 /**
  * Aduce amounts la convenția POOL (V3) pe care o așteaptă getQuoteFlowAsEth.
