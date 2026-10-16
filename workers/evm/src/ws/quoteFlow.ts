@@ -73,6 +73,65 @@ export function decodeV3SwapAmounts(
   return { amount0: int256FromWord(hex.slice(0, 64)), amount1: int256FromWord(hex.slice(64, 128)), variant };
 }
 
+// ── BETA-1 / T2: Aerodrome clasic pe ruta V2 — topicuri și decodoare pure ───────────────────────────────────────
+// Sursa: aerodrome-finance/contracts @ 1ba30815bba620f7e9faa34769ffd00c214c9b82, `contracts/interfaces/IPool.sol`.
+// Mint are aceeași semnătură ca la Uniswap V2 (același topic); Swap și Burn au alt topic, dar aceeași ordine a sumelor
+// neindexate. Formatul e recunoscut pe orice pool urmărit pe ruta V2 (fără gardă pe `dexId`); alte forkuri Solidly
+// nu sunt țintă și nu sunt testate.
+
+/** `Swap(address indexed sender, address indexed to, uint256 amount0In, uint256 amount1In, uint256 amount0Out, uint256 amount1Out)` */
+export const SWAP_AERODROME_TOPIC = "0xb3e2773606abfd36b5bd91394b3a54d1398336c65005baf7bf7a05efeffaf75b";
+/** `Burn(address indexed sender, address indexed to, uint256 amount0, uint256 amount1)` */
+export const BURN_AERODROME_TOPIC = "0x5d624aa9c148153ab3446c1b154f660ee7701e549fe9b62dab7171b1c80e6fa2";
+
+/** Swap Aerodrome: exact 4 cuvinte (256 hex); trunchierea și surplusul sunt refuzate. */
+const AERODROME_SWAP_EXACT_HEX = 256;
+/** Burn Aerodrome: exact 2 cuvinte (128 hex). */
+const AERODROME_BURN_EXACT_HEX = 128;
+
+/** Partea de după `0x`, dacă `data` e șir cu prefix `0x`, are EXACT `len` caractere și toate sunt hex; altfel `null`. */
+function exactHexData(data: unknown, len: number): string | null {
+  if (typeof data !== "string" || !data.startsWith("0x")) return null;
+  const hex = data.slice(2);
+  return hex.length === len && HEX_ONLY.test(hex) ? hex : null;
+}
+
+/** Sumele unui `Swap` Aerodrome clasic, fără semn. NU aruncă niciodată: orice intrare invalidă dă `null`. */
+export function decodeAerodromeSwap(
+  data: unknown,
+): { amount0In: bigint; amount1In: bigint; amount0Out: bigint; amount1Out: bigint } | null {
+  const hex = exactHexData(data, AERODROME_SWAP_EXACT_HEX);
+  if (hex === null) return null;
+  return {
+    amount0In:  BigInt("0x" + hex.slice(0, 64)),
+    amount1In:  BigInt("0x" + hex.slice(64, 128)),
+    amount0Out: BigInt("0x" + hex.slice(128, 192)),
+    amount1Out: BigInt("0x" + hex.slice(192, 256)),
+  };
+}
+
+/** Sumele unui `Burn` Aerodrome clasic (tokenurile ieșite). NU aruncă niciodată: orice intrare invalidă dă `null`. */
+export function decodeAerodromeBurn(data: unknown): { amount0: bigint; amount1: bigint } | null {
+  const hex = exactHexData(data, AERODROME_BURN_EXACT_HEX);
+  if (hex === null) return null;
+  return { amount0: BigInt("0x" + hex.slice(0, 64)), amount1: BigInt("0x" + hex.slice(64, 128)) };
+}
+
+/**
+ * Delta pool-ului dintr-un swap în stil V2 (sume fără semn), în convenția POOL pe care o așteaptă `getQuoteFlowAsEth`.
+ * Regula existentă a workerului, extrasă pură (T2): `null` dacă ambele intrări sunt 0 (swap ignorat); altfel
+ * `amount0 = in0 > 0 ? in0 : −out0`, `amount1 = in1 > 0 ? in1 : −out1`. Folosită de Uniswap V2 și de Aerodrome.
+ */
+export function v2PoolDeltas(
+  amount0In: bigint, amount1In: bigint, amount0Out: bigint, amount1Out: bigint,
+): { amount0: bigint; amount1: bigint } | null {
+  if (amount0In === 0n && amount1In === 0n) return null;
+  return {
+    amount0: amount0In > 0n ? amount0In : -amount0Out,
+    amount1: amount1In > 0n ? amount1In : -amount1Out,
+  };
+}
+
 /**
  * Aduce amounts la convenția POOL (V3) pe care o așteaptă getQuoteFlowAsEth.
  * Pentru V4 (perspectiva swapper-ului, opusă) negăm ambele; altfel pass-through.

@@ -26,7 +26,7 @@
  * subscriere; runtime-ul pornește totuși nodul local, ca pentru orice caz).
  *
  * Cazuri RETRASE (rămân aici ca istoric, nu sunt în manifest și nu sunt rulate): D1 (marker `BETA1-D1-FIX`);
- * T1, T1-LP, T1-FORCED (marker `BETA1-T1-FIX`).
+ * T1, T1-LP, T1-FORCED (marker `BETA1-T1-FIX`); T2 (marker `BETA1-T2-FIX`).
  */
 
 import type { CaseContext, CaseBodyResult, ScopedKind } from "../harness/caseRuntime";
@@ -38,7 +38,7 @@ import {
 } from "../harness/evmFixtures";
 import {
   POOL_D1, POOL_PANCAKE_V3, POOL_AERO_V2, POOL_INDEXED, T_SWAP_PANCAKE_V3, T_SWAP_SOLIDLY, T_MINT_V3, D1_SWAP, D1_TWIN,
-  PANCAKE_SWAP, dsPair, indexedPair, swapSolidlyLog, mintV3Log, defectFixturesSelfCheck, type DsPairRaw,
+  PANCAKE_SWAP, AERO_SWAP, dsPair, indexedPair, mintV3Log, defectFixturesSelfCheck, type DsPairRaw,
 } from "../harness/evmFixturesDefects";
 import { CONTROLS } from "./controlDefs";
 
@@ -129,7 +129,8 @@ const v2Witness = (pool: string, n: number): RpcLog =>
 
 // `PANCAKE_SWAP` (0x7101) vine din fixture: același obiect e logul controlului C-PANCAKE-BUY (felia T1).
 const PANCAKE_MINT = mintV3Log(POOL_PANCAKE_V3, { amount0: 2n * E18, amount1: 10n * E18 }, 0x7102);
-const SOLIDLY_SWAP = swapSolidlyLog(POOL_AERO_V2, { amount0In: E18, amount1In: 0n, amount0Out: 0n, amount1Out: 5n * E18 }, 0x7201);
+// Swapul Aerodrome (0x7201) vine din fixture: același obiect e logul controlului C-AERO-BUY (felia T2).
+const SOLIDLY_SWAP = AERO_SWAP;
 
 const M1_MONTAGE = {
   shape: "deliver" as const, source: "gecko" as const,
@@ -197,7 +198,10 @@ export const DEFECTS: Record<string, DefectDef> = {
     offered: [{ log: PANCAKE_MINT, role: "subject", expectSent: 1 }],
     forced: [],
   },
+  // Felia T2 (fixul §4.4, Aerodrome clasic): predicția „topicul Swap lipsește din filtru; swapul nu e trimis" e
+  // contrazisă de fix. Rolul trece la controalele C-AERO-*.
   "T2": {
+    retired: { marker: "BETA1-T2-FIX", replacedBy: ["C-AERO-BUY", "C-AERO-SELL"] },
     shape: "deliver", kind: "defect", section: "filter", diagnosis: "§4.4", pairedControl: "C-V2-BUY",
     prediction: "pool Aerodrome clasic pe ruta V2: topicul Swap Solidly lipsește din filtru; swapul nu e trimis; nimic înregistrat",
     source: "gecko", raw: geckoPool(POOL_AERO_V2, "aerodrome-base", WETH_BASE, "WETH"), pair: POOL_AERO_V2, dexType: "V2",

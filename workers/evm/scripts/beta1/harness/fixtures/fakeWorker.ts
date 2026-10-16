@@ -10,6 +10,11 @@
  * `V3_SCOPED_TOPICS`), topicul e mapat la kind-ul `v3` (marcajul precede decodarea, doar pe subscripția activă),
  * iar handlerul decodează cu regula exactă de 448 hex (Uniswap ≥ 128), refuzând tăcut restul. Comportamentul vechi
  * devine defect injectat (`pancake-unsupported`).
+ *
+ * Felia T2: falsul urmează produsul REPARAT și pentru Aerodrome clasic — filtrul V2 conține Swap și Burn Aerodrome
+ * (ordinea din `V2_SCOPED_TOPICS`), ambele mapate la kind-ul `v2`; un log Aerodrome e tratat ÎNAINTEA oricărei
+ * operații pe date (dispatch sigur), cu decodare strictă (Swap exact 256 hex, Burn exact 128 hex) și refuz tăcut.
+ * Comportamentul vechi devine defect injectat (`aero-unsupported`); `fixed-solidly-topic` a dispărut odată cu T2.
  */
 
 import WebSocket from "ws";
@@ -24,7 +29,7 @@ export const FAULTS = [
   // Felia 4 — variante „REPARATE": workerul fals NU mai are defectul respectiv, deci cazul de defect corespunzător
   // trebuie să dea DEFECT_NOT_REPRODUCED / PARTIAL_NOT_OBSERVED. Fără ele, „reprodus" ar putea fi un verde fals.
   // (Felia T1: `fixed-pancake-topic` a dispărut odată cu T1, T1-LP și T1-FORCED, retrase; falsul e acum reparat.)
-  "fixed-map-route", "fixed-v4-route", "fixed-solidly-topic",
+  "fixed-map-route", "fixed-v4-route",
   "fixed-price-fallback", "fixed-v3-dexes",
   // Felia D1: falsul urmează produsul REPARAT (metadatele DexScreener sunt citite). Varianta veche, cu metadate
   // necitibile, devine defect injectat: cu ea, controalele D1-DS-* trebuie să dea CONTROL_FAILED.
@@ -43,6 +48,14 @@ export const FAULTS = [
   "buy-extra-swap-other-chain",
   // Swapul Pancake cu sumele negate înaintea clasificării; linia de swap Pancake fără câmpul `swapVariant`.
   "buy-sign-negated", "buy-variant-missing",
+  // Felia T2 (design rev3, §5.2): comportamentul vechi (topicurile Aerodrome lipsesc din filtru, handler și kind);
+  // parsare permisivă pe surplus (Burn: primele 128; Swap: ≥ 256); dispatch DUPĂ `data.slice(2)` (aruncă pe date
+  // ne-șir → `[WS ERR` → HARNESS_ERROR); Burn netratat / tratat ca adăugare / linie fără sufix; kind nemapat;
+  // intrări și ieșiri inversate; linie fără `swapVariant`; efecte laterale; decodorul aruncă.
+  "aero-unsupported", "aero-swap-legacy-fallback", "aero-burn-legacy-fallback", "aero-unsafe-dispatch",
+  "aero-burn-unhandled", "aero-burn-as-add", "aero-lp-line-suffix-missing", "aero-kind-unmapped",
+  "aero-in-out-swapped", "aero-variant-missing",
+  "aero-side-swap-other-chain", "aero-side-lp-other-pair", "aero-side-swap-line", "aero-side-lp-line", "aero-throws",
 ] as const;
 export type Fault = typeof FAULTS[number];
 
@@ -54,7 +67,8 @@ const T_BURN_V2 = "0xdccd412f0b1252819cb1fd330b93224ca42612892bb3f4f789976e6d819
 const T_MINT_V3 = "0x7a53080ba414158be7ec69b987b5fb7d07dee101fe85488f0853ae16239d0bde";
 const T_BURN_V3 = "0x0c396cd989a39f4459b5fa1aed6a9a8dcdbc45908acfd67e028cd568da98982c";
 const T_PANCAKE_V3 = "0x19b47279256b2a23a1665c810c8d55a1758940ee09377d4f8d26497a3577dc83";
-const T_SOLIDLY = "0xb3e2773606abfd36b5bd91394b3a54d1398336c65005baf7bf7a05efeffaf75b";
+const T_SOLIDLY = "0xb3e2773606abfd36b5bd91394b3a54d1398336c65005baf7bf7a05efeffaf75b";   // = Swap Aerodrome clasic
+const T_BURN_AERO = "0x5d624aa9c148153ab3446c1b154f660ee7701e549fe9b62dab7171b1c80e6fa2";
 const POOL_MANAGER = "0x498581ff718922c3f8e6a244956af099b2652b2b";
 const USDC = "833589fcd6edb6e08f4c7c32d4f71b54bda02913";
 
@@ -85,6 +99,20 @@ function fakeDecodeV3(topic0: string, data: unknown): { amount0: bigint; variant
   }
   if (hex.length < 128 || !/^[0-9a-fA-F]*$/.test(hex.slice(0, 128))) return null;
   return { amount0: signed(hex.slice(0, 64)), variant: "uniswap-v3" };
+}
+
+/**
+ * Decodorul Aerodrome al falsului (T2): `words` cuvinte EXACT, toate hex; altfel `null`. Cu `permissive` (defectele
+ * injectate de tip „fallback"), acceptă și surplusul — citește doar primele `words` cuvinte, ca o parsare veche.
+ */
+function fakeDecodeAero(data: unknown, words: number, permissive: boolean): bigint[] | null {
+  if (typeof data !== "string" || !data.startsWith("0x")) return null;
+  const hex = data.slice(2);
+  const len = words * 64;
+  const exact = hex.length === len && /^[0-9a-fA-F]*$/.test(hex);
+  const lenient = permissive && hex.length >= len && /^[0-9a-fA-F]*$/.test(hex.slice(0, len));
+  if (!exact && !lenient) return null;
+  return Array.from({ length: words }, (_, i) => BigInt("0x" + hex.slice(i * 64, (i + 1) * 64)));
 }
 
 /** Construiește un worker fals proaspăt. `fault` = singurul lucru stricat deliberat. */
@@ -135,9 +163,11 @@ export async function loadFakeSrc(fault: Fault): Promise<SrcModules> {
 
   // topic0 → kind (ca `TOPIC_TO_KIND` din produs). Topicul Pancake e mapat la `v3`, cu excepția defectelor injectate.
   const pancakeKind = fault !== "pancake-kind-unmapped" && fault !== "pancake-unsupported";
+  const aeroKind = fault !== "aero-kind-unmapped" && fault !== "aero-unsupported";
   const TOPIC_KIND: Record<string, "v2" | "v3" | "v4"> = {
     [T_V4]: "v4", [T_V3]: "v3", [T_MINT_V3]: "v3", [T_BURN_V3]: "v3", [T_V2]: "v2", [T_MINT_V2]: "v2", [T_BURN_V2]: "v2",
     ...(pancakeKind ? { [T_PANCAKE_V3]: "v3" as const } : {}),
+    ...(aeroKind ? { [T_SOLIDLY]: "v2" as const, [T_BURN_AERO]: "v2" as const } : {}),
   };
   const kindOf = (topic0: unknown): "v2" | "v3" | "v4" | null => (typeof topic0 === "string" ? TOPIC_KIND[topic0] ?? null : null);
 
@@ -164,7 +194,8 @@ export async function loadFakeSrc(fault: Fault): Promise<SrcModules> {
       scopedSubStore.latestReq.set(key, id);
       // Felia T1: ordinea din `V3_SCOPED_TOPICS`; `pancake-unsupported` = filtrul de dinainte de fix.
       const v3Topics = fault === "pancake-unsupported" ? [T_V3, T_MINT_V3, T_BURN_V3] : [T_V3, T_PANCAKE_V3, T_MINT_V3, T_BURN_V3];
-      const v2Topics = [T_V2, T_MINT_V2, T_BURN_V2, ...(fault === "fixed-solidly-topic" ? [T_SOLIDLY] : [])];
+      // Felia T2: ordinea din `V2_SCOPED_TOPICS`; `aero-unsupported` = filtrul de dinainte de fix.
+      const v2Topics = fault === "aero-unsupported" ? [T_V2, T_MINT_V2, T_BURN_V2] : [T_V2, T_SOLIDLY, T_MINT_V2, T_BURN_V2, T_BURN_AERO];
       const params = kind === "v4"
         ? ["logs", { address: POOL_MANAGER, topics: [[T_V4], addrs] }]
         : ["logs", { address: addrs, topics: [kind === "v3" ? v3Topics : v2Topics] }];
@@ -200,14 +231,53 @@ export async function loadFakeSrc(fault: Fault): Promise<SrcModules> {
         wsLastMessageAtByKind.set(`${chain.id}:${kind}`, Date.now());
       }
       if (fault === "handler-throws") throw new Error("defect injectat în handler");
-      const raw = log.data.slice(2);
+      // Felia T2: dispatch Aerodrome ÎNAINTEA oricărei operații pe date (ca produsul reparat).
+      const isAero = (topic0 === T_SOLIDLY || topic0 === T_BURN_AERO) && fault !== "aero-unsupported";
+      let aeroSwap: bigint[] | null = null;
+      if (isAero) {
+        const OTHER = "0x" + "99".repeat(20);
+        if (fault === "aero-side-swap-other-chain") wsFlow.set("arbitrum", OTHER, [{ ts: Date.now(), isBuy: true, ethAmount: 1, usdAmount: 2_500 }]);
+        if (fault === "aero-side-lp-other-pair") lpEvents.set(chain.id, OTHER, [{ ts: Date.now(), isAdd: true, ethAmount: 1 }]);
+        if (fault === "aero-side-swap-line") console.log(`[V2 SWAP arbitrum] ALT BUY (fals)`);
+        if (fault === "aero-side-lp-line") console.log(`[LP ADD arbitrum] ALT +1.000 ETH quote=WETH (fals)`);
+        if (fault === "aero-throws") throw new Error("decodor Aerodrome: excepție injectată");
+        if (fault === "aero-unsafe-dispatch") void (log.data as unknown as string).slice(2);   // aruncă pe date ne-șir
+        if (typeof log.address !== "string") return;
+        if (topic0 === T_BURN_AERO) {
+          const w = fakeDecodeAero(log.data, 2, fault === "aero-burn-legacy-fallback");
+          if (!w || fault === "aero-burn-unhandled") return;
+          const lpPool = watchedPoolCache.get(chain.id, log.address);
+          const lpMem = memory.get(chain.id, log.address);
+          if (!lpPool || !lpMem || !lpPool.quoteKnown || price === null) return;
+          const quoteAmt = Number(w[0]) / (lpPool.stableQuote ? 1e6 : 1e18);
+          const eth = lpPool.stableQuote ? quoteAmt / price : quoteAmt;
+          const quoteSym = lpPool.stableQuote ? "USDC" : "WETH";
+          const isAdd = fault === "aero-burn-as-add";
+          lpEvents.set(chain.id, log.address, [...(lpEvents.get(chain.id, log.address) ?? []), { ts: Date.now(), isAdd, ethAmount: eth }]);
+          const reserve = poolLiquidity.get(chain.id, log.address)?.reserveEth ?? 0;
+          console.log(`[LP REMOVE ${chain.id}] ${lpMem.symbol} -${eth.toFixed(3)} ETH (quote=${quoteSym})`
+            + (reserve > 0 ? ` (${((eth / reserve) * 100).toFixed(1)}% of pool)` : " (no reserve estimate)")
+            + (fault === "aero-lp-line-suffix-missing" ? "" : " ⚠️"));
+          return;
+        }
+        aeroSwap = fakeDecodeAero(log.data, 4, fault === "aero-swap-legacy-fallback");
+        if (!aeroSwap) return;                                      // refuz tăcut, ca decodorul produsului
+      }
+      const raw = isAero ? "" : log.data.slice(2);
       let pair: string, quoteDelta: bigint, tag: "V2" | "V3" | "V4";
       let pool: FakePool | undefined;
-      let variant: "uniswap-v3" | "pancake-v3" | null = null;
+      let variant: "uniswap-v3" | "pancake-v3" | "uniswap-v2" | "aerodrome-classic" | null = null;
       const isPancake = topic0 === T_PANCAKE_V3;
       const asV3 = topic0 === T_V3 || (isPancake && fault !== "pancake-unsupported");
-      const asV2 = topic0 === T_V2 || (fault === "fixed-solidly-topic" && topic0 === T_SOLIDLY);
-      if (topic0 === T_V4) {
+      const asV2 = topic0 === T_V2;
+      if (aeroSwap) {
+        let [in0, in1, out0, out1] = aeroSwap;
+        if (fault === "aero-in-out-swapped") [in0, in1, out0, out1] = [out0, out1, in0, in1];
+        if (in0 === 0n && in1 === 0n) return;                       // ca în worker: swap fără intrare, ignorat
+        void in1; void out1;
+        pair = log.address; quoteDelta = in0 > 0n ? in0 : -out0; tag = "V2"; variant = "aerodrome-classic";
+        pool = watchedPoolCache.get(chain.id, pair);
+      } else if (topic0 === T_V4) {
         pair = log.topics[1]; quoteDelta = -signed(raw.slice(0, 64)); tag = "V4";
         pool = v4PoolMap.get(chain.id, pair);                       // ca în worker: doar din hartă
       } else if (asV3) {
@@ -229,7 +299,7 @@ export async function loadFakeSrc(fault: Fault): Promise<SrcModules> {
         const amount0In = BigInt("0x" + raw.slice(0, 64)), amount1In = BigInt("0x" + raw.slice(64, 128));
         const amountOut = BigInt("0x" + raw.slice(128, 192));
         if (amount0In === 0n && amount1In === 0n) return;           // ca în worker: swap fără intrare, ignorat
-        pair = log.address; quoteDelta = amount0In > 0n ? amount0In : -amountOut; tag = "V2";
+        pair = log.address; quoteDelta = amount0In > 0n ? amount0In : -amountOut; tag = "V2"; variant = "uniswap-v2";
         pool = watchedPoolCache.get(chain.id, pair);
       } else if (topic0 === T_MINT_V2 || topic0 === T_BURN_V2) {
         // LP V2 (felia D1), ca în worker: sumă nativă din rezerva de quote (token0), rezerva pool-ului pentru procent.
@@ -277,7 +347,8 @@ export async function loadFakeSrc(fault: Fault): Promise<SrcModules> {
       events.push(event);
       if (fault === "double-record") events.push({ ...event });
       wsFlow.set(chain.id, pair, events);
-      const variantField = variant === null || (variant === "pancake-v3" && fault === "buy-variant-missing") ? "" : ` swapVariant=${variant}`;
+      const variantField = variant === null || (variant === "pancake-v3" && fault === "buy-variant-missing")
+        || (variant === "aerodrome-classic" && fault === "aero-variant-missing") ? "" : ` swapVariant=${variant}`;
       console.log(`[${tag} SWAP ${chain.id}] ${mem.symbol} ${event.isBuy ? "BUY" : "SELL"} (fals)${variantField}`);
     };
 

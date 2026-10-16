@@ -5,6 +5,8 @@
  * DexScreener, pereche în forma registrului indexerului, loguri ale altor DEX-uri și loguri LP.
  *
  * Felia T1: logurile controalelor `C-PANCAKE-*` (swap PancakeSwap V3 complet, BUY/SELL, și forma trunchiată).
+ * Felia T2: logurile controalelor `C-AERO-*` (Aerodrome clasic: Swap, Mint, Burn; forme trunchiate, cu surplus și
+ * cu date ne-șir). Sursa semnăturilor: aerodrome-finance/contracts @ 1ba30815, `contracts/interfaces/IPool.sol`.
  *
  * Ca în `evmFixtures.ts`: totul e scris INDEPENDENT de produs. Topicurile sunt keccak-256 al semnăturii din
  * comentariu; nu se citesc din constantele din `src/` și nu se calculează cu funcții din `src/`.
@@ -20,7 +22,7 @@ import { TOKEN, WETH_BASE, E18, uint256Word, int256Word, swapV2Log, foreignLog }
 export const POOL_D1 = "0x" + "d1".repeat(20);
 /** Pool PancakeSwap V3 (T1, T1-LP, T1-FORCED — retrase; controalele `C-PANCAKE-*`). */
 export const POOL_PANCAKE_V3 = "0x" + "ca".repeat(20);
-/** Pool Aerodrome clasic, pe ruta V2 (T2). */
+/** Pool Aerodrome clasic, pe ruta V2 (T2 — retras; controalele `C-AERO-*`). */
 export const POOL_AERO_V2 = "0x" + "ae".repeat(20);
 /** Pereche din registrul indexerului (X1). */
 export const POOL_INDEXED = "0x" + "e1".repeat(20);
@@ -35,6 +37,10 @@ const txHash = (n: number): string => "0x" + n.toString(16).padStart(64, "0");
 export const T_SWAP_PANCAKE_V3 = "0x19b47279256b2a23a1665c810c8d55a1758940ee09377d4f8d26497a3577dc83";
 /** `Swap(address,address,uint256,uint256,uint256,uint256)` — Solidly / Aerodrome clasic */
 export const T_SWAP_SOLIDLY = "0xb3e2773606abfd36b5bd91394b3a54d1398336c65005baf7bf7a05efeffaf75b";
+/** Același topic, numit după ținta testată (Aerodrome clasic, `IPool.sol` @ 1ba30815). */
+export const T_SWAP_AERODROME = T_SWAP_SOLIDLY;
+/** `Burn(address,address,uint256,uint256)` — Aerodrome clasic (`sender` și `to` indexate; date: amount0, amount1) */
+export const T_BURN_AERODROME = "0x5d624aa9c148153ab3446c1b154f660ee7701e549fe9b62dab7171b1c80e6fa2";
 /** `Mint(address,address,int24,int24,uint128,uint256,uint256)` — Uniswap V3 și PancakeSwap V3 (aceeași semnătură) */
 export const T_MINT_V3 = "0x7a53080ba414158be7ec69b987b5fb7d07dee101fe85488f0853ae16239d0bde";
 /** `Burn(address,int24,int24,uint128,uint256,uint256)` — Uniswap V3 și PancakeSwap V3 (felia T1: lista exactă a filtrului V3) */
@@ -164,13 +170,49 @@ export const PANCAKE_TWIN_SELL: RpcLog = foreignLog(POOL_PANCAKE_V3, null, 0x730
 export const PANCAKE_SHORT: RpcLog = { ...PANCAKE_SWAP, data: PANCAKE_SWAP.data.slice(0, 2 + 5 * 64), transactionHash: txHash(0x7304) };
 export const PANCAKE_TWIN_SHORT: RpcLog = foreignLog(POOL_PANCAKE_V3, null, 0x7305);
 
+// ── Felia T2: logurile controalelor `C-AERO-*` pe POOL_AERO_V2 (WETH < TOKEN ⇒ WETH e token0) ─────────────────────
+/** Aerodrome `Burn`: topics [sig, sender, to]; data = amount0, amount1 (tokenurile ieșite). */
+export function burnAerodromeLog(pool: string, a: { amount0: bigint; amount1: bigint }, n: number): RpcLog {
+  return { address: pool, topics: [T_BURN_AERODROME, SENDER, SENDER], data: "0x" + uint256Word(a.amount0) + uint256Word(a.amount1), transactionHash: txHash(n) };
+}
+/** Log cu `data` ne-șir (număr, obiect): forma e invalidă prin construcție; nodul local îl trimite ca atare. */
+const withData = (l: RpcLog, data: unknown, n: number): RpcLog => ({ ...l, data: data as string, transactionHash: txHash(n) });
+
+/** Cumpărare de 1 WETH: 1 WETH intră (`amount0In`), 5 TKN ies. ACELAȘI log ca în T2 (retras). */
+export const AERO_SWAP: RpcLog = swapSolidlyLog(POOL_AERO_V2, { amount0In: E18, amount1In: 0n, amount0Out: 0n, amount1Out: 5n * E18 }, 0x7201);
+export const AERO_TWIN: RpcLog = foreignLog(POOL_AERO_V2, null, 0x7401);
+/** Vânzare de 0,5 WETH: 3 TKN intră, 0,5 WETH iese. */
+export const AERO_SWAP_SELL: RpcLog = swapSolidlyLog(POOL_AERO_V2, { amount0In: 0n, amount1In: 3n * E18, amount0Out: E18 / 2n, amount1Out: 0n }, 0x7402);
+export const AERO_TWIN_SELL: RpcLog = foreignLog(POOL_AERO_V2, null, 0x7403);
+/** Swap TRUNCHIAT: primele 3 cuvinte (192 hex) din cumpărare. */
+export const AERO_SWAP_SHORT: RpcLog = { ...AERO_SWAP, data: AERO_SWAP.data.slice(0, 2 + 3 * 64), transactionHash: txHash(0x7404) };
+export const AERO_TWIN_SHORT: RpcLog = foreignLog(POOL_AERO_V2, null, 0x7405);
+/** Swap cu SURPLUS: cumpărarea validă + un cuvânt (320 hex). O parsare permisivă (≥ 256) l-ar înregistra. */
+export const AERO_SWAP_LONG: RpcLog = { ...AERO_SWAP, data: AERO_SWAP.data + uint256Word(0n), transactionHash: txHash(0x7406) };
+export const AERO_TWIN_LONG: RpcLog = foreignLog(POOL_AERO_V2, null, 0x7407);
+/** Swap cu `data` NE-ȘIR (`7`). */
+export const AERO_SWAP_NONSTRING: RpcLog = withData(AERO_SWAP, 7, 0x7408);
+export const AERO_TWIN_NONSTRING: RpcLog = foreignLog(POOL_AERO_V2, null, 0x7409);
+/** `Mint` (topic COMUN cu Uniswap V2) cu 1 WETH. */
+export const AERO_MINT: RpcLog = mintV2Log(POOL_AERO_V2, { amount0: E18, amount1: 5n * E18 }, 0x740a);
+export const AERO_TWIN_MINT: RpcLog = foreignLog(POOL_AERO_V2, null, 0x740b);
+/** `Burn` Aerodrome cu 2 WETH, dintr-o rezervă de 20 ETH (reserve_in_usd 100 000, preț 2500) ⇒ 10%. */
+export const AERO_BURN: RpcLog = burnAerodromeLog(POOL_AERO_V2, { amount0: 2n * E18, amount1: 10n * E18 }, 0x740c);
+export const AERO_TWIN_BURN: RpcLog = foreignLog(POOL_AERO_V2, null, 0x740d);
+/** Burn cu SURPLUS: Burn-ul valid + un cuvânt (192 hex). O parsare permisivă (primele 128) l-ar înregistra. */
+export const AERO_BURN_LONG: RpcLog = { ...AERO_BURN, data: AERO_BURN.data + uint256Word(0n), transactionHash: txHash(0x740e) };
+export const AERO_TWIN_BURN_LONG: RpcLog = foreignLog(POOL_AERO_V2, null, 0x740f);
+/** Burn cu `data` NE-ȘIR (`{}`). */
+export const AERO_BURN_NONSTRING: RpcLog = withData(AERO_BURN, {}, 0x7410);
+export const AERO_TWIN_BURN_NONSTRING: RpcLog = foreignLog(POOL_AERO_V2, null, 0x7411);
+
 /** Controale proprii ale fixture-urilor de aici. Întoarce lista problemelor (goală = în regulă). */
 export function defectFixturesSelfCheck(): string[] {
   const p: string[] = [];
-  for (const [name, t] of [["T_SWAP_PANCAKE_V3", T_SWAP_PANCAKE_V3], ["T_SWAP_SOLIDLY", T_SWAP_SOLIDLY], ["T_MINT_V3", T_MINT_V3], ["T_BURN_V3", T_BURN_V3]] as const) {
+  for (const [name, t] of [["T_SWAP_PANCAKE_V3", T_SWAP_PANCAKE_V3], ["T_SWAP_SOLIDLY", T_SWAP_SOLIDLY], ["T_MINT_V3", T_MINT_V3], ["T_BURN_V3", T_BURN_V3], ["T_BURN_AERODROME", T_BURN_AERODROME]] as const) {
     if (!/^0x[0-9a-f]{64}$/.test(t)) p.push(`${name} nu e un topic valid`);
   }
-  if (new Set([T_SWAP_PANCAKE_V3, T_SWAP_SOLIDLY, T_MINT_V3, T_MINT_V2, T_BURN_V2, T_BURN_V3]).size !== 6) p.push("topicuri identice");
+  if (new Set([T_SWAP_PANCAKE_V3, T_SWAP_SOLIDLY, T_MINT_V3, T_MINT_V2, T_BURN_V2, T_BURN_V3, T_BURN_AERODROME]).size !== 7) p.push("topicuri identice");
   for (const [name, l] of [["D1_MINT", D1_MINT], ["D1_BURN", D1_BURN]] as const) {
     if (l.data.length !== 2 + 2 * 64 || l.topics.some(t => t.length !== 66)) p.push(`forma logului ${name}`);
   }
@@ -187,6 +229,23 @@ export function defectFixturesSelfCheck(): string[] {
   }
   if (PANCAKE_SHORT.data.length !== 2 + 5 * 64 || PANCAKE_SHORT.topics[0] !== T_SWAP_PANCAKE_V3 || !PANCAKE_SWAP.data.startsWith(PANCAKE_SHORT.data)) p.push("forma logului PANCAKE_SHORT");
   if (new Set([PANCAKE_SWAP, PANCAKE_TWIN, PANCAKE_SWAP_SELL, PANCAKE_TWIN_SELL, PANCAKE_SHORT, PANCAKE_TWIN_SHORT].map(l => l.transactionHash)).size !== 6) p.push("hash-uri de tranzacție Pancake duplicate");
+  // Felia T2: formele logurilor Aerodrome ale controalelor.
+  const aeroLen: Array<[string, RpcLog, string, number | null]> = [
+    ["AERO_SWAP", AERO_SWAP, T_SWAP_AERODROME, 4 * 64], ["AERO_SWAP_SELL", AERO_SWAP_SELL, T_SWAP_AERODROME, 4 * 64],
+    ["AERO_SWAP_SHORT", AERO_SWAP_SHORT, T_SWAP_AERODROME, 3 * 64], ["AERO_SWAP_LONG", AERO_SWAP_LONG, T_SWAP_AERODROME, 5 * 64],
+    ["AERO_SWAP_NONSTRING", AERO_SWAP_NONSTRING, T_SWAP_AERODROME, null],
+    ["AERO_MINT", AERO_MINT, T_MINT_V2, 2 * 64], ["AERO_BURN", AERO_BURN, T_BURN_AERODROME, 2 * 64],
+    ["AERO_BURN_LONG", AERO_BURN_LONG, T_BURN_AERODROME, 3 * 64], ["AERO_BURN_NONSTRING", AERO_BURN_NONSTRING, T_BURN_AERODROME, null],
+  ];
+  for (const [name, l, topic, hexLen] of aeroLen) {
+    const okData = hexLen === null ? typeof l.data !== "string" : typeof l.data === "string" && l.data.length === 2 + hexLen;
+    if (!okData || l.topics[0] !== topic || l.address !== POOL_AERO_V2) p.push(`forma logului ${name}`);
+  }
+  if (!AERO_SWAP_LONG.data.startsWith(AERO_SWAP.data) || !AERO_SWAP.data.startsWith(AERO_SWAP_SHORT.data) || !AERO_BURN_LONG.data.startsWith(AERO_BURN.data)) p.push("formele Aerodrome derivate nu pornesc de la logul valid");
+  const aeroAll = [AERO_SWAP, AERO_TWIN, AERO_SWAP_SELL, AERO_TWIN_SELL, AERO_SWAP_SHORT, AERO_TWIN_SHORT, AERO_SWAP_LONG, AERO_TWIN_LONG,
+    AERO_SWAP_NONSTRING, AERO_TWIN_NONSTRING, AERO_MINT, AERO_TWIN_MINT, AERO_BURN, AERO_TWIN_BURN, AERO_BURN_LONG, AERO_TWIN_BURN_LONG,
+    AERO_BURN_NONSTRING, AERO_TWIN_BURN_NONSTRING];
+  if (new Set(aeroAll.map(l => l.transactionHash)).size !== aeroAll.length) p.push("hash-uri de tranzacție Aerodrome duplicate");
   const ds = dsPair(POOL_D1, "uniswap");
   if (typeof ds.baseToken !== "object" || typeof ds.quoteToken !== "object") p.push("forma DexScreener: base/quote trebuie să fie obiecte");
   return p;

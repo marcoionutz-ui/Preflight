@@ -31,6 +31,12 @@
  * logul trimis și primit exact o dată; `wsLastMessageAtByKind` nemarcat înainte și marcat după livrare pentru
  * `base:v3`; verificări GLOBALE (toate cheile `wsFlow`/`lpEvents`, liniile de swap și LP pe orice chain). Absența
  * liniilor `[WS ERR` NU e verificată aici: e invariant de validitate al cazului în runtime (→ HARNESS_ERROR).
+ *
+ * Felia T2 (design `BETA1_T2_FIX_DESIGN.md` rev3, §5.1) adaugă nouă controale `C-AERO-*` pe un pool Aerodrome clasic
+ * (`aerodrome-base`, ruta V2, fără hartă): swap BUY/SELL, swap trunchiat (192 hex), cu surplus (320 hex) și cu date
+ * ne-șir; Mint (topic comun — așteptat `CONTROL_OK` și pe baseline, fără lista exactă a filtrului); Burn valid, cu
+ * surplus (192 hex) și cu date ne-șir. Liniile LP sunt verificate ÎNTREGI. La controalele cu date ne-șir, lipsa
+ * `[WS ERR` (invariantul runtime-ului) e chiar dovada că dispatch-ul Aerodrome precede orice operație nesigură.
  */
 
 import { jsonEqual, type CaseContext, type CaseBodyResult, type ScopedKind } from "../harness/caseRuntime";
@@ -44,6 +50,9 @@ import {
   POOL_D1, D1_SWAP, D1_TWIN, D1_SWAP_SELL, D1_TWIN_SELL, D1_MINT, D1_TWIN_MINT, D1_BURN, D1_TWIN_BURN, T_MINT_V2, T_BURN_V2,
   POOL_PANCAKE_V3, T_SWAP_PANCAKE_V3, T_MINT_V3, T_BURN_V3, PANCAKE_SWAP, PANCAKE_TWIN, PANCAKE_SWAP_SELL, PANCAKE_TWIN_SELL,
   PANCAKE_SHORT, PANCAKE_TWIN_SHORT, dsPair, defectFixturesSelfCheck, type DsPairRaw,
+  POOL_AERO_V2, T_SWAP_AERODROME, T_BURN_AERODROME, AERO_SWAP, AERO_TWIN, AERO_SWAP_SELL, AERO_TWIN_SELL, AERO_SWAP_SHORT,
+  AERO_TWIN_SHORT, AERO_SWAP_LONG, AERO_TWIN_LONG, AERO_SWAP_NONSTRING, AERO_TWIN_NONSTRING, AERO_MINT, AERO_TWIN_MINT,
+  AERO_BURN, AERO_TWIN_BURN, AERO_BURN_LONG, AERO_TWIN_BURN_LONG, AERO_BURN_NONSTRING, AERO_TWIN_BURN_NONSTRING,
 } from "../harness/evmFixturesDefects";
 
 export interface ControlDef {
@@ -73,11 +82,13 @@ export interface ControlDef {
    */
   lp?:        { isAdd: boolean; ethAmount: number; reserveEth?: number };
   /**
-   * Control Pancake (felia T1): `topics0` = lista EXACTĂ din poziția 0 a filtrului cerut; `lineField` = câmpul
-   * obligatoriu din linia de swap (BUY/SELL); `none` = forma trunchiată: nicio înregistrare, verificat global.
-   * Marcajul per-kind e obligatoriu pentru toate controalele cu `t1`.
+   * Control STRICT (felia T1, extins la T2): recepție exact o dată, marcaj per-kind obligatoriu (nemarcat înainte,
+   * marcat după), verificări GLOBALE. `topics0` = lista EXACTĂ din poziția 0 a filtrului cerut (absent = doar
+   * prezența topicului propriu, ex. `C-AERO-LP-ADD`); `lineField` = câmpul obligatoriu din linia de swap; `none` =
+   * formă invalidă: nicio înregistrare, nicăieri. Cu `lp` (T2): exact un eveniment LP, iar `linePrefix` e linia LP
+   * ÎNTREAGĂ, comparată prin egalitate exactă (inclusiv sufixul ` ⚠️` la REMOVE).
    */
-  t1?:        { topics0: string[]; lineField?: string; none?: true };
+  strict?:    { topics0?: string[]; lineField?: string; none?: true };
 }
 
 const PRICE = 2_500;
@@ -196,18 +207,53 @@ const PCS = {
 CONTROLS["C-PANCAKE-BUY"] = {
   ...PCS, swap: PANCAKE_SWAP, twin: PANCAKE_TWIN,
   expected: { isBuy: true, ethAmount: 1, usdAmount: 2_500 }, linePrefix: "[V3 SWAP base] TKN BUY",
-  t1: { topics0: V3_TOPICS0, lineField: "swapVariant=pancake-v3" },
+  strict: { topics0: V3_TOPICS0, lineField: "swapVariant=pancake-v3" },
 };
 CONTROLS["C-PANCAKE-SELL"] = {
   ...PCS, swap: PANCAKE_SWAP_SELL, twin: PANCAKE_TWIN_SELL,
   expected: { isBuy: false, ethAmount: 0.5, usdAmount: 1_250 }, linePrefix: "[V3 SWAP base] TKN SELL",
-  t1: { topics0: V3_TOPICS0, lineField: "swapVariant=pancake-v3" },
+  strict: { topics0: V3_TOPICS0, lineField: "swapVariant=pancake-v3" },
 };
 CONTROLS["C-PANCAKE-SHORT"] = {
   ...PCS, swap: PANCAKE_SHORT, twin: PANCAKE_TWIN_SHORT,
   linePrefix: "[V3 SWAP base]",
-  t1: { topics0: V3_TOPICS0, none: true },
+  strict: { topics0: V3_TOPICS0, none: true },
 };
+
+// ── Felia T2: acceptarea fixului pe traseul real (design `BETA1_T2_FIX_DESIGN.md` rev3, §5.1) ──────────────────
+// Pool Aerodrome clasic pe ruta V2 (fără hartă). Pe baseline, toate în afară de LP-ADD dau CONTROL_FAILED pe filtru
+// (topicul Aerodrome lipsește din poziția 0); LP-ADD (Mint, topic comun) dă CONTROL_OK. După fix: toate CONTROL_OK.
+// Logul BUY e același obiect `AERO_SWAP` ca în T2 (retras).
+const V2_TOPICS0 = [T_SWAP_V2, T_SWAP_AERODROME, T_MINT_V2, T_BURN_V2, T_BURN_AERODROME];
+const AERO = {
+  raw: geckoPool(POOL_AERO_V2, "aerodrome-base", WETH_BASE, "WETH"), pair: POOL_AERO_V2, kind: "v2" as const,
+  admit: null, dexType: "V2" as const, priceEth: PRICE,
+};
+const AERO_SWAP_STRICT = { topics0: V2_TOPICS0, lineField: "swapVariant=aerodrome-classic" };
+const AERO_NONE = { topics0: V2_TOPICS0, none: true as const };
+CONTROLS["C-AERO-BUY"] = {
+  ...AERO, swapTopic: T_SWAP_AERODROME, swap: AERO_SWAP, twin: AERO_TWIN,
+  expected: { isBuy: true, ethAmount: 1, usdAmount: 2_500 }, linePrefix: "[V2 SWAP base] TKN BUY", strict: AERO_SWAP_STRICT,
+};
+CONTROLS["C-AERO-SELL"] = {
+  ...AERO, swapTopic: T_SWAP_AERODROME, swap: AERO_SWAP_SELL, twin: AERO_TWIN_SELL,
+  expected: { isBuy: false, ethAmount: 0.5, usdAmount: 1_250 }, linePrefix: "[V2 SWAP base] TKN SELL", strict: AERO_SWAP_STRICT,
+};
+CONTROLS["C-AERO-SHORT"] = { ...AERO, swapTopic: T_SWAP_AERODROME, swap: AERO_SWAP_SHORT, twin: AERO_TWIN_SHORT, linePrefix: "[V2 SWAP base]", strict: AERO_NONE };
+CONTROLS["C-AERO-SWAP-LONG"] = { ...AERO, swapTopic: T_SWAP_AERODROME, swap: AERO_SWAP_LONG, twin: AERO_TWIN_LONG, linePrefix: "[V2 SWAP base]", strict: AERO_NONE };
+CONTROLS["C-AERO-SWAP-NONSTRING"] = { ...AERO, swapTopic: T_SWAP_AERODROME, swap: AERO_SWAP_NONSTRING, twin: AERO_TWIN_NONSTRING, linePrefix: "[V2 SWAP base]", strict: AERO_NONE };
+CONTROLS["C-AERO-LP-ADD"] = {
+  ...AERO, swapTopic: T_MINT_V2, swap: AERO_MINT, twin: AERO_TWIN_MINT,
+  linePrefix: "[LP ADD base] TKN +1.000 ETH quote=WETH",
+  lp: { isAdd: true, ethAmount: 1 }, strict: {},             // fără `topics0`: izolează compatibilitatea Mint de lista filtrului
+};
+CONTROLS["C-AERO-LP-REMOVE"] = {
+  ...AERO, swapTopic: T_BURN_AERODROME, swap: AERO_BURN, twin: AERO_TWIN_BURN,
+  linePrefix: "[LP REMOVE base] TKN -2.000 ETH (quote=WETH) (10.0% of pool) ⚠️",
+  lp: { isAdd: false, ethAmount: 2, reserveEth: 20 }, strict: { topics0: V2_TOPICS0 },
+};
+CONTROLS["C-AERO-BURN-LONG"] = { ...AERO, swapTopic: T_BURN_AERODROME, swap: AERO_BURN_LONG, twin: AERO_TWIN_BURN_LONG, linePrefix: "[LP REMOVE base]", strict: AERO_NONE };
+CONTROLS["C-AERO-BURN-NONSTRING"] = { ...AERO, swapTopic: T_BURN_AERODROME, swap: AERO_BURN_NONSTRING, twin: AERO_TWIN_BURN_NONSTRING, linePrefix: "[LP REMOVE base]", strict: AERO_NONE };
 
 export const CONTROL_IDS = Object.keys(CONTROLS);
 
@@ -226,7 +272,7 @@ function filterProblem(def: ControlDef, req: CapturedRequest): string | null {
   if (!Array.isArray(f.topics) || !Array.isArray(f.topics[0]) || !(f.topics[0] as unknown[]).includes(def.swapTopic)) {
     return "topicul de swap lipsește din poziția 0 a filtrului";
   }
-  if (def.t1 && !jsonEqual(f.topics[0], def.t1.topics0)) return "poziția 0 a filtrului V3 nu e exact lista așteptată (Swap Uniswap V3, Swap PancakeSwap V3, Mint, Burn)";
+  if (def.strict?.topics0 && !jsonEqual(f.topics[0], def.strict.topics0)) return `poziția 0 a filtrului ${def.kind.toUpperCase()} nu e exact lista așteptată`;
   if (def.kind === "v4" ? !jsonEqual(f.topics[1], [def.pair]) || f.topics.length !== 2 : f.topics.length !== 1) {
     return "pozițiile de topic ale filtrului nu sunt cele așteptate";
   }
@@ -236,7 +282,7 @@ function filterProblem(def: ControlDef, req: CapturedRequest): string | null {
 export async function controlBody(def: ControlDef, ctx: CaseContext): Promise<CaseBodyResult> {
   const { src, chain } = ctx;
   const st = src.stores;
-  const fx = [...fixturesSelfCheck(), ...(def.t1 ? defectFixturesSelfCheck() : [])];
+  const fx = [...fixturesSelfCheck(), ...(def.strict ? defectFixturesSelfCheck() : [])];
   if (fx.length > 0) throw new Error("fixture invalide: " + fx.join("; "));
 
   // ── Stare, prin funcțiile de producție ─────────────────────────────────────────────────────────────────────
@@ -298,15 +344,15 @@ export async function controlBody(def: ControlDef, ctx: CaseContext): Promise<Ca
   if (d.perLog[def.twin.transactionHash].sent !== 0) reasons.push("geamănul negativ (topic străin) a fost trimis de nod");
   if (d.perLog[def.swap.transactionHash].sent !== 1) reasons.push("logul controlului nu a fost trimis exact o dată prin filtru");
   if (before !== 0) reasons.push("existau swapuri înregistrate înainte de livrare");
-  if (def.t1) {
-    // Control Pancake (felia T1): recepție exact o dată, marcaj per-kind, verificări GLOBALE.
-    const t1 = def.t1;
+  if (def.strict) {
+    // Control STRICT (felia T1 / T2): recepție exact o dată, marcaj per-kind, verificări GLOBALE.
+    const strict = def.strict;
     const swapTotal = [...st.wsFlow.values()].reduce((n, evs) => n + evs.length, 0);
     const lpTotal = [...st.lpEvents.values()].reduce((n, evs) => n + evs.length, 0);
     const consoleTexts = ctx.cons.lines().map(l => l.text);
     const swapLinesAll = consoleTexts.filter(t => /\[V[234] SWAP [^\]]*\]/.test(t)).length;
     const lpLines = consoleTexts.filter(t => /\b(?:V3 )?LP (?:ADD|REMOVE) [^\]]*\]/.test(t)).length;
-    const fieldLines = t1.lineField ? consoleTexts.filter(t => t.includes(def.linePrefix) && t.includes(t1.lineField as string)).length : null;
+    const fieldLines = strict.lineField ? consoleTexts.filter(t => t.includes(def.linePrefix) && t.includes(strict.lineField as string)).length : null;
     const kindMarkedAfter = st.wsLastMessageAtByKind.has(kindKey);
     Object.assign(observations, {
       swapReceived: d.perLog[def.swap.transactionHash].received,
@@ -316,14 +362,31 @@ export async function controlBody(def: ControlDef, ctx: CaseContext): Promise<Ca
     if (d.perLog[def.swap.transactionHash].received !== 1) reasons.push("logul controlului nu a fost primit exact o dată de worker");
     if (kindMarkedBefore) reasons.push(`wsLastMessageAtByKind era deja marcat pentru ${kindKey} înainte de livrare`);
     if (!kindMarkedAfter) reasons.push(`wsLastMessageAtByKind nu a fost marcat pentru ${kindKey}`);
-    if (t1.none) {
+    if (strict.none) {
       // Forma trunchiată: NICIO înregistrare, nicăieri.
       if (swapTotal !== 0) reasons.push(`swapuri înregistrate în wsFlow, pe toate cheile: ${swapTotal} (se cer 0)`);
       if (lpTotal !== 0) reasons.push(`evenimente LP pe toate cheile: ${lpTotal} (se cer 0)`);
       if (swapLinesAll !== 0) reasons.push(`linii de swap în consolă, pe toate chain-urile: ${swapLinesAll} (se cer 0)`);
       if (lpLines !== 0) reasons.push(`linii LP în consolă, pe toate chain-urile: ${lpLines} (se cer 0)`);
+    } else if (def.lp) {
+      // LP strict (T2): exact un eveniment LP, cu sensul și suma exacte; ZERO swapuri; linia LP ÎNTREAGĂ, exactă.
+      const lpEv = st.lpEvents.get(chain.id, def.pair) ?? [];
+      const exactLpLines = consoleTexts.filter(t => t === def.linePrefix).length;
+      Object.assign(observations, {
+        lpEventsRecorded: lpEv.length, lpRecorded: lpEv.map(e => ({ isAdd: e.isAdd, ethAmount: e.ethAmount })),
+        exactLpLines, reserveEth: st.poolLiquidity.get(chain.id, def.pair)?.reserveEth ?? null,
+      });
+      if (lpEv.length !== 1) reasons.push(`evenimente LP înregistrate: ${lpEv.length} (se cere exact 1)`);
+      else {
+        if (lpEv[0].isAdd !== def.lp.isAdd) reasons.push(`sens LP înregistrat: ${lpEv[0].isAdd ? "adăugare" : "retragere"}`);
+        if (!near(lpEv[0].ethAmount, def.lp.ethAmount)) reasons.push(`sumă nativă LP înregistrată: ${lpEv[0].ethAmount} (așteptat ${def.lp.ethAmount})`);
+        if (lpTotal !== 1) reasons.push(`evenimente LP pe toate cheile: ${lpTotal} (se cere exact 1, cel al perechii controlului)`);
+      }
+      if (swapTotal !== 0) reasons.push(`swapuri înregistrate în wsFlow, pe toate cheile: ${swapTotal} (se cer 0)`);
+      if (swapLinesAll !== 0) reasons.push(`linii de swap în consolă, pe toate chain-urile: ${swapLinesAll} (se cer 0)`);
+      if (exactLpLines !== 1 || lpLines !== 1) reasons.push(`linii LP în consolă: ${lpLines}, dintre care identice cu linia exactă așteptată ${exactLpLines} (se cere exact 1 și 1)`);
     } else {
-      if (!def.expected) throw new Error("control Pancake de swap fără valori așteptate");
+      if (!def.expected) throw new Error("control strict de swap fără valori așteptate");
       if (events.length !== 1) reasons.push(`swapuri înregistrate: ${events.length} (se cere exact 1)`);
       else {
         const e = events[0];
@@ -334,7 +397,7 @@ export async function controlBody(def: ControlDef, ctx: CaseContext): Promise<Ca
       }
       if (lpTotal !== 0) reasons.push(`evenimente LP pe toate cheile: ${lpTotal} (se cer 0)`);
       if (lines !== 1 || swapLinesAll !== 1) reasons.push(`linii de swap în consolă, pe toate chain-urile: ${swapLinesAll}, dintre care cu prefixul așteptat ${lines} (se cere exact 1 și 1)`);
-      else if (fieldLines !== 1) reasons.push(`linia de swap nu conține câmpul ${String(t1.lineField)}`);
+      else if (fieldLines !== 1) reasons.push(`linia de swap nu conține câmpul ${String(strict.lineField)}`);
       if (lpLines !== 0) reasons.push(`linii LP în consolă, pe toate chain-urile: ${lpLines} (se cer 0)`);
     }
   } else if (def.lp) {

@@ -5,8 +5,9 @@
  * designului. Felia D1 (fixul §4.5): patru controale `D1-DS-*` care afirmă comportamentul REPARAT; cazul D1 e
  * RETRAS (marker `BETA1-D1-FIX`) și nu mai e rulat. Felia T1 (fixul §4.4, Pancake): trei controale `C-PANCAKE-*`
  * (BUY, SELL și forma trunchiată, refuzată tăcut); T1, T1-LP și T1-FORCED sunt RETRASE (marker `BETA1-T1-FIX`).
- * Supraveghetorul rulează ÎNTÂI toate controalele; un caz de defect se rulează și se interpretează numai dacă toate
- * cele 17 controale au dat `CONTROL_OK`.
+ * Felia T2 (fixul §4.4, Aerodrome clasic): nouă controale `C-AERO-*` (swap, forme invalide, Mint, Burn); T2 RETRAS
+ * (marker `BETA1-T2-FIX`). Supraveghetorul rulează ÎNTÂI toate controalele; un caz de defect se rulează și se
+ * interpretează numai dacă toate cele 26 de controale au dat `CONTROL_OK`.
  *
  * Secțiunile de raport nu se amestecă: `filter` (prin filtrul nodului local), `forced` (livrare forțată),
  * `partial` (X1). Un cod de ieșire 0 înseamnă „experiment valid, predicții confirmate" — adică defectele din
@@ -31,12 +32,14 @@ const CONTROL_IDS = [
   "D1-DS-BUY", "D1-DS-SELL", "D1-DS-LP-ADD", "D1-DS-LP-REMOVE",
   // Felia T1: acceptarea fixului pe traseul real — pool PancakeSwap V3; swap BUY/SELL, formă trunchiată.
   "C-PANCAKE-BUY", "C-PANCAKE-SELL", "C-PANCAKE-SHORT",
+  // Felia T2: acceptarea fixului pe traseul real — pool Aerodrome clasic pe ruta V2.
+  "C-AERO-BUY", "C-AERO-SELL", "C-AERO-SHORT", "C-AERO-SWAP-LONG", "C-AERO-SWAP-NONSTRING",
+  "C-AERO-LP-ADD", "C-AERO-LP-REMOVE", "C-AERO-BURN-LONG", "C-AERO-BURN-NONSTRING",
 ];
 
 const DEFECT_SPECS: Array<Pick<RunnableCase, "id" | "kind" | "section">> = [
   { id: "M1",        kind: "defect",  section: "filter"  },
   { id: "M2",        kind: "defect",  section: "filter"  },
-  { id: "T2",        kind: "defect",  section: "filter"  },
   { id: "P1",        kind: "defect",  section: "filter"  },
   { id: "M1-FORCED", kind: "defect",  section: "forced"  },
   { id: "X1",        kind: "partial", section: "partial" },

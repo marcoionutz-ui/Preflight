@@ -6,7 +6,10 @@
 import WebSocket from "ws";
 import type { ChainConfig } from "../config/chains";
 import { isShuttingDown, beginJob, closeSocketsBounded } from "../lib/lifecycle";
-import { getQuoteFlowAsEth, toPoolConventionAmounts, extractBaseQuote, resolveLpNativeAmount, decodeV3SwapAmounts, int256FromWord } from "./quoteFlow";
+import {
+  getQuoteFlowAsEth, toPoolConventionAmounts, extractBaseQuote, resolveLpNativeAmount, decodeV3SwapAmounts, int256FromWord,
+  decodeAerodromeSwap, decodeAerodromeBurn, v2PoolDeltas,
+} from "./quoteFlow";
 import { createReconnectManager, type BackoffConfig } from "./wsBackoff";
 import { startHeartbeat } from "./heartbeat";
 import {
@@ -28,6 +31,8 @@ import {
   SWAP_V2_TOPIC,
   SWAP_V3_TOPIC,
   SWAP_PANCAKE_V3_TOPIC,
+  SWAP_AERODROME_TOPIC,
+  BURN_AERODROME_TOPIC,
   MINT_V2_TOPIC,
   BURN_V2_TOPIC,
   MINT_V3_TOPIC,
@@ -51,8 +56,10 @@ const TOPIC_TO_KIND: Record<string, ScopedSubKind> = {
   [MINT_V3_TOPIC]:              "v3",
   [BURN_V3_TOPIC]:              "v3",
   [SWAP_V2_TOPIC]:              "v2",
+  [SWAP_AERODROME_TOPIC]:       "v2", // BETA-1 / T2: Aerodrome clasic, pe ruta V2
   [MINT_V2_TOPIC]:              "v2",
   [BURN_V2_TOPIC]:              "v2",
+  [BURN_AERODROME_TOPIC]:       "v2", // BETA-1 / T2
 };
 function kindForTopic(topic0: unknown): ScopedSubKind | null {
   return typeof topic0 === "string" ? (TOPIC_TO_KIND[topic0] ?? null) : null;
@@ -95,6 +102,66 @@ const wsReconnect = createReconnectManager({
   rand:       Math.random,
   log:        (m) => console.log(m),
 });
+
+// ── Ruta V2: coada comună a unui swap și blocul comun de LP Burn (Uniswap V2 și Aerodrome clasic — BETA-1 / T2) ──
+// Extrase din ramurile V2 existente, fără schimbare de comportament: aceeași ordine a verificărilor, aceleași
+// înregistrări, aceeași linie (plus câmpul final `swapVariant=` la swap). Apelantul a verificat deja `memory.has`.
+type V2SwapVariant = "uniswap-v2" | "aerodrome-classic";
+
+function recordV2PoolSwap(
+  chain: ChainConfig, pairAddress: string,
+  amount0In: bigint, amount1In: bigint, amount0Out: bigint, amount1Out: bigint,
+  variant: V2SwapVariant,
+): void {
+  const deltas = v2PoolDeltas(amount0In, amount1In, amount0Out, amount1Out);
+  if (!deltas) return;                                   // swap fără nicio intrare → ignorat (ca înainte)
+
+  const mem   = memory.get(chain.id, pairAddress)!;
+  const pool2 = watchedPoolCache.get(chain.id, pairAddress);
+
+  const { baseToken: base2, quoteToken: quote2 } = pool2
+    ? extractBaseQuote(pool2)
+    : { baseToken: "", quoteToken: "" };
+
+  if (!base2 || !quote2) return;
+
+  const qflow2 = getQuoteFlowAsEth(chain, base2, quote2, deltas.amount0, deltas.amount1);
+  if (!qflow2.ok || qflow2.ethAmount <= 0) return;
+
+  recordSwap(chain.id, pairAddress, qflow2.isBuy, qflow2.ethAmount, qflow2.usdAmount);
+  console.log(`[V2 SWAP ${chain.id}] ${mem.symbol} ${qflow2.isBuy ? "BUY" : "SELL"} quote=${qflow2.quote} nativeEq:${qflow2.ethAmount.toFixed(4)} usd:$${qflow2.usdAmount.toFixed(0)} swapVariant=${variant}`);
+  if (qflow2.isBuy) {
+    const flow = getWsFlow(chain.id, pairAddress);
+    if (flow.hasData && flow.pressure === "BUYING" && flow.buys5m >= 5) {
+      if (!hotCandidates.has(chain.id, pairAddress)) {
+        promoteHotCandidate(pairAddress, chain.id, undefined);
+      }
+    }
+  }
+}
+
+// E18: quote-agnostic (ca V3 Burn + swap). Detecția de rug (LP removed %) era MOARTĂ pe stable-quoted:
+// valoarea removed era calculată presupunând WETH-quoted (rezerva greșită / 1e18) → prag niciodată atins
+// corect. Acum reutilizează resolveLpNativeAmount → native-echivalent corect indiferent de quote.
+function recordV2PoolBurn(chain: ChainConfig, pairAddress: string, amount0: bigint, amount1: bigint): void {
+  const memLp   = memory.get(chain.id, pairAddress);
+  const pool2Lp = watchedPoolCache.get(chain.id, pairAddress);
+  const lp      = resolveLpNativeAmount(chain, pool2Lp, amount0, amount1);
+  if (!lp.ok) return;
+  const ethAmount = lp.ethAmount;
+  recordLp(chain.id, pairAddress, false, ethAmount);
+
+  // E18 nit varu: valoarea e native-echivalent (BNB pe BSC, altfel ETH) — nu eticheta mereu "ETH".
+  const nativeSymbol = chain.id === "bsc" ? "BNB" : "ETH";
+  const poolEth    = poolLiquidity.get(chain.id, pairAddress)?.reserveEth ?? 0;
+  const removedPct = poolEth > 0 ? ethAmount / poolEth : 0;
+
+  console.log(
+    `[LP REMOVE ${chain.id}] ${memLp?.symbol} -${ethAmount.toFixed(3)} ${nativeSymbol} (quote=${lp.quote})`
+    + (poolEth > 0 ? ` (${(removedPct * 100).toFixed(1)}% of pool)` : " (no reserve estimate)")
+    + ` ⚠️`,
+  );
+}
 
 export function connectChainWebSocket(chain: ChainConfig): void {
   // PH-13 (cgpt #1): guard CHIAR LA INTRARE — un timer de reconnect deja programat înainte de shutdown poate ajunge
@@ -372,6 +439,28 @@ export function connectChainWebSocket(chain: ChainConfig): void {
 
       if (!msg.params?.result) return;
 
+      // ── Aerodrome clasic (BETA-1 / T2) — dispatch ÎNAINTEA operațiilor nesigure din secțiunea V2 ─────────
+      // Secțiunea V2 de mai jos face `log.address?.toLowerCase()` și `log.data?.slice(2)` pe orice log; pe date sau
+      // adresă ne-șir acestea aruncă (`[WS ERR`). Un log cu topic Aerodrome e tratat DOAR aici: adresa verificată ca
+      // șir, datele numai prin decodoarele pure (`null` = refuz tăcut). Comportamentul Uniswap V2 rămâne neschimbat.
+      const topicAero = msg.params.result.topics?.[0];
+      if (topicAero === SWAP_AERODROME_TOPIC || topicAero === BURN_AERODROME_TOPIC) {
+        const logA = msg.params.result;
+        if (typeof logA.address !== "string") return;
+        const pairA = logA.address.toLowerCase();
+        if (!memory.has(chain.id, pairA)) return;
+        if (topicAero === SWAP_AERODROME_TOPIC) {
+          const swapA = decodeAerodromeSwap(logA.data);
+          if (!swapA) return;
+          recordV2PoolSwap(chain, pairA, swapA.amount0In, swapA.amount1In, swapA.amount0Out, swapA.amount1Out, "aerodrome-classic");
+        } else {
+          const burnA = decodeAerodromeBurn(logA.data);
+          if (!burnA) return;
+          recordV2PoolBurn(chain, pairA, burnA.amount0, burnA.amount1);
+        }
+        return;
+      }
+
       const log         = msg.params.result;
       const pairAddress = log.address?.toLowerCase();
       if (!pairAddress || !memory.has(chain.id, pairAddress)) return;
@@ -388,33 +477,8 @@ export function connectChainWebSocket(chain: ChainConfig): void {
         const amount0Out = BigInt("0x" + raw.slice(128, 192));
         const amount1Out = BigInt("0x" + raw.slice(192, 256));
 
-        if (amount0In === 0n && amount1In === 0n) return;
-
-        const mem   = memory.get(chain.id, pairAddress)!;
-        const pool2 = watchedPoolCache.get(chain.id, pairAddress);
-
-        const { baseToken: base2, quoteToken: quote2 } = pool2
-          ? extractBaseQuote(pool2)
-          : { baseToken: "", quoteToken: "" };
-
-        if (!base2 || !quote2) return;
-
-        const amount0 = amount0In > 0n ? amount0In : -amount0Out;
-        const amount1 = amount1In > 0n ? amount1In : -amount1Out;
-
-        const qflow2 = getQuoteFlowAsEth(chain, base2, quote2, amount0, amount1);
-        if (!qflow2.ok || qflow2.ethAmount <= 0) return;
-
-        recordSwap(chain.id, pairAddress, qflow2.isBuy, qflow2.ethAmount, qflow2.usdAmount);
-        console.log(`[V2 SWAP ${chain.id}] ${mem.symbol} ${qflow2.isBuy ? "BUY" : "SELL"} quote=${qflow2.quote} nativeEq:${qflow2.ethAmount.toFixed(4)} usd:$${qflow2.usdAmount.toFixed(0)}`);
-        if (qflow2.isBuy) {
-          const flow = getWsFlow(chain.id, pairAddress);
-          if (flow.hasData && flow.pressure === "BUYING" && flow.buys5m >= 5) {
-            if (!hotCandidates.has(chain.id, pairAddress)) {
-              promoteHotCandidate(pairAddress, chain.id, undefined);
-            }
-          }
-        }
+        // Coada comună (T2): `v2PoolDeltas` → base/quote → flow → înregistrare + linie (cu `swapVariant=uniswap-v2`).
+        recordV2PoolSwap(chain, pairAddress, amount0In, amount1In, amount0Out, amount1Out, "uniswap-v2");
       }
 
       // ── LP Mint ──────────────────────────────────────────────────────────
@@ -434,29 +498,11 @@ export function connectChainWebSocket(chain: ChainConfig): void {
       }
 
       // ── LP Burn ──────────────────────────────────────────────────────────
-      // E18: quote-agnostic (ca V3 Burn + swap). Detecția de rug (LP removed %) era MOARTĂ pe stable-quoted:
-      // valoarea removed era calculată presupunând WETH-quoted (rezerva greșită / 1e18) → prag niciodată atins
-      // corect. Acum reutilizează resolveLpNativeAmount → native-echivalent corect indiferent de quote.
+      // Blocul comun (T2): `recordV2PoolBurn` — quote-agnostic (E18), procentul retras, linia neschimbată.
       if (topic0 === BURN_V2_TOPIC) {
         const amount0 = BigInt("0x" + raw.slice(0,  64));
         const amount1 = BigInt("0x" + raw.slice(64, 128));
-        const memLp   = memory.get(chain.id, pairAddress);
-        const pool2Lp = watchedPoolCache.get(chain.id, pairAddress);
-        const lp      = resolveLpNativeAmount(chain, pool2Lp, amount0, amount1);
-        if (!lp.ok) return;
-        const ethAmount = lp.ethAmount;
-        recordLp(chain.id, pairAddress, false, ethAmount);
-
-        // E18 nit varu: valoarea e native-echivalent (BNB pe BSC, altfel ETH) — nu eticheta mereu "ETH".
-        const nativeSymbol = chain.id === "bsc" ? "BNB" : "ETH";
-        const poolEth    = poolLiquidity.get(chain.id, pairAddress)?.reserveEth ?? 0;
-        const removedPct = poolEth > 0 ? ethAmount / poolEth : 0;
-
-        console.log(
-          `[LP REMOVE ${chain.id}] ${memLp?.symbol} -${ethAmount.toFixed(3)} ${nativeSymbol} (quote=${lp.quote})`
-          + (poolEth > 0 ? ` (${(removedPct * 100).toFixed(1)}% of pool)` : " (no reserve estimate)")
-          + ` ⚠️`,
-        );
+        recordV2PoolBurn(chain, pairAddress, amount0, amount1);
       }
 
     } catch (e) { console.log(`[WS ERR ${chain.id}]`, e); }
