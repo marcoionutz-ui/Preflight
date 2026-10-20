@@ -7,6 +7,9 @@
  * Felia T1: logurile controalelor `C-PANCAKE-*` (swap PancakeSwap V3 complet, BUY/SELL, și forma trunchiată).
  * Felia T2: logurile controalelor `C-AERO-*` (Aerodrome clasic: Swap, Mint, Burn; forme trunchiate, cu surplus și
  * cu date ne-șir). Sursa semnăturilor: aerodrome-finance/contracts @ 1ba30815, `contracts/interfaces/IPool.sol`.
+ * Felia V4L: logul controlului `C-V4-LIQ` (Uniswap V4 `ModifyLiquidity`, eveniment ABI complet) și geamănul lui cu
+ * topicul vechi al produsului (`DecreaseLiquidity` din V3 NPM). Sursa: Uniswap/v4-core @ 46c68346,
+ * `src/interfaces/IPoolManager.sol` L63–L72 (`PoolId` = `bytes32`, `src/types/PoolId.sol` L6).
  *
  * Ca în `evmFixtures.ts`: totul e scris INDEPENDENT de produs. Topicurile sunt keccak-256 al semnăturii din
  * comentariu; nu se citesc din constantele din `src/` și nu se calculează cu funcții din `src/`.
@@ -15,7 +18,7 @@
  */
 
 import type { RpcLog } from "./localNode";
-import { TOKEN, WETH_BASE, E18, uint256Word, int256Word, swapV2Log, foreignLog } from "./evmFixtures";
+import { TOKEN, WETH_BASE, E18, uint256Word, int256Word, swapV2Log, foreignLog, V4_POOL_MANAGER_BASE, POOL_V4_ID } from "./evmFixtures";
 
 // ── Adrese ───────────────────────────────────────────────────────────────────────────────────────────────────
 /** Pool V2 folosit de D1 și de D1-CONTROL: aceeași adresă, același log; diferă doar sursa metadatelor. */
@@ -49,6 +52,10 @@ export const T_BURN_V3 = "0x0c396cd989a39f4459b5fa1aed6a9a8dcdbc45908acfd67e028c
 export const T_MINT_V2 = "0x4c209b5fc8ad50758f13e2e1088ba56a560dff690a1c6fef26394f4c03821c4f";
 /** `Burn(address,uint256,uint256,address)` — Uniswap V2 (felia D1: controlul LP de retragere) */
 export const T_BURN_V2 = "0xdccd412f0b1252819cb1fd330b93224ca42612892bb3f4f789976e6d81936496";
+/** `ModifyLiquidity(bytes32,address,int24,int24,int256,bytes32)` — Uniswap V4 PoolManager (felia V4L; `PoolId` = `bytes32`) */
+export const T_MODIFY_LIQUIDITY_V4 = "0xf208f4912782fd25c7f114ca3723a2d5dd6f3bcc3ac8db5af63baa85f711d5ec";
+/** `DecreaseLiquidity(uint256,uint128,uint256,uint256)` — V3 NonfungiblePositionManager: valoarea VECHE, greșită, a constantei V4 din produs */
+export const T_DECREASE_LIQUIDITY_V3 = "0x26f6a048ee9138f2c0ce266f322cb99228e8d619ae2bff30c67f8dcf9d2377b4";
 
 // ── Pool în forma DexScreener (`/latest/dex/pairs/...`) ──────────────────────────────────────────────────────
 export interface DsPairRaw {
@@ -206,6 +213,29 @@ export const AERO_TWIN_BURN_LONG: RpcLog = foreignLog(POOL_AERO_V2, null, 0x740f
 export const AERO_BURN_NONSTRING: RpcLog = withData(AERO_BURN, {}, 0x7410);
 export const AERO_TWIN_BURN_NONSTRING: RpcLog = foreignLog(POOL_AERO_V2, null, 0x7411);
 
+// ── Felia V4L: logul controlului `C-V4-LIQ` pe POOL_V4_ID, emis de PoolManager-ul Base ──────────────────────────────
+/**
+ * Uniswap V4 `ModifyLiquidity`: topics [sig, id (PoolId), sender]; data = tickLower, tickUpper (int24 extinse cu semn pe
+ * 256 de biți), liquidityDelta (int256), salt (bytes32) = 4 cuvinte, 256 hex.
+ */
+export function modifyLiquidityV4Log(poolId: string, a: { tickLower: bigint; tickUpper: bigint; liquidityDelta: bigint; salt: bigint }, n: number): RpcLog {
+  return {
+    address: V4_POOL_MANAGER_BASE,
+    topics: [T_MODIFY_LIQUIDITY_V4, poolId, SENDER],
+    data: "0x" + int256Word(a.tickLower) + int256Word(a.tickUpper) + int256Word(a.liquidityDelta) + uint256Word(a.salt),
+    transactionHash: txHash(n),
+  };
+}
+/** Adăugare de lichiditate (delta 10^18) pe intervalul [-600, 600]. Valoarea delta nu contează pentru ramura diagnostică. */
+export const V4L_LOG: RpcLog = modifyLiquidityV4Log(POOL_V4_ID, { tickLower: -600n, tickUpper: 600n, liquidityDelta: E18, salt: 1n }, 0x7601);
+/**
+ * Geamănul: ACELAȘI eveniment (adresă, pool, date), cu topicul VECHI al produsului și `transactionHash` DISTINCT — runtime-ul
+ * numără livrările după hash-ul tranzacției; cu același hash, contoarele geamănului și ale logului s-ar uni.
+ */
+export const V4L_TWIN_OLD_TOPIC: RpcLog = { ...V4L_LOG, topics: [T_DECREASE_LIQUIDITY_V3, ...V4L_LOG.topics.slice(1)], transactionHash: txHash(0x7602) };
+/** Linia diagnostică EXACTĂ a ramurii `[V4 LIQ]` pentru `V4L_LOG` (simbolul pool-ului din `memory`: TKN). */
+export const V4L_DIAG_LINE = `[V4 LIQ] TKN len=256 data=${V4L_LOG.data.slice(2, 2 + 192)} tx=${V4L_LOG.transactionHash}`;
+
 /** Controale proprii ale fixture-urilor de aici. Întoarce lista problemelor (goală = în regulă). */
 export function defectFixturesSelfCheck(): string[] {
   const p: string[] = [];
@@ -246,6 +276,18 @@ export function defectFixturesSelfCheck(): string[] {
     AERO_SWAP_NONSTRING, AERO_TWIN_NONSTRING, AERO_MINT, AERO_TWIN_MINT, AERO_BURN, AERO_TWIN_BURN, AERO_BURN_LONG, AERO_TWIN_BURN_LONG,
     AERO_BURN_NONSTRING, AERO_TWIN_BURN_NONSTRING];
   if (new Set(aeroAll.map(l => l.transactionHash)).size !== aeroAll.length) p.push("hash-uri de tranzacție Aerodrome duplicate");
+  // Felia V4L: forma logului `ModifyLiquidity` și a geamănului cu topicul vechi.
+  for (const [name, t] of [["T_MODIFY_LIQUIDITY_V4", T_MODIFY_LIQUIDITY_V4], ["T_DECREASE_LIQUIDITY_V3", T_DECREASE_LIQUIDITY_V3]] as const) {
+    if (!/^0x[0-9a-f]{64}$/.test(t)) p.push(`${name} nu e un topic valid`);
+  }
+  if (new Set<string>([T_MODIFY_LIQUIDITY_V4, T_DECREASE_LIQUIDITY_V3]).size !== 2) p.push("topicurile V4L identice");
+  if (V4L_LOG.data.length !== 2 + 4 * 64 || V4L_LOG.topics.length !== 3 || V4L_LOG.topics.some(t => t.length !== 66)
+    || V4L_LOG.topics[0] !== T_MODIFY_LIQUIDITY_V4 || V4L_LOG.topics[1] !== POOL_V4_ID || V4L_LOG.address !== V4_POOL_MANAGER_BASE) p.push("forma logului V4L_LOG");
+  if (V4L_LOG.data.slice(2, 66) !== "f".repeat(61) + "da8") p.push("tickLower (-600) nu e codificat în complement față de doi");
+  if (V4L_TWIN_OLD_TOPIC.topics[0] !== T_DECREASE_LIQUIDITY_V3 || V4L_TWIN_OLD_TOPIC.data !== V4L_LOG.data
+    || V4L_TWIN_OLD_TOPIC.address !== V4L_LOG.address || V4L_TWIN_OLD_TOPIC.topics[1] !== V4L_LOG.topics[1]) p.push("forma geamănului V4L");
+  if (V4L_TWIN_OLD_TOPIC.transactionHash === V4L_LOG.transactionHash) p.push("geamănul V4L are același transactionHash ca logul");
+  if (!V4L_DIAG_LINE.endsWith(` tx=${V4L_LOG.transactionHash}`) || V4L_DIAG_LINE.length !== "[V4 LIQ] TKN len=256 data=".length + 192 + 4 + 66) p.push("forma liniei diagnostice V4L");
   const ds = dsPair(POOL_D1, "uniswap");
   if (typeof ds.baseToken !== "object" || typeof ds.quoteToken !== "object") p.push("forma DexScreener: base/quote trebuie să fie obiecte");
   return p;

@@ -115,4 +115,6 @@ export const V4_POOL_MANAGERS: Record<string, string> = {
 /** @deprecated Use V4_POOL_MANAGERS[chain.id] — kept for backward compat */
 export const UNISWAP_V4_POOL_MANAGER   = V4_POOL_MANAGERS["base"];
 export const SWAP_V4_TOPIC             = "0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f";
-export const MODIFY_LIQUIDITY_V4_TOPIC = "0x26f6a048ee9138f2c0ce266f322cb99228e8d619ae2bff30c67f8dcf9d2377b4";
+// BETA-1 / V4L: `ModifyLiquidity(bytes32,address,int24,int24,int256,bytes32)` — Uniswap/v4-core@46c68346,
+// IPoolManager.sol L63–L72 (PoolId = bytes32, PoolId.sol L6). Valoarea veche era `DecreaseLiquidity` din V3 NPM.
+export const MODIFY_LIQUIDITY_V4_TOPIC = "0xf208f4912782fd25c7f114ca3723a2d5dd6f3bcc3ac8db5af63baa85f711d5ec";

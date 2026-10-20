@@ -37,6 +37,14 @@
  * ne-șir; Mint (topic comun — așteptat `CONTROL_OK` și pe baseline, fără lista exactă a filtrului); Burn valid, cu
  * surplus (192 hex) și cu date ne-șir. Liniile LP sunt verificate ÎNTREGI. La controalele cu date ne-șir, lipsa
  * `[WS ERR` (invariantul runtime-ului) e chiar dovada că dispatch-ul Aerodrome precede orice operație nesigură.
+ *
+ * Felia V4L (design `BETA1_V4L_FIX_DESIGN.md` rev2, §6) adaugă controlul `C-V4-LIQ`: un `ModifyLiquidity` V4 complet,
+ * emis de PoolManager pe pool-ul V4 admis în `v4PoolMap`. Rezultatul cerut e RUTARE DIAGNOSTICĂ, nu suport LP: poziția
+ * 0 a filtrului exact `[Swap V4, ModifyLiquidity]`; geamănul cu topicul vechi (`DecreaseLiquidity` V3, alt
+ * `transactionHash`) refuzat de filtru; logul trimis și primit exact o dată; `base:v4` nemarcat înainte și marcat după;
+ * exact o linie `[V4 LIQ]`, identică cu linia așteptată (pool, date, tranzacție); zero swapuri și zero LP, global.
+ * Marcajul `v4` dovedește doar activitatea fluxului: în produs el PRECEDE verificarea PoolManager-ului, deci dovada
+ * că ramura a acceptat logul e linia diagnostică, nu marcajul.
  */
 
 import { jsonEqual, type CaseContext, type CaseBodyResult, type ScopedKind } from "../harness/caseRuntime";
@@ -50,6 +58,7 @@ import {
   POOL_D1, D1_SWAP, D1_TWIN, D1_SWAP_SELL, D1_TWIN_SELL, D1_MINT, D1_TWIN_MINT, D1_BURN, D1_TWIN_BURN, T_MINT_V2, T_BURN_V2,
   POOL_PANCAKE_V3, T_SWAP_PANCAKE_V3, T_MINT_V3, T_BURN_V3, PANCAKE_SWAP, PANCAKE_TWIN, PANCAKE_SWAP_SELL, PANCAKE_TWIN_SELL,
   PANCAKE_SHORT, PANCAKE_TWIN_SHORT, dsPair, defectFixturesSelfCheck, type DsPairRaw,
+  T_MODIFY_LIQUIDITY_V4, V4L_LOG, V4L_TWIN_OLD_TOPIC, V4L_DIAG_LINE,
   POOL_AERO_V2, T_SWAP_AERODROME, T_BURN_AERODROME, AERO_SWAP, AERO_TWIN, AERO_SWAP_SELL, AERO_TWIN_SELL, AERO_SWAP_SHORT,
   AERO_TWIN_SHORT, AERO_SWAP_LONG, AERO_TWIN_LONG, AERO_SWAP_NONSTRING, AERO_TWIN_NONSTRING, AERO_MINT, AERO_TWIN_MINT,
   AERO_BURN, AERO_TWIN_BURN, AERO_BURN_LONG, AERO_TWIN_BURN_LONG, AERO_BURN_NONSTRING, AERO_TWIN_BURN_NONSTRING,
@@ -86,9 +95,10 @@ export interface ControlDef {
    * marcat după), verificări GLOBALE. `topics0` = lista EXACTĂ din poziția 0 a filtrului cerut (absent = doar
    * prezența topicului propriu, ex. `C-AERO-LP-ADD`); `lineField` = câmpul obligatoriu din linia de swap; `none` =
    * formă invalidă: nicio înregistrare, nicăieri. Cu `lp` (T2): exact un eveniment LP, iar `linePrefix` e linia LP
-   * ÎNTREAGĂ, comparată prin egalitate exactă (inclusiv sufixul ` ⚠️` la REMOVE).
+   * ÎNTREAGĂ, comparată prin egalitate exactă (inclusiv sufixul ` ⚠️` la REMOVE). `diagLine` (felia V4L) = linia
+   * diagnostică EXACTĂ cerută (exact una cu același prefix pe toată consola, identică), plus „zero efecte" ca la `none`.
    */
-  strict?:    { topics0?: string[]; lineField?: string; none?: true };
+  strict?:    { topics0?: string[]; lineField?: string; none?: true; diagLine?: string };
 }
 
 const PRICE = 2_500;
@@ -255,6 +265,16 @@ CONTROLS["C-AERO-LP-REMOVE"] = {
 CONTROLS["C-AERO-BURN-LONG"] = { ...AERO, swapTopic: T_BURN_AERODROME, swap: AERO_BURN_LONG, twin: AERO_TWIN_BURN_LONG, linePrefix: "[LP REMOVE base]", strict: AERO_NONE };
 CONTROLS["C-AERO-BURN-NONSTRING"] = { ...AERO, swapTopic: T_BURN_AERODROME, swap: AERO_BURN_NONSTRING, twin: AERO_TWIN_BURN_NONSTRING, linePrefix: "[LP REMOVE base]", strict: AERO_NONE };
 
+// ── Felia V4L: rutarea diagnostică `ModifyLiquidity` (design `BETA1_V4L_FIX_DESIGN.md` rev2, §6) ─────────────────
+// Același pool V4 ca `C-V4-*` (admis în `v4PoolMap`, precondiție). Pe baseline: CONTROL_FAILED pe filtru (topicul
+// corect lipsește din poziția 0). După fix: CONTROL_OK. `C-V4-BUY/SELL` rămân neschimbate (fără lista exactă).
+CONTROLS["C-V4-LIQ"] = {
+  raw: geckoPool(POOL_V4_ID, "uniswap-v4-base", WETH_BASE, "WETH"), pair: POOL_V4_ID, kind: "v4", admit: "v4", dexType: "V4",
+  swapTopic: T_MODIFY_LIQUIDITY_V4, swap: V4L_LOG, twin: V4L_TWIN_OLD_TOPIC, priceEth: PRICE,
+  linePrefix: V4L_DIAG_LINE,
+  strict: { topics0: [T_SWAP_V4, T_MODIFY_LIQUIDITY_V4], diagLine: V4L_DIAG_LINE },
+};
+
 export const CONTROL_IDS = Object.keys(CONTROLS);
 
 const near = (a: number, b: number): boolean => Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(b));
@@ -362,12 +382,23 @@ export async function controlBody(def: ControlDef, ctx: CaseContext): Promise<Ca
     if (d.perLog[def.swap.transactionHash].received !== 1) reasons.push("logul controlului nu a fost primit exact o dată de worker");
     if (kindMarkedBefore) reasons.push(`wsLastMessageAtByKind era deja marcat pentru ${kindKey} înainte de livrare`);
     if (!kindMarkedAfter) reasons.push(`wsLastMessageAtByKind nu a fost marcat pentru ${kindKey}`);
-    if (strict.none) {
-      // Forma trunchiată: NICIO înregistrare, nicăieri.
+    if (strict.none || strict.diagLine !== undefined) {
+      // Forma trunchiată (`none`) sau rutarea diagnostică (`diagLine`, felia V4L): NICIO înregistrare, nicăieri.
       if (swapTotal !== 0) reasons.push(`swapuri înregistrate în wsFlow, pe toate cheile: ${swapTotal} (se cer 0)`);
       if (lpTotal !== 0) reasons.push(`evenimente LP pe toate cheile: ${lpTotal} (se cer 0)`);
       if (swapLinesAll !== 0) reasons.push(`linii de swap în consolă, pe toate chain-urile: ${swapLinesAll} (se cer 0)`);
       if (lpLines !== 0) reasons.push(`linii LP în consolă, pe toate chain-urile: ${lpLines} (se cer 0)`);
+      if (strict.diagLine !== undefined) {
+        // Exact o linie diagnostică pe toată consola (același prefix, ex. `[V4 LIQ]`), identică cu linia așteptată.
+        const diag = strict.diagLine;
+        const diagPrefix = diag.slice(0, diag.indexOf("]") + 1);
+        const diagLines = consoleTexts.filter(t => t.startsWith(diagPrefix)).length;
+        const exactDiagLines = consoleTexts.filter(t => t === diag).length;
+        Object.assign(observations, { diagLines, exactDiagLines });
+        if (diagLines !== 1 || exactDiagLines !== 1) {
+          reasons.push(`linii ${diagPrefix} în consolă: ${diagLines}, dintre care identice cu linia exactă așteptată ${exactDiagLines} (se cere exact 1 și 1)`);
+        }
+      }
     } else if (def.lp) {
       // LP strict (T2): exact un eveniment LP, cu sensul și suma exacte; ZERO swapuri; linia LP ÎNTREAGĂ, exactă.
       const lpEv = st.lpEvents.get(chain.id, def.pair) ?? [];

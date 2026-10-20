@@ -35,6 +35,11 @@
  * inversat / linie fără sufix, kind nemapat, intrări-ieșiri inversate, `swapVariant` lipsă, efecte laterale, livrare
  * dublă, decodor care aruncă. T2 e retras (I8, I10); rândurile lui din H sunt mutate pe P1 și M2, cel din J eliminat.
  *
+ * Felia V4L: A include `C-V4-LIQ` (falsul reparat: filtrul V4 `[Swap V4, ModifyLiquidity]`, kind `v4`, ramura scrie
+ * doar linia `[V4 LIQ]`). N provoacă separat fiecare verificare: comportamentul vechi (topicul greșit), filtrul cu
+ * ambele topicuri, linia lipsă / dublată / greșită, marcajul lipsă, swap sau LP înregistrat, linie de swap sau LP,
+ * livrare dublă; ramura care aruncă → `[WS ERR` → HARNESS_ERROR. Niciun caz nu e retras (I8 neschimbat, I11).
+ *
  * TERMINARE NECONFIRMATĂ: dacă supraveghetorul nu poate confirma că un proces de caz și grupul lui nu mai au
  * procese vii, lansatorul OPREȘTE imediat orice lansare următoare, păstrează cazul și PID-ul, iar cleanup-ul
  * mărginit din `finally` oprește procesul rămas și verifică rezultatul. Secțiunea E dovedește acest comportament.
@@ -145,8 +150,8 @@ function manifestConsistency(): void {
   const ids = CASES.map(c => c.id);
   check("I1. manifestul nu are id-uri duplicate și nicio specificație incoerentă", new Set(ids).size === ids.length && CASES.every(c => specProblem(c) === null));
   const controls = CASES.filter(c => c.kind === "control");
-  check("I2. controalele din manifest sunt exact cele definite (26), toate în «filter», în același fișier",
-    controls.length === 26 && JSON.stringify(controls.map(c => c.id).sort()) === JSON.stringify(Object.keys(CONTROLS).sort())
+  check("I2. controalele din manifest sunt exact cele definite (27), toate în «filter», în același fișier",
+    controls.length === 27 && JSON.stringify(controls.map(c => c.id).sort()) === JSON.stringify(Object.keys(CONTROLS).sort())
       && controls.every(c => c.section === "filter" && c.file.endsWith("positiveControls.ts")));
   const defects = CASES.filter(c => c.kind !== "control");
   check("I3. cazurile de defect din manifest sunt exact cele ACTIVE (5), cu același fel și aceeași secțiune",
@@ -179,6 +184,12 @@ function manifestConsistency(): void {
     t2?.retired?.marker === "BETA1-T2-FIX" && !ids.includes("T2") && !("T2" in DEFECT_SPECS) && !ACTIVE_DEFECT_IDS.includes("T2")
       && JSON.stringify(t2.retired.replacedBy) === '["C-AERO-BUY","C-AERO-SELL"]'
       && AERO_IDS.every(c => controls.some(m => m.id === c)));
+  const v4l = CONTROLS["C-V4-LIQ"];
+  check("I11. C-V4-LIQ e în manifest, pe kind v4 (admis în v4PoolMap), cu lista exactă a filtrului și linia diagnostică exactă; geamănul are alt transactionHash",
+    controls.some(m => m.id === "C-V4-LIQ") && v4l?.kind === "v4" && v4l.admit === "v4"
+      && Array.isArray(v4l.strict?.topics0) && v4l.strict?.topics0?.length === 2 && typeof v4l.strict?.diagLine === "string"
+      && v4l.strict.diagLine.startsWith("[V4 LIQ] ") && v4l.linePrefix === v4l.strict.diagLine && v4l.expected === undefined && v4l.lp === undefined
+      && v4l.twin.transactionHash !== v4l.swap.transactionHash);
 }
 
 const AERO_IDS = ["C-AERO-BUY", "C-AERO-SELL", "C-AERO-SHORT", "C-AERO-SWAP-LONG", "C-AERO-SWAP-NONSTRING",
@@ -242,6 +253,17 @@ async function main(): Promise<void> {
       v.outcome === "CONTROL_OK" && v.diagnostics?.terminationConfirmed === true && kindOk(o) && o.lpEventsRecorded === 1
         && Array.isArray(lp) && lp[0].isAdd === isAdd && lp[0].ethAmount === eth && o.lpEventsAllKeys === 1 && o.swapsAllKeys === 0
         && o.swapLogLinesAllChains === 0 && o.lpLogLines === 1 && o.exactLpLines === 1 && (isAdd || o.reserveEth === 20), why(v));
+  }
+
+  // Felia V4L: rutarea diagnostică — linia exactă, nimic înregistrat, geamănul cu topicul vechi refuzat de filtru.
+  {
+    const v = await run("C-V4-LIQ", ["--control=C-V4-LIQ", "--fault=none"]);
+    const o = v.observations;
+    const twin = o.twinDelivery as { sent?: number } | undefined;
+    check("A. C-V4-LIQ peste workerul fals → CONTROL_OK: trimis și primit o dată, geamănul trimis de 0 ori, base:v4 marcat doar după, o singură linie [V4 LIQ] (exactă), nimic înregistrat nicăieri",
+      v.outcome === "CONTROL_OK" && v.diagnostics?.terminationConfirmed === true && o.logsSent === 1 && twin?.sent === 0 && kindOk(o)
+        && o.diagLines === 1 && o.exactDiagLines === 1 && o.swapsAllKeys === 0 && o.lpEventsAllKeys === 0
+        && o.swapLogLinesAllChains === 0 && o.lpLogLines === 0, why(v));
   }
 
   console.log("B. swap neînregistrat sau înregistrat greșit → CONTROL_FAILED");
@@ -334,6 +356,7 @@ async function main(): Promise<void> {
 
   await pancakeInjections();
   await aeroInjections();
+  await v4lInjections();
   await defectCases();
 
   console.log("D. procese rămase");
@@ -346,8 +369,50 @@ async function main(): Promise<void> {
   await unconfirmedRegression();
 }
 
-/** A 26 + B 13 + C 10 + C' 4 + K 15 + L 27 + F 5 + G 6 + H 9 + J 5. */
-const EXPECTED_PROCESSES = 120;
+/** A 27 + B 13 + C 10 + C' 4 + K 15 + L 27 + N 12 + F 5 + G 6 + H 9 + J 5. */
+const EXPECTED_PROCESSES = 133;
+
+/**
+ * N. Felia V4L: fiecare verificare a controlului `C-V4-LIQ`, provocată separat peste workerul fals, cu motivul EXACT
+ * și unic (design `BETA1_V4L_FIX_DESIGN.md` rev2, §6). Lipsa sau dublarea liniei, lipsa marcajului și efectele
+ * suplimentare se invalidează fiecare prin propria injecție. Excepție: ramura care aruncă produce o linie `[WS ERR`
+ * → HARNESS_ERROR (regula existentă a runtime-ului), iar rularea care o conține e invalidă (cod 3).
+ */
+async function v4lInjections(): Promise<void> {
+  console.log("N. controlul V4 ModifyLiquidity: injecții → CONTROL_FAILED cu motivul exact; ramura care aruncă → HARNESS_ERROR");
+  const exactly = (v: CaseVerdict, reasons: string[]): boolean => v.outcome === "CONTROL_FAILED" && JSON.stringify(v.reasons) === JSON.stringify(reasons);
+  const diag = (all: number, exact: number): string => `linii [V4 LIQ] în consolă: ${all}, dintre care identice cu linia exactă așteptată ${exact} (se cere exact 1 și 1)`;
+  const cases: Array<[string, string, string[]]> = [
+    ["N1", "v4l-old-topic", ["topicul de swap lipsește din poziția 0 a filtrului"]],
+    ["N2", "v4l-both-topics", ["poziția 0 a filtrului V4 nu e exact lista așteptată"]],
+    ["N3", "v4l-line-missing", [diag(0, 0)]],
+    ["N4", "v4l-line-dup", [diag(2, 2)]],
+    ["N5", "v4l-line-wrong", [diag(1, 0)]],
+    ["N6", "v4l-kind-unmapped", ["wsLastMessageAtByKind nu a fost marcat pentru base:v4"]],
+    ["N7", "v4l-records-swap", ["swapuri înregistrate în wsFlow, pe toate cheile: 1 (se cer 0)"]],
+    ["N8", "v4l-records-lp", ["evenimente LP pe toate cheile: 1 (se cer 0)"]],
+    ["N9", "v4l-swap-line", ["linii de swap în consolă, pe toate chain-urile: 1 (se cer 0)"]],
+    ["N10", "v4l-lp-line", ["linii LP în consolă, pe toate chain-urile: 1 (se cer 0)"]],
+  ];
+  for (const [n, fault, reasons] of cases) {
+    const v = await run("C-V4-LIQ", ["--control=C-V4-LIQ", `--fault=${fault}`]);
+    check(`${n}. C-V4-LIQ + ${fault} → CONTROL_FAILED, singurul motiv: ${reasons[0]}`, exactly(v, reasons), why(v));
+  }
+  {
+    const v = await run("C-V4-LIQ", ["--control=C-V4-LIQ", "--fault=none", "--tamper=duplicate-delivery"]);
+    check("N11. C-V4-LIQ + livrare dublă → CONTROL_FAILED, exact motivele de trimitere, recepție și linie dublată",
+      exactly(v, ["logul controlului nu a fost trimis exact o dată prin filtru", "logul controlului nu a fost primit exact o dată de worker", diag(2, 2)]), why(v));
+  }
+  {
+    const WS_ERR = "înainte de închidere: linie [WS ERR în captura de consolă";
+    const v = await run("C-V4-LIQ", ["--control=C-V4-LIQ", "--fault=v4l-throws"]);
+    check("N12. C-V4-LIQ + v4l-throws → HARNESS_ERROR, singurul motiv: [WS ERR, fără observații, cod 0, terminare confirmată",
+      v.outcome === "HARNESS_ERROR" && JSON.stringify(v.reasons) === JSON.stringify([WS_ERR]) && Object.keys(v.observations).length === 0
+        && v.diagnostics?.code === 0 && v.diagnostics.signal === null && !v.diagnostics.timedOut && v.diagnostics.terminationConfirmed, why(v));
+    const sm = summarize([v]);
+    check("N12b. o rulare care conține acest HARNESS_ERROR e invalidă: cod 3", sm.exitCode === 3 && sm.invalid.includes("C-V4-LIQ: HARNESS_ERROR"), JSON.stringify(sm));
+  }
+}
 
 /**
  * L. Felia T2: fiecare verificare a controalelor Aerodrome, provocată separat peste workerul fals, cu motivul EXACT

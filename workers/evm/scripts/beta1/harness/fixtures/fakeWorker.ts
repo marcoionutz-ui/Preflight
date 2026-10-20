@@ -15,6 +15,11 @@
  * (ordinea din `V2_SCOPED_TOPICS`), ambele mapate la kind-ul `v2`; un log Aerodrome e tratat ÎNAINTEA oricărei
  * operații pe date (dispatch sigur), cu decodare strictă (Swap exact 256 hex, Burn exact 128 hex) și refuz tăcut.
  * Comportamentul vechi devine defect injectat (`aero-unsupported`); `fixed-solidly-topic` a dispărut odată cu T2.
+ *
+ * Felia V4L: falsul urmează produsul REPARAT și pentru V4 `ModifyLiquidity` — filtrul V4 e `[Swap V4, ModifyLiquidity]`
+ * (ca în produs; înainte, falsul cerea doar Swap V4), topicul e mapat la `v4` (marcajul precede ramura), iar ramura
+ * scrie DOAR linia diagnostică `[V4 LIQ] …`, în forma produsului, fără nicio înregistrare. Comportamentul vechi
+ * (topicul `DecreaseLiquidity` V3) devine defect injectat (`v4l-old-topic`).
  */
 
 import WebSocket from "ws";
@@ -56,6 +61,11 @@ export const FAULTS = [
   "aero-burn-unhandled", "aero-burn-as-add", "aero-lp-line-suffix-missing", "aero-kind-unmapped",
   "aero-in-out-swapped", "aero-variant-missing",
   "aero-side-swap-other-chain", "aero-side-lp-other-pair", "aero-side-swap-line", "aero-side-lp-line", "aero-throws",
+  // Felia V4L (design rev2, §6): comportamentul vechi (topicul greșit în filtru, kind și ramură); filtrul cu ambele
+  // topicuri; linia diagnostică lipsă / dublată / greșită (alt `tx`); topicul nemapat la `v4`; efecte suplimentare
+  // (swap sau LP înregistrat, linie de swap sau LP); ramura aruncă.
+  "v4l-old-topic", "v4l-both-topics", "v4l-line-missing", "v4l-line-dup", "v4l-line-wrong", "v4l-kind-unmapped",
+  "v4l-records-swap", "v4l-records-lp", "v4l-swap-line", "v4l-lp-line", "v4l-throws",
 ] as const;
 export type Fault = typeof FAULTS[number];
 
@@ -69,6 +79,8 @@ const T_BURN_V3 = "0x0c396cd989a39f4459b5fa1aed6a9a8dcdbc45908acfd67e028cd568da9
 const T_PANCAKE_V3 = "0x19b47279256b2a23a1665c810c8d55a1758940ee09377d4f8d26497a3577dc83";
 const T_SOLIDLY = "0xb3e2773606abfd36b5bd91394b3a54d1398336c65005baf7bf7a05efeffaf75b";   // = Swap Aerodrome clasic
 const T_BURN_AERO = "0x5d624aa9c148153ab3446c1b154f660ee7701e549fe9b62dab7171b1c80e6fa2";
+const T_MODIFY_V4 = "0xf208f4912782fd25c7f114ca3723a2d5dd6f3bcc3ac8db5af63baa85f711d5ec";   // ModifyLiquidity V4 (corect)
+const T_DECREASE_V3_NPM = "0x26f6a048ee9138f2c0ce266f322cb99228e8d619ae2bff30c67f8dcf9d2377b4"; // valoarea veche a produsului
 const POOL_MANAGER = "0x498581ff718922c3f8e6a244956af099b2652b2b";
 const USDC = "833589fcd6edb6e08f4c7c32d4f71b54bda02913";
 
@@ -164,10 +176,13 @@ export async function loadFakeSrc(fault: Fault): Promise<SrcModules> {
   // topic0 → kind (ca `TOPIC_TO_KIND` din produs). Topicul Pancake e mapat la `v3`, cu excepția defectelor injectate.
   const pancakeKind = fault !== "pancake-kind-unmapped" && fault !== "pancake-unsupported";
   const aeroKind = fault !== "aero-kind-unmapped" && fault !== "aero-unsupported";
+  // Felia V4L: „constanta" falsului pentru `ModifyLiquidity` — cea corectă, sau cea veche sub `v4l-old-topic`.
+  const v4lTopic = fault === "v4l-old-topic" ? T_DECREASE_V3_NPM : T_MODIFY_V4;
   const TOPIC_KIND: Record<string, "v2" | "v3" | "v4"> = {
     [T_V4]: "v4", [T_V3]: "v3", [T_MINT_V3]: "v3", [T_BURN_V3]: "v3", [T_V2]: "v2", [T_MINT_V2]: "v2", [T_BURN_V2]: "v2",
     ...(pancakeKind ? { [T_PANCAKE_V3]: "v3" as const } : {}),
     ...(aeroKind ? { [T_SOLIDLY]: "v2" as const, [T_BURN_AERO]: "v2" as const } : {}),
+    ...(fault !== "v4l-kind-unmapped" ? { [v4lTopic]: "v4" as const } : {}),
   };
   const kindOf = (topic0: unknown): "v2" | "v3" | "v4" | null => (typeof topic0 === "string" ? TOPIC_KIND[topic0] ?? null : null);
 
@@ -196,8 +211,10 @@ export async function loadFakeSrc(fault: Fault): Promise<SrcModules> {
       const v3Topics = fault === "pancake-unsupported" ? [T_V3, T_MINT_V3, T_BURN_V3] : [T_V3, T_PANCAKE_V3, T_MINT_V3, T_BURN_V3];
       // Felia T2: ordinea din `V2_SCOPED_TOPICS`; `aero-unsupported` = filtrul de dinainte de fix.
       const v2Topics = fault === "aero-unsupported" ? [T_V2, T_MINT_V2, T_BURN_V2] : [T_V2, T_SOLIDLY, T_MINT_V2, T_BURN_V2, T_BURN_AERO];
+      // Felia V4L: ordinea din filtrul V4 al produsului (`[SWAP_V4_TOPIC, MODIFY_LIQUIDITY_V4_TOPIC]`).
+      const v4Topics = fault === "v4l-both-topics" ? [T_V4, T_DECREASE_V3_NPM, T_MODIFY_V4] : [T_V4, v4lTopic];
       const params = kind === "v4"
-        ? ["logs", { address: POOL_MANAGER, topics: [[T_V4], addrs] }]
+        ? ["logs", { address: POOL_MANAGER, topics: [v4Topics, addrs] }]
         : ["logs", { address: addrs, topics: [kind === "v3" ? v3Topics : v2Topics] }];
       ws.send(JSON.stringify({ jsonrpc: "2.0", id, method: "eth_subscribe", params }));
     };
@@ -212,7 +229,7 @@ export async function loadFakeSrc(fault: Fault): Promise<SrcModules> {
     });
 
     const handle = (data: Buffer): void => {
-      const msg = JSON.parse(data.toString()) as { id?: unknown; result?: unknown; params?: { subscription?: unknown; result?: { address: string; topics: string[]; data: string } } };
+      const msg = JSON.parse(data.toString()) as { id?: unknown; result?: unknown; params?: { subscription?: unknown; result?: { address: string; topics: string[]; data: string; transactionHash?: string } } };
       if (typeof msg.id === "number" && scopedSubStore.pending.has(msg.id)) {
         const p = scopedSubStore.pending.get(msg.id) as { key: string; snapshot: string };
         scopedSubStore.pending.delete(msg.id);
@@ -231,6 +248,24 @@ export async function loadFakeSrc(fault: Fault): Promise<SrcModules> {
         wsLastMessageAtByKind.set(`${chain.id}:${kind}`, Date.now());
       }
       if (fault === "handler-throws") throw new Error("defect injectat în handler");
+      // Felia V4L: ramura `ModifyLiquidity` a produsului — DOAR linia diagnostică, pentru PoolManager-ul chain-ului.
+      if (topic0 === v4lTopic && typeof log.address === "string" && log.address.toLowerCase() === POOL_MANAGER) {
+        if (fault === "v4l-throws") throw new Error("ramura [V4 LIQ]: excepție injectată");
+        const poolId = log.topics[1]?.toLowerCase();
+        const mem4 = poolId ? memory.get(chain.id, poolId) : undefined;
+        const raw4 = typeof log.data === "string" ? log.data.slice(2) : "";
+        if (poolId && fault === "v4l-records-swap") wsFlow.set(chain.id, poolId, [{ ts: Date.now(), isBuy: true, ethAmount: 1, usdAmount: 2_500 }]);
+        if (poolId && fault === "v4l-records-lp") lpEvents.set(chain.id, poolId, [{ ts: Date.now(), isAdd: true, ethAmount: 1 }]);
+        if (fault === "v4l-swap-line") console.log(`[V4 SWAP ${chain.id}] ${mem4?.symbol ?? poolId} BUY (fals)`);
+        if (fault === "v4l-lp-line") console.log(`[LP ADD ${chain.id}] ${mem4?.symbol ?? poolId} +1.000 ETH quote=WETH (fals)`);
+        if (fault !== "v4l-line-missing") {
+          const tx = fault === "v4l-line-wrong" ? "0x" + "00".repeat(32) : log.transactionHash;
+          const line = `[V4 LIQ] ${mem4?.symbol ?? poolId} len=${raw4.length} data=${raw4.slice(0, 192)} tx=${tx}`;
+          console.log(line);
+          if (fault === "v4l-line-dup") console.log(line);
+        }
+        return;
+      }
       // Felia T2: dispatch Aerodrome ÎNAINTEA oricărei operații pe date (ca produsul reparat).
       const isAero = (topic0 === T_SOLIDLY || topic0 === T_BURN_AERO) && fault !== "aero-unsupported";
       let aeroSwap: bigint[] | null = null;

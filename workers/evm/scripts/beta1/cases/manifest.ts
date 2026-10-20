@@ -6,8 +6,9 @@
  * RETRAS (marker `BETA1-D1-FIX`) și nu mai e rulat. Felia T1 (fixul §4.4, Pancake): trei controale `C-PANCAKE-*`
  * (BUY, SELL și forma trunchiată, refuzată tăcut); T1, T1-LP și T1-FORCED sunt RETRASE (marker `BETA1-T1-FIX`).
  * Felia T2 (fixul §4.4, Aerodrome clasic): nouă controale `C-AERO-*` (swap, forme invalide, Mint, Burn); T2 RETRAS
- * (marker `BETA1-T2-FIX`). Supraveghetorul rulează ÎNTÂI toate controalele; un caz de defect se rulează și se
- * interpretează numai dacă toate cele 26 de controale au dat `CONTROL_OK`.
+ * (marker `BETA1-T2-FIX`). Felia V4L (topicul V4 `ModifyLiquidity`): controlul `C-V4-LIQ` (rutare diagnostică);
+ * niciun caz retras. Supraveghetorul rulează ÎNTÂI toate controalele; un caz de defect se rulează și se
+ * interpretează numai dacă toate cele 27 de controale au dat `CONTROL_OK`.
  *
  * Secțiunile de raport nu se amestecă: `filter` (prin filtrul nodului local), `forced` (livrare forțată),
  * `partial` (X1). Un cod de ieșire 0 înseamnă „experiment valid, predicții confirmate" — adică defectele din
@@ -35,6 +36,8 @@ const CONTROL_IDS = [
   // Felia T2: acceptarea fixului pe traseul real — pool Aerodrome clasic pe ruta V2.
   "C-AERO-BUY", "C-AERO-SELL", "C-AERO-SHORT", "C-AERO-SWAP-LONG", "C-AERO-SWAP-NONSTRING",
   "C-AERO-LP-ADD", "C-AERO-LP-REMOVE", "C-AERO-BURN-LONG", "C-AERO-BURN-NONSTRING",
+  // Felia V4L: rutarea diagnostică a `ModifyLiquidity` V4 (linia `[V4 LIQ]`, fără înregistrări).
+  "C-V4-LIQ",
 ];
 
 const DEFECT_SPECS: Array<Pick<RunnableCase, "id" | "kind" | "section">> = [
