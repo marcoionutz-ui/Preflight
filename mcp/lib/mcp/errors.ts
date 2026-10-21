@@ -20,6 +20,13 @@ export type McpDataQuality = {
 };
 
 /**
+ * BETA-3 (design `BETA3_OUTPUT_SCHEMA_DESIGN.md` rev2): obiect deschis, publicat PORTABIL prin SDK ca
+ * `{"type":"object","propertyNames":{"type":"string"},"additionalProperties":true}` (nu `{}` / `additionalProperties: {}`).
+ * La nivelul câmpului acceptă DOAR obiect; `null`, matricele și primitivele sunt respinse. Înăuntru, orice valoare.
+ */
+const OPEN_OBJECT = () => z.record(z.string(), z.unknown()).meta({ additionalProperties: true });
+
+/**
  * PH-14: meta-ul unui răspuns de SUCCES. `freshnessSec`/`coverageNote` sunt `.nullable()` INTENȚIONAT:
  * `null` = „necunoscut explicit" (worker viu dar fără dată), distinct de câmp absent = „nu se aplică". mcpResponse
  * păstrează `null`; doar `undefined` elimină cheia (vezi mai jos).
@@ -34,7 +41,7 @@ const PREFLIGHT_META_SCHEMA = z.object({
     risk:      z.enum(["cached", "stale", "missing"]).optional(),
     liquidity: z.enum(["confirmed", "estimated", "unknown"]).optional(),
   }).optional(),
-  evidence:     z.record(z.string(), z.unknown()).optional(),
+  evidence:     OPEN_OBJECT().optional(),   // BETA-3: aceeași validare ca înainte; se schimbă doar JSON-ul publicat
 }).optional();
 
 /**
@@ -44,13 +51,14 @@ const PREFLIGHT_META_SCHEMA = z.object({
  *   { ok:true, format:"preflight.response.v1", text, data?, meta? }
  * `ok`/`format` sunt LITERALE (nu boolean/string liber) și obiectul e `.strict()` → validează exact această formă și
  * RESPINGE combinații contradictorii: `{ok:false}`, `{ok:true, error:{...}}`, succes fără `text`/`format`.
- * `data` rămâne `z.unknown()` — envelope-ul e tipat, tiparea payload-ului per-tool e follow-up separat (nu PH-14).
+ * BETA-3: `data` e obiect deschis (`OPEN_OBJECT`) sau absent — restrângere intenționată față de `z.unknown()`; tiparea
+ * payload-ului per-tool rămâne follow-up separat.
  */
 export const PREFLIGHT_OUTPUT_SCHEMA = z.object({
   ok:     z.literal(true),
   format: z.literal("preflight.response.v1"),
   text:   z.string(),
-  data:   z.unknown().optional(),
+  data:   OPEN_OBJECT().optional(),
   meta:   PREFLIGHT_META_SCHEMA,
 }).strict();
 
@@ -117,7 +125,7 @@ export function mcpErr(code: string, message: string, extra?: Record<string, unk
 
 export function mcpResponse(params: {
   text:           string;
-  data?:          unknown;         // PH-14: payload structurat (tool-urile de date), pe lângă `text` (human/compat)
+  data?:          Record<string, unknown>; // PH-14 + BETA-3: payload structurat, OBIECT (tool-urile de date), pe lângă `text`
   freshnessSec?:  number | null;
   confidence?:    McpConfidence;
   coverageNote?:  string | null;
