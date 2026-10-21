@@ -354,7 +354,8 @@ export function connectChainWebSocket(chain: ChainConfig): void {
         const log4   = msg.params.result;
         const poolId = log4.topics?.[1]?.toLowerCase();
         const mem4   = poolId ? memory.get(chain.id, poolId) : null;
-        const raw4   = log4.data?.slice(2) ?? "";
+        // BETA-1 / V4LR: `data` ne-șir (număr, obiect, matrice, boolean) e tratat ca date goale, ca `null`/absent — fără excepție.
+        const raw4   = typeof log4.data === "string" ? log4.data.slice(2) : "";
         console.log(`[V4 LIQ] ${mem4?.symbol ?? poolId} len=${raw4.length} data=${raw4.slice(0, 192)} tx=${log4.transactionHash}`);
         return;
       }

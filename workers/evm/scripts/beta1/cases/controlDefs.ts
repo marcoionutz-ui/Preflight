@@ -45,6 +45,12 @@
  * exact o linie `[V4 LIQ]`, identică cu linia așteptată (pool, date, tranzacție); zero swapuri și zero LP, global.
  * Marcajul `v4` dovedește doar activitatea fluxului: în produs el PRECEDE verificarea PoolManager-ului, deci dovada
  * că ramura a acceptat logul e linia diagnostică, nu marcajul.
+ *
+ * Felia V4LR (design `BETA1_V4LR_ROBUSTNESS_DESIGN.md` rev1, §3) adaugă cinci controale pe același pool și același
+ * filtru exact, cu un singur lucru schimbat față de `C-V4-LIQ`: câmpul `data` — `null`, absent, `7`, `{}` și
+ * `["a","b","c"]`. După fix, toate cer exact linia `[V4 LIQ] TKN len=0 data= tx=<hash>` și zero efecte. Pe baseline:
+ * `null`/absent dau deja această linie (CONTROL_OK); `7`/`{}` aruncă la `slice` → `[WS ERR` → HARNESS_ERROR; matricea
+ * NU aruncă, dar dă linia `len=1 data=c` → CONTROL_FAILED (schimbare de comportament documentată).
  */
 
 import { jsonEqual, type CaseContext, type CaseBodyResult, type ScopedKind } from "../harness/caseRuntime";
@@ -59,6 +65,8 @@ import {
   POOL_PANCAKE_V3, T_SWAP_PANCAKE_V3, T_MINT_V3, T_BURN_V3, PANCAKE_SWAP, PANCAKE_TWIN, PANCAKE_SWAP_SELL, PANCAKE_TWIN_SELL,
   PANCAKE_SHORT, PANCAKE_TWIN_SHORT, dsPair, defectFixturesSelfCheck, type DsPairRaw,
   T_MODIFY_LIQUIDITY_V4, V4L_LOG, V4L_TWIN_OLD_TOPIC, V4L_DIAG_LINE,
+  V4L_NULL, V4L_TWIN_NULL, V4L_NODATA, V4L_TWIN_NODATA, V4L_NUM, V4L_TWIN_NUM, V4L_OBJ, V4L_TWIN_OBJ, V4L_ARRAY, V4L_TWIN_ARRAY,
+  V4L_NULL_LINE, V4L_NODATA_LINE, V4L_NUM_LINE, V4L_OBJ_LINE, V4L_ARRAY_LINE,
   POOL_AERO_V2, T_SWAP_AERODROME, T_BURN_AERODROME, AERO_SWAP, AERO_TWIN, AERO_SWAP_SELL, AERO_TWIN_SELL, AERO_SWAP_SHORT,
   AERO_TWIN_SHORT, AERO_SWAP_LONG, AERO_TWIN_LONG, AERO_SWAP_NONSTRING, AERO_TWIN_NONSTRING, AERO_MINT, AERO_TWIN_MINT,
   AERO_BURN, AERO_TWIN_BURN, AERO_BURN_LONG, AERO_TWIN_BURN_LONG, AERO_BURN_NONSTRING, AERO_TWIN_BURN_NONSTRING,
@@ -274,6 +282,20 @@ CONTROLS["C-V4-LIQ"] = {
   linePrefix: V4L_DIAG_LINE,
   strict: { topics0: [T_SWAP_V4, T_MODIFY_LIQUIDITY_V4], diagLine: V4L_DIAG_LINE },
 };
+
+// ── Felia V4LR: `data` null / absent / ne-șir pe ramura `[V4 LIQ]` (design `BETA1_V4LR_ROBUSTNESS_DESIGN.md` rev1, §3) ──
+/** Ca `C-V4-LIQ` (pool, kind, filtru exact), cu alt log, alt geamăn și linia diagnostică exactă `len=0`. */
+const v4lrControl = (swap: RpcLog, twin: RpcLog, line: string): ControlDef => ({
+  raw: geckoPool(POOL_V4_ID, "uniswap-v4-base", WETH_BASE, "WETH"), pair: POOL_V4_ID, kind: "v4", admit: "v4", dexType: "V4",
+  swapTopic: T_MODIFY_LIQUIDITY_V4, swap, twin, priceEth: PRICE,
+  linePrefix: line,
+  strict: { topics0: [T_SWAP_V4, T_MODIFY_LIQUIDITY_V4], diagLine: line },
+});
+CONTROLS["C-V4-LIQ-NULL"]   = v4lrControl(V4L_NULL, V4L_TWIN_NULL, V4L_NULL_LINE);
+CONTROLS["C-V4-LIQ-NODATA"] = v4lrControl(V4L_NODATA, V4L_TWIN_NODATA, V4L_NODATA_LINE);
+CONTROLS["C-V4-LIQ-NUM"]    = v4lrControl(V4L_NUM, V4L_TWIN_NUM, V4L_NUM_LINE);
+CONTROLS["C-V4-LIQ-OBJ"]    = v4lrControl(V4L_OBJ, V4L_TWIN_OBJ, V4L_OBJ_LINE);
+CONTROLS["C-V4-LIQ-ARRAY"]  = v4lrControl(V4L_ARRAY, V4L_TWIN_ARRAY, V4L_ARRAY_LINE);
 
 export const CONTROL_IDS = Object.keys(CONTROLS);
 

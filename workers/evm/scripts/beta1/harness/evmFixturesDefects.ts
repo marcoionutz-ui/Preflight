@@ -236,6 +236,38 @@ export const V4L_TWIN_OLD_TOPIC: RpcLog = { ...V4L_LOG, topics: [T_DECREASE_LIQU
 /** Linia diagnostică EXACTĂ a ramurii `[V4 LIQ]` pentru `V4L_LOG` (simbolul pool-ului din `memory`: TKN). */
 export const V4L_DIAG_LINE = `[V4 LIQ] TKN len=256 data=${V4L_LOG.data.slice(2, 2 + 192)} tx=${V4L_LOG.transactionHash}`;
 
+// ── Felia V4LR: `data` null / absent / ne-șir pe ramura `[V4 LIQ]` (design `BETA1_V4LR_ROBUSTNESS_DESIGN.md` rev1, §3) ──
+// Același eveniment ca `V4L_LOG` (PoolManager, pool, topicuri), cu un singur lucru schimbat: câmpul `data`. După fix,
+// toate se comportă ca `null`/absent: exact linia `len=0 data=` și nimic înregistrat. Fiecare log are geamănul lui cu
+// topicul VECHI (aceleași date sau aceeași absență) și un `transactionHash` DISTINCT (0x7603–0x760c).
+/** Log cu câmpul `data` ȘTERS: cheia lipsește din obiect, deci și din JSON-ul trimis de nodul local. */
+const withoutData = (l: RpcLog, n: number): RpcLog => {
+  const o: Record<string, unknown> = { ...l, transactionHash: txHash(n) };
+  delete o.data;
+  return o as unknown as RpcLog;
+};
+/** Geamănul cu topicul VECHI (`DecreaseLiquidity` V3): același eveniment, alt `transactionHash`. */
+const v4lTwin = (l: RpcLog, n: number): RpcLog => ({ ...l, topics: [T_DECREASE_LIQUIDITY_V3, ...l.topics.slice(1)], transactionHash: txHash(n) });
+/** Linia diagnostică EXACTĂ pentru date goale (`len=0`), pe tranzacția logului. */
+const v4lEmptyLine = (l: RpcLog): string => `[V4 LIQ] TKN len=0 data= tx=${l.transactionHash}`;
+
+export const V4L_NULL: RpcLog = withData(V4L_LOG, null, 0x7603);
+export const V4L_TWIN_NULL: RpcLog = v4lTwin(V4L_NULL, 0x7604);
+export const V4L_NODATA: RpcLog = withoutData(V4L_LOG, 0x7605);
+export const V4L_TWIN_NODATA: RpcLog = v4lTwin(V4L_NODATA, 0x7606);
+export const V4L_NUM: RpcLog = withData(V4L_LOG, 7, 0x7607);
+export const V4L_TWIN_NUM: RpcLog = v4lTwin(V4L_NUM, 0x7608);
+export const V4L_OBJ: RpcLog = withData(V4L_LOG, {}, 0x7609);
+export const V4L_TWIN_OBJ: RpcLog = v4lTwin(V4L_OBJ, 0x760a);
+/** Matricea NU aruncă pe baseline: `["a","b","c"].slice(2)` = `["c"]` → linia veche `len=1 data=c` (schimbare documentată). */
+export const V4L_ARRAY: RpcLog = withData(V4L_LOG, ["a", "b", "c"], 0x760b);
+export const V4L_TWIN_ARRAY: RpcLog = v4lTwin(V4L_ARRAY, 0x760c);
+export const V4L_NULL_LINE = v4lEmptyLine(V4L_NULL);
+export const V4L_NODATA_LINE = v4lEmptyLine(V4L_NODATA);
+export const V4L_NUM_LINE = v4lEmptyLine(V4L_NUM);
+export const V4L_OBJ_LINE = v4lEmptyLine(V4L_OBJ);
+export const V4L_ARRAY_LINE = v4lEmptyLine(V4L_ARRAY);
+
 /** Controale proprii ale fixture-urilor de aici. Întoarce lista problemelor (goală = în regulă). */
 export function defectFixturesSelfCheck(): string[] {
   const p: string[] = [];
@@ -288,6 +320,23 @@ export function defectFixturesSelfCheck(): string[] {
     || V4L_TWIN_OLD_TOPIC.address !== V4L_LOG.address || V4L_TWIN_OLD_TOPIC.topics[1] !== V4L_LOG.topics[1]) p.push("forma geamănului V4L");
   if (V4L_TWIN_OLD_TOPIC.transactionHash === V4L_LOG.transactionHash) p.push("geamănul V4L are același transactionHash ca logul");
   if (!V4L_DIAG_LINE.endsWith(` tx=${V4L_LOG.transactionHash}`) || V4L_DIAG_LINE.length !== "[V4 LIQ] TKN len=256 data=".length + 192 + 4 + 66) p.push("forma liniei diagnostice V4L");
+  // Felia V4LR: un singur lucru schimbat față de V4L_LOG (câmpul `data`); gemeni cu topicul vechi; hash-uri distincte.
+  const v4lr: Array<[string, RpcLog, RpcLog, string, (d: unknown) => boolean, boolean]> = [
+    ["V4L_NULL", V4L_NULL, V4L_TWIN_NULL, V4L_NULL_LINE, d => d === null, true],
+    ["V4L_NODATA", V4L_NODATA, V4L_TWIN_NODATA, V4L_NODATA_LINE, d => d === undefined, false],
+    ["V4L_NUM", V4L_NUM, V4L_TWIN_NUM, V4L_NUM_LINE, d => d === 7, true],
+    ["V4L_OBJ", V4L_OBJ, V4L_TWIN_OBJ, V4L_OBJ_LINE, d => typeof d === "object" && d !== null && !Array.isArray(d) && Object.keys(d).length === 0, true],
+    ["V4L_ARRAY", V4L_ARRAY, V4L_TWIN_ARRAY, V4L_ARRAY_LINE, d => Array.isArray(d) && JSON.stringify(d) === '["a","b","c"]', true],
+  ];
+  for (const [name, l, twin, line, dataOk, hasKey] of v4lr) {
+    const d = (l as unknown as { data?: unknown }).data;
+    if (!dataOk(d) || ("data" in l) !== hasKey || l.address !== V4L_LOG.address || JSON.stringify(l.topics) !== JSON.stringify(V4L_LOG.topics)) p.push(`forma logului ${name}`);
+    if (twin.topics[0] !== T_DECREASE_LIQUIDITY_V3 || twin.address !== l.address || JSON.stringify(twin.topics.slice(1)) !== JSON.stringify(l.topics.slice(1))
+      || ("data" in twin) !== hasKey || JSON.stringify((twin as unknown as { data?: unknown }).data) !== JSON.stringify(d)) p.push(`forma geamănului ${name}`);
+    if (line !== `[V4 LIQ] TKN len=0 data= tx=${l.transactionHash}`) p.push(`linia așteptată pentru ${name}`);
+  }
+  const v4lAll = [V4L_LOG, V4L_TWIN_OLD_TOPIC, ...v4lr.flatMap(([, l, t]) => [l, t])];
+  if (new Set(v4lAll.map(l => l.transactionHash)).size !== v4lAll.length) p.push("hash-uri de tranzacție V4L/V4LR duplicate");
   const ds = dsPair(POOL_D1, "uniswap");
   if (typeof ds.baseToken !== "object" || typeof ds.quoteToken !== "object") p.push("forma DexScreener: base/quote trebuie să fie obiecte");
   return p;

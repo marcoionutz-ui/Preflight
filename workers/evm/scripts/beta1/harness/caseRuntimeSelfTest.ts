@@ -40,6 +40,11 @@
  * ambele topicuri, linia lipsă / dublată / greșită, marcajul lipsă, swap sau LP înregistrat, linie de swap sau LP,
  * livrare dublă; ramura care aruncă → `[WS ERR` → HARNESS_ERROR. Niciun caz nu e retras (I8 neschimbat, I11).
  *
+ * Felia V4LR: A include cele cinci controale `C-V4-LIQ-*` (`data` null, absent, `7`, `{}`, matrice; falsul reparat dă
+ * linia `len=0` și nimic înregistrat). O dovedește clasificarea pe forma de BASELINE (`v4l-unsafe-data`): `7`/`{}` →
+ * `[WS ERR` → HARNESS_ERROR (nu CONTROL_FAILED), matricea → CONTROL_FAILED pe linie, iar șirul, `null` și absentul →
+ * CONTROL_OK (forma veche e identică pe ele). Niciun caz nu e retras (I8 neschimbat, I12).
+ *
  * TERMINARE NECONFIRMATĂ: dacă supraveghetorul nu poate confirma că un proces de caz și grupul lui nu mai au
  * procese vii, lansatorul OPREȘTE imediat orice lansare următoare, păstrează cazul și PID-ul, iar cleanup-ul
  * mărginit din `finally` oprește procesul rămas și verifică rezultatul. Secțiunea E dovedește acest comportament.
@@ -150,8 +155,8 @@ function manifestConsistency(): void {
   const ids = CASES.map(c => c.id);
   check("I1. manifestul nu are id-uri duplicate și nicio specificație incoerentă", new Set(ids).size === ids.length && CASES.every(c => specProblem(c) === null));
   const controls = CASES.filter(c => c.kind === "control");
-  check("I2. controalele din manifest sunt exact cele definite (27), toate în «filter», în același fișier",
-    controls.length === 27 && JSON.stringify(controls.map(c => c.id).sort()) === JSON.stringify(Object.keys(CONTROLS).sort())
+  check("I2. controalele din manifest sunt exact cele definite (32), toate în «filter», în același fișier",
+    controls.length === 32 && JSON.stringify(controls.map(c => c.id).sort()) === JSON.stringify(Object.keys(CONTROLS).sort())
       && controls.every(c => c.section === "filter" && c.file.endsWith("positiveControls.ts")));
   const defects = CASES.filter(c => c.kind !== "control");
   check("I3. cazurile de defect din manifest sunt exact cele ACTIVE (5), cu același fel și aceeași secțiune",
@@ -190,7 +195,20 @@ function manifestConsistency(): void {
       && Array.isArray(v4l.strict?.topics0) && v4l.strict?.topics0?.length === 2 && typeof v4l.strict?.diagLine === "string"
       && v4l.strict.diagLine.startsWith("[V4 LIQ] ") && v4l.linePrefix === v4l.strict.diagLine && v4l.expected === undefined && v4l.lp === undefined
       && v4l.twin.transactionHash !== v4l.swap.transactionHash);
+  const v4lrOk = V4LR_IDS.every(id => {
+    const d = CONTROLS[id];
+    return controls.some(m => m.id === id) && d?.kind === "v4" && d.admit === "v4" && d.pair === v4l?.pair && d.swapTopic === v4l?.swapTopic
+      && JSON.stringify(d.strict?.topics0) === JSON.stringify(v4l?.strict?.topics0)
+      && d.strict?.diagLine === `[V4 LIQ] TKN len=0 data= tx=${d.swap.transactionHash}` && d.linePrefix === d.strict.diagLine
+      && d.expected === undefined && d.lp === undefined && d.twin.transactionHash !== d.swap.transactionHash
+      && d.twin.topics[0] !== d.swapTopic && JSON.stringify(d.swap.topics) === JSON.stringify(v4l?.swap.topics);
+  });
+  const v4lrHashes = [v4l?.swap, v4l?.twin, ...V4LR_IDS.flatMap(id => [CONTROLS[id]?.swap, CONTROLS[id]?.twin])].map(l => l?.transactionHash);
+  check("I12. cele 5 controale V4LR sunt în manifest, pe același pool, kind și filtru exact ca C-V4-LIQ, cu linia exactă `len=0`; gemeni cu topicul vechi; toate cele 12 hash-uri distincte",
+    v4lrOk && new Set(v4lrHashes).size === 12 && v4lrHashes.every(h => typeof h === "string"));
 }
+
+const V4LR_IDS = ["C-V4-LIQ-NULL", "C-V4-LIQ-NODATA", "C-V4-LIQ-NUM", "C-V4-LIQ-OBJ", "C-V4-LIQ-ARRAY"];
 
 const AERO_IDS = ["C-AERO-BUY", "C-AERO-SELL", "C-AERO-SHORT", "C-AERO-SWAP-LONG", "C-AERO-SWAP-NONSTRING",
   "C-AERO-LP-ADD", "C-AERO-LP-REMOVE", "C-AERO-BURN-LONG", "C-AERO-BURN-NONSTRING"];
@@ -261,6 +279,16 @@ async function main(): Promise<void> {
     const o = v.observations;
     const twin = o.twinDelivery as { sent?: number } | undefined;
     check("A. C-V4-LIQ peste workerul fals → CONTROL_OK: trimis și primit o dată, geamănul trimis de 0 ori, base:v4 marcat doar după, o singură linie [V4 LIQ] (exactă), nimic înregistrat nicăieri",
+      v.outcome === "CONTROL_OK" && v.diagnostics?.terminationConfirmed === true && o.logsSent === 1 && twin?.sent === 0 && kindOk(o)
+        && o.diagLines === 1 && o.exactDiagLines === 1 && o.swapsAllKeys === 0 && o.lpEventsAllKeys === 0
+        && o.swapLogLinesAllChains === 0 && o.lpLogLines === 0, why(v));
+  }
+  // Felia V4LR: `data` null / absent / ne-șir peste falsul reparat → exact linia `len=0`, nimic înregistrat.
+  for (const control of V4LR_IDS) {
+    const v = await run(control, [`--control=${control}`, "--fault=none"]);
+    const o = v.observations;
+    const twin = o.twinDelivery as { sent?: number } | undefined;
+    check(`A. ${control} peste workerul fals → CONTROL_OK: trimis și primit o dată, geamănul trimis de 0 ori, base:v4 marcat doar după, o singură linie [V4 LIQ] (exactă, len=0), nimic înregistrat nicăieri`,
       v.outcome === "CONTROL_OK" && v.diagnostics?.terminationConfirmed === true && o.logsSent === 1 && twin?.sent === 0 && kindOk(o)
         && o.diagLines === 1 && o.exactDiagLines === 1 && o.swapsAllKeys === 0 && o.lpEventsAllKeys === 0
         && o.swapLogLinesAllChains === 0 && o.lpLogLines === 0, why(v));
@@ -357,6 +385,7 @@ async function main(): Promise<void> {
   await pancakeInjections();
   await aeroInjections();
   await v4lInjections();
+  await v4lrInjections();
   await defectCases();
 
   console.log("D. procese rămase");
@@ -369,8 +398,53 @@ async function main(): Promise<void> {
   await unconfirmedRegression();
 }
 
-/** A 27 + B 13 + C 10 + C' 4 + K 15 + L 27 + N 12 + F 5 + G 6 + H 9 + J 5. */
-const EXPECTED_PROCESSES = 133;
+/** A 32 + B 13 + C 10 + C' 4 + K 15 + L 27 + N 12 + O 8 + F 5 + G 6 + H 9 + J 5. */
+const EXPECTED_PROCESSES = 146;
+
+/**
+ * O. Felia V4LR: clasificarea pe forma de BASELINE a ramurii `[V4 LIQ]` (`v4l-unsafe-data`, design
+ * `BETA1_V4LR_ROBUSTNESS_DESIGN.md` rev1, §4): `7`/`{}` aruncă la `slice` → `[WS ERR` → HARNESS_ERROR (exact calea
+ * baseline-ului, NU CONTROL_FAILED); matricea nu aruncă, dar dă linia greșită → CONTROL_FAILED; șirul, `null` și absentul
+ * dau aceeași ieșire în ambele forme → CONTROL_OK (fixul nu le atinge). Plus regula existentă (ramura care aruncă) și o
+ * verificare existentă (linia lipsă) pe controalele noi.
+ */
+async function v4lrInjections(): Promise<void> {
+  console.log("O. ramura [V4 LIQ] cu data ne-șir: forma de baseline → HARNESS_ERROR pe 7/{}, CONTROL_FAILED pe matrice, neschimbat pe șir/null/absent");
+  const WS_ERR = "înainte de închidere: linie [WS ERR în captura de consolă";
+  const diag = (all: number, exact: number): string => `linii [V4 LIQ] în consolă: ${all}, dintre care identice cu linia exactă așteptată ${exact} (se cere exact 1 și 1)`;
+  const harnessErr = (v: CaseVerdict): boolean => v.outcome === "HARNESS_ERROR" && JSON.stringify(v.reasons) === JSON.stringify([WS_ERR])
+    && Object.keys(v.observations).length === 0 && v.diagnostics?.code === 0 && v.diagnostics.signal === null
+    && !v.diagnostics.timedOut && v.diagnostics.terminationConfirmed;
+  let numVerdict: CaseVerdict | null = null;
+  for (const [n, control] of [["O1", "C-V4-LIQ-NUM"], ["O2", "C-V4-LIQ-OBJ"]] as const) {
+    const v = await run(control, [`--control=${control}`, "--fault=v4l-unsafe-data"]);
+    if (n === "O1") numVerdict = v;
+    check(`${n}. ${control} + v4l-unsafe-data → HARNESS_ERROR, singurul motiv: [WS ERR, fără observații, cod 0, terminare confirmată`, harnessErr(v), why(v));
+  }
+  if (numVerdict !== null) {
+    const sm = summarize([numVerdict]);
+    check("O1b. o rulare care conține acest HARNESS_ERROR e invalidă: cod 3", sm.exitCode === 3 && sm.invalid.includes("C-V4-LIQ-NUM: HARNESS_ERROR"), JSON.stringify(sm));
+  }
+  {
+    const v = await run("C-V4-LIQ-ARRAY", ["--control=C-V4-LIQ-ARRAY", "--fault=v4l-unsafe-data"]);
+    check(`O3. C-V4-LIQ-ARRAY + v4l-unsafe-data → CONTROL_FAILED, singurul motiv: ${diag(1, 0)}`,
+      v.outcome === "CONTROL_FAILED" && JSON.stringify(v.reasons) === JSON.stringify([diag(1, 0)]), why(v));
+  }
+  for (const [n, control] of [["O4", "C-V4-LIQ"], ["O5", "C-V4-LIQ-NULL"], ["O6", "C-V4-LIQ-NODATA"]] as const) {
+    const v = await run(control, [`--control=${control}`, "--fault=v4l-unsafe-data"]);
+    check(`${n}. ${control} + v4l-unsafe-data → CONTROL_OK (forma veche e identică pe ${control === "C-V4-LIQ" ? "șir" : control === "C-V4-LIQ-NULL" ? "null" : "absent"})`,
+      v.outcome === "CONTROL_OK" && v.observations.diagLines === 1 && v.observations.exactDiagLines === 1, why(v));
+  }
+  {
+    const v = await run("C-V4-LIQ-NUM", ["--control=C-V4-LIQ-NUM", "--fault=v4l-throws"]);
+    check("O7. C-V4-LIQ-NUM + v4l-throws → HARNESS_ERROR, singurul motiv: [WS ERR (regula existentă)", harnessErr(v), why(v));
+  }
+  {
+    const v = await run("C-V4-LIQ-NULL", ["--control=C-V4-LIQ-NULL", "--fault=v4l-line-missing"]);
+    check(`O8. C-V4-LIQ-NULL + v4l-line-missing → CONTROL_FAILED, singurul motiv: ${diag(0, 0)}`,
+      v.outcome === "CONTROL_FAILED" && JSON.stringify(v.reasons) === JSON.stringify([diag(0, 0)]), why(v));
+  }
+}
 
 /**
  * N. Felia V4L: fiecare verificare a controlului `C-V4-LIQ`, provocată separat peste workerul fals, cu motivul EXACT

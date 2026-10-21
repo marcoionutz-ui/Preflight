@@ -20,6 +20,10 @@
  * (ca în produs; înainte, falsul cerea doar Swap V4), topicul e mapat la `v4` (marcajul precede ramura), iar ramura
  * scrie DOAR linia diagnostică `[V4 LIQ] …`, în forma produsului, fără nicio înregistrare. Comportamentul vechi
  * (topicul `DecreaseLiquidity` V3) devine defect injectat (`v4l-old-topic`).
+ *
+ * Felia V4LR: falsul urmează produsul REPARAT și pentru `data` ne-șir în ramura `[V4 LIQ]` (`typeof data === "string"`,
+ * altfel date goale). Forma veche a produsului (`data?.slice(2) ?? ""`) devine defect injectat (`v4l-unsafe-data`):
+ * aruncă pe `7`/`{}` (→ `[WS ERR` → HARNESS_ERROR), dă `len=1 data=c` pe matrice și e identică pe șir, `null`, absent.
  */
 
 import WebSocket from "ws";
@@ -66,6 +70,8 @@ export const FAULTS = [
   // (swap sau LP înregistrat, linie de swap sau LP); ramura aruncă.
   "v4l-old-topic", "v4l-both-topics", "v4l-line-missing", "v4l-line-dup", "v4l-line-wrong", "v4l-kind-unmapped",
   "v4l-records-swap", "v4l-records-lp", "v4l-swap-line", "v4l-lp-line", "v4l-throws",
+  // Felia V4LR (design rev1, §4): forma de baseline a ramurii `[V4 LIQ]` — `data?.slice(2) ?? ""`, fără gardă de tip.
+  "v4l-unsafe-data",
 ] as const;
 export type Fault = typeof FAULTS[number];
 
@@ -253,7 +259,9 @@ export async function loadFakeSrc(fault: Fault): Promise<SrcModules> {
         if (fault === "v4l-throws") throw new Error("ramura [V4 LIQ]: excepție injectată");
         const poolId = log.topics[1]?.toLowerCase();
         const mem4 = poolId ? memory.get(chain.id, poolId) : undefined;
-        const raw4 = typeof log.data === "string" ? log.data.slice(2) : "";
+        const raw4 = fault === "v4l-unsafe-data"
+          ? ((log.data as unknown as string | null | undefined)?.slice(2) ?? "")   // forma de baseline: aruncă pe `7`/`{}`
+          : typeof log.data === "string" ? log.data.slice(2) : "";
         if (poolId && fault === "v4l-records-swap") wsFlow.set(chain.id, poolId, [{ ts: Date.now(), isBuy: true, ethAmount: 1, usdAmount: 2_500 }]);
         if (poolId && fault === "v4l-records-lp") lpEvents.set(chain.id, poolId, [{ ts: Date.now(), isAdd: true, ethAmount: 1 }]);
         if (fault === "v4l-swap-line") console.log(`[V4 SWAP ${chain.id}] ${mem4?.symbol ?? poolId} BUY (fals)`);

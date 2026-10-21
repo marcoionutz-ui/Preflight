@@ -10,6 +10,12 @@
  * `manager.ts` ca text (gărzi de sursă), fără să le importe. Dovada pe traseul real vine din controlul `C-V4-LIQ`.
  *
  * Pe baseline (`fbafeaa`) constanta are valoarea veche: L1 și L2 pică, cu cod 1 și `FAILED_IDS: L1,L2`.
+ *
+ * Felia V4LR (design `BETA1_V4LR_ROBUSTNESS_DESIGN.md` rev1, §5): L5 = gardă de sursă LIMITATĂ la ramura `[V4 LIQ]`
+ * (de la comentariul `// ── V4 ModifyLiquidity` până la comentariul ramurii următoare): `data` ne-șir e tratat ca date
+ * goale, iar `return;` e cerut ÎN ramură. L5 PICĂ dacă oricare delimitator lipsește — niciodată verde pe o secțiune
+ * negăsită. L6 verifică garda pe un model sintetic (mutații, cu motivul exact), L7 pe sursa reală fără `return`-ul LIQ.
+ * Nu inspectează ramura V4 Swap. Pe baseline (`698c8b4`): `FAILED_IDS: L5` (L6, L7 trec: verifică garda, nu produsul).
  */
 import { readFileSync } from "node:fs";
 import * as constants from "../src/config/constants";
@@ -49,7 +55,74 @@ check("L4", "gardă de sursă: manager.ts mapează constanta la \"v4\", iar ramu
     && mgr.includes("console.log(`[V4 LIQ] ${mem4?.symbol ?? poolId} len=${raw4.length} data=${raw4.slice(0, 192)} tx=${log4.transactionHash}`);")
     && !mgr.includes(T_DECREASE_LIQUIDITY_V3) && !mgr.includes(T_MODIFY_LIQUIDITY_V4));
 
-const ALL = ["L1", "L2", "L3", "L4"];
+// ── L5–L7 (V4LR): garda ramurii LIQ, cu delimitatori obligatorii la AMBELE capete ────────────────────────────────
+// Secțiunea începe la comentariul `// ── V4 ModifyLiquidity` (exact o apariție) și se termină la comentariul URMĂTOAREI
+// ramuri (`// ── `, ex. `// ── V3 Swap`). `return;` e cerut ÎN interiorul secțiunii, după linia `raw4` — garda nu poate
+// împrumuta `return`-ul altei ramuri (cgpt P2). Lipsa oricărui delimitator → eșec, niciodată verde.
+const LIQ_START = "// ── V4 ModifyLiquidity";
+const NEXT_BRANCH = "// ── ";
+const LIQ_RAW4 = 'const raw4   = typeof log4.data === "string" ? log4.data.slice(2) : "";';
+function liqSection(src: string): { section: string | null; why: string } {
+  const starts = src.split(LIQ_START).length - 1;
+  if (starts !== 1) return { section: null, why: `comentariul de început al ramurii LIQ apare de ${starts} ori (se cere 1)` };
+  const start = src.indexOf(LIQ_START);
+  const next = src.indexOf(NEXT_BRANCH, start + LIQ_START.length);
+  if (next < 0) return { section: null, why: "delimitatorul de sfârșit (comentariul ramurii următoare) lipsește" };
+  return { section: src.slice(start, next), why: "" };
+}
+function liqGuard(src: string): { ok: boolean; why: string } {
+  const { section, why } = liqSection(src);
+  if (section === null) return { ok: false, why };
+  const raw = section.indexOf(LIQ_RAW4);
+  if (raw < 0) return { ok: false, why: "linia `raw4` cu gardă de tip lipsește din ramura LIQ" };
+  if (section.includes("log4.data?.slice")) return { ok: false, why: "ramura LIQ conține `log4.data?.slice`" };
+  if (section.indexOf("return;", raw) < 0) return { ok: false, why: "`return;` lipsește din ramura LIQ (după linia `raw4`)" };
+  return { ok: true, why: "" };
+}
+const g5 = liqGuard(mgr);
+check("L5", "gardă de sursă (ramura [V4 LIQ], delimitată la ambele capete): `data` ne-șir → date goale; `return;` în ramură; fără `log4.data?.slice`",
+  g5.ok, g5.why);
+
+// L6: garda pe un model SINTETIC al structurii (independent de produs): trece pe forma corectă și pică pe fiecare
+// mutație, cu motivul exact — inclusiv eliminarea DOAR a `return`-ului LIQ, cu `return`-ul ramurii V3 păstrat.
+const TPL = [
+  "      // ── V4 ModifyLiquidity (investigating layout) ─────",
+  "      if (liq) {",
+  `        ${LIQ_RAW4}`,
+  "        console.log(`[V4 LIQ] ...`);",
+  "        return;",
+  "      }",
+  "",
+  "      // ── V3 Swap: Uniswap V3 și PancakeSwap V3 (BETA-1 / T1) ─────",
+  "      if (v3) {",
+  "        return;",
+  "      }",
+].join("\n");
+const LIQ_RETURN = "        console.log(`[V4 LIQ] ...`);\n        return;";
+const mutations: Array<[string, string, string]> = [
+  ["fără return LIQ (return V3 păstrat)", TPL.replace(LIQ_RETURN, "        console.log(`[V4 LIQ] ...`);"), "`return;` lipsește din ramura LIQ (după linia `raw4`)"],
+  ["fără comentariul de început", TPL.replace(LIQ_START, "// V4"), "comentariul de început al ramurii LIQ apare de 0 ori (se cere 1)"],
+  ["comentariul de început dublat", TPL + "\n" + LIQ_START, "comentariul de început al ramurii LIQ apare de 2 ori (se cere 1)"],
+  ["fără ramura următoare", TPL.replace("// ── V3 Swap", "// V3 Swap"), "delimitatorul de sfârșit (comentariul ramurii următoare) lipsește"],
+  ["forma veche a lui raw4", TPL.replace(LIQ_RAW4, 'const raw4   = log4.data?.slice(2) ?? "";'), "linia `raw4` cu gardă de tip lipsește din ramura LIQ"],
+  ["`log4.data?.slice` în plus în ramură", TPL.replace("      if (liq) {", "      if (liq) { void log4.data?.slice;"), "ramura LIQ conține `log4.data?.slice`"],
+];
+const tplOk = liqGuard(TPL).ok && TPL.split("return;").length - 1 === 2;
+const badMut = mutations.filter(([, src, why]) => { const g = liqGuard(src); return g.ok || g.why !== why; }).map(([n]) => n);
+check("L6", "garda pe modelul sintetic: trece pe forma corectă, pică pe fiecare mutație cu motivul exact (inclusiv fără return LIQ, cu return V3 păstrat)",
+  tplOk && badMut.length === 0 && mutations[0][1].split("return;").length - 1 === 1, `model corect acceptat: ${tplOk}; mutații greșit tratate: ${badMut.join(", ")}`);
+
+// L7: regresia pe sursa REALĂ — elimină DOAR `return`-ul din ramura LIQ (toate celelalte `return;` din fișier rămân);
+// garda trebuie să pice. Mutația trebuie să se fi aplicat efectiv: secțiunea LIQ găsită, cu exact un `return;`.
+const sec = liqSection(mgr).section;
+const returnsInSec = sec === null ? -1 : sec.split("return;").length - 1;
+const mutated = sec !== null && returnsInSec === 1 ? mgr.replace(sec, sec.replace("return;", "")) : null;
+const fileReturns = (t: string): number => t.split("return;").length - 1;
+check("L7", "regresie pe manager.ts: fără `return`-ul LIQ (celelalte păstrate) → garda pică",
+  mutated !== null && fileReturns(mutated) === fileReturns(mgr) - 1 && !liqGuard(mutated).ok,
+  `secțiune LIQ găsită: ${sec !== null}; return; în secțiune: ${returnsInSec}`);
+
+const ALL = ["L1", "L2", "L3", "L4", "L5", "L6", "L7"];
 console.log(`\n${passed} passed, ${failedIds.length} failed (cazuri: ${ALL.length})`);
 console.log(`FAILED_IDS: ${failedIds.join(",")}`);
 if (failedIds.length > 0) process.exit(1);
