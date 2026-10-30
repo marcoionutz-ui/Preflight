@@ -488,7 +488,15 @@ export interface PreflightWsSubHealth {
   confirmedAgeSec:   number | null;
 }
 
+/** Native-price observation AT observedAt, not a current quote or availability guarantee. */
+export interface PreflightNativePriceObservation {
+  symbol: "ETH" | "BNB"; value: number | null;
+  ageSec: number | null; sourceAgeSec: number | null;
+  observedAt: number; droppedNoPrice: number;
+}
+
 export interface PreflightWorkerRuntime {
+  nativePrice?: PreflightNativePriceObservation;
   chain:       PreflightEvmChain;
   wsConnected: boolean;
   // D1 (health onestitate): vârste distincte de liveness WS (ajustate la `now` de reader).

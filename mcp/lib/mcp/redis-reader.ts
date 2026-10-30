@@ -18,7 +18,7 @@ import {
   // NF2/U9: boundary de normalizare a launch-urilor legacy (înlocuiește `JSON.parse ... as
   // PreflightSolanaLaunch`). `classify...` întoarce outcome-ul (pt. log pe rejected) + value union|null.
   classifySolanaLaunchNormalization,
-  type PreflightWorkerRuntime, type PreflightEvmChain, type MarketRegime as PreflightMarketRegime,
+  type PreflightNativePriceObservation, type PreflightWorkerRuntime, type PreflightEvmChain, type MarketRegime as PreflightMarketRegime,
   type PreflightMarketContext, type PreflightDrop,
   type PreflightMomentumEvent, type PreflightSignalPipelineEntry, type PreflightQualifiedSignal,
   type PreflightSolanaPool, type PreflightObservedCandidate, type PreflightSolanaQuoteType,
@@ -58,8 +58,11 @@ import {
 
 // ── Redis read ────────────────────────────────────────────────────────────────
 
-export async function readAllRedis(): Promise<RedisContext | null> {
-  const r = getRedis();
+export async function readAllRedis(
+  redisOverride?: Pick<NonNullable<ReturnType<typeof getRedis>>, "mget">,
+  nowOverride?: number,
+): Promise<RedisContext | null> {
+  const r = redisOverride ?? getRedis();
   if (!r) return null;
 
   // B4: pair_states/active_watch/hot_candidates/armed_entries/worker_snapshot sunt
@@ -90,7 +93,7 @@ export async function readAllRedis(): Promise<RedisContext | null> {
     r.mget(...evmChains.map(c => REDIS_KEYS.workerRuntime(c))),
   ]);
 
-  const now = Date.now();
+  const now = nowOverride ?? Date.now();
 
   // B4: merge cheile per-chain (keysets pairKey B3 → chain-disjuncte, Object.assign nu pierde nimic).
   // `mergeChainRecords` (leaf): `any`/`presentByChain` setate DOAR după parse REUȘIT — un payload corupt
@@ -267,6 +270,7 @@ export async function readAllRedis(): Promise<RedisContext | null> {
   const scanOnlyChains:    PreflightEvmChain[] = [];
   // D1 (health onestitate): vârste WS per-chain, ajustate la `now` (workerul publică vârsta la updatedAt-ul lui).
   const wsRuntimeByChain: Record<string, {
+    nativePrice?: PreflightNativePriceObservation | null;
     wsConnected: boolean; lastPongAgeSec: number | null; lastWsMessageAgeSec: number | null;
     subs: {
       v2: { confirmed: boolean; poolCount: number; lastMessageAgeSec: number | null; confirmedAgeSec: number | null } | null;
@@ -296,6 +300,7 @@ export async function readAllRedis(): Promise<RedisContext | null> {
     if (wsrt.wsConnected) wsConnectedChains.push(keyChain);
     else scanOnlyChains.push(keyChain);
     wsRuntimeByChain[keyChain] = {
+      nativePrice:         wsrt.nativePrice ?? null,
       wsConnected:         wsrt.wsConnected,
       lastPongAgeSec:      wsrt.lastPongAgeSec,
       lastWsMessageAgeSec: wsrt.lastWsMessageAgeSec,

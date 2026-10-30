@@ -33,7 +33,7 @@ const caps = bindRoleCaps();
 
 // ─────────────────────────────── B. invariantul ok ⇔ problems gol ───────────────────────────────
 {
-  const good = caps.validateService["worker-evm"]!({ REDIS_URL: "redis://localhost:6379", ENABLED_CHAINS: "base", PREFLIGHT_MODE: "LIVE", ALCHEMY_BASE_WS: "wss://base.example" });
+  const good = caps.validateService["worker-evm"]!({ REDIS_URL: "redis://localhost:6379", ENABLED_CHAINS: "base", PREFLIGHT_MODE: "LIVE", ALCHEMY_BASE_RPC: "https://base.example/rpc", ALCHEMY_BASE_WS: "wss://base.example" });
   assert(good.ok === true && good.problems.length === 0, "B1: env valid → ok:true + zero probleme");
 }
 

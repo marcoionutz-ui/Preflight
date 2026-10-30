@@ -18,6 +18,7 @@ import {
   redisUrl,
   csvKnownTokens,
   wsUrl,
+  fetchHttpUrl, present, isProd,
   type FieldSpec,
   type EnvSnapshot,
   type EnvValidation,
@@ -33,6 +34,13 @@ export const CHAIN_WS_ENV: Readonly<Record<string, string>> = Object.freeze({
   ethereum: "ALCHEMY_ETH_WS",
 } as const);
 
+/** P1: sources consumed by nativePrice.ts; ETH fallback is shared, BNB is independent. */
+export const CHAIN_PRICE_RPC_ENV: Readonly<Record<string, string>> = Object.freeze({
+  base: "ALCHEMY_BASE_RPC", arbitrum: "ALCHEMY_ARB_RPC",
+  ethereum: "ALCHEMY_ETH_RPC", bsc: "ALCHEMY_BNB_RPC",
+});
+export const ETH_PRICE_RPC_GROUP = "ETH_PRICE_RPC_GROUP";
+const ETH_PRICE_RPC_KEYS = [CHAIN_PRICE_RPC_ENV.base, CHAIN_PRICE_RPC_ENV.arbitrum, CHAIN_PRICE_RPC_ENV.ethereum];
 /**
  * `wsEnabled` efectiv (oglindește `mode.ts`): `(PREFLIGHT_MODE ?? "LIVE").toUpperCase()`; DOAR `DEV` are `wsEnabled:false`,
  * restul (BURST/LIVE/PAID_LIVE + necunoscut→LIVE) au `true`. În DEV subsistemul WS nici nu pornește (`index.ts`).
@@ -73,6 +81,9 @@ export function workerEvmEnvFields(env: EnvSnapshot): FieldSpec[] {
       fields.push({ name: CHAIN_WS_ENV[chain], required: () => true, validate: wsUrl(CHAIN_WS_ENV[chain]) });
     }
   }
+  for (const name of Object.values(CHAIN_PRICE_RPC_ENV)) {
+    fields.push({ name, required: () => false, validate: fetchHttpUrl(name) });
+  }
   return fields;
 }
 
@@ -85,14 +96,30 @@ export const WORKER_EVM_UNEXPECTED_PREFIXES: readonly string[] = Object.freeze([
  */
 export function validateWorkerEvmEnv(env: EnvSnapshot): EnvValidation {
   const base = validateEnv("worker-evm", workerEvmEnvFields(env), WORKER_EVM_UNEXPECTED_PREFIXES, env);
-  if (enabledEvmChains(env).length > 0) return base;
-  const emptyProblem: EnvProblem = {
-    name: "ENABLED_CHAINS",
-    kind: "invalid",
+  const problems: EnvProblem[] = base.ok ? [] : [...base.problems];
+  const warnings = [...base.warnings];
+  const chains = enabledEvmChains(env);
+  if (chains.length === 0) problems.push({
+    name: "ENABLED_CHAINS", kind: "invalid",
     detail: "selecție de chain-uri goală după gate-uri — worker-ul n-ar porni niciun chain",
+  });
+  const validRpc = (name: string): boolean => {
+    const value = env[name];
+    return present(value) && fetchHttpUrl(name)(value, isProd(env)) === null;
   };
-  const problems = base.ok ? [emptyProblem] : [...base.problems, emptyProblem];
-  return { ok: false, role: base.role, problems, warnings: base.warnings };
+  const priceIssue = (name: string, keys: readonly string[], detail: string): void => {
+    if (keys.some(validRpc)) return;
+    const issue: EnvProblem = { name, kind: keys.some(k => present(env[k])) ? "invalid" : "missing", detail };
+    if (wsEnabledForEnv(env)) problems.push(issue);
+    else warnings.push({ name: issue.name, detail: issue.detail });
+  };
+  if (chains.some(c => c !== "bsc")) priceIssue(ETH_PRICE_RPC_GROUP, ETH_PRICE_RPC_KEYS,
+    "preț ETH indisponibil din configurare: cere cel puțin un RPC HTTP valid din BASE/ARB/ETH");
+  if (chains.includes("bsc")) priceIssue(CHAIN_PRICE_RPC_ENV.bsc, [CHAIN_PRICE_RPC_ENV.bsc],
+    "preț BNB indisponibil din configurare: cere ALCHEMY_BNB_RPC valid");
+  return problems.length > 0
+    ? { ok: false, role: base.role, problems, warnings }
+    : { ok: true, role: base.role, warnings };
 }
 
 /**
@@ -105,4 +132,6 @@ export const WORKER_EVM_PROBLEM_KEYS: readonly string[] = Object.freeze([
   "REDIS_URL",
   "ENABLED_CHAINS",
   ...Object.values(CHAIN_WS_ENV),
+  ...Object.values(CHAIN_PRICE_RPC_ENV),
+  ETH_PRICE_RPC_GROUP,
 ]);

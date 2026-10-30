@@ -89,7 +89,7 @@ export const WORKER_ENV_INFRA_ALLOWLIST: readonly string[] = [
   "NVM_DIR", "NVM_BIN", // WSL + nvm: găsirea node/tsx la `npx tsx`
 ];
 
-/** `ALCHEMY_BASE_RPC` (opțional) valid: `https://` OBLIGATORIU, host prezent, FĂRĂ userinfo/#fragment. Cheia e în path (secret) → NU se ecouă. */
+/** `ALCHEMY_BASE_RPC` obligatoriu pentru LIVE, valid: `https://` OBLIGATORIU, host prezent, FĂRĂ userinfo/#fragment. Cheia e în path (secret) → NU se ecouă. */
 function isWorkerRpcUrl(raw: string): boolean {
   if (typeof raw !== "string" || raw.trim() === "") return false;
   let u: URL;
@@ -154,8 +154,8 @@ export function buildWorkerBaseEnv(
 ): WorkerEnvResult {
   if (!isWorkerWsUrl(alchemyBaseWs)) return { ok: false, reason: "ALCHEMY_BASE_WS lipsă/invalid (cere wss://, host, fără userinfo/#fragment) — LIVE ar rula base scan-only sau ar scurge cheia" };
   if (!isLoopbackRedisUrl(redisUrl)) return { ok: false, reason: "REDIS_URL non-loopback/schemă greșită — refuz (anti-prod)" };
-  // RPC opțional: dacă e furnizat, TREBUIE valid (https, host, fără userinfo/#fragment) — altfel config fail (NU ecouă cheia).
-  if (alchemyBaseRpc !== undefined && !isWorkerRpcUrl(alchemyBaseRpc)) return { ok: false, reason: "ALCHEMY_BASE_RPC invalid (cere https://, host, fără userinfo/#fragment)" };
+  // P1: RPC obligatoriu pentru workerul LIVE; trebuie valid (https, host, fără userinfo/#fragment) — altfel config fail (NU ecouă cheia).
+  if (alchemyBaseRpc === undefined || !isWorkerRpcUrl(alchemyBaseRpc)) return { ok: false, reason: "ALCHEMY_BASE_RPC lipsă/invalid (cere https://, host, fără userinfo/#fragment)" };
   // canaryRunId opțional: dacă e furnizat, TREBUIE token opac strict (anti-injecție env) — altfel config fail (NU ecouă valoarea).
   if (canaryRunId !== undefined && !isCanaryRunId(canaryRunId)) return { ok: false, reason: "CANARY_RUN_ID invalid (cere [A-Za-z0-9_-], 1..128) — refuz injecția în env-ul worker" };
   // ⭐ ALLOWLIST: din baseEnv trece DOAR infrastructura (nimic altceva — niciun secret, nici măcar config workerul citit
@@ -168,7 +168,7 @@ export function buildWorkerBaseEnv(
   env.PREFLIGHT_MODE  = "LIVE";        // control — WS-live (nu scan-only tăcut)
   env.ALCHEMY_BASE_WS = alchemyBaseWs; // control — cheia validată
   env.REDIS_URL       = redisUrl;      // control — loopback validat
-  if (alchemyBaseRpc !== undefined) env.ALCHEMY_BASE_RPC = alchemyBaseRpc; // config închis aprobat (RPC HTTP opțional)
+  if (alchemyBaseRpc !== undefined) env.ALCHEMY_BASE_RPC = alchemyBaseRpc; // config închis aprobat (RPC HTTP obligatoriu pentru LIVE)
   // ⭐ CANARY_RUN_ID: injectat EXPLICIT ca set închis (nu din baseEnv). Workerul îl publică în heartbeat-ul worker_runtime;
   //   bariera de generație a release-gate-ului cere EXACT acest id (dovada că heartbeat-ul avansat e al procesului nostru).
   //   E DUPĂ allowlist → chiar dacă baseEnv-ul ar conține din greșeală un CANARY_RUN_ID, ăsta e cel autoritar (sau absent).
@@ -189,7 +189,7 @@ export interface WorkerLaunch {
   cwd:           string;
   baseEnv:        Record<string, string>;  // filtrat de buildWorkerBaseEnv la ALLOWLIST-ul de infra (niciun secret trece)
   alchemyBaseWs:  string;                   // ALCHEMY_BASE_WS (secret în path); validat wss înainte de spawn
-  alchemyBaseRpc?: string;                  // ⭐ config ÎNCHIS opțional (RPC HTTP) — validat https; NU un `extraEnv` free-form
+  alchemyBaseRpc?: string;                  // ⭐ config ÎNCHIS (RPC HTTP obligatoriu pentru LIVE) — validat https; NU un `extraEnv` free-form
   canaryRunId?:   string;                   // ⭐ marker de identitate a runului (config ÎNCHIS) — injectat ca CANARY_RUN_ID; validat token opac
   onDebugLine?:   (line: string) => void;   // debug OPT-IN (stderr redactat linie cu linie); fără el, stderr = ignore
 }

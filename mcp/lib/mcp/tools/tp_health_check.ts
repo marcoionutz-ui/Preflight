@@ -1,9 +1,18 @@
+import type { PreflightNativePriceObservation } from "@preflight/schema";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { readAllRedis, safeMinAge, readQuoteOracleHealth, readQuotePriceHealth, readSolanaIndexerStats } from "../redis-reader";
 import { keyFreshness, aggregateKnownFreshness, completeOnKnownChains, isWsStreamStale, classifyWsSubs } from "../health-freshness";
 import { mcpResponse, mcpErr, ERR, sanitizeToolError, PREFLIGHT_OUTPUT_SCHEMA } from "../errors";
 
-export function registerHealthCheck(server: McpServer) {
+type HealthReads = {
+  readAllRedis: typeof readAllRedis;
+  readQuoteOracleHealth: typeof readQuoteOracleHealth;
+  readQuotePriceHealth: typeof readQuotePriceHealth;
+  readSolanaIndexerStats: typeof readSolanaIndexerStats;
+};
+export function registerHealthCheck(server: McpServer, reads: HealthReads = {
+  readAllRedis, readQuoteOracleHealth, readQuotePriceHealth, readSolanaIndexerStats,
+}) {
   server.registerTool(
     "tp_health_check",
     {
@@ -12,6 +21,7 @@ export function registerHealthCheck(server: McpServer) {
 
 Returns worker version, data freshness for all Redis keys, and high-level stats:
 total pairs tracked, phase distribution, active watch/hot/armed counts.
+Native-price observations, when present, are at nativePrice.observedAt (ages are frozen at that timestamp), not live quotes.
 
 Use this first to verify the worker is running before calling other tools.`,
       inputSchema: {},
@@ -21,9 +31,9 @@ Use this first to verify the worker is running before calling other tools.`,
     async () => {
       try {
         const [ctx, quoteOracleHealth, quotePriceHealth] = await Promise.all([
-          readAllRedis(),
-          readQuoteOracleHealth(),
-          readQuotePriceHealth(),
+          reads.readAllRedis(),
+          reads.readQuoteOracleHealth(),
+          reads.readQuotePriceHealth(),
         ]);
         if (!ctx) return mcpErr(ERR.REDIS_DOWN, "Redis not connected");
 
@@ -58,7 +68,7 @@ Use this first to verify the worker is running before calling other tools.`,
         // per-chain (peste TOATE chain-urile cunoscute, nu doar live) — vârstă snapshot + quality + live.
         type WsSubView = { confirmed: boolean; poolCount: number; lastMessageAgeSec: number | null; confirmedAgeSec: number | null } | null;
         type WsSubStateView = { v2: string | null; v3: string | null; v4: string | null };
-        const perChainWorker: Record<string, { ageSec: number | null; quality: string; live: boolean; wsConnected: boolean; lastPongAgeSec: number | null; lastWsMessageAgeSec: number | null; subs: { v2: WsSubView; v3: WsSubView; v4: WsSubView } | null; subsState: WsSubStateView | null; subsSummary: string | null }> = {};
+        const perChainWorker: Record<string, { nativePrice: PreflightNativePriceObservation | null; ageSec: number | null; quality: string; live: boolean; wsConnected: boolean; lastPongAgeSec: number | null; lastWsMessageAgeSec: number | null; subs: { v2: WsSubView; v3: WsSubView; v4: WsSubView } | null; subsState: WsSubStateView | null; subsSummary: string | null }> = {};
         // Part B: semnal SOFT la nivel de SUBSCRIPȚIE (chain:kind), din clasificarea CROSS-KIND — prinde
         // „V2 mort, V3/V4 curg" pe care agregatul per-chain (wsStreamStaleChains) îl ascunde.
         const wsStreamStaleSubs: string[] = [];
@@ -76,6 +86,8 @@ Use this first to verify the worker is running before calling other tools.`,
             live:    liveChains.includes(c),
             // D1 (health onestitate): pong = transport viu; lastWsMessage = data stream viu. wsConnected + pong
             // recent + lastWsMessageAgeSec mare = subscripții moarte tăcut (sau piață liniștită).
+            // Age/value are at nativePrice.observedAt, not a live quote at request time.
+            nativePrice:         wsrt?.nativePrice ?? null,
             wsConnected:         wsrt?.wsConnected ?? false,
             lastPongAgeSec:      wsrt?.lastPongAgeSec ?? null,
             lastWsMessageAgeSec: wsrt?.lastWsMessageAgeSec ?? null,
@@ -213,7 +225,7 @@ Use this first to verify the worker is running before calling other tools.`,
 		  } : null,
 		  quoteOracleHealth: Object.keys(quoteOracleHealth).length ? quoteOracleHealth : null,
 		  quotePriceHealth:  Object.keys(quotePriceHealth).length  ? quotePriceHealth  : null,
-		  solana: await readSolanaIndexerStats(now).catch(() => null),
+		  solana: await reads.readSolanaIndexerStats(now).catch(() => null),
 		  pipelineCoverage: pipelineCoverage ? {
 			savedAgeSec: Math.round((now - pipelineCoverage.savedAt) / 1000),
 			chains: Object.fromEntries(

@@ -21,7 +21,7 @@ const WS_ETH  = "wss://eth-mainnet.example/v2/k";
 
 /** env cu default (base,arbitrum) + ambele WS + Redis. */
 function baseEnv(over: EnvSnapshot = {}): EnvSnapshot {
-  return { REDIS_URL: "rediss://r:6379", ALCHEMY_BASE_WS: WS_BASE, ALCHEMY_ARB_WS: WS_ARB, ...over };
+  return { REDIS_URL: "rediss://r:6379", ALCHEMY_BASE_RPC: "https://base.example/rpc", ALCHEMY_BASE_WS: WS_BASE, ALCHEMY_ARB_WS: WS_ARB, ...over };
 }
 function pnames(v: ReturnType<typeof validateWorkerEvmEnv>): string[] { return v.ok ? [] : v.problems.map((p) => p.name); }
 function pkind(v: ReturnType<typeof validateWorkerEvmEnv>, name: string): string | undefined {
@@ -69,21 +69,21 @@ check("11. ⭐⭐ ALCHEMY_BASE_WS http:// → problem invalid (trebuie ws/wss)",
 })());
 check("12. ⭐⭐ ws:// (local) acceptat", validateWorkerEvmEnv(baseEnv({ ALCHEMY_BASE_WS: "ws://localhost:8545" })).ok === true);
 check("13. ⭐⭐⭐ ENABLED_CHAINS=base → DOAR ALCHEMY_BASE_WS cerut (arbitrum absent → NU e problem)", (() => {
-  const v = validateWorkerEvmEnv({ REDIS_URL: "rediss://r:6379", ENABLED_CHAINS: "base", ALCHEMY_BASE_WS: WS_BASE });
+  const v = validateWorkerEvmEnv({ REDIS_URL: "rediss://r:6379", ALCHEMY_BASE_RPC: "https://base.example/rpc", ALCHEMY_BNB_RPC: "https://bsc.example/rpc", ENABLED_CHAINS: "base", ALCHEMY_BASE_WS: WS_BASE });
   return v.ok === true;
 })());
 check("14. ⭐⭐⭐ id 'bsc' → cere ALCHEMY_BNB_WS (naming inconsistent, 1:1 cu chains.ts)", (() => {
-  const withoutWs = validateWorkerEvmEnv({ REDIS_URL: "rediss://r:6379", ENABLED_CHAINS: "bsc" });
-  const withWs    = validateWorkerEvmEnv({ REDIS_URL: "rediss://r:6379", ENABLED_CHAINS: "bsc", ALCHEMY_BNB_WS: WS_BNB });
+  const withoutWs = validateWorkerEvmEnv({ REDIS_URL: "rediss://r:6379", ALCHEMY_BASE_RPC: "https://base.example/rpc", ALCHEMY_BNB_RPC: "https://bsc.example/rpc", ENABLED_CHAINS: "bsc" });
+  const withWs    = validateWorkerEvmEnv({ REDIS_URL: "rediss://r:6379", ALCHEMY_BASE_RPC: "https://base.example/rpc", ALCHEMY_BNB_RPC: "https://bsc.example/rpc", ENABLED_CHAINS: "bsc", ALCHEMY_BNB_WS: WS_BNB });
   return withoutWs.ok === false && pkind(withoutWs, "ALCHEMY_BNB_WS") === "missing" && withWs.ok === true;
 })());
 check("15. ⭐⭐⭐ ethereum shadow-first: în ENABLED_CHAINS dar fără INDEXER_ENABLE_ETHEREUM=1 → ALCHEMY_ETH_WS NU e cerut", (() => {
-  const v = validateWorkerEvmEnv({ REDIS_URL: "rediss://r:6379", ENABLED_CHAINS: "base,ethereum", ALCHEMY_BASE_WS: WS_BASE });
+  const v = validateWorkerEvmEnv({ REDIS_URL: "rediss://r:6379", ALCHEMY_BASE_RPC: "https://base.example/rpc", ALCHEMY_BNB_RPC: "https://bsc.example/rpc", ENABLED_CHAINS: "base,ethereum", ALCHEMY_BASE_WS: WS_BASE });
   return v.ok === true && !pnames(v).includes("ALCHEMY_ETH_WS");
 })());
 check("16. ⭐⭐⭐ ethereum activat (INDEXER_ENABLE_ETHEREUM=1) → ALCHEMY_ETH_WS OBLIGATORIU", (() => {
-  const missing = validateWorkerEvmEnv({ REDIS_URL: "rediss://r:6379", ENABLED_CHAINS: "base,ethereum", INDEXER_ENABLE_ETHEREUM: "1", ALCHEMY_BASE_WS: WS_BASE });
-  const ok      = validateWorkerEvmEnv({ REDIS_URL: "rediss://r:6379", ENABLED_CHAINS: "base,ethereum", INDEXER_ENABLE_ETHEREUM: "1", ALCHEMY_BASE_WS: WS_BASE, ALCHEMY_ETH_WS: WS_ETH });
+  const missing = validateWorkerEvmEnv({ REDIS_URL: "rediss://r:6379", ALCHEMY_BASE_RPC: "https://base.example/rpc", ALCHEMY_BNB_RPC: "https://bsc.example/rpc", ENABLED_CHAINS: "base,ethereum", INDEXER_ENABLE_ETHEREUM: "1", ALCHEMY_BASE_WS: WS_BASE });
+  const ok      = validateWorkerEvmEnv({ REDIS_URL: "rediss://r:6379", ALCHEMY_BASE_RPC: "https://base.example/rpc", ALCHEMY_BNB_RPC: "https://bsc.example/rpc", ENABLED_CHAINS: "base,ethereum", INDEXER_ENABLE_ETHEREUM: "1", ALCHEMY_BASE_WS: WS_BASE, ALCHEMY_ETH_WS: WS_ETH });
   return missing.ok === false && pkind(missing, "ALCHEMY_ETH_WS") === "missing" && ok.ok === true;
 })());
 check("17. ⭐⭐⭐ multi-lipsă: base+arb pornite, ambele WS lipsă → AMBELE probleme colectate", (() => {
@@ -101,11 +101,11 @@ check("19. ⭐⭐ REDIS_URL http:// → invalid", (() => {
   return v.ok === false && pkind(v, "REDIS_URL") === "invalid";
 })());
 check("20. ⭐⭐⭐ ENABLED_CHAINS cu token necunoscut ('base,polygon') → warning, dar base cere tot WS-ul lui", (() => {
-  const v = validateWorkerEvmEnv({ REDIS_URL: "rediss://r:6379", ENABLED_CHAINS: "base,polygon", ALCHEMY_BASE_WS: WS_BASE });
+  const v = validateWorkerEvmEnv({ REDIS_URL: "rediss://r:6379", ALCHEMY_BASE_RPC: "https://base.example/rpc", ALCHEMY_BNB_RPC: "https://bsc.example/rpc", ENABLED_CHAINS: "base,polygon", ALCHEMY_BASE_WS: WS_BASE });
   return v.ok === true && wnames(v).includes("ENABLED_CHAINS");
 })());
 check("21. ⭐⭐ mesajul ENABLED_CHAINS NU ecouă valoarea ('polygon' nu apare) — anti-leak", (() => {
-  const v = validateWorkerEvmEnv({ REDIS_URL: "rediss://r:6379", ENABLED_CHAINS: "base,polygon", ALCHEMY_BASE_WS: WS_BASE });
+  const v = validateWorkerEvmEnv({ REDIS_URL: "rediss://r:6379", ALCHEMY_BASE_RPC: "https://base.example/rpc", ALCHEMY_BNB_RPC: "https://bsc.example/rpc", ENABLED_CHAINS: "base,polygon", ALCHEMY_BASE_WS: WS_BASE });
   const s = formatEnvValidation(v);
   return !/polygon/.test(s) && /ENABLED_CHAINS/.test(s);
 })());
@@ -114,9 +114,9 @@ check("21. ⭐⭐ mesajul ENABLED_CHAINS NU ecouă valoarea ('polygon' nu apare)
 check("22. ⭐⭐ CHAIN_WS_ENV: bsc→ALCHEMY_BNB_WS, base→ALCHEMY_BASE_WS, arbitrum→ALCHEMY_ARB_WS, ethereum→ALCHEMY_ETH_WS", (() =>
   CHAIN_WS_ENV.bsc === "ALCHEMY_BNB_WS" && CHAIN_WS_ENV.base === "ALCHEMY_BASE_WS"
   && CHAIN_WS_ENV.arbitrum === "ALCHEMY_ARB_WS" && CHAIN_WS_ENV.ethereum === "ALCHEMY_ETH_WS")());
-check("23. ⭐⭐ workerEvmEnvFields DERIVAT din env: base-only (mod LIVE) → 3 câmpuri (REDIS_URL, ENABLED_CHAINS, ALCHEMY_BASE_WS)", (() => {
+check("23. ⭐⭐ workerEvmEnvFields DERIVAT din env: base-only (mod LIVE) → 7 câmpuri (Redis, chains, WS și cele 4 RPC opționale)", (() => {
   const f = workerEvmEnvFields({ ENABLED_CHAINS: "base" }).map((x) => x.name);
-  return f.length === 3 && f.includes("REDIS_URL") && f.includes("ENABLED_CHAINS") && f.includes("ALCHEMY_BASE_WS") && !f.includes("ALCHEMY_ARB_WS");
+  return f.length === 7 && f.includes("REDIS_URL") && f.includes("ENABLED_CHAINS") && f.includes("ALCHEMY_BASE_WS") && !f.includes("ALCHEMY_ARB_WS");
 })());
 
 // ── fix cgpt #1: WS obligatoriu DOAR când modul are WS activ (mode.ts: DEV → wsEnabled:false) ──────
@@ -124,9 +124,9 @@ check("24. ⭐⭐⭐ PREFLIGHT_MODE=DEV + base pornit, FĂRĂ WS → ok (DEV nu 
   const v = validateWorkerEvmEnv({ REDIS_URL: "rediss://r:6379", PREFLIGHT_MODE: "DEV", ENABLED_CHAINS: "base" });
   return v.ok === true;
 })());
-check("25. ⭐⭐⭐ DEV: workerEvmEnvFields NU adaugă niciun câmp ALCHEMY_*_WS (doar REDIS_URL + ENABLED_CHAINS)", (() => {
+check("25. ⭐⭐⭐ DEV: workerEvmEnvFields NU adaugă niciun câmp ALCHEMY_*_WS (Redis, chains și RPC opționale)", (() => {
   const f = workerEvmEnvFields({ PREFLIGHT_MODE: "dev", ENABLED_CHAINS: "base,arbitrum" }).map((x) => x.name);
-  return f.length === 2 && !f.some((n) => n.startsWith("ALCHEMY_"));
+  return f.length === 6 && !f.some((n) => n.endsWith("_WS"));
 })());
 check("26. ⭐⭐ BURST (wsEnabled) tot cere WS (nu doar LIVE): base fără WS → missing", (() => {
   const v = validateWorkerEvmEnv({ REDIS_URL: "rediss://r:6379", PREFLIGHT_MODE: "BURST", ENABLED_CHAINS: "base" });
@@ -139,15 +139,15 @@ check("27. ⭐⭐ wsEnabledForEnv: DEV→false; LIVE/BURST/PAID_LIVE/absent/necu
 
 // ── fix cgpt #2: selecție efectivă goală → problem (absența listei păstrează default-ul) ───────────
 check("28. ⭐⭐⭐ ENABLED_CHAINS=\"\" → problem (selecție goală; worker n-ar porni niciun chain)", (() => {
-  const v = validateWorkerEvmEnv({ REDIS_URL: "rediss://r:6379", ENABLED_CHAINS: "" });
+  const v = validateWorkerEvmEnv({ REDIS_URL: "rediss://r:6379", ALCHEMY_BASE_RPC: "https://base.example/rpc", ALCHEMY_BNB_RPC: "https://bsc.example/rpc", ENABLED_CHAINS: "" });
   return v.ok === false && v.problems.some((p) => p.name === "ENABLED_CHAINS" && p.kind === "invalid");
 })());
 check("29. ⭐⭐⭐ ENABLED_CHAINS=\" , , \" → problem (selecție goală)", (() => {
-  const v = validateWorkerEvmEnv({ REDIS_URL: "rediss://r:6379", ENABLED_CHAINS: " , , " });
+  const v = validateWorkerEvmEnv({ REDIS_URL: "rediss://r:6379", ALCHEMY_BASE_RPC: "https://base.example/rpc", ALCHEMY_BNB_RPC: "https://bsc.example/rpc", ENABLED_CHAINS: " , , " });
   return v.ok === false && v.problems.some((p) => p.name === "ENABLED_CHAINS");
 })());
 check("30. ⭐⭐⭐ ENABLED_CHAINS=\"ethereum\" fără gate → problem (0 chain-uri după shadow-first)", (() => {
-  const v = validateWorkerEvmEnv({ REDIS_URL: "rediss://r:6379", ENABLED_CHAINS: "ethereum" });
+  const v = validateWorkerEvmEnv({ REDIS_URL: "rediss://r:6379", ALCHEMY_BASE_RPC: "https://base.example/rpc", ALCHEMY_BNB_RPC: "https://bsc.example/rpc", ENABLED_CHAINS: "ethereum" });
   return v.ok === false && v.problems.some((p) => p.name === "ENABLED_CHAINS");
 })());
 check("31. ⭐⭐⭐ ENABLED_CHAINS ABSENT → default base,arbitrum → NU e problem de selecție goală (cu WS → ok)", (() => {

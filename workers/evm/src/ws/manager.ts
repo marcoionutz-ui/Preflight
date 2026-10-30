@@ -4,6 +4,7 @@
  */
 
 import WebSocket from "ws";
+import { recordNoPriceDrop } from "../infra/noPrice";
 import type { ChainConfig } from "../config/chains";
 import { isShuttingDown, beginJob, closeSocketsBounded } from "../lib/lifecycle";
 import {
@@ -126,7 +127,11 @@ function recordV2PoolSwap(
   if (!base2 || !quote2) return;
 
   const qflow2 = getQuoteFlowAsEth(chain, base2, quote2, deltas.amount0, deltas.amount1);
-  if (!qflow2.ok || qflow2.ethAmount <= 0) return;
+  if (!qflow2.ok) {
+    if (qflow2.reason === "no-price") recordNoPriceDrop(chain.id);
+    return;
+  }
+  if (qflow2.ethAmount <= 0) return;
 
   recordSwap(chain.id, pairAddress, qflow2.isBuy, qflow2.ethAmount, qflow2.usdAmount);
   console.log(`[V2 SWAP ${chain.id}] ${mem.symbol} ${qflow2.isBuy ? "BUY" : "SELL"} quote=${qflow2.quote} nativeEq:${qflow2.ethAmount.toFixed(4)} usd:$${qflow2.usdAmount.toFixed(0)} swapVariant=${variant}`);
@@ -324,6 +329,7 @@ export function connectChainWebSocket(chain: ChainConfig): void {
         const [v4a0, v4a1] = toPoolConventionAmounts(amount0, amount1, true);
         const qflow4 = getQuoteFlowAsEth(chain, baseToken, quoteToken, v4a0, v4a1);
         if (!qflow4.ok) {
+          if (qflow4.reason === "no-price") { recordNoPriceDrop(chain.id); return; }
           console.log(`[V4 SKIP] ${memV4.symbol} no WETH/USDC side base=${baseToken} quote=${quoteToken}`);
           return;
         }
@@ -377,7 +383,10 @@ export function connectChainWebSocket(chain: ChainConfig): void {
 
         // Convenția POOL în ambele variante → direct, fără negare.
         const qflow3 = getQuoteFlowAsEth(chain, base3, quote3, dec3.amount0, dec3.amount1);
-        if (!qflow3.ok) return;
+        if (!qflow3.ok) {
+          if (qflow3.reason === "no-price") recordNoPriceDrop(chain.id);
+          return;
+        }
 
         if (qflow3.ethAmount > 0) {
           recordSwap(chain.id, pairAddr3, qflow3.isBuy, qflow3.ethAmount, qflow3.usdAmount);

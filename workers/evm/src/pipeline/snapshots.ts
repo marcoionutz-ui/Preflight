@@ -5,6 +5,7 @@
  */
 
 import type { Redis } from "ioredis";
+import { queueWorkerRuntime } from "./workerRuntime";
 import {
   activeWatch, hotCandidates, memory, wsFlow, wsClients,
   wsLastPongAt, wsLastMessageAt, wsLastMessageAtByKind, scopedConfirmedAt, scopedSubStore,
@@ -77,7 +78,7 @@ export async function writeAllSnapshots(r: Redis): Promise<void> {
   };
   for (const c of CHAINS) {
     const ws = wsClients.get(c.id);
-    runtimePipe.set(REDIS_KEYS.workerRuntime(c.id), JSON.stringify({
+    queueWorkerRuntime(runtimePipe, {
       chain:       c.id,
       wsConnected: ws?.readyState === WebSocket.OPEN,
       // D1 (health onestitate): două semnale DISTINCTE. `lastPongAgeSec` = transportul WS răspunde la ping
@@ -91,7 +92,7 @@ export async function writeAllSnapshots(r: Redis): Promise<void> {
       updatedAt:   runtimeNow,
       // 12.5c-4: marker de identitate — `{canaryRunId}` sub runnerul canary, altfel `{}` (spread no-op → JSON legacy).
       ...canaryMark,
-    }), "EX", SNAPSHOT_TTL_SEC);
+    }, SNAPSHOT_TTL_SEC);
   }
   await runtimePipe.exec();
   await writeDropsAndEvents(r);

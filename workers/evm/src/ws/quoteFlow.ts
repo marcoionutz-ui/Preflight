@@ -178,7 +178,7 @@ export function getQuoteFlowAsEth(
   quoteToken: string,
   amount0:    bigint,
   amount1:    bigint,
-): { ok: boolean; ethAmount: number; usdAmount: number; isBuy: boolean; quote: string | null } {
+): { ok: boolean; ethAmount: number; usdAmount: number; isBuy: boolean; quote: string | null; reason?: "no-quote" | "no-price" } {
   const base   = baseToken.toLowerCase();
   const quoteT = quoteToken.toLowerCase();
   const token0 = base < quoteT ? base : quoteT;
@@ -209,7 +209,7 @@ export function getQuoteFlowAsEth(
   const quoteMetaT = quoteMetaFor(quoteT);
   const quoteMeta  = baseMeta ?? quoteMetaT;
 
-  if (!quoteMeta) return { ok: false, ethAmount: 0, usdAmount: 0, isBuy: false, quote: null };
+  if (!quoteMeta) return { ok: false, ethAmount: 0, usdAmount: 0, isBuy: false, quote: null, reason: "no-quote" };
 
   const quoteAddr   = baseMeta ? base : quoteT;
   const amt         = amountFor(quoteAddr);
@@ -223,7 +223,7 @@ export function getQuoteFlowAsEth(
   // deci fără un preț valid rezultatul ar fi NaN/Infinity/inventat → ok:false.
   const nativePrice = getNativePrice(nativeSymbol);
   if (nativePrice === null) {
-    return { ok: false, ethAmount: 0, usdAmount: 0, isBuy: false, quote: quoteMeta.symbol };
+    return { ok: false, ethAmount: 0, usdAmount: 0, isBuy: false, quote: quoteMeta.symbol, reason: "no-price" };
   }
   const ethAmount = quoteMeta.kind === "native" ? quoteAmount : quoteAmount / nativePrice;
   const usdAmount = quoteMeta.kind === "stable" ? quoteAmount : quoteAmount * nativePrice;

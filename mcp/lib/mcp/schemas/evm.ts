@@ -299,6 +299,8 @@ const WsSubHealthSchema = z.object({
 
 // worker_runtime:{chain} = PreflightWorkerRuntime — chain/updatedAt/wsConnected TOATE required.
 export const WorkerRuntimeSchema = z.object({
+  // P1: validate this optional leaf separately so bad price telemetry cannot drop healthy WS.
+  nativePrice: z.unknown().optional(),
   chain:       z.string(),
   updatedAt:   z.number(),
   wsConnected: z.boolean(),

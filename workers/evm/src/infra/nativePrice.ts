@@ -55,6 +55,18 @@ export function getNativePrice(nativeSymbol: NativeSymbol): number | null {
   return resolveNativePrice(s.value, s.updatedAt, Date.now(), NATIVE_PRICE_MAX_AGE_MS);
 }
 
+/** P1: observation only; no fetch, mutation or extra oracle-freshness policy. */
+export interface NativePriceStatus { value: number | null; ageSec: number | null; sourceAgeSec: number | null; }
+export function getNativePriceStatus(symbol: NativeSymbol, now = Date.now()): NativePriceStatus {
+  const s = state[symbol.toLowerCase()];
+  const age = (at: number | null | undefined): number | null =>
+    typeof at === "number" && Number.isFinite(at) && Number.isFinite(now) && now >= at
+      ? Math.floor((now - at) / 1000) : null;
+  return {
+    value: s ? resolveNativePrice(s.value, s.updatedAt, now, NATIVE_PRICE_MAX_AGE_MS) : null,
+    ageSec: age(s?.updatedAt), sourceAgeSec: age(s?.sourceUpdatedAt),
+  };
+}
 // backward compat — prețul ETH sau `null` dacă stale/never-fetched.
 export function getEthPrice(): number | null {
   return getNativePrice("ETH");

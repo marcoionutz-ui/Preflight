@@ -4,7 +4,7 @@
  */
 
 import type {
-  PreflightMarketContext, PreflightDrop,
+  PreflightNativePriceObservation, PreflightMarketContext, PreflightDrop,
   PreflightMomentumEvent, PreflightSignalPipelineEntry, PreflightQualifiedSignal,
   PreflightPairState, PreflightMemoryEntry, PreflightWorkerSnapshot,
   PreflightLifecycleEntry, PreflightPipelineCoverage, PreflightScannerStats,
@@ -188,6 +188,7 @@ export interface RedisContext {
   // D1 (health onestitate): vârste WS per-chain (pong = transport, lastWsMessage = data stream), ajustate la now.
   // Part B: `subs` = sănătatea per-kind (v2/v3/v4) a subscripțiilor scoped; `null` = worker vechi (fără wsSubs).
   wsRuntimeByChain:       Record<string, {
+    nativePrice?: PreflightNativePriceObservation | null;
     wsConnected:         boolean;
     lastPongAgeSec:      number | null;
     lastWsMessageAgeSec: number | null;

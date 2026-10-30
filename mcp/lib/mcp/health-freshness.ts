@@ -1,3 +1,5 @@
+import type { PreflightNativePriceObservation } from "@preflight/schema";
+import { normalizeNativePriceObservation } from "./nativePriceObservation";
 /**
  * lib/mcp/health-freshness.ts — E14 + E15 (reporting honesty pentru tp_health_check & tp_recent_pipeline_drops).
  *
@@ -192,6 +194,7 @@ export function adjustWsAgeSec(published: unknown, runtimeAgeSec: number): numbe
 }
 
 export interface WsRuntimeRaw {
+  nativePrice?: unknown;
   chain?:              unknown;
   updatedAt?:          unknown;
   wsConnected?:        unknown;
@@ -201,6 +204,7 @@ export interface WsRuntimeRaw {
 }
 
 export interface WsRuntimeEntry {
+  nativePrice?: PreflightNativePriceObservation | null;
   updatedAt:           number;
   wsConnected:         boolean;
   lastPongAgeSec:      number | null;
@@ -241,6 +245,7 @@ export function resolveWsRuntime(
     : null;
   return {
     updatedAt,
+    nativePrice: normalizeNativePriceObservation(wr.nativePrice, keyChain, updatedAt),
     wsConnected:         wr.wsConnected === true,
     lastPongAgeSec:      adjustWsAgeSec(wr.lastPongAgeSec, rtAgeSec),
     lastWsMessageAgeSec: adjustWsAgeSec(wr.lastWsMessageAgeSec, rtAgeSec),
