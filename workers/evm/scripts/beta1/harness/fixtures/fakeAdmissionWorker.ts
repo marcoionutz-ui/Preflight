@@ -7,13 +7,16 @@
  *     routing-only a pool-urilor urmărite dispărute din scan — D5), pool fără preț ignorat, pool cu preț → watch
  *     FRESH + rundă de reabonare 500/800/1100 ms (limitată la 2 s) + GoPlus, apoi subscrierile v4, v3, v2;
  *   - `runDsBoostedRefresh()` → boosted → token-pairs → follow-list; `runFollowRefresh()` → Gecko `pools/<addr>` →
- *     același `processPool`, care NU scrie în hărți (M1/M2 la baseline);
+ *     (M12: falsul urmează produsul REPARAT) admiterea în hartă ÎNAINTEA `processPool`, cu ștergerea markerului
+ *     routing-only și datele proaspete ale răspunsului; comportamentul vechi (fără admitere, M1/M2) e defectul
+ *     injectat `m12-unadmitted`;
  *   - subscrierile: V3/V4 doar membrii hărților urmăriți; V2 restul, cu `length === 42`; listă goală → dezabonarea
  *     subscripției confirmate; înlocuire → `eth_unsubscribe` al celei vechi la confirmarea celei noi;
  *   - livrarea: swap V2 din `watchedPoolCache`, V3 doar din `v3PoolMap`, V4 doar din `v4PoolMap`;
  *   - (rev2) subscrierile iau doar intrările lanțului `base` (ca produsul: `entryChain === chain.id`); GoPlus își curăță
  *     timerul de abort la primirea răspunsului, ÎNAINTEA citirii corpului (packages/risk-layer/src/goplus.ts).
- * Defectele (`fault`) sunt singurul lucru stricat deliberat; fiecare e legat de un control al self-testului.
+ * Defectele (`fault`) sunt singurul lucru stricat deliberat; fiecare e legat de un control al self-testului. (M12 rev2)
+ * Se pot combina cu `+` (ex. `m12-unadmitted+extra-swap`): fiecare componentă trebuie să fie în `A2_FAULTS`.
  * Folosește `fetch`-ul global (stubul gărzii) și timerele globale (observate) — exact ca produsul.
  */
 
@@ -24,12 +27,15 @@ import {
   URL_TRENDING_1, URL_TRENDING_2, URL_NEW_POOLS, URL_DS_BOOSTED, urlGeckoPool, urlDsTokenPairs, urlGoPlus,
   V2_TOPICS0, V3_TOPICS0, V4_TOPICS0, V4_POOL_MANAGER_BASE, SYM_TARGET,
 } from "../admissionFixtures";
-import { T_SWAP_V2, T_SWAP_V3, T_SWAP_V4 } from "../evmFixtures";
+import { T_SWAP_V2, T_SWAP_V3, T_SWAP_V4, T_FOREIGN } from "../evmFixtures";
 
 export const A2_FAULTS = [
   "none",
   // Varianta REPARATĂ (follow-refresh admite în hartă) și amestecurile între coloane.
-  "fixed-admission", "mix-v2-v3", "spurious-v3", "never-subscribe-v3",
+  // M12: falsul urmează produsul REPARAT; `m12-unadmitted` = comportamentul de dinainte (follow-refresh fără admitere);
+  // `readmit-keeps-marker` / `readmit-stale-data` = helper care uită să șteargă markerul / nu suprascrie intrarea.
+  "m12-unadmitted", "readmit-keeps-marker", "readmit-stale-data",
+  "mix-v2-v3", "spurious-v3", "never-subscribe-v3",
   // Bariera de reabonare (§3.1).
   "round-pending", "round-partial", "round-throws", "round-suppressed", "pending-left", "node-filter-mismatch",
   // Tipurile ABSENTE (rev3): subscripție V2 tranzitorie, dezabonată corect sau nu.
@@ -47,6 +53,9 @@ export const A2_FAULTS = [
   // rev3 (cgpt P2): citirea corpului GoPlus RESPINSĂ (`formData()` pe un corp JSON): ignorată de apelant (fără
   // `await`/`catch` → `unhandledRejection`) sau tratată explicit (`.catch`) → operația `failed`, fără excepție.
   "body-reject-ignored", "body-reject-handled",
+  // M12 rev2 (cgpt): un LP tăcut pe altă pereche la livrare; ținta admisă în hartă, dar rutată ca înainte de fix
+  // (filtre baseline); un topic în plus în filtrul V3 la `scan2`, eliminat la `follow2` (aceleași pool-uri).
+  "extra-lp", "target-mapped-baseline-filters", "scan2-extra-topic",
 ] as const;
 export type A2Fault = typeof A2_FAULTS[number];
 
@@ -84,10 +93,20 @@ function normalizeGecko(raw: unknown): FakePool | null {
   };
 }
 
-/** Construiește un worker fals proaspăt. `fault` = singurul lucru stricat deliberat. */
-export async function loadFakeAdmissionSrc(fault: A2Fault): Promise<SrcModules> {
-  if (fault === "import-timer") setTimeout(() => { /* injectat la import */ }, 5);
-  if (fault === "import-fetch") void fetch("https://example.invalid/a2-import").catch(() => { /* refuzat de gardă */ });
+/** Componentele unui defect compus (`a+b`), fiecare verificată față de `A2_FAULTS`. */
+export function parseA2Faults(arg: string): A2Fault[] | null {
+  const parts = arg.split("+");
+  return parts.every(x => (A2_FAULTS as readonly string[]).includes(x)) ? parts as A2Fault[] : null;
+}
+
+/** Construiește un worker fals proaspăt. `fault` = singurul lucru stricat deliberat (sau o combinație `a+b`). */
+export async function loadFakeAdmissionSrc(fault: string): Promise<SrcModules> {
+  const parsed = parseA2Faults(fault);
+  if (!parsed) throw new Error(`defect necunoscut: ${fault}`);
+  const faults = new Set<string>(parsed);
+  const has = (f: A2Fault): boolean => faults.has(f);
+  if (has("import-timer")) setTimeout(() => { /* injectat la import */ }, 5);
+  if (has("import-fetch")) void fetch("https://example.invalid/a2-import").catch(() => { /* refuzat de gardă */ });
 
   const memory = new FakePairMap<{ symbol: string }>();
   const activeWatch = new FakePairMap<{ chain: string; addedAt: number; kind: string }>();
@@ -115,6 +134,11 @@ export async function loadFakeAdmissionSrc(fault: A2Fault): Promise<SrcModules> 
   let reqId = 30_000;
   let scanCount = 0;
   let lastDsBoostedFetchAt = 0;
+  // M12 rev2: ținta admisă de follow-refresh (pentru `target-mapped-baseline-filters`), pasul follow2 și ultima
+  // semnătură trimisă (adrese + topic suplimentar) pentru `scan2-extra-topic`.
+  const followAdmitted = new Set<string>();
+  let inFollow2 = false;
+  const sentSig = new Map<string, string>();
 
   const getJson = async (url: string): Promise<unknown> => {
     try { const res = await fetch(url); return res.ok ? await res.json() : null; }
@@ -128,10 +152,10 @@ export async function loadFakeAdmissionSrc(fault: A2Fault): Promise<SrcModules> 
     try {
       const res = await fetch(url, { signal: ctrl.signal });
       clearTimeout(t);
-      if (fault === "body-pending") return;                                   // corpul nu se citește niciodată
-      if (fault === "body-delayed") await new Promise<void>(r => { realTimers.setTimeout(r, 1_500); });
-      if (fault === "body-reject-ignored") { void res.formData(); return; }          // respingere neprelucrată
-      if (fault === "body-reject-handled") { await res.formData().catch(() => { /* tratată de apelant */ }); return; }
+      if (has("body-pending")) return;                                   // corpul nu se citește niciodată
+      if (has("body-delayed")) await new Promise<void>(r => { realTimers.setTimeout(r, 1_500); });
+      if (has("body-reject-ignored")) { void res.formData(); return; }          // respingere neprelucrată
+      if (has("body-reject-handled")) { await res.formData().catch(() => { /* tratată de apelant */ }); return; }
       if (res.ok) await res.json();
     } catch { clearTimeout(t); }
   };
@@ -141,57 +165,66 @@ export async function loadFakeAdmissionSrc(fault: A2Fault): Promise<SrcModules> 
   const subscribe = (kind: "v2" | "v3" | "v4"): void => {
     const ws = wsClients.get("base");
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    if (fault === "never-subscribe-v3" && kind === "v3") return;
+    if (has("never-subscribe-v3") && kind === "v3") return;
     const watched = activeWatch.entries().filter(([k]) => k.chain === "base").map(([k]) => k.address);
-    const inV3 = (a: string): boolean => v3PoolMap.has("base", a);
-    const inV4 = (a: string): boolean => v4PoolMap.has("base", a);
+    // `target-mapped-baseline-filters`: ținta e în hartă, dar rutarea o tratează ca înainte de fix (filtre baseline).
+    const hidden = (a: string): boolean => has("target-mapped-baseline-filters") && followAdmitted.has(a);
+    const inV3 = (a: string): boolean => v3PoolMap.has("base", a) && !hidden(a);
+    const inV4 = (a: string): boolean => v4PoolMap.has("base", a) && !hidden(a);
     let addrs: string[];
-    if (kind === "v3") addrs = fault === "spurious-v3" ? [...new Set([...watched.filter(inV3), ...v3PoolMap.addresses()])] : watched.filter(inV3);
+    if (kind === "v3") addrs = has("spurious-v3") ? [...new Set([...watched.filter(inV3), ...v3PoolMap.addresses()])] : watched.filter(inV3);
     else if (kind === "v4") addrs = watched.filter(inV4);
-    else if (fault.startsWith("transient-v2") && scanCount === 1) addrs = watched.filter(a => a.length === 42);   // ca și cum hărțile n-ar exista încă
-    else addrs = watched.filter(a => (fault === "mix-v2-v3" ? !inV4(a) : !inV3(a) && !inV4(a)) && a.length === 42);
+    else if ([...faults].some(f => f.startsWith("transient-v2")) && scanCount === 1) addrs = watched.filter(a => a.length === 42);   // ca și cum hărțile n-ar exista încă
+    else addrs = watched.filter(a => (has("mix-v2-v3") ? !inV4(a) : !inV3(a) && !inV4(a)) && a.length === 42);
     const key = `base:${kind}`;
     if (addrs.length === 0) {
       const active = scopedSubStore.active.get(key);
       scopedSubStore.latestReq.delete(key);
       if (!active) return;
-      if (fault === "transient-v2-keep-worker" && kind === "v2") return;          // nici intrarea, nici dezabonarea
+      if (has("transient-v2-keep-worker") && kind === "v2") return;          // nici intrarea, nici dezabonarea
       scopedSubStore.active.delete(key);
-      if (fault === "transient-v2-keep-node" && kind === "v2") return;            // intrarea ștearsă, dezabonarea netrimisă
-      const target = fault === "transient-v2-bad-unsub" && kind === "v2" ? "0xbad" : active.subId;
+      if (has("transient-v2-keep-node") && kind === "v2") return;            // intrarea ștearsă, dezabonarea netrimisă
+      const target = has("transient-v2-bad-unsub") && kind === "v2" ? "0xbad" : active.subId;
       send({ jsonrpc: "2.0", id: kind === "v4" ? 50 : kind === "v3" ? 51 : 53, method: "eth_unsubscribe", params: [target] });
       return;
     }
     const desired = addrs.join(",");
+    // `scan2-extra-topic`: la scan2 filtrele V2/V3 primesc un topic în plus în poziția 0 (aceleași pool-uri); la follow2
+    // sunt retrimise fără el. Instantaneul rămâne lista de adrese; semnătura (adrese + topic) ocolește no-op-ul.
+    const topicFault = has("scan2-extra-topic") && kind !== "v4";
+    const extraTopic = topicFault && scanCount === 2 && !inFollow2;
+    const sig = desired + (extraTopic ? "|x" : "|");
+    const sigChanged = topicFault && sentSig.has(key) && sentSig.get(key) !== sig;
     const latestId = scopedSubStore.latestReq.get(key);
     const latest = latestId !== undefined ? scopedSubStore.pending.get(latestId) : undefined;
-    if (latest && latest.snapshot === desired) return;
+    if (!sigChanged && latest && latest.snapshot === desired) return;
     const act = scopedSubStore.active.get(key);
-    if (act && act.snapshot === desired && !latest) return;
+    if (!sigChanged && act && act.snapshot === desired && !latest) return;
     const id = ++reqId;
-    const stored = fault === "node-filter-mismatch" && kind === "v3" ? desired + ",0xalterat" : desired;
+    const stored = has("node-filter-mismatch") && kind === "v3" ? desired + ",0xalterat" : desired;
     scopedSubStore.pending.set(id, { key, snapshot: stored, sentAt: Date.now() });
     scopedSubStore.latestReq.set(key, id);
+    sentSig.set(key, sig);
     const params = kind === "v4"
       ? ["logs", { address: V4_POOL_MANAGER_BASE, topics: [[...V4_TOPICS0], addrs] }]
-      : ["logs", { address: addrs, topics: [[...(kind === "v3" ? V3_TOPICS0 : V2_TOPICS0)]] }];
+      : ["logs", { address: addrs, topics: [[...(kind === "v3" ? V3_TOPICS0 : V2_TOPICS0), ...(extraTopic ? [T_FOREIGN] : [])]] }];
     send({ jsonrpc: "2.0", id, method: "eth_subscribe", params });
   };
 
   const requestImmediate = (): void => {
-    if (fault === "round-suppressed") return;
+    if (has("round-suppressed")) return;
     const now = Date.now();
     if (now - (lastImmediateSub.get("base") ?? 0) < 2_000) return;
     lastImmediateSub.set("base", now);
     setTimeout(() => subscribe("v4"), 500);
     setTimeout(() => {
-      if (fault === "round-throws") throw new Error("rundă de reabonare: excepție injectată");
+      if (has("round-throws")) throw new Error("rundă de reabonare: excepție injectată");
       subscribe("v3");
     }, 800);
-    if (fault === "round-partial") return;
+    if (has("round-partial")) return;
     const t1100: NodeJS.Timeout = setTimeout(() => {
       subscribe("v2");
-      if (fault === "round-pending") t1100.refresh();   // rămâne „pending” la nesfârșit; joburile rămân 0
+      if (has("round-pending")) t1100.refresh();   // rămâne „pending” la nesfârșit; joburile rămân 0
     }, 1_100);
   };
 
@@ -200,24 +233,20 @@ export async function loadFakeAdmissionSrc(fault: A2Fault): Promise<SrcModules> 
     if (!p.priceUsd) return;
     memory.set("base", p.pairAddress, { symbol: p.symbol });
     if (activeWatch.has("base", p.pairAddress)) return;
-    if (fault === "not-admitted" && p.symbol === SYM_TARGET) return;
-    const watchChain = fault === "watch-other-chain" && p.symbol === SYM_TARGET ? "arbitrum" : "base";
+    if (has("not-admitted") && p.symbol === SYM_TARGET) return;
+    const watchChain = has("watch-other-chain") && p.symbol === SYM_TARGET ? "arbitrum" : "base";
     if (activeWatch.has(watchChain, p.pairAddress)) return;
     activeWatch.set(watchChain, p.pairAddress, { chain: watchChain, addedAt: Date.now(), kind: "FRESH_WATCH" });
     watchedPoolCache.set(watchChain, p.pairAddress, p);
-    if (source === "follow" && (fault === "fixed-admission" || fault === "mix-v2-v3")) {
-      if (p.dexType === "V3") v3PoolMap.set("base", p.pairAddress, p);
-      if (p.dexType === "V4") v4PoolMap.set("base", p.pairAddress, p);
-    }
     console.log(`[FRESH_WATCH] ${p.symbol} (base) (fals)`);
     requestImmediate();
-    void goPlus(fault === "unserved-fetch" ? urlGoPlus("0x" + "de".repeat(20)) : urlGoPlus(p.tokenAddress));
+    void goPlus(has("unserved-fetch") ? urlGoPlus("0x" + "de".repeat(20)) : urlGoPlus(p.tokenAddress));
   };
 
   const scan = async (): Promise<void> => {
     scanCount++;
     const pools: FakePool[] = [];
-    const urls = [URL_TRENDING_1, ...(fault === "extra-fetch" && scanCount === 1 ? [URL_TRENDING_1] : []), URL_TRENDING_2, URL_NEW_POOLS];
+    const urls = [URL_TRENDING_1, ...(has("extra-fetch") && scanCount === 1 ? [URL_TRENDING_1] : []), URL_TRENDING_2, URL_NEW_POOLS];
     const seen = new Set<string>();
     for (const u of urls) {
       const d = await getJson(u) as { data?: unknown[] } | null;
@@ -226,7 +255,7 @@ export async function loadFakeAdmissionSrc(fault: A2Fault): Promise<SrcModules> 
         if (p && !seen.has(p.pairAddress)) { seen.add(p.pairAddress); pools.push(p); }
       }
     }
-    if (pools.length > 0 && !(fault === "d5-no-rebuild" && scanCount === 2)) {
+    if (pools.length > 0 && !(has("d5-no-rebuild") && scanCount === 2)) {
       for (const map of [v3PoolMap, v4PoolMap]) {
         for (const a of map.addresses()) {
           if (seen.has(a)) continue;
@@ -260,19 +289,36 @@ export async function loadFakeAdmissionSrc(fault: A2Fault): Promise<SrcModules> 
     }
   };
 
+  /** M12: admiterea din follow-refresh, ca `admitToPoolMaps` din produsul reparat (aceeași regulă ca re-add-ul din scan). */
+  const admitFollow = (p: FakePool): void => {
+    if (has("m12-unadmitted")) return;                                       // comportamentul de dinainte (M1/M2)
+    const kind = p.dexType === "V3" && V3_DEXES.has(p.dexId) ? "v3" : p.dexType === "V4" ? "v4" : null;
+    if (!kind) return;
+    followAdmitted.add(p.pairAddress);
+    const map = kind === "v3" ? v3PoolMap : v4PoolMap;
+    const wasMapped = map.has("base", p.pairAddress);
+    if (!(has("readmit-stale-data") && wasMapped)) map.set("base", p.pairAddress, p);   // stale: nu suprascrie
+    if (!has("readmit-keeps-marker")) routingOnlyPools.delete("base", p.pairAddress);  // keeps-marker: uită markerul
+    if (!wasMapped) console.log(`[FOLLOW ADMIT] base:${p.pairAddress} → ${kind} (fals)`);
+  };
+
   const runFollowRefresh = async (): Promise<void> => {
+    if (has("scan2-extra-topic") && scanCount === 2) inFollow2 = true;
     for (const a of marketFollowList.addresses()) {
       const d = await getJson(urlGeckoPool(a)) as { data?: unknown } | null;
       const p = d?.data ? normalizeGecko(d.data) : null;
-      if (p) processPool(p, "follow");
+      if (!p) continue;
+      admitFollow(p);                                                              // ÎNAINTEA processPool, ca produsul
+      processPool(p, "follow");
     }
+    if (inFollow2) { subscribe("v3"); subscribe("v2"); }                           // retrimite filtrele fără topicul suplimentar
   };
 
   // ── Managerul WS (ws/manager.ts, simplificat) ─────────────────────────────────────────────────────────────
   const handle = (data: Buffer): void => {
     const msg = JSON.parse(data.toString()) as { id?: unknown; result?: unknown; params?: { result?: { address: string; topics: string[]; data: string } } };
     if (typeof msg.id === "number" && scopedSubStore.pending.has(msg.id)) {
-      if (fault === "pending-left") return;                                       // confirmarea ignorată
+      if (has("pending-left")) return;                                       // confirmarea ignorată
       const p = scopedSubStore.pending.get(msg.id) as { key: string; snapshot: string };
       scopedSubStore.pending.delete(msg.id);
       if (scopedSubStore.latestReq.get(p.key) !== msg.id) {
@@ -295,12 +341,12 @@ export async function loadFakeAdmissionSrc(fault: A2Fault): Promise<SrcModules> 
       pair = log.address.toLowerCase(); pool = watchedPoolCache.get("base", pair); tag = "V2";
       const in0 = BigInt("0x" + raw.slice(0, 64)), out0 = BigInt("0x" + raw.slice(128, 192));
       quoteDelta = in0 > 0n ? in0 : -out0;
-      if (fault === "missing-witness") return;
-      if (fault === "witness-flip") quoteDelta = -quoteDelta;
+      if (has("missing-witness")) return;
+      if (has("witness-flip")) quoteDelta = -quoteDelta;
     } else if (log.topics[0] === T_SWAP_V3) {
       pair = log.address.toLowerCase(); pool = v3PoolMap.get("base", pair); tag = "V3";
       quoteDelta = signed(raw.slice(0, 64));
-      if (fault === "no-record-target" && pool?.symbol === SYM_TARGET) return;
+      if (has("no-record-target") && pool?.symbol === SYM_TARGET) return;
     } else if (log.topics[0] === T_SWAP_V4) {
       pair = log.topics[1].toLowerCase(); pool = v4PoolMap.get("base", pair); tag = "V4";
       quoteDelta = -signed(raw.slice(0, 64));
@@ -311,7 +357,8 @@ export async function loadFakeAdmissionSrc(fault: A2Fault): Promise<SrcModules> 
     const ev: FakeSwap = { ts: Date.now(), isBuy: quoteDelta > 0n, ethAmount: eth, usdAmount: eth * price };
     wsFlow.set("base", pair, [...(wsFlow.get("base", pair) ?? []), ev]);
     console.log(`[${tag} SWAP base] ${pool.symbol} ${ev.isBuy ? "BUY" : "SELL"} (fals)`);
-    if (fault === "extra-swap") wsFlow.set("base", "0x" + "99".repeat(20), [{ ...ev }]);   // tăcut, pe altă cheie
+    if (has("extra-swap")) wsFlow.set("base", "0x" + "99".repeat(20), [{ ...ev }]);   // tăcut, pe altă cheie
+    if (has("extra-lp")) lpEvents.set("base", "0x" + "98".repeat(20), [{ ts: Date.now(), isAdd: true, ethAmount: eth }]);   // tăcut, alt pool
   };
 
   const connectChainWebSocket = (chain: { id: string; wsUrl: string }): void => {

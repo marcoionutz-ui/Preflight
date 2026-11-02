@@ -21,6 +21,12 @@
  * PRECONDIȚIE DECLARATĂ (treapta 1): prezența sau absența din `v3PoolMap` / `v4PoolMap` e pusă de CAZ. Admiterea
  * reală (`scan()` / `runFollowRefresh()`) ține de treapta 2 și NU e exercitată aici.
  *
+ * M1, M2, M1-FORCED după fixul M1/M2 (design `BETA1_M12_FIX_DESIGN.md` rev2 §6.1): RĂMÂN active. Montajul lor pune direct
+ * starea „urmărit, absent din hartă”, pe care fixul nu o schimbă (rutarea și decodarea pentru ea sunt aceleași), deci
+ * ele documentează rutarea unui pool absent din hărți — stare accesibilă și după fix prin §4.3 (`pancakeswap-v3` din
+ * indexer) și M1-DS (pool V3 clasificat V2 de DexScreener). NU sunt dovada că admiterea din follow-refresh eșuează:
+ * dovada reparării M1/M2 sunt controalele A2-F-V3 / A2-F-V4 (`runAdmission`).
+ *
  * Secțiuni de raport, care nu se amestecă: `filter` (prin filtrul nodului local), `forced` (livrare forțată: nu
  * dovedește nimic despre filtru sau despre un nod real), `partial` (X1: fără conectarea workerului și fără
  * subscriere; runtime-ul pornește totuși nodul local, ca pentru orice caz).

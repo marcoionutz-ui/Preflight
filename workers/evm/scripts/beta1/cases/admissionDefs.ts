@@ -1,11 +1,15 @@
 /**
  * scripts/beta1/cases/admissionDefs.ts — BETA-1, treapta 2: definițiile și corpul cazurilor de ADMITERE REALĂ.
  *
- * Design: `BETA1_TREAPTA2_DESIGN.md` rev3 (`d5290d5c…`). Modul fără efecte la import (nu pornește niciun caz); e
- * folosit de `admissionCases.ts` (codul REAL al workerului) și de self-testul treptei 2 (worker fals).
+ * Design: `BETA1_TREAPTA2_DESIGN.md` rev3 (`d5290d5c…`); după fixul M1/M2: `BETA1_M12_FIX_DESIGN.md` rev2
+ * (`44fa2448…`) — toate cele cinci cazuri sunt CONTROALE; A2-F-V3/F-V4 au două coloane (`baseline` = M1/M2 de dinainte
+ * de fix → CONTROL_FAILED; `fix` = contractul) și dovedesc și readmiterea după routing-only (pasul `follow2`).
+ * Modul fără efecte la import (nu pornește niciun caz); e folosit de `admissionCases.ts` (codul REAL al workerului) și
+ * de self-testul admiterii (worker fals).
  *
  * Traseul fiecărui caz (§2), cu NIMIC pus direct în hărți, watch, follow-list sau routing-only:
  *   connect → [scan1] scan() → [boosted] runDsBoostedRefresh() → [follow] runFollowRefresh() → [scan2] scan()
+ *   → [follow2] runFollowRefresh() (M12 rev2: F primește al doilea răspuns, cu date distincte; S/D5: follow-list gol)
  *   → bariera finală (§3.1, contractul pe două coloane, §4.2) → conținutul filtrelor → o livrare → verdict.
  * Intrările cazului: env-ul fix (supraveghetorul), fixture-ul `fetch` per URL exact (`admissionFixtures.ts`), prețul
  * nativ injectat și conectarea managerului WS la nodul local.
@@ -40,9 +44,13 @@
  * `v3PoolMap` și linia „Keeping previous V3/V4 maps” lipsește (reconstruirea a rulat — esențial pentru D5).
  * Orice abatere de montaj → HARNESS_ERROR „montaj”, nu „defect reprodus”.
  *
- * MARTOR ȘI TOTALURI (§4.1): F-V3/F-V4 livrează în aceeași rulare martorul V2, ținta și geamănul; controalele
- * livrează ținta și geamănul. Martorul e verificat individual (o înregistrare, direcție și sume exacte, o linie);
- * geamănul nu e trimis; zero LP; zero swapuri pe alte chei; totalul = suma componentelor coloanei.
+ * MARTOR ȘI TOTALURI (§4.1): F-V3/F-V4 livrează în aceeași rulare martorul V2, ținta și geamănul; S/D5 livrează ținta
+ * și geamănul. Martorul e verificat individual (o înregistrare, direcție și sume exacte, o linie; lipsă → HARNESS_ERROR);
+ * geamănul nu e trimis; zero LP; zero swapuri pe alte chei; total: F = țintă 1 + martor 1, S/D5 = un singur swap.
+ *
+ * READMITERE (M12 rev2, coloana `fix` a lui F): după `scan2` ținta e în harta ei, pe Base, MARCATĂ routing-only; după
+ * `follow2` rămâne în aceeași hartă, pe Base (și nicăieri pe alt chain), markerul a DISPĂRUT, intrarea poartă datele
+ * celui de-al doilea răspuns, iar filtrele active sunt identice cu cele de după `scan2`.
  *
  * NU importă nimic din `src/`.
  */
@@ -58,12 +66,13 @@ import {
   GOPLUS_EMPTY_BODY, PRICE_ETH, EXPECTED_BUY, V2_TOPICS0, V3_TOPICS0, V4_TOPICS0, V4_POOL_MANAGER_BASE,
   A2_TARGET_V3, A2_TARGET_V4, A2_WITNESS_V2, A2_FILLER_V3, TOKEN_TARGET, TOKEN_WITNESS,
   SYM_TARGET, SYM_WITNESS, POOL_TARGET_V3, POOL_TARGET_V4, POOL_WITNESS_V2, POOL_FILLER_V3,
+  POOL_TARGET_V3_FRESH, POOL_TARGET_V4_FRESH, MARKET_ACTIVE, MARKET_ACTIVE_FRESH,
   SWAP_TARGET_V3, TWIN_TARGET_V3, SWAP_TARGET_V4, TWIN_TARGET_V4, SWAP_WITNESS_V2,
   a2DsPair, a2BoostedItem, admissionFixturesSelfCheck, type A2GeckoRaw,
 } from "../harness/admissionFixtures";
 
 // ── Tipuri ───────────────────────────────────────────────────────────────────────────────────────────────────
-export const STEPS = ["scan1", "boosted", "follow", "scan2"] as const;
+export const STEPS = ["scan1", "boosted", "follow", "scan2", "follow2"] as const;
 export type StepName = typeof STEPS[number];
 export const KINDS: readonly ScopedKind[] = ["v2", "v3", "v4"];
 
@@ -87,12 +96,20 @@ export interface AdmissionDef {
   watch:   Record<StepName, string[]>;
   /** Fetch-uri servite per pas, per URL exact. */
   fetches: Record<StepName, Record<string, number>>;
-  /** Contractul de subscripții după ultima rundă: baseline (`f679f4b`) și după fixul M1/M2. Controale: identice. */
+  /**
+   * Contractul de subscripții după ultima rundă: `baseline` = comportamentul de dinainte de fixul M1/M2 (cunoscut),
+   * `fix` = contractul. S/D5: identice. F (M1/M2, design M12 rev2 §6): diferite — conținutul `baseline` dă CONTROL_FAILED.
+   */
   columns: Record<ColumnName, Column>;
-  /** Harta în care ținta trebuie să fie după `scan2`, per coloană (`null` = în nicio hartă). */
+  /** Harta în care ținta trebuie să fie după `scan2` și după `follow2`, per coloană (`null` = în nicio hartă). */
   mapAfterScan2: Record<ColumnName, "v3" | "v4" | null>;
-  /** D5: ținta marcată routing-only după `scan2`. */
-  routingOnly: boolean;
+  /** Markerul routing-only al țintei după `scan2` și după `follow2`, per coloană. */
+  routingAfter: Record<ColumnName, { scan2: boolean; follow2: boolean }>;
+  /**
+   * M12 rev2: al doilea răspuns `pools/<țintă>` (pasul `follow2`), cu date distincte; după fix, intrarea din hartă
+   * trebuie să le poarte. `null` = fără follow-list (S, D5).
+   */
+  readmit: { raw: A2GeckoRaw; priceUsd: number; reserveUsd: number } | null;
 }
 
 const V3 = (pair: string): AdmissionDef["target"] => ({ pair, kind: "v3", raw: POOL_TARGET_V3, swap: SWAP_TARGET_V3, twin: TWIN_TARGET_V3, linePrefix: `[V3 SWAP base] ${SYM_TARGET} BUY` });
@@ -108,16 +125,22 @@ function scanControl(id: string, target: AdmissionDef["target"]): AdmissionDef {
   return {
     id, kind: "control", section: "filter", target, witness: null,
     scan1: [target.raw, POOL_FILLER_V3], scan2: [target.raw, POOL_FILLER_V3], boosted: false,
-    watch: { scan1: [target.pair], boosted: [target.pair], follow: [target.pair], scan2: [target.pair] },
+    watch: { scan1: [target.pair], boosted: [target.pair], follow: [target.pair], scan2: [target.pair], follow2: [target.pair] },
     fetches: {
       scan1: { ...SCAN_URLS, [urlGoPlus(TOKEN_TARGET)]: 1 }, boosted: { [URL_DS_BOOSTED]: 1 }, follow: {}, scan2: { ...SCAN_URLS },
+      follow2: {},
     },
-    columns: same(col), mapAfterScan2: { baseline: target.kind, fix: target.kind }, routingOnly: false,
+    columns: same(col), mapAfterScan2: { baseline: target.kind, fix: target.kind },
+    routingAfter: { baseline: { scan2: false, follow2: false }, fix: { scan2: false, follow2: false } }, readmit: null,
   };
 }
 
-/** Cazul F: ținta absentă din trending; ajunge în follow-list prin boosted și în watch prin follow-refresh. */
-function followDefect(id: string, target: AdmissionDef["target"]): AdmissionDef {
+/**
+ * Cazul F: ținta absentă din trending; ajunge în follow-list prin boosted și în watch prin follow-refresh. După fixul
+ * M1/M2 e CONTROL (design M12 rev2 §6): coloana `fix` cere ținta în harta ei (marcată routing-only după `scan2`,
+ * readmisă cu datele proaspete și fără marker după `follow2`); coloana `baseline` (M1/M2) dă CONTROL_FAILED.
+ */
+function followControl(id: string, target: AdmissionDef["target"], fresh: A2GeckoRaw): AdmissionDef {
   const baseline: Column = target.kind === "v3"
     ? { v2: [A2_WITNESS_V2, target.pair], v3: null, v4: null }
     : { v2: [A2_WITNESS_V2], v3: null, v4: null };   // poolId-ul eliminat de `length === 42` din V2 și absent din V4
@@ -125,16 +148,22 @@ function followDefect(id: string, target: AdmissionDef["target"]): AdmissionDef 
     ? { v2: [A2_WITNESS_V2], v3: [target.pair], v4: null }
     : { v2: [A2_WITNESS_V2], v3: null, v4: [target.pair] };
   return {
-    id, kind: "defect", section: "filter", target, witness: WITNESS,
+    id, kind: "control", section: "filter", target, witness: WITNESS,
     scan1: [POOL_WITNESS_V2, POOL_FILLER_V3], scan2: [POOL_WITNESS_V2, POOL_FILLER_V3], boosted: true,
-    watch: { scan1: [A2_WITNESS_V2], boosted: [A2_WITNESS_V2], follow: [A2_WITNESS_V2, target.pair], scan2: [A2_WITNESS_V2, target.pair] },
+    watch: {
+      scan1: [A2_WITNESS_V2], boosted: [A2_WITNESS_V2], follow: [A2_WITNESS_V2, target.pair],
+      scan2: [A2_WITNESS_V2, target.pair], follow2: [A2_WITNESS_V2, target.pair],
+    },
     fetches: {
       scan1:   { ...SCAN_URLS, [urlGoPlus(TOKEN_WITNESS)]: 1 },
       boosted: { [URL_DS_BOOSTED]: 1, [urlDsTokenPairs(TOKEN_TARGET)]: 1 },
       follow:  { [urlGeckoPool(target.pair)]: 1, [urlGoPlus(TOKEN_TARGET)]: 1 },
       scan2:   { ...SCAN_URLS },
+      follow2: { [urlGeckoPool(target.pair)]: 1 },
     },
-    columns: { baseline, fix }, mapAfterScan2: { baseline: null, fix: target.kind }, routingOnly: false,
+    columns: { baseline, fix }, mapAfterScan2: { baseline: null, fix: target.kind },
+    routingAfter: { baseline: { scan2: false, follow2: false }, fix: { scan2: true, follow2: false } },
+    readmit: { raw: fresh, priceUsd: Number(MARKET_ACTIVE_FRESH.price), reserveUsd: Number(MARKET_ACTIVE_FRESH.reserve) },
   };
 }
 
@@ -147,10 +176,11 @@ export const ADMISSION_DEFS: Record<string, AdmissionDef> = {
     // Al doilea scan e NEVID (umplutura, care nu intră în watch), cu ținta ABSENTĂ: altfel produsul păstrează hărțile
     // fără rebuild („Keeping previous V3/V4 maps”) și marcarea routing-only nu ar fi demonstrată.
     scan2: [POOL_FILLER_V3],
-    routingOnly: true,
+    // D5 nu e în follow-list: markerul rămâne și după `follow2`.
+    routingAfter: { baseline: { scan2: true, follow2: true }, fix: { scan2: true, follow2: true } },
   },
-  "A2-F-V3": followDefect("A2-F-V3", V3(A2_TARGET_V3)),
-  "A2-F-V4": followDefect("A2-F-V4", V4(A2_TARGET_V4)),
+  "A2-F-V3": followControl("A2-F-V3", V3(A2_TARGET_V3), POOL_TARGET_V3_FRESH),
+  "A2-F-V4": followControl("A2-F-V4", V4(A2_TARGET_V4), POOL_TARGET_V4_FRESH),
 };
 export const ADMISSION_IDS = ["A2-S-V3", "A2-S-V4", "A2-D5", "A2-F-V3", "A2-F-V4"] as const;
 
@@ -164,11 +194,18 @@ export function admissionDefsSelfCheck(): string[] {
     if (d.scan1.length === 0 || d.scan2.length === 0) p.push(`${id}: un scan gol nu reconstruiește hărțile`);
     if (!d.scan2.some(r => addrOf(r) === A2_FILLER_V3)) p.push(`${id}: al doilea scan fără umplutură`);
     const inScan2 = d.scan2.some(r => addrOf(r) === d.target.pair);
-    if (d.routingOnly && inScan2) p.push(`${id}: D5 cere ținta ABSENTĂ din al doilea scan`);
+    if (d.routingAfter.fix.scan2 && !d.boosted && inScan2) p.push(`${id}: D5 cere ținta ABSENTĂ din al doilea scan`);
     if (d.boosted && (inScan2 || d.scan1.some(r => addrOf(r) === d.target.pair))) p.push(`${id}: ținta F nu are voie să fie în trending`);
-    if (d.kind === "control" && JSON.stringify(d.columns.baseline) !== JSON.stringify(d.columns.fix)) p.push(`${id}: un control are aceeași predicție în ambele coloane`);
-    if (d.kind === "defect" && JSON.stringify(d.columns.baseline) === JSON.stringify(d.columns.fix)) p.push(`${id}: un defect are coloane diferite`);
-    if ((d.kind === "defect") !== (d.witness !== null)) p.push(`${id}: martorul există exact la cazurile de defect`);
+    if (d.kind !== "control") p.push(`${id}: după fixul M1/M2 toate cazurile A2 sunt controale`);
+    const sameCols = JSON.stringify(d.columns.baseline) === JSON.stringify(d.columns.fix);
+    if (sameCols === d.boosted) p.push(`${id}: coloanele diferă exact la cazurile F (M1/M2)`);
+    if ((d.witness !== null) !== d.boosted) p.push(`${id}: martorul există exact la cazurile F`);
+    if ((d.readmit !== null) !== d.boosted) p.push(`${id}: readmiterea (follow2) există exact la cazurile F`);
+    if (d.readmit) {
+      if (addrOf(d.readmit.raw) !== d.target.pair) p.push(`${id}: al doilea răspuns follow e pentru alt pool`);
+      if (d.readmit.priceUsd === Number(MARKET_ACTIVE.price) || d.readmit.reserveUsd === Number(MARKET_ACTIVE.reserve)) p.push(`${id}: datele readmiterii nu sunt distincte de primul răspuns`);
+      if (!(d.routingAfter.fix.scan2 && !d.routingAfter.fix.follow2)) p.push(`${id}: F după fix cere marker după scan2 și fără marker după follow2`);
+    }
     for (const w of Object.values(d.watch)) if (w.includes(A2_FILLER_V3)) p.push(`${id}: umplutura nu intră în watch`);
   }
   return p;
@@ -217,6 +254,11 @@ interface SubsState {
   /** Pool-urile din filtrul ACTIV la nod (ordinea cererii), pe tip. */
   pools:    Record<ScopedKind, string[] | null>;
   topics0:  Record<ScopedKind, string[] | null>;
+  /**
+   * M12 rev2 (cgpt P2): filtrul ACTIV la nod, COMPLET (adresă/adrese + toate pozițiile `topics`), copie JSON, pe tip.
+   * Comparațiile de stabilitate („neschimbat”) se fac pe el, nu doar pe pool-uri.
+   */
+  filters:  Record<ScopedKind, LogFilter | null>;
   unsubscribes: number;
 }
 
@@ -229,6 +271,7 @@ function readSubs(ctx: CaseContext): SubsState {
   const status = { v2: "ABSENT", v3: "ABSENT", v4: "ABSENT" } as SubsState["status"];
   const pools: SubsState["pools"] = { v2: null, v3: null, v4: null };
   const topics0: SubsState["topics0"] = { v2: null, v3: null, v4: null };
+  const filters: SubsState["filters"] = { v2: null, v3: null, v4: null };
   if (st.pending.size !== 0) problems.push(`cereri rămase în pending: ${[...st.pending.entries()].map(([id, p]) => `#${id} ${p.key}`).join(", ")}`);
   if (st.latestReq.size !== 0) problems.push(`latestReq nevid: ${[...st.latestReq.keys()].join(", ")}`);
   for (const key of st.active.keys()) if (!KINDS.some(k => key === `base:${k}`)) problems.push(`intrare activă necunoscută în worker: ${key}`);
@@ -250,7 +293,7 @@ function readSubs(ctx: CaseContext): SubsState {
       if (!lastReq || lastReq.subId !== active.subId) problems.push(`${k}: subscripția confirmată nu e ultima cerere a tipului`);
       const ps = poolsOfFilter(k, n.filter);
       if (ps.join(",") !== active.snapshot) problems.push(`${k}: filtrul activ la nod (${ps.length} pool-uri) ≠ instantaneul confirmat în worker`);
-      pools[k] = ps; topics0[k] = topics0Of(n.filter);
+      pools[k] = ps; topics0[k] = topics0Of(n.filter); filters[k] = JSON.parse(JSON.stringify(n.filter)) as LogFilter;
     } else if (nodeActive.length !== 0) {
       problems.push(`${k}: ${nodeActive.length} subscripție(i) activă(e) la nod fără intrare activă în worker (subscripție veche nedezabonată)`);
     }
@@ -261,7 +304,7 @@ function readSubs(ctx: CaseContext): SubsState {
     const s = subs.find(x => x.subId === target);
     if (!s || s.active) problems.push(`dezabonare neconfirmată de nod: ${String(target)}`);
   }
-  return { problems, status, pools, topics0, unsubscribes: unsubs.length };
+  return { problems, status, pools, topics0, filters, unsubscribes: unsubs.length };
 }
 
 interface StepObservation {
@@ -272,6 +315,8 @@ interface StepObservation {
   fetches: Record<string, number>;
   status: SubsState["status"];
   pools: SubsState["pools"];
+  /** M12 rev2: filtrele active COMPLETE (adrese + topicuri) după pas. */
+  filters: SubsState["filters"];
   unsubscribes: number;
   watch: string[];
   v3Map: string[];
@@ -330,7 +375,7 @@ async function settleStep(ctx: CaseContext, step: StepName): Promise<{ rounds: n
   await ctx.clientBarrier(`A2-${step}-client`);
   await ctx.deliver([], `A2-${step}-nod`);
   const again = readSubs(ctx);
-  if (again.problems.length > 0 || JSON.stringify(again.pools) !== JSON.stringify(last.pools)) {
+  if (again.problems.length > 0 || JSON.stringify(again.filters) !== JSON.stringify(last.filters)) {
     throw new HarnessError(`barieră ${step}: starea subscripțiilor s-a schimbat după confirmare: ${again.problems.join("; ") || "alt conținut"}`);
   }
   return { rounds, subs: again };
@@ -357,6 +402,8 @@ function setStepFixtures(def: AdmissionDef, step: StepName, ctx: CaseContext): v
     set(urlGeckoPool(def.target.pair), json({ data: def.target.raw }));
     set(urlGoPlus(TOKEN_TARGET), { status: 200, body: GOPLUS_EMPTY_BODY });
   }
+  // M12 rev2: al doilea răspuns `pools/<țintă>`, cu date distincte (readmiterea după routing-only).
+  if (step === "follow2" && def.readmit) set(urlGeckoPool(def.target.pair), json({ data: def.readmit.raw }));
 }
 
 /**
@@ -394,7 +441,7 @@ export async function admissionBody(def: AdmissionDef, ctx: CaseContext): Promis
   const steps: Partial<Record<StepName, StepObservation>> = {};
   const run: Record<StepName, () => Promise<void>> = {
     scan1: () => scanMod.scan(), boosted: () => scanMod.runDsBoostedRefresh(),
-    follow: () => scanMod.runFollowRefresh(), scan2: () => scanMod.scan(),
+    follow: () => scanMod.runFollowRefresh(), scan2: () => scanMod.scan(), follow2: () => scanMod.runFollowRefresh(),
   };
   let keepingLinesBefore = 0;
   for (const step of STEPS) {
@@ -421,7 +468,7 @@ export async function admissionBody(def: AdmissionDef, ctx: CaseContext): Promis
     const obs: StepObservation = {
       rounds, fetchInFlightAtReturn,
       roundNote: rounds === 0 ? "zero timere de rundă: rundă necerută sau suprimată de limitarea de 2 s" : `${rounds} rundă(e) completă(e)`,
-      fetches: delta, status: subs.status, pools: subs.pools, unsubscribes: subs.unsubscribes,
+      fetches: delta, status: subs.status, pools: subs.pools, filters: subs.filters, unsubscribes: subs.unsubscribes,
       watch, v3Map: pairKeys(st.v3PoolMap), v4Map: pairKeys(st.v4PoolMap), routingOnly: pairKeys(st.routingOnlyPools),
       followList: pairKeys(st.marketFollowList),
     };
@@ -486,19 +533,29 @@ export async function admissionBody(def: AdmissionDef, ctx: CaseContext): Promis
     return `conținutul filtrelor nu corespunde niciunei coloane (detectat la etapa de conținut, după barieră): ${parts.join("; ")}`;
   };
 
-  // ── Hărțile după scan2 ─────────────────────────────────────────────────────────────────────────────────────
-  const inV3 = st.v3PoolMap.has("base", def.target.pair), inV4 = st.v4PoolMap.has("base", def.target.pair);
-  const mapNow: "v3" | "v4" | "v3+v4" | null = inV3 && inV4 ? "v3+v4" : inV3 ? "v3" : inV4 ? "v4" : null;
-  const routing = st.routingOnlyPools.has("base", def.target.pair);
-  const mapNeverSeen = STEPS.filter(s => s === "scan1" || s === "scan2").every(s => {
-    const o = steps[s] as StepObservation;
-    // Pe ORICE chain: o țintă admisă într-o hartă de pe alt chain nu e „absentă” în sensul baseline-ului.
-    const isTarget = (k: string): boolean => k.slice(k.indexOf(":") + 1) === lc(def.target.pair);
-    return !o.v3Map.some(isTarget) && !o.v4Map.some(isTarget);
+  // ── Hărțile și markerul routing-only: după `scan2` (observat la pas) și acum, după `follow2` ───────────────
+  const tKey = baseKey(def.target.pair);
+  const isTarget = (k: string): boolean => k.slice(k.indexOf(":") + 1) === lc(def.target.pair);
+  const s2 = steps.scan2 as StepObservation, f2 = steps.follow2 as StepObservation;
+  const mapOf = (v3: string[], v4: string[]): "v3" | "v4" | "v3+v4" | null => {
+    const a = v3.includes(tKey), b = v4.includes(tKey);
+    return a && b ? "v3+v4" : a ? "v3" : b ? "v4" : null;
+  };
+  const mapAtScan2 = mapOf(s2.v3Map, s2.v4Map);
+  const mapNow = mapOf(pairKeys(st.v3PoolMap), pairKeys(st.v4PoolMap));
+  const otherChainMaps = [...pairKeys(st.v3PoolMap), ...pairKeys(st.v4PoolMap)].filter(k => isTarget(k) && k !== tKey);
+  const routingAtScan2 = s2.routingOnly.includes(tKey);
+  const routingNow = st.routingOnlyPools.has("base", def.target.pair);
+  const entry = st.v3PoolMap.get("base", def.target.pair) ?? st.v4PoolMap.get("base", def.target.pair);
+  const entryData = entry ? { priceUsd: entry.priceUsd, reserveUsd: entry.reserveUsd } : null;
+  // M12 rev2 (cgpt P2): filtrul COMPLET (adrese + toate topicurile), nu doar pool-urile.
+  const filtersUnchangedByFollow2 = JSON.stringify(s2.filters) === JSON.stringify(f2.filters);
+  Object.assign(observations, {
+    targetMapAfterScan2: mapAtScan2 ?? "niciuna", targetMapAfterFollow2: mapNow ?? "niciuna", targetOtherChainMaps: otherChainMaps,
+    targetRoutingAfterScan2: routingAtScan2, targetRoutingOnly: routingNow, targetMapEntry: entryData, filtersUnchangedByFollow2,
   });
-  Object.assign(observations, { targetMapAfterScan2: mapNow ?? "niciuna", targetRoutingOnly: routing, targetAbsentFromMapsAfterBothScans: mapNeverSeen });
 
-  // ── O singură livrare: (martor) + țintă + geamăn ───────────────────────────────────────────────────────────
+  // ── O singură livrare, după `follow2`: (martor) + țintă + geamăn ───────────────────────────────────────────
   const logs = [...(def.witness ? [def.witness.swap] : []), def.target.swap, def.target.twin];
   const swapsBefore = [...st.wsFlow.values()].reduce((n, a) => n + a.length, 0);
   if (swapsBefore !== 0) throw new HarnessError(`montaj: ${swapsBefore} swap(uri) înregistrate înainte de livrare`);
@@ -524,60 +581,73 @@ export async function admissionBody(def: AdmissionDef, ctx: CaseContext): Promis
   const recordedExact = (ev: typeof tEv): boolean => ev.length === 1 && ev[0].isBuy === EXPECTED_BUY.isBuy
     && near(ev[0].ethAmount, EXPECTED_BUY.ethAmount) && typeof ev[0].usdAmount === "number" && near(ev[0].usdAmount, EXPECTED_BUY.usdAmount);
 
-  // Gărzi comune (orice caz): geamănul nu e trimis.
+  // Gărzi comune: geamănul nu e trimis; martorul (F) dovedește fluxul — fără el, nimic despre țintă nu înseamnă ceva.
   if (twD.sent !== 0) throw new HarnessError("geamănul negativ (topic străin) a fost trimis de nod");
+  if (def.witness) {
+    const wit: string[] = [];
+    if (!wD || wD.sent !== 1 || wD.received !== 1) wit.push(`martorul: trimis ${wD?.sent ?? 0}, primit ${wD?.received ?? 0} (se cere 1 și 1)`);
+    if (!recordedExact(wEv)) wit.push(`martorul înregistrat: ${JSON.stringify(observations.witnessRecorded)} (se cere exact o cumpărare de 1 ETH = 2500 USD)`);
+    if (wLines !== 1) wit.push(`linii de swap ale martorului: ${wLines} (se cere 1)`);
+    if (wit.length > 0) throw new HarnessError(`martor (${short(def.witness.pair)}): fluxul nu e dovedit funcțional — ${wit.join("; ")}`);
+  }
 
   const result = (outcome: Outcome, reasons: string[]): CaseBodyResult => ({ outcome, reasons, observations });
+  const twoColumns = JSON.stringify(def.columns.baseline) !== JSON.stringify(def.columns.fix);
+  const r: string[] = [...topicProblems];
 
-  // ── Controale ──────────────────────────────────────────────────────────────────────────────────────────────
-  if (def.kind === "control") {
-    const r: string[] = [];
-    if (topicProblems.length > 0) r.push(...topicProblems);
-    if (contentMatches.length === 0) r.push(contentProblem());
-    if (mapNow !== def.mapAfterScan2.baseline) r.push(`ținta după scan2: ${mapNow ?? "în nicio hartă"} (prezis ${def.mapAfterScan2.baseline}PoolMap)`);
-    if (routing !== def.routingOnly) r.push(def.routingOnly ? "ținta nu e marcată routing-only după ce a dispărut din scan" : "ținta e marcată routing-only deși e în scan");
-    if (tD.sent !== 1 || tD.received !== 1) r.push(`swapul țintei: trimis ${tD.sent}, primit ${tD.received} (se cere 1 și 1)`);
-    if (!recordedExact(tEv)) r.push(`swapul țintei înregistrat: ${JSON.stringify(observations.targetRecorded)} (se cere exact o cumpărare de 1 ETH = 2500 USD)`);
-    if (tLines !== 1 || swapLinesAll !== 1) r.push(`linii de swap: ${swapLinesAll} pe toate chain-urile, ${tLines} ale țintei (se cere 1 și 1)`);
-    if (otherSwaps !== 0) r.push(`swapuri pe ${OTHER_PAIR_GUARD}: ${otherSwaps} (se cer 0)`);
-    if (swapTotal !== 1) r.push(`total swapuri pe toate cheile: ${swapTotal} (se cere exact 1)`);
-    if (lpTotal !== 0 || lpLines !== 0) r.push(`evenimente LP: ${lpTotal}, linii LP: ${lpLines} (se cer 0)`);
-    return result(r.length > 0 ? "CONTROL_FAILED" : "CONTROL_OK", r);
+  // ── Conținutul: coloana `fix` = contractul; coloana `baseline` (doar F) = M1/M2 de dinainte de fix ──────────
+  if (!contentMatches.includes("fix")) {
+    if (twoColumns && contentMatches.length === 1) {
+      if (!statusMatches.includes("baseline")) throw new HarnessError("conținutul corespunde coloanei baseline, statutul nu");
+      // M12 rev2 (cgpt P1/P2): verdictul baseline numai pe baseline-ul CUNOSCUT, complet. Orice abatere de la el
+      // (hartă, marker, livrare, totaluri, LP, filtre instabile, topicuri) → HARNESS_ERROR, nu CONTROL_FAILED.
+      const wantB = def.routingAfter.baseline;
+      const inc: string[] = [...topicProblems];
+      if (mapAtScan2 !== def.mapAfterScan2.baseline || mapNow !== def.mapAfterScan2.baseline) inc.push(`ținta în hartă: după scan2 ${mapAtScan2 ?? "niciuna"}, după follow2 ${mapNow ?? "niciuna"} (baseline: ${def.mapAfterScan2.baseline ?? "niciuna"})`);
+      if (otherChainMaps.length > 0) inc.push(`ținta în hărți pe alt chain: ${otherChainMaps.join(", ")}`);
+      if (routingAtScan2 !== wantB.scan2 || routingNow !== wantB.follow2) inc.push(`markerul routing-only: după scan2 ${routingAtScan2}, după follow2 ${routingNow} (baseline: ${wantB.scan2}, ${wantB.follow2})`);
+      if (!filtersUnchangedByFollow2) inc.push("filtrele active s-au schimbat la follow2");
+      if (tD.sent !== 0 || tEv.length !== 0 || tLines !== 0) inc.push(`ținta: trimis ${tD.sent}, înregistrat ${tEv.length}, linii ${tLines} (baseline cere 0)`);
+      const wantBSwaps = def.witness ? 1 : 0;
+      if (swapTotal !== wantBSwaps || swapLinesAll !== wantBSwaps) inc.push(`total swapuri ${swapTotal}, linii de swap ${swapLinesAll} (baseline cere exact ${wantBSwaps} — martorul)`);
+      if (otherSwaps !== 0) inc.push(`swapuri pe ${OTHER_PAIR_GUARD}: ${otherSwaps} (se cer 0)`);
+      if (lpTotal !== 0 || lpLines !== 0) inc.push(`evenimente LP: ${lpTotal}, linii LP: ${lpLines} (se cer 0)`);
+      if (inc.length > 0) throw new HarnessError(`stare baseline (M1/M2) incoerentă: ${inc.join("; ")}`);
+      const where = def.target.kind === "v3"
+        ? "adresa în filtrul V2, absentă din V3; swapul V3 nelivrat"
+        : "poolId-ul în niciun filtru (eliminat de length === 42 din V2, absent din V4); swapul V4 nelivrat";
+      return result("CONTROL_FAILED", [
+        `comportamentul M1/M2 de dinainte de fix: ținta a intrat în activeWatch prin runFollowRefresh, dar e în ${mapNow ?? "nicio hartă"} după follow2; ${where}; înregistrări ale țintei: ${tEv.length}`,
+        ...r,
+      ]);
+    }
+    // F: un conținut care nu e nici `fix`, nici `baseline` e amestec → HARNESS_ERROR (regula existentă).
+    if (twoColumns) throw new HarnessError(contentProblem());
+    r.push(contentProblem());
+  } else if (!statusMatches.includes("fix")) {
+    throw new HarnessError("conținutul corespunde coloanei fix, statutul nu");
   }
 
-  // ── Defecte: martorul și totalurile întâi (fără martor, absența țintei nu înseamnă nimic) ──────────────────
-  const w = def.witness as NonNullable<AdmissionDef["witness"]>;
-  const wit: string[] = [];
-  if (!wD || wD.sent !== 1 || wD.received !== 1) wit.push(`martorul: trimis ${wD?.sent ?? 0}, primit ${wD?.received ?? 0} (se cere 1 și 1)`);
-  if (!recordedExact(wEv)) wit.push(`martorul înregistrat: ${JSON.stringify(observations.witnessRecorded)} (se cere exact o cumpărare de 1 ETH = 2500 USD)`);
-  if (wLines !== 1) wit.push(`linii de swap ale martorului: ${wLines} (se cere 1)`);
-  if (wit.length > 0) throw new HarnessError(`martor (${short(w.pair)}): fluxul nu e dovedit funcțional — ${wit.join("; ")}`);
-  if (otherSwaps !== 0) throw new HarnessError(`swapuri pe ${OTHER_PAIR_GUARD}: ${otherSwaps} (se cer 0)`);
-  if (lpTotal !== 0 || lpLines !== 0) throw new HarnessError(`evenimente LP: ${lpTotal}, linii LP: ${lpLines} (se cer 0)`);
-  if (topicProblems.length > 0) throw new HarnessError(`conținut: ${topicProblems.join("; ")}`);
-  if (contentMatches.length !== 1) throw new HarnessError(contentProblem());
-  const col = contentMatches[0];
-  if (!statusMatches.includes(col)) throw new HarnessError(`conținutul corespunde coloanei ${col}, statutul nu`);
-
-  if (col === "baseline") {
-    const r: string[] = [];
-    if (!mapNeverSeen || mapNow !== null) r.push("ținta apare într-o hartă, deși filtrele corespund baseline-ului");
-    if (routing) r.push("ținta e marcată routing-only");
-    if (tD.sent !== 0 || tEv.length !== 0 || tLines !== 0) r.push(`ținta: trimis ${tD.sent}, înregistrat ${tEv.length}, linii ${tLines} (baseline cere 0)`);
-    if (swapTotal !== 1 || swapLinesAll !== 1) r.push(`total swapuri ${swapTotal}, linii ${swapLinesAll} (baseline cere exact 1 — martorul)`);
-    if (r.length > 0) throw new HarnessError(`stare baseline incoerentă: ${r.join("; ")}`);
-    const where = def.target.kind === "v3"
-      ? "adresa în filtrul V2, absentă din V3; swapul V3 nelivrat"
-      : "poolId-ul în niciun filtru (eliminat de length === 42 din V2, absent din V4); swapul V4 nelivrat";
-    return result("DEFECT_REPRODUCED", [
-      `ținta a intrat în activeWatch prin runFollowRefresh, dar e absentă din ${def.target.kind}PoolMap după ambele scanuri și nemarcată routing-only; ${where}; nimic înregistrat pentru ea`,
-      "martorul V2 de pe aceeași rută: exact o înregistrare, cu direcția și sumele exacte",
-    ]);
+  // ── Coloana `fix`: hărțile, markerul, readmiterea, livrarea, totalurile ─────────────────────────────────────
+  const wantMap = def.mapAfterScan2.fix, wantRouting = def.routingAfter.fix;
+  if (mapAtScan2 !== wantMap) r.push(`ținta după scan2: ${mapAtScan2 ?? "în nicio hartă"} (prezis ${wantMap}PoolMap, pe Base)`);
+  if (mapNow !== wantMap) r.push(`ținta după follow2: ${mapNow ?? "în nicio hartă"} (prezis ${wantMap}PoolMap, pe Base)`);
+  if (otherChainMaps.length > 0) r.push(`ținta apare în hărți pe alt chain: ${otherChainMaps.join(", ")}`);
+  if (routingAtScan2 !== wantRouting.scan2) r.push(wantRouting.scan2 ? "ținta nu e marcată routing-only după scan2 (urmărită, absentă din scan)" : "ținta e marcată routing-only după scan2 deși e în scan");
+  if (routingNow !== wantRouting.follow2) {
+    r.push(def.readmit ? "markerul routing-only nu a dispărut după readmitere (follow2)"
+      : wantRouting.follow2 ? "ținta nu mai e marcată routing-only după follow2 (nu e în follow-list)" : "ținta e marcată routing-only după follow2");
   }
-  const r: string[] = [];
-  if (mapNow !== def.mapAfterScan2.fix) r.push(`ținta după scan2: ${mapNow ?? "în nicio hartă"} (după fix: ${def.mapAfterScan2.fix}PoolMap)`);
-  if (tD.sent !== 1 || tD.received !== 1 || !recordedExact(tEv) || tLines !== 1) r.push(`ținta: trimis ${tD.sent}, primit ${tD.received}, înregistrat ${JSON.stringify(observations.targetRecorded)}, linii ${tLines}`);
-  if (swapTotal !== 2 || swapLinesAll !== 2) r.push(`total swapuri ${swapTotal}, linii ${swapLinesAll} (după fix: exact 2)`);
-  if (r.length > 0) throw new HarnessError(`stare „după fix” incoerentă: ${r.join("; ")}`);
-  return result("DEFECT_NOT_REPRODUCED", [`ținta admisă în ${def.target.kind}PoolMap și în filtrul ${def.target.kind.toUpperCase()}; swapul ei înregistrat (comportamentul corect)`]);
+  if (def.readmit && (!entryData || !near(entryData.priceUsd, def.readmit.priceUsd) || !near(entryData.reserveUsd, def.readmit.reserveUsd))) {
+    r.push(`intrarea din hartă nu are datele celui de-al doilea răspuns: ${JSON.stringify(entryData)} (se cer priceUsd ${def.readmit.priceUsd}, reserveUsd ${def.readmit.reserveUsd})`);
+  }
+  if (!filtersUnchangedByFollow2) r.push("filtrele active s-au schimbat la follow2");
+  const wantSwaps = def.witness ? 2 : 1;
+  if (tD.sent !== 1 || tD.received !== 1) r.push(`swapul țintei: trimis ${tD.sent}, primit ${tD.received} (se cere 1 și 1)`);
+  if (!recordedExact(tEv)) r.push(`swapul țintei înregistrat: ${JSON.stringify(observations.targetRecorded)} (se cere exact o cumpărare de 1 ETH = 2500 USD)`);
+  if (tLines !== 1 || swapLinesAll !== wantSwaps) r.push(`linii de swap: ${swapLinesAll} pe toate chain-urile, ${tLines} ale țintei (se cer ${wantSwaps} și 1)`);
+  if (otherSwaps !== 0) r.push(`swapuri pe ${OTHER_PAIR_GUARD}: ${otherSwaps} (se cer 0)`);
+  if (swapTotal !== wantSwaps) r.push(`total swapuri pe toate cheile: ${swapTotal} (se cere exact ${wantSwaps}${def.witness ? " — ținta și martorul" : ""})`);
+  if (lpTotal !== 0 || lpLines !== 0) r.push(`evenimente LP: ${lpTotal}, linii LP: ${lpLines} (se cer 0)`);
+  return result(r.length > 0 ? "CONTROL_FAILED" : "CONTROL_OK", r);
 }

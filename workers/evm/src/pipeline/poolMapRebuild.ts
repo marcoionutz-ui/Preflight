@@ -71,3 +71,20 @@ export function planPoolMapRebuild(
 export function poolSnapshotForScoring<P>(cached: P | undefined, isRoutingOnly: boolean): P | undefined {
   return isRoutingOnly ? undefined : cached;
 }
+
+/**
+ * BETA-1 / M1–M2: eligibilitatea unui pool pentru `v3PoolMap` / `v4PoolMap` — regula UNICĂ, folosită de re-add-ul din
+ * `rebuildPoolMaps` și de admiterea din `runFollowRefresh` (ambele prin `admitToPoolMaps`, scan.ts). Exact regula de
+ * dinainte a buclei de re-add: simbol blocat → nimic; V3 cu `dexId` în `V3_DEXES` → `v3`; V4 → `v4`; altfel nimic.
+ * PURĂ: setul și predicatul de blocare sunt injectate.
+ */
+export function poolMapKindFor(
+  pool: { dexType: string; dexId: string; symbol: string },
+  v3Dexes: ReadonlySet<string>,
+  isBlocked: (symbol: string) => boolean,
+): "v3" | "v4" | null {
+  if (isBlocked(pool.symbol)) return null;
+  if (pool.dexType === "V3" && v3Dexes.has(pool.dexId)) return "v3";
+  if (pool.dexType === "V4") return "v4";
+  return null;
+}

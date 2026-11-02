@@ -2,7 +2,7 @@
  * scripts/beta1/harness/fixtures/fakeAdmissionCase.ts — BETA-1, treapta 2: proces de caz A2-* peste WORKERUL FALS.
  *
  * Același `runCase` și același corp (`admissionBody`) ca în cazurile reale, dar cu `loadSrc` înlocuit de workerul
- * fals al admiterii și cu un defect injectat (`--fault=`). `--tamper=deliver-twin`: nodul trimite geamănul negativ ca
+ * fals al admiterii și cu un defect injectat (`--fault=`, eventual compus `a+b`). `--tamper=deliver-twin`: nodul trimite geamănul negativ ca
  * log obișnuit pe o subscripție activă, DUPĂ verificarea filtrelor (garda geamănului). Folosit DOAR de
  * `admissionSelfTest`. Nu spune nimic despre workerul real.
  */
@@ -11,7 +11,7 @@ import { runCase } from "../caseRuntime";
 import type { LocalNode } from "../localNode";
 import type { CaseSpec } from "../caseProtocol";
 import { ADMISSION_DEFS, admissionBody } from "../../cases/admissionDefs";
-import { loadFakeAdmissionSrc, A2_FAULTS, type A2Fault } from "./fakeAdmissionWorker";
+import { loadFakeAdmissionSrc, parseA2Faults } from "./fakeAdmissionWorker";
 
 const arg = (name: string): string =>
   process.argv.find(a => a.startsWith(`--${name}=`))?.slice(name.length + 3) ?? "";
@@ -46,8 +46,8 @@ runCase(spec, async (ctx) => {
   return admissionBody(def, ctx);
 }, {
   loadSrc: () => {
-    if (!(A2_FAULTS as readonly string[]).includes(faultArg)) throw new Error(`defect necunoscut: ${faultArg}`);
-    return loadFakeAdmissionSrc(faultArg as A2Fault);
+    if (!parseA2Faults(faultArg)) throw new Error(`defect necunoscut: ${faultArg}`);   // M12 rev2: și combinații `a+b`
+    return loadFakeAdmissionSrc(faultArg);
   },
   selfTestNodeTamper: tamperArg ? tamperNode : undefined,
 });

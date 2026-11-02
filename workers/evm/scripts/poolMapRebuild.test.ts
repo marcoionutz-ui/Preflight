@@ -5,13 +5,15 @@
  *   - `planPoolMapRebuild` → { toDelete, toMarkRouting } (păstrează pool-urile urmărite ABSENTE din scan,
  *     marchează routing-only; șterge cele prezente-dar-reclasificate — „crede scanul");
  *   - `poolSnapshotForScoring` → sursa pt. scoring (routing-only ⇒ NU folosi cache-ul stale);
- * plus o simulare end-to-end (delete + mark + re-add) cu marker routing-only.
+ * plus o simulare end-to-end (delete + mark + re-add) cu marker routing-only;
+ *   - BETA-1 / M1–M2: `poolMapKindFor` → regula UNICĂ de eligibilitate (re-add din scan + admitere din follow-refresh),
+ *     tabel exhaustiv peste dexType × apartenența la V3_DEXES × simbol blocat.
  *
  * Fără dependențe externe → rulează mereu, determinist.
  */
 
 import {
-  planPoolMapRebuild, poolSnapshotForScoring, type ScopedPoolKey,
+  planPoolMapRebuild, poolSnapshotForScoring, poolMapKindFor, type ScopedPoolKey,
 } from "../src/pipeline/poolMapRebuild";
 
 let passed = 0, failed = 0;
@@ -194,6 +196,26 @@ function main(): void {
     simulateRebuild(map, routingOnly, [{ chain: "base", pairAddress: "0xE", symbol: "FRESH", eligible: true }], (c, a) => K(c, a) === "base:0xE");
     check("D5.16a. prezent eligibil → re-add fresh", map.get("base:0xE")?.symbol === "FRESH");
     check("D5.16b. prezent eligibil → fără marker routing-only", !routingOnly.has("base:0xE"));
+  }
+
+  // ── M12: poolMapKindFor — regula unică de eligibilitate (BETA-1 / M1–M2) ──
+  {
+    const DEXES: ReadonlySet<string> = new Set(["uniswap-v3", "uniswap-v3-base", "pancakeswap-v3-base", "aerodrome-slipstream"]);
+    const blocked = (s: string): boolean => s.trim().toLowerCase() === "usdc";
+    const P = (dexType: string, dexId: string, symbol = "TKN") => ({ dexType, dexId, symbol });
+    check("M12.1. V3 cu dexId din V3_DEXES → v3", poolMapKindFor(P("V3", "uniswap-v3-base"), DEXES, blocked) === "v3");
+    check("M12.2. V3 cu pancakeswap-v3 (indexer, §4.3) → null (neschimbat de fix)", poolMapKindFor(P("V3", "pancakeswap-v3"), DEXES, blocked) === null);
+    check("M12.3. V4 → v4 (indiferent de dexId)", poolMapKindFor(P("V4", "uniswap-v4-base"), DEXES, blocked) === "v4" && poolMapKindFor(P("V4", "orice"), DEXES, blocked) === "v4");
+    check("M12.4. V2 → null, chiar cu dexId din V3_DEXES", poolMapKindFor(P("V2", "uniswap-v2-base"), DEXES, blocked) === null && poolMapKindFor(P("V2", "uniswap-v3-base"), DEXES, blocked) === null);
+    check("M12.5. UNKNOWN → null", poolMapKindFor(P("UNKNOWN", "uniswap-v3-base"), DEXES, blocked) === null);
+    check("M12.6. simbol blocat → null pe V3 și pe V4", poolMapKindFor(P("V3", "uniswap-v3-base", " USDC "), DEXES, blocked) === null && poolMapKindFor(P("V4", "x", "usdc"), DEXES, blocked) === null);
+    // Tabel exhaustiv: rezultatul = (neblocat) ∧ (V3 ∧ în set → v3 | V4 → v4 | altfel null).
+    let bad = 0;
+    for (const t of ["V2", "V3", "V4", "UNKNOWN"]) for (const d of ["uniswap-v3-base", "pancakeswap-v3", "uniswap-v4-base"]) for (const sym of ["TKN", "USDC"]) {
+      const want = sym === "USDC" ? null : t === "V3" && DEXES.has(d) ? "v3" : t === "V4" ? "v4" : null;
+      if (poolMapKindFor(P(t, d, sym), DEXES, blocked) !== want) bad++;
+    }
+    check("M12.7. tabel exhaustiv dexType × dexId × simbol (24 combinații) = regula re-add-ului de dinainte", bad === 0);
   }
 
   console.log("\n" + passed + " passed, " + failed + " failed");

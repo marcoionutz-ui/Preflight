@@ -43,7 +43,7 @@ import { addWatchCandidate, armCandidate, recordDrop, recordPipelineEvent } from
 import { recordLifecycleOutcome } from "../state/lifecycle";
 import { triggerRiskCheck } from "../risk/riskChecker";
 import { requestImmediateScopedSubscribe } from "../ws/subscriptions";
-import { planPoolMapRebuild } from "./poolMapRebuild";
+import { planPoolMapRebuild, poolMapKindFor } from "./poolMapRebuild";
 import { countsTowardVerticalBudget } from "./verticalBudget";
 import { writeAllSnapshots } from "./snapshots";
 import { subscribeV3Scoped, subscribeV4Scoped, subscribeV2Scoped, cleanupActiveWatch } from "../ws/subscriptions";
@@ -98,6 +98,18 @@ function pruneMemory(): void {
   if (pruned > 0) console.log(`[MEMORY PRUNE] Removed ${pruned} stale pairs`);
 }
 
+/**
+ * BETA-1 / M1–M2: SINGURUL punct care scrie o intrare în `v3PoolMap` / `v4PoolMap`. Regula de eligibilitate e
+ * `poolMapKindFor` (pură). Datele vin proaspete (scan sau follow-refresh) → markerul routing-only se șterge. Doar
+ * adaugă / actualizează: ștergerea și marcarea routing-only rămân exclusiv ale `rebuildPoolMaps`.
+ */
+function admitToPoolMaps(p: SourcePool): "v3" | "v4" | null {
+  const kind = poolMapKindFor(p, V3_DEXES, isBlockedSymbol);
+  if (kind === "v3") { v3PoolMap.set(p.chain, p.pairAddress, p); routingOnlyPools.delete(p.chain, p.pairAddress); }
+  if (kind === "v4") { v4PoolMap.set(p.chain, p.pairAddress, p); routingOnlyPools.delete(p.chain, p.pairAddress); }
+  return kind;
+}
+
 function rebuildPoolMaps(pools: SourcePool[]): void {
   const scanChains = new Set(pools.map(p => p.chain));
   // D5: un pool încă URMĂRIT care a căzut din scanul curent trebuie PĂSTRAT în hartă — altfel
@@ -120,11 +132,7 @@ function rebuildPoolMaps(pools: SourcePool[]): void {
     for (const { chain, address } of toMarkRouting) routingOnlyPools.set(chain, address, true);
   }
   // Re-add din scanul curent → date proaspete; curăță markerul routing-only (nu mai e stale).
-  for (const p of pools) {
-    if (isBlockedSymbol(p.symbol)) continue;
-    if (p.dexType === "V3" && V3_DEXES.has(p.dexId)) { v3PoolMap.set(p.chain, p.pairAddress, p); routingOnlyPools.delete(p.chain, p.pairAddress); }
-    if (p.dexType === "V4")                          { v4PoolMap.set(p.chain, p.pairAddress, p); routingOnlyPools.delete(p.chain, p.pairAddress); }
-  }
+  for (const p of pools) admitToPoolMaps(p);
 }
 
 async function writeScannerStats(
@@ -1010,6 +1018,12 @@ export async function runFollowRefresh(): Promise<void> {
         // decision.action === "skip" → lăsăm intrarea neatinsă (missCount și lastRefreshedAt păstrate)
         continue;
       }
+
+      // BETA-1 / M1–M2: admiterea în hărți ÎNAINTEA `processPool` — aceeași ordine ca în scan (hărțile înaintea
+      // clasificării). Fără ea, un pool V3 ajuns în watch din follow-refresh era abonat pe V2, iar un poolId V4 deloc.
+      const wasMapped = v3PoolMap.has(chain, addr) || v4PoolMap.has(chain, addr);
+      const admitted = admitToPoolMaps(pool);
+      if (admitted && !wasMapped) console.log(`[FOLLOW ADMIT] ${chain}:${addr} → ${admitted}`);
 
       const discoverySource = entry.source ?? "MARKET_FOLLOW_LIST";
 

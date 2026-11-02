@@ -2,13 +2,13 @@
  * scripts/beta1/runAdmission.ts — BETA-1, treapta 2: punctul de intrare al probei de ADMITERE REALĂ.
  *
  * Rulează cele cinci cazuri A2-* prin supraveghetor (un proces per caz, mediu construit de la zero, termen,
- * terminare confirmată): întâi controalele (A2-S-V3, A2-S-V4, A2-D5), apoi cazurile de defect (A2-F-V3, A2-F-V4),
- * numai dacă toate controalele sunt CONTROL_OK. Mediul fix (design §3): `PREFLIGHT_MODE=LIVE`, `ENABLED_CHAINS=base`,
+ * terminare confirmată). După fixul M1/M2 (design `BETA1_M12_FIX_DESIGN.md` rev2) toate cinci sunt CONTROALE:
+ * A2-S-V3, A2-S-V4, A2-D5 și A2-F-V3, A2-F-V4 (admiterea din follow-refresh + readmiterea după routing-only). Mediul fix (design §3): `PREFLIGHT_MODE=LIVE`, `ENABLED_CHAINS=base`,
  * `DISCOVERY_SOURCE=gecko`; fără `REDIS_URL`, `TELEGRAM_*`, `GOPLUS_API_KEY` (nimic nu se moștenește în afara
  * `INHERITED_ENV_KEYS`).
  *
- * Cod de ieșire: 0 = experiment valid, predicții baseline confirmate (NU înseamnă produs sănătos; BETA-1 rămâne
- * deschis); 2 = cel puțin o predicție contrazisă; 3 = rularea nu dovedește nimic.
+ * Cod de ieșire: 0 = toate controalele CONTROL_OK (NU înseamnă produs sănătos; BETA-1 rămâne deschis); 3 = cel puțin
+ * un control eșuat sau HARNESS_ERROR (pe produsul de dinainte de fix, F-V3/F-V4 dau CONTROL_FAILED: cod 3).
  *
  * Rulat EXPLICIT în WSL, NU e în `npm test` și NU e entrypointul workerului.
  */

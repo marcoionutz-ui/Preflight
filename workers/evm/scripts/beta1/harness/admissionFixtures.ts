@@ -86,6 +86,12 @@ export { V4_POOL_MANAGER_BASE };
 export interface A2Market { price: string; m5: string; h1: string; h24: string; reserve: string; }
 export const MARKET_ACTIVE: A2Market = Object.freeze({ price: "0.5", m5: "12", h1: "20", h24: "0", reserve: "600000" });
 export const MARKET_FILLER: A2Market = Object.freeze({ price: "0", m5: "0", h1: "0", h24: "0", reserve: "600000" });
+/**
+ * BETA-1 / M1–M2 (design rev2, §6): al DOILEA răspuns `pools/<țintă>` (pasul `follow2`), cu date DISTINCTE de primul
+ * (preț 0,6 în loc de 0,5; rezervă 700 000 în loc de 600 000) și aceleași variații → tot NO_MOMENTUM / FRESH; ținta e
+ * deja urmărită, deci nicio intrare nouă în watch, niciun GoPlus, nicio rundă.
+ */
+export const MARKET_ACTIVE_FRESH: A2Market = Object.freeze({ price: "0.6", m5: "12", h1: "20", h24: "0", reserve: "700000" });
 
 export interface A2GeckoRaw { id: string; type: string; attributes: Record<string, unknown>; relationships: Record<string, unknown>; }
 
@@ -139,6 +145,8 @@ export const POOL_TARGET_V3 = a2GeckoPool(A2_TARGET_V3, "uniswap-v3-base", TOKEN
 export const POOL_TARGET_V4 = a2GeckoPool(A2_TARGET_V4, "uniswap-v4-base", TOKEN_TARGET, SYM_TARGET, MARKET_ACTIVE);
 export const POOL_WITNESS_V2 = a2GeckoPool(A2_WITNESS_V2, "uniswap-v2-base", TOKEN_WITNESS, SYM_WITNESS, MARKET_ACTIVE);
 export const POOL_FILLER_V3 = a2GeckoPool(A2_FILLER_V3, "uniswap-v3-base", TOKEN_FILLER, SYM_FILLER, MARKET_FILLER);
+export const POOL_TARGET_V3_FRESH = a2GeckoPool(A2_TARGET_V3, "uniswap-v3-base", TOKEN_TARGET, SYM_TARGET, MARKET_ACTIVE_FRESH);
+export const POOL_TARGET_V4_FRESH = a2GeckoPool(A2_TARGET_V4, "uniswap-v4-base", TOKEN_TARGET, SYM_TARGET, MARKET_ACTIVE_FRESH);
 
 // ── Loguri (convențiile treptei 1: quote = token0) ───────────────────────────────────────────────────────────
 /** V3: semn în convenția POOL — quote intrat (pozitiv) = cumpărare. */
@@ -171,6 +179,8 @@ export function admissionFixturesSelfCheck(): string[] {
   if (new Set([SYM_TARGET, SYM_WITNESS, SYM_FILLER]).size !== 3) p.push("simboluri nedistincte");
   if (Number(MARKET_FILLER.price) !== 0) p.push("umplutura trebuie să fie fără preț (nu intră în processPool)");
   if (!(Number(MARKET_ACTIVE.m5) <= 30 && Number(MARKET_ACTIVE.h24) <= 200)) p.push("piața activă nu mai e NO_MOMENTUM");
+  if (MARKET_ACTIVE_FRESH.price === MARKET_ACTIVE.price || MARKET_ACTIVE_FRESH.reserve === MARKET_ACTIVE.reserve) p.push("al doilea răspuns follow nu are date distincte");
+  if (MARKET_ACTIVE_FRESH.m5 !== MARKET_ACTIVE.m5 || MARKET_ACTIVE_FRESH.h1 !== MARKET_ACTIVE.h1 || MARKET_ACTIVE_FRESH.h24 !== MARKET_ACTIVE.h24) p.push("al doilea răspuns follow schimbă variațiile (clasificarea)");
   for (const u of [URL_TRENDING_1, URL_TRENDING_2, URL_NEW_POOLS, URL_DS_BOOSTED, urlGeckoPool(A2_TARGET_V3), urlDsTokenPairs(TOKEN_TARGET), urlGoPlus(TOKEN_TARGET)]) {
     if (!u.startsWith("https://")) p.push(`URL invalid: ${u}`);
   }

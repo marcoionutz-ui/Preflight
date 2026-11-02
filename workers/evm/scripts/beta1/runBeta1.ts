@@ -43,6 +43,7 @@ async function main(): Promise<void> {
   console.log("");
   if (report.aborted) console.log(`SUITĂ OPRITĂ la cazul ${report.aborted.caseId} (pid ${report.aborted.pid}): terminare neconfirmată.`);
   for (const why of report.summary.invalid) console.log(`invalid: ${why}`);
+  console.log("notă: M1, M2 și M1-FORCED sunt montaje pentru starea „urmărit, absent din hartă” (accesibilă prin §4.3 și M1-DS); dovada reparării M1/M2 din follow-refresh sunt controalele A2-F din runAdmission.");
   console.log(`numărătoare: ${JSON.stringify(report.summary.counts)}`);
   const meaning =
     report.summary.exitCode === 0 ? "experiment valid, predicții confirmate — NU înseamnă produs sănătos, iar BETA-1 rămâne nerezolvat" :
