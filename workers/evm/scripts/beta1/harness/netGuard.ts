@@ -37,6 +37,23 @@ export interface Refusal {
 
 export interface FetchFixture { status: number; body: string; contentType?: string; }
 
+/**
+ * Treapta 2 (rev2): o operație `fetch` observată cap-coadă. `body`:
+ *   `unread`   — răspunsul a fost întors, corpul nu a fost cerut încă (operația e ÎN ZBOR);
+ *   `reading`  — s-a cerut `json()`/`text()`/… și citirea nu s-a încheiat (ÎN ZBOR);
+ *   `stream`   — s-a accesat `body` (flux) direct: încheierea citirii nu poate fi observată (ÎN ZBOR, conservator);
+ *   `read` / `failed` — citirea corpului s-a încheiat (cu succes / cu eroare): operația e terminată;
+ *   `refused`  — apel neservit (refuz al gărzii): nu există răspuns, operația e terminată ca eșec.
+ * Timerul de abort al apelantului NU e criteriu: produsul îl curăță la primirea răspunsului, înaintea citirii corpului.
+ */
+export type FetchBodyState = "unread" | "reading" | "stream" | "read" | "failed" | "refused";
+export interface FetchOp {
+  seq:  number;
+  /** URL-ul exact pentru apelurile servite (cheie de fixture); pentru cele refuzate, doar gazda. */
+  url:  string;
+  body: FetchBodyState;
+}
+
 export interface NetGuard {
   /** Fixează destinația permisă (127.0.0.1:port). O SINGURĂ dată; al doilea apel aruncă. */
   allowOnly(port: number): void;
@@ -51,6 +68,13 @@ export interface NetGuard {
   setFetchFixture(url: string, fixture: FetchFixture): void;
   fetchCalls(): number;
   fetchServed(): number;
+  /**
+   * Treapta 2: apelurile SERVITE, per URL exact (cheile sunt numai URL-uri de fixture, puse de caz). Apelurile
+   * neservite nu apar aici: sunt refuzuri (`violations`, doar gazda), deci HARNESS_ERROR prin regula existentă.
+   */
+  fetchServedByUrl(): Record<string, number>;
+  /** Treapta 2 (rev2): toate operațiile `fetch`, cu starea citirii corpului (copii). */
+  fetchOps(): FetchOp[];
 }
 
 export const GUARD_ERROR_CODE = "EBETA1GUARD";
@@ -109,6 +133,9 @@ export function installNetGuard(): NetGuard {
   let fetchServed = 0;
   const refusals: Refusal[] = [];
   const fixtures = new Map<string, FetchFixture>();
+  const servedByUrl = new Map<string, number>();
+  const ops: FetchOp[] = [];
+  let opSeq = 0;
 
   const record = (kind: RefusalKind, detail: string): void => {
     refusals.push({ seq: ++seq, kind, detail, control: currentControl });
@@ -198,13 +225,45 @@ export function installNetGuard(): NetGuard {
     const fx = fixtures.get(url);
     if (!fx) {
       record("fetch", hostOfUrl(url));
+      ops.push({ seq: ++opSeq, url: hostOfUrl(url), body: "refused" });
       throw guardError("fetch");
     }
     fetchServed++;
-    return new Response(fx.body, {
+    servedByUrl.set(url, (servedByUrl.get(url) ?? 0) + 1);
+    const op: FetchOp = { seq: ++opSeq, url, body: "unread" };
+    ops.push(op);
+    const res = new Response(fx.body, {
       status:  fx.status,
       headers: { "content-type": fx.contentType ?? "application/json" },
     });
+    // Consumarea corpului e observată pe INSTANȚĂ: fiecare metodă de citire marchează `reading`, iar încheierea
+    // promisiunii ei (succes sau eroare) marchează operația terminată. Accesul direct la flux rămâne „în zbor”.
+    // rev3 (cgpt P2): apelantul primește promisiunea OBSERVATĂ (lanțul), nu originalul: valoarea trece neschimbată,
+    // iar respingerea e re-aruncată. Observarea NU tratează eroarea în locul apelantului — o citire respinsă și
+    // ignorată rămâne `unhandledRejection` (văzută de observatorul de proces → HARNESS_ERROR). Promisiunea originală
+    // are un singur consumator (lanțul), deci nu apare o a doua respingere.
+    for (const m of ["json", "text", "arrayBuffer", "blob", "formData", "bytes"]) {
+      const orig = (res as unknown as Record<string, unknown>)[m];
+      if (typeof orig !== "function") continue;
+      Object.defineProperty(res, m, {
+        configurable: true,
+        value: (...a: unknown[]): Promise<unknown> => {
+          if (op.body === "unread") op.body = "reading";
+          return (orig as (...x: unknown[]) => Promise<unknown>).apply(res, a).then(
+            (v: unknown) => { op.body = "read"; return v; },
+            (e: unknown) => { op.body = "failed"; throw e; },
+          );
+        },
+      });
+    }
+    const bodyGetter = Object.getOwnPropertyDescriptor(Response.prototype, "body")?.get;
+    if (bodyGetter) {
+      Object.defineProperty(res, "body", {
+        configurable: true,
+        get: (): unknown => { if (op.body === "unread") op.body = "stream"; return bodyGetter.call(res); },
+      });
+    }
+    return res;
   });
 
   // Importurile ESM cu nume (`import { connect } from "node:tls"`) văd și ele înlocuirile.
@@ -228,5 +287,7 @@ export function installNetGuard(): NetGuard {
     setFetchFixture(url: string, fixture: FetchFixture): void { fixtures.set(url, { ...fixture }); },
     fetchCalls:  () => fetchCalls,
     fetchServed: () => fetchServed,
+    fetchServedByUrl: () => Object.fromEntries(servedByUrl),
+    fetchOps: () => ops.map(o => ({ ...o })),
   };
 }

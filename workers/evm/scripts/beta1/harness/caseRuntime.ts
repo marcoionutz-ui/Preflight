@@ -44,6 +44,7 @@ import {
   installConsoleCapture, installTimerObserver, installProcessObserver, observeSocket, waitUntil, withDeadline,
   realTimers, HarnessError,
   type ConsoleCapture, type TimerObserver, type ProcessObserver, type SocketObserver, type SeenFrame, type TimerRecord,
+  type TimerFault,
 } from "./observers";
 import { startLocalNode, type LocalNode, type RpcLog, type CapturedRequest } from "./localNode";
 import { serializeCaseResult, CASE_RESULT_SCHEMA, type CaseSpec, type Outcome, type CaseResult } from "./caseProtocol";
@@ -64,6 +65,12 @@ export interface SrcModules {
   dexscreener: typeof import("../../../src/sources/dexscreener");
   indexed:     typeof import("../../../src/sources/indexed");
   constants:   typeof import("../../../src/config/constants");
+  /**
+   * Treapta 2 (admiterea reală): `scan()`, `runDsBoostedRefresh()`, `runFollowRefresh()`. Încărcat NUMAI când cazul
+   * cere (`RunCaseOptions.importScan`), în aceeași fază `import`, după gărzi — cazurile treptei 1 nu-l încarcă, deci
+   * graful lor de import rămâne neschimbat. `ws/subscriptions` intră transitiv (scan, manager); cazul nu-l cheamă.
+   */
+  scan?:       typeof import("../../../src/pipeline/scan");
 }
 
 export type ScopedKind = "v2" | "v3" | "v4";
@@ -103,6 +110,21 @@ export interface CaseContext {
    * Rezultatele se raportează în secțiunea separată „forced".
    */
   deliverForced(logs: RpcLog[], subId: string, tag: string): Promise<DeliveryReport>;
+  /**
+   * Treapta 2: fixture-urile `fetch` (URL exact), contorul apelurilor SERVITE per URL și operațiile `fetch` cu starea
+   * citirii corpului (rev2). Un apel neservit rămâne refuz al gărzii (E1 → HARNESS_ERROR), ca până acum.
+   */
+  net: Pick<NetGuard, "setFetchFixture" | "fetchServedByUrl" | "fetchCalls" | "fetchServed" | "fetchOps">;
+  /**
+   * Treapta 2: observatorul de timere, pentru bariera de reabonare (§3.1). `setPhase` acceptă numai faze `step:…`
+   * (fazele runtime-ului — `connect`, `body`, `shutdown` — nu pot fi refolosite de corp).
+   */
+  timers: {
+    setPhase(phase: string): void;
+    records(): TimerRecord[];
+    outstanding(): TimerRecord[];
+    faults(): TimerFault[];
+  };
 }
 
 /** Minimul folosit de harness din socketul `ws` al workerului. */
@@ -202,11 +224,13 @@ export interface RunCaseOptions {
    * la final. Cazurile reale NU îl setează.
    */
   selfTestNodeTamper?: (node: LocalNode) => LocalNode;
+  /** Treapta 2: încarcă și `src/pipeline/scan` (vezi `SrcModules.scan`). Ignorat când `loadSrc` e setat. */
+  importScan?: boolean;
 }
 
 /** Încărcarea REALĂ: import dinamic din `src/`, după instalarea gărzilor. */
-async function loadRealSrc(): Promise<SrcModules> {
-  return {
+async function loadRealSrc(importScan: boolean): Promise<SrcModules> {
+  const mods: SrcModules = {
     stores:      await import("../../../src/state/stores"),
     memory:      await import("../../../src/state/memory"),
     transitions: await import("../../../src/pipeline/transitions"),
@@ -218,6 +242,8 @@ async function loadRealSrc(): Promise<SrcModules> {
     indexed:     await import("../../../src/sources/indexed"),
     constants:   await import("../../../src/config/constants"),
   };
+  if (importScan) mods.scan = await import("../../../src/pipeline/scan");
+  return mods;
 }
 
 /**
@@ -304,7 +330,7 @@ export function runCase(spec: CaseSpec, body: (ctx: CaseContext) => Promise<Case
     // ── 4. Import dinamic din `src/` + precondiții ─────────────────────────────────────────────────────────
     tobs.setPhase("import");
     const fetchBefore = guard.fetchCalls();
-    const loaded: SrcModules = await (options.loadSrc ?? loadRealSrc)();
+    const loaded: SrcModules = await (options.loadSrc ?? (() => loadRealSrc(options.importScan === true)))();
     src = loaded;
     tobs.setPhase("preconditions");
     const st = loaded.stores;
@@ -367,6 +393,25 @@ export function runCase(spec: CaseSpec, body: (ctx: CaseContext) => Promise<Case
 
     const ctx: CaseContext = {
       src: loaded, node: theNode, chain, cons,
+
+      net: {
+        setFetchFixture: (url, fixture) => { guard.setFetchFixture(url, fixture); },
+        fetchServedByUrl: () => guard.fetchServedByUrl(),
+        fetchCalls: () => guard.fetchCalls(),
+        fetchServed: () => guard.fetchServed(),
+        fetchOps: () => guard.fetchOps(),
+      },
+
+      timers: {
+        setPhase(phase: string): void {
+          if (!/^step:[A-Za-z0-9_-]+$/.test(phase)) throw new HarnessError(`fază de timer nepermisă pentru corp: „${phase}"`);
+          if (!connected) throw new HarnessError("faza unui pas setată înainte de connect()");
+          tobs.setPhase(phase);
+        },
+        records: () => tobs.records(),
+        outstanding: () => tobs.outstanding(),
+        faults: () => tobs.faults(),
+      },
 
       async connect(): Promise<void> {
         if (connected) throw new HarnessError("connect() apelat de două ori");
