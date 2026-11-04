@@ -11,6 +11,13 @@
  *   ETAPA 1 (TRUST) → `invalid_client` (LOCAL, fără redirect): client_id prezent; registration găsit + `active` +
  *     ne-expirat + permite `authorization_code`; are `redirect_uris`; `redirect_uri` prezentat ∈ allowlist
  *     (`redirectUriMatchesAny`, exact-match loopback-aware). Orice picare aici = pagină locală.
+ *     POLITICA PUBLIC (lotul OAuth staging, design rev3 §3): pentru un registration public (`client_type = "public"`
+ *     sau, fail-closed, `token_endpoint_auth_method = "none"` — un client fără autentificare e public prin definiție,
+ *     RFC 6749 §2.1), FIECARE intrare din `redirect_uris` a rândului TREBUIE să fie un callback Claude exact
+ *     (`isClaudeCallback`) — altfel rândul e corupt/legacy → `invalid_client` chiar dacă URI-ul prezentat ar fi bun; iar
+ *     `redirect_uri` prezentat TREBUIE să fie callback Claude ȘI identic (`===`) cu o intrare a rândului. Fără excepția
+ *     loopback RFC 8252 pentru public (Claude Code e în afara beta-ului). Registration-urile non-publice păstrează
+ *     regula de mai sus neschimbată. Regula e în cod, nu în env → identică în staging și producție.
  *   ETAPA 2 (REQUEST, redirect DEJA trusted) → `error_redirect` (route-ul redirectează cu error+state+iss):
  *     `response_type=code`; PKCE S256 valid (RFC 7636); `resource` valid (RFC 8707); scope-urile cerute ⊆ catalog.
  *   SUCCES → `ok` cu câmpurile derivate pentru `buildAuthzTransaction` (resource canonic, scope-uri validate).
@@ -23,6 +30,7 @@ import { validateAuthorizeChallenge } from "./pkce";
 import { validateResourceIndicator } from "./resource";
 import { redirectUriMatchesAny } from "./redirectMatch";
 import { isAllowedRegistrationRedirect } from "./registrationRedirectPolicy";
+import { isClaudeCallback } from "./claudeCallbacks";
 
 /** Registration-ul necesar la `/authorize` GET (superset față de `RegistrationRef`: + redirect_uris + metadate UI). */
 export interface AuthorizeRegistration {
@@ -70,6 +78,11 @@ export type AuthorizeValidation =
 
 function isNonEmptyString(v: unknown): v is string { return typeof v === "string" && v.length > 0; }
 
+/** Public = `client_type` declarat `public` SAU fără autentificare la /token (`none`) — fail-closed pe un rând ambiguu. */
+function isPublicRegistration(reg: AuthorizeRegistration): boolean {
+  return reg.client_type === "public" || reg.token_endpoint_auth_method === "none";
+}
+
 /**
  * Validează cererea `/authorize` GET. `registration` = null când `client_id` nu se rezolvă. `nowMs`/`issuer`/
  * `serverPolicy` (catalogul de scope-uri) injectate (pur).
@@ -92,6 +105,17 @@ export function validateAuthorizeRequest(p: {
   if (!reg.grant_types.includes("authorization_code"))       return { kind: "invalid_client", reason: "registration nu permite authorization_code" };
   if (!Array.isArray(reg.redirect_uris) || reg.redirect_uris.length === 0) {
     return { kind: "invalid_client", reason: "niciun redirect_uri înregistrat pentru client" };
+  }
+  // POLITICA PUBLIC (design rev3 §3): rândul conține DOAR callback-uri Claude exacte (altfel corupt/legacy → refuz
+  // întregul client, nu doar URI-ul), iar URI-ul prezentat e callback Claude ȘI identic cu o intrare a rândului.
+  // Se aplică ÎNAINTE de verificarea generală de mai jos, care rămâne în vigoare și pentru public (apărare în adâncime).
+  if (isPublicRegistration(reg)) {
+    if (!reg.redirect_uris.every(isClaudeCallback)) {
+      return { kind: "invalid_client", reason: "registration public cu redirect_uri în afara callback-urilor Claude (rând corupt/legacy)" };
+    }
+    if (!isClaudeCallback(q.redirect_uri) || !reg.redirect_uris.includes(q.redirect_uri)) {
+      return { kind: "invalid_client", reason: "redirect_uri nu e un callback Claude înregistrat pentru clientul public" };
+    }
   }
   // ALLOWLIST POZITIV (cgpt) ÎNAINTE de match: `redirectUriMatchesAny` se sprijină doar pe denylist-ul U7
   // (`isSafeRedirectUri`), care lasă să treacă `ftp:`/`ws:`/`mailto:`/scheme custom fără reverse-domain. Un rând

@@ -32,3 +32,18 @@ export function isLegacyAuthCodeCutoverEnabled(env: Record<string, string | unde
   if (TRUTHY.has(v)) return true;            // explicit activat
   return true;                               // PREZENT dar necunoscut → FAIL-CLOSED (refuză legacy)
 }
+
+/**
+ * Lot OAuth staging §4.2 — refuzul refresh-ului LEGACY (forma client, emisă de fluxul confidențial de cod).
+ *
+ * §4.1 închide clienții neautorizați, dar un client M2M AUTORIZAT trece de `lookupClientById`; fără această regulă,
+ * un refresh legacy emis înainte de cutover ar continua să rotească la nesfârșit, deși codul legacy e deja refuzat.
+ * Decizia folosește EXACT același flag și același parser ca ramura codului (`PH2_REJECT_LEGACY_AUTHCODE` prin
+ * `isLegacyAuthCodeCutoverEnabled`) — o singură sursă de adevăr, aceeași semantică fail-closed pe valori necunoscute:
+ *   absent / falsy → `false` (comportamentul de azi, byte-identic); truthy / prezent-necunoscut → `true` (refuz).
+ * Ruta o aplică DOAR pe forma client (după bifurcația `isUserRefresh`), ÎNAINTE de lookup, rotație sau `touchClient`.
+ * Nu afectează `client_credentials` (nu emite refresh) și nici refresh-ul user/CIMD (`handleUserRefreshGrant`).
+ */
+export function shouldRejectLegacyRefresh(env: Record<string, string | undefined>): boolean {
+  return isLegacyAuthCodeCutoverEnabled(env);
+}

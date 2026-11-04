@@ -26,6 +26,7 @@ import { createAuthzTxn } from "@/lib/db/authzTxnStoreIo";
 import { AUTHZ_TXN_TTL_SEC } from "@/lib/db/authzTxnStore";
 import { SERVER_SCOPE_CATALOG } from "@/lib/oauth/scopeCatalog";
 import type { AuthorizeParams, ValidatedAuthorizeRequest } from "@/lib/oauth/authorizeRequestValidate";
+import { claudeCimdClientIdLogFields } from "@/lib/oauth/cimdDocValidate";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -120,9 +121,15 @@ async function handleStart(req: NextRequest): Promise<NextResponse> {
     case "unavailable":
       console.error("[AUTHZ START] unavailable:", action.reason);
       return unavailable();
-    case "local_error":
+    case "local_error": {
       console.error("[AUTHZ START] local_error:", action.reason);
+      // S0 (design rev3 §9): în mode `initial`, `local_error` = validatorul a întors `invalid_client`. Dacă `client_id`
+      // e un URL https pe claude.ai/claude.com (documentul CIMD al hosted apps), logăm DOAR originea + calea — ca
+      // operatorul să afle URL-ul de provizionat. Fără query, fără alți parametri, niciodată redirect_uri / state.
+      const cimd = claudeCimdClientIdLogFields(params.client_id);
+      if (cimd) console.warn(`[AUTHZ START] cimd client_id necunoscut: origin=${cimd.origin} path=${cimd.path}`);
       return localError();
+    }
     case "client_error": {
       const u = new URL(action.redirect_uri); // redirect_uri DEJA trusted (validator)
       u.searchParams.set("error", action.error);

@@ -7,6 +7,8 @@
  * (c) la ACEEAȘI versiune ca tokenul. Discriminăm 503 (retry) de 401 (respins), ca restul lui `resolveAuth`:
  *   - lookup `unavailable` (Supabase jos) → 503 (NU 401 — contul poate exista; apelantul face retry apoi 503);
  *   - lookup `not_found` (0 rânduri) → 401 (cont fără entitlement → nu autorizăm);
+ *   - lookup `expired` (`access_expires_at <= now`, decis în clasificatorul `entitlementLookup`) → 401, EXACT ca un cont
+ *     suspendat (aceeași frunză servește și refresh-ul user → `invalid_grant`);
  *   - `found` dar `entitlement.user_id` ≠ `user_id` al tokenului → 401 (verifierul e GRANIȚA fail-closed — confirmă
  *     EXPLICIT identitatea contului, nu se bazează pe faptul că `getAccountEntitlement` a filtrat după `user_id`; un
  *     adaptor care întoarce rândul altui user, activ + aceeași versiune, NU trebuie să scurgă planul/limitele/identitatea
@@ -35,6 +37,8 @@ export function verifyUserAccount(
 ): UserAccountDecision {
   if (lookup.status === "unavailable") return { ok: false, kind: "unavailable",  reason: "account entitlement unavailable: " + lookup.reason };
   if (lookup.status === "not_found")   return { ok: false, kind: "unauthorized", reason: "account has no entitlement" };
+  // Acces expirat (`access_expires_at <= now`, clasificat în `entitlementLookup`) = cont inactiv: 401 / invalid_grant.
+  if (lookup.status === "expired")     return { ok: false, kind: "unauthorized", reason: "account access expired" };
   const e = lookup.entitlement;
   // Granița fail-closed: confirmă EXPLICIT că entitlement-ul e al user-ului tokenului (nu te baza pe filtrul query-ului).
   if (e.user_id !== tokenUserId)       return { ok: false, kind: "unauthorized", reason: "account user_id mismatch (wrong account row)" };

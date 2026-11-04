@@ -28,7 +28,7 @@ const handler = createMcpHandler(
 
 export async function GET(req: NextRequest) {
   const auth = await authenticate(req);
-  if (!auth.ok) return authErrorResponse(auth);
+  if (!auth.ok) return authErrorResponse(auth, req.headers);
   // PH-2 (9b-wire): subiectul de quota vine din `auth` (derivat din token în resolveAuth) → context, neschimbat.
   return withToolContext(
     buildToolContext({ clientId: auth.clientId!, scopes: auth.scopes!, plan: auth.plan, subject: auth.subject }),
@@ -38,7 +38,7 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   const auth = await authenticate(req);
-  if (!auth.ok) return authErrorResponse(auth);
+  if (!auth.ok) return authErrorResponse(auth, req.headers);
   return withToolContext(
     buildToolContext({ clientId: auth.clientId!, scopes: auth.scopes!, plan: auth.plan, subject: auth.subject }),
     () => handler(req),

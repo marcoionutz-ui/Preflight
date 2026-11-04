@@ -7,7 +7,7 @@ import { isUserRefreshDraft, type UserRefreshPayload } from "./refreshPayloadMod
 import type { OAuthGrant } from "./grant";
 import type { AccountEntitlement } from "./entitlement";
 import type { GrantLookup } from "../db/grantLookup";
-import type { AccountEntitlementLookup } from "../db/entitlementLookup";
+import { classifyEntitlementLookup, type AccountEntitlementLookup } from "../db/entitlementLookup";
 
 let passed = 0, failed = 0;
 function check(name: string, cond: boolean): void {
@@ -67,6 +67,15 @@ check("12. ⭐⭐⭐ entitlement_version cont ≠ refresh → reject (plan schim
   plan({ accountLookup: { status: "found", entitlement: { ...ent, entitlement_version: 3 } } }).kind === "reject");
 check("13. ⭐⭐⭐ cont SUSPENDED → reject", plan({ accountLookup: { status: "found", entitlement: { ...ent, status: "suspended" } } }).kind === "reject");
 check("14. ⭐⭐ user_id cont ≠ refresh → reject", plan({ accountLookup: { status: "found", entitlement: { ...ent, user_id: "u2" } } }).kind === "reject");
+
+// ── cont: access_expires_at (migrarea 0002, E12) — prin clasificatorul REAL ─────────────────────────
+const NOW = Date.parse("2026-11-03T12:00:00.000Z");
+const acctAt = (exp: unknown, now: number = NOW) => classifyEntitlementLookup({ ...ent, access_expires_at: exp }, null, now);
+check("14a. ⭐⭐⭐ cont NEEXPIRAT → rotate (neschimbat)", plan({ accountLookup: acctAt("2026-11-17T12:00:00+00:00") }).kind === "rotate");
+check("14b. ⭐⭐⭐ access_expires_at null → rotate (nu expiră)", plan({ accountLookup: acctAt(null) }).kind === "rotate");
+check("14c. ⭐⭐⭐ cont EXPIRAT → reject (invalid_grant, NU unavailable; E12)", plan({ accountLookup: acctAt("2026-11-02T00:00:00Z") }).kind === "reject");
+check("14d. ⭐⭐ lookup `expired` direct → reject", plan({ accountLookup: { status: "expired", user_id: "u1", access_expires_at_ms: 1 } }).kind === "reject");
+check("14e. ⭐⭐⭐ access_expires_at MALFORMAT → refuzat (corupt = unavailable → 503, nu rotate)", plan({ accountLookup: acctAt("2026-13-45") }).kind === "unavailable");
 
 // ── scope narrowing / clamp ──────────────────────────────────────────────────────
 check("15. ⭐⭐⭐ escaladare (cere scope ce refresh nu are) → reject", plan({ requestedScopes: ["read:pair", "admin:all"] }).kind === "reject");

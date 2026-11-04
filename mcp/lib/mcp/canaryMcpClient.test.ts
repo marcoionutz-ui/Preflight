@@ -2,7 +2,7 @@
  * lib/mcp/canaryMcpClient.test.ts — PH-12 12.5b-2 (client /api/mcp, transport fake, pur). JSON + SSE, anti-leak.
  */
 import {
-  callMcpTool, listMcpTools, buildJsonRpcRequest, buildJsonRpcNotification,
+  callMcpTool, listMcpTools, initializeMcp, buildJsonRpcRequest, buildJsonRpcNotification, MCP_PROBE_PROTOCOL_VERSION,
   type PostJson, type McpClientConfig, type McpHttpResponse,
 } from "./canaryMcpClient";
 
@@ -174,6 +174,28 @@ async function main(): Promise<void> {
   {
     const r = await listMcpTools(fakePost(401, JSON.stringify({ ok: false, error: { code: "UNAUTHORIZED" } }), "application/json"), CFG, { accessToken: TOKEN });
     check("30. ⭐⭐ tools/list 401 UNAUTHORIZED → http cu cod", r.ok === false && !r.ok && r.stage === "http" && r.reason === "HTTP 401 UNAUTHORIZED");
+  }
+
+  // ── lot OAuth staging C: initialize autentificat (JSON + SSE), fără leak ──
+  {
+    const sink: { last?: Captured } = {};
+    const body = JSON.stringify({ jsonrpc: "2.0", id: 1, result: { protocolVersion: "2025-06-18", capabilities: {}, serverInfo: { name: "s", version: "1" } } });
+    const r = await initializeMcp(fakePost(200, body, "application/json", sink), CFG, { accessToken: TOKEN });
+    const params = sink.last?.json.params as Record<string, unknown> | undefined;
+    check("31. ⭐⭐⭐ initialize: 200 + protocolVersion → ok; cere versiunea probei + Bearer", r.ok === true && r.ok && r.protocolVersion === "2025-06-18"
+      && sink.last?.json.method === "initialize" && params?.protocolVersion === MCP_PROBE_PROTOCOL_VERSION && sink.last?.headers["Authorization"] === `Bearer ${TOKEN}`);
+  }
+  {
+    const r = await initializeMcp(fakePost(200, sse({ jsonrpc: "2.0", id: 1, result: { protocolVersion: "2025-06-18" } }), "text/event-stream"), CFG, { accessToken: TOKEN });
+    check("32. ⭐⭐ initialize pe SSE → ok", r.ok === true);
+  }
+  {
+    const r = await initializeMcp(fakePost(200, JSON.stringify({ jsonrpc: "2.0", id: 1, result: {} }), "application/json"), CFG, { accessToken: TOKEN });
+    check("33. ⭐⭐ initialize fără protocolVersion → parse", r.ok === false && !r.ok && r.stage === "parse");
+  }
+  {
+    const r = await initializeMcp(fakePost(401, JSON.stringify({ ok: false, error: { code: "INVALID_TOKEN", message: TOKEN } }), "application/json"), CFG, { accessToken: TOKEN });
+    check("34. ⭐⭐⭐ initialize 401 → http, reason fără token", r.ok === false && !r.ok && r.stage === "http" && r.status === 401 && !r.reason.includes(TOKEN));
   }
 
   console.log(`\n${passed} passed, ${failed} failed`);

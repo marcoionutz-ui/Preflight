@@ -205,6 +205,37 @@ export async function callMcpTool(
   return out;
 }
 
+/** Versiunea de protocol cerută la `initialize` de proba de staging (serverul negociază). */
+export const MCP_PROBE_PROTOCOL_VERSION = "2025-06-18";
+
+/** Rezultatul unui `initialize` autentificat (design rev3 §8, E6: `initialize` + `tools/call`). */
+export type McpInitResult =
+  | { ok: true; protocolVersion: string }
+  | { ok: false; stage: "transport" | "http" | "parse" | "jsonrpc"; status: number | null; reason: string };
+
+/**
+ * Lot OAuth staging (partea C): `initialize` autentificat. Succesul = HTTP 200 + envelope JSON-RPC `result` cu
+ * `protocolVersion` string ne-gol. Fără `notifications/initialized` (transportul e stateless; Gate 1 a dovedit că
+ * `tools/list` / `tools/call` merg direct). Anti-leak: tokenul e doar în header.
+ */
+export async function initializeMcp(
+  post: PostJson,
+  cfg:  McpClientConfig,
+  args: { accessToken: string },
+): Promise<McpInitResult> {
+  const r = await postRequest(post, cfg, args.accessToken, 1, "initialize", {
+    protocolVersion: MCP_PROBE_PROTOCOL_VERSION,
+    capabilities:    {},
+    clientInfo:      { name: "preflight-gate1-staging-probe", version: "1" },
+  });
+  if (!r.ok) return r;
+  const pv = r.result.protocolVersion;
+  if (typeof pv !== "string" || pv.trim() === "") {
+    return { ok: false, stage: "parse", status: 200, reason: "initialize fără `protocolVersion` (formă invalidă)" };
+  }
+  return { ok: true, protocolVersion: pv };
+}
+
 /**
  * Probă de protocol fără efecte: `tools/list`. Succesul = HTTP 200 + `result.tools: Array<{name:string}>`. Util ca
  * smoke minimal (dovedește token acceptat + rutare MCP) fără a atinge logica vreunui tool.

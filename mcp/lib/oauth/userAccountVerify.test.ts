@@ -2,7 +2,7 @@
  * lib/oauth/userAccountVerify.test.ts — PH-2 step 10.5a frunza 4a (verificarea contului USER, pur).
  */
 import { verifyUserAccount } from "./userAccountVerify";
-import type { AccountEntitlementLookup } from "../db/entitlementLookup";
+import { classifyEntitlementLookup, type AccountEntitlementLookup } from "../db/entitlementLookup";
 import type { AccountEntitlement } from "./entitlement";
 
 let passed = 0, failed = 0;
@@ -60,6 +60,15 @@ check("16. ⭐⭐ ok expune rate_limit_per_minute/day (pt. planul de quota accou
   (() => { const r = verifyUserAccount(found(ent), "u1", 2); return r.ok === true && r.entitlement.rate_limit_per_minute === 60 && r.entitlement.rate_limit_per_day === 10000; })());
 check("17. ⭐ ok expune user_id (subiect account) + scopes",
   (() => { const r = verifyUserAccount(found(ent), "u1", 2); return r.ok === true && r.entitlement.user_id === "u1" && r.entitlement.scopes.length === 2; })());
+
+// ── access_expires_at (migrarea 0002) — expirat = cont inactiv ─────────────────────────────────────
+const NOW = Date.parse("2026-11-03T12:00:00.000Z");
+const viaCls = (exp: unknown, now: number = NOW) => classifyEntitlementLookup({ ...ent, access_expires_at: exp }, null, now);
+check("18. ⭐⭐⭐ neexpirat → ok (neschimbat)", (() => { const r = verifyUserAccount(viaCls("2026-11-17T12:00:00Z"), "u1", 2); return r.ok === true && r.entitlement.plan === "pro"; })());
+check("19. ⭐⭐⭐ null → ok (nu expiră niciodată)", verifyUserAccount(viaCls(null), "u1", 2).ok === true);
+check("20. ⭐⭐⭐ expirat → 401 unauthorized (ca suspended)", (() => { const r = verifyUserAccount(viaCls("2026-11-03T00:00:00Z"), "u1", 2); return r.ok === false && r.kind === "unauthorized"; })());
+check("21. ⭐⭐ lookup `expired` direct → 401", (() => { const r = verifyUserAccount({ status: "expired", user_id: "u1", access_expires_at_ms: NOW }, "u1", 2); return r.ok === false && r.kind === "unauthorized" && r.reason.length > 0; })());
+check("22. ⭐⭐⭐ malformat → refuzat (unavailable, fail-closed — NU ok)", (() => { const r = verifyUserAccount(viaCls("yesterday"), "u1", 2); return r.ok === false && r.kind === "unavailable"; })());
 
 console.log("\n" + passed + " passed, " + failed + " failed");
 if (failed > 0) process.exit(1);

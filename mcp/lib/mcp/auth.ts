@@ -12,6 +12,7 @@ import { resolveAuth, resolveDevBypass } from "./authPolicy";
 import type { AuthResult }            from "./authPolicy";
 import { resolveBaseUrl }             from "@/lib/oauth/baseUrl";
 import { canonicalResourceUri }       from "@/lib/oauth/resource";
+import { buildWwwAuthenticate }       from "./wwwAuthenticate";
 
 export type { AuthResult } from "./authPolicy";
 
@@ -71,10 +72,19 @@ export async function authenticate(req: NextRequest): Promise<AuthResult> {
   });
 }
 
-export function authErrorResponse(auth: AuthResult): Response {
+/**
+ * Răspunsul de eroare de autentificare (401/429/503). Lotul OAuth staging (design rev3 §5): `WWW-Authenticate` cu
+ * `resource_metadata` ABSOLUT (originea din `resolveBaseUrl`, aceeași sursă canonică ca metadata) + `scope="read:basic"`.
+ * `reqHeaders` = header-ele cererii (folosite de `resolveBaseUrl` DOAR ca fallback dev, când `PUBLIC_BASE_URL` lipsește).
+ * Dacă `resolveBaseUrl` aruncă (producție fără `PUBLIC_BASE_URL`, fail-closed), NU propagăm: statusul rămâne cel din
+ * `auth` și header-ul cade pe forma relativă de dinainte (`buildWwwAuthenticate(null)`) — un 401 nu devine 500.
+ */
+export function authErrorResponse(auth: AuthResult, reqHeaders: { get(name: string): string | null }): Response {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (auth.retryAfter) headers["Retry-After"] = String(auth.retryAfter);
-  headers["WWW-Authenticate"] = `Bearer resource_metadata="/.well-known/oauth-protected-resource"`;
+  let origin: string | null;
+  try { origin = resolveBaseUrl(reqHeaders, process.env); } catch { origin = null; }
+  headers["WWW-Authenticate"] = buildWwwAuthenticate(origin);
 
   return new Response(
     JSON.stringify({ ok: false, error: { code: auth.errorCode, message: auth.error } }),

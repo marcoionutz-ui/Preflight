@@ -12,6 +12,7 @@ import { createClient as createSupabaseServerClient } from "@/lib/supabase/serve
 import {
   getClientByUserId, rotateClientSecret, addRedirectUri, removeRedirectUri,
 } from "@/lib/db/oauth-clients";
+import { revokeClaudeGrantsForUser } from "@/lib/db/grantRevoke";
 
 export async function rotateSecretAction(): Promise<
   { ok: true; secret: string } | { ok: false; error: string }
@@ -65,6 +66,27 @@ export async function removeRedirectUriAction(uri: string): Promise<
   if (!updated) return { ok: false, error: "Failed to remove URI — try again" };
 
   return { ok: true, redirectUris: updated.redirect_uris };
+}
+
+// ── Lot OAuth staging §6: „Revoke Claude's access" — session-gated, ca acțiunile de mai sus. Fără parametri din
+// browser: userId vine DOAR din sesiunea verificată pe server. Revocă grant-urile ACTIVE ale contului DOAR pe
+// registration-urile Claude (`isClaudeCimdClientId`); grant-urile altor clienți rămân neatinse. Efectul (401 la apel,
+// invalid_grant la refresh) vine din verificările care citesc grant-ul (vezi lib/db/grantRevoke.ts). Idempotent: al doilea
+// click raportează 0. Logul nu conține tokenuri sau id-uri.
+export async function revokeClaudeAccessAction(): Promise<
+  { ok: true; revoked: number } | { ok: false; error: string }
+> {
+  const supabase = await createSupabaseServerClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { ok: false, error: "Not authenticated" };
+
+  const result = await revokeClaudeGrantsForUser(user.id);
+  if (result.status !== "revoked") {
+    console.error(`[DASHBOARD] revoke Claude access failed: status=${result.status}`);
+    return { ok: false, error: "Could not revoke access — try again" };
+  }
+  console.log(`[DASHBOARD] revoke Claude access ok: revoked=${result.count}`);
+  return { ok: true, revoked: result.count };
 }
 
 export async function signOutAction(): Promise<void> {
