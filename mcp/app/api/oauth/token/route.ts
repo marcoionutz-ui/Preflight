@@ -18,7 +18,7 @@ import { isValidCodeVerifier }              from "@/lib/oauth/pkce";
 import { resolveBaseUrl }                   from "@/lib/oauth/baseUrl";
 import { validateResourceIndicator, canonicalResourceUri } from "@/lib/oauth/resource";
 import { planAuthCodeTokenIssuance }        from "@/lib/oauth/authCodeIssuancePlan";
-import { isLegacyAuthCodeCutoverEnabled }   from "@/lib/oauth/authCodeCutover";
+import { isLegacyAuthCodeCutoverEnabled, shouldRejectLegacyRefresh } from "@/lib/oauth/authCodeCutover";
 // PH-2 fix (canary Gate 1): calea de ACCESS auth-code trebuie să FORKEZE pe identitatea codului ca și calea de refresh —
 // un cod USER (DCR public) se validează pe registration, NU pe `oauth_clients` legacy. Clasificatorul e sursa unică (10.2).
 import { readAuthCodeIdentity }             from "@/lib/oauth/authGrantIssuance";
@@ -351,6 +351,14 @@ async function handleRefreshGrant(req: NextRequest, body: Record<string, string>
   // deci forma user TREBUIE deviată AICI; după `return`, `rp` se îngustează la forma client (`RefreshPayload`).
   if (isUserRefresh(rp)) {
     return handleUserRefreshGrant(req, body, rp, refresh_token, scopeParam);
+  }
+
+  // Lot OAuth staging §4.2: de aici `rp` e forma LEGACY de client (emisă de fluxul confidențial de cod). Cu
+  // `PH2_REJECT_LEGACY_AUTHCODE` activ (același flag + parser ca ramura codului) → refuz IMEDIAT, ÎNAINTE de lookup,
+  // rotație sau touchClient: nu se emite token, nu se scrie în Redis, vechiul refresh nu e consumat. Flag oprit →
+  // comportamentul de azi, neschimbat. Refresh-ul user/CIMD a ieșit deja pe ramura de mai sus.
+  if (shouldRejectLegacyRefresh(process.env)) {
+    return jsonError(400, "invalid_grant", "Legacy refresh tokens are no longer accepted; re-authorize");
   }
 
   // 3. Clientul e încă activ? + rotația secretului (credential_version) → forțează reauth. PH-9: discriminat.

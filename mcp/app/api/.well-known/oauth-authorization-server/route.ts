@@ -24,5 +24,9 @@ export async function GET(req: NextRequest) {
 	  // PH-3 (RFC 9207): authorization response include `iss` → clientul verifica ce AS a emis (anti mix-up).
 	  authorization_response_iss_parameter_supported: true,
 	  scopes_supported:                        [...SERVER_SCOPE_CATALOG],
+	  // Lotul OAuth staging (design rev3 §2): hosted apps Claude aleg CIMD („Use Claude's published identity”) doar
+	  // dacă AS anunță acest flag + `none`. CIMD FIXAT: acceptăm doar client_id-urile provizionate (fără fetch la
+	  // runtime). Intenționat FĂRĂ endpoint de înregistrare dinamică (fără DCR).
+	  client_id_metadata_document_supported:   true,
 	});
 }

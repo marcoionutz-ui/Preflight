@@ -12,6 +12,7 @@ import { logUsage, generateRequestId, reserveQuota, refundQuota } from "./usage"
 import { getToolCredits, resolvePlan }                  from "./billing";
 import { toolAuthorized }                               from "./scopes";
 import { mcpErr, ERR, sanitizeToolError }                                   from "./errors";
+import { formatToolCallLog }                                                from "./toolCallLog";
 // PH-2 (9b-wire): context + builder pur trăiesc în `toolContext.ts` (modul ușor, testabil). Re-exportate aici ca
 // importurile caller-ilor (`route.ts`, `tp_watch_pair.ts`) să rămână neschimbate.
 import { getToolContext } from "./toolContext";
@@ -53,7 +54,7 @@ export function createInstrumentedServer(server: McpServer): McpServer {
     config: unknown,
     handler: (args: Record<string, unknown>) => Promise<{ content: { type: string; text: string }[] }>,
   ) => {
-    const instrumentedHandler = async (args: Record<string, unknown>) => {
+    const runInstrumented = async (args: Record<string, unknown>) => {
       const ctx       = getToolContext();
       const requestId = generateRequestId();
       const startTime = Date.now();
@@ -170,6 +171,22 @@ export function createInstrumentedServer(server: McpServer): McpServer {
         });
         return mcpErr(ERR.INTERNAL, sanitizeToolError(e));
       }
+    };
+
+    // Lot OAuth staging §9 S2 / §10: O SINGURĂ linie per `tools/call`, pe TOATE căile de ieșire de mai sus (refuz
+    // scope, quota, succes, excepție internă). Doar numele + `isError` + starea `structuredContent` — fără argumente,
+    // conținut sau identități (formatter pur în toolCallLog.ts). O excepție scăpată din strat (neașteptată) e logată
+    // ca eroare fără conținut, apoi propagată neschimbată către SDK.
+    const instrumentedHandler = async (args: Record<string, unknown>) => {
+      let result: Awaited<ReturnType<typeof runInstrumented>>;
+      try {
+        result = await runInstrumented(args);
+      } catch (e) {
+        console.log(formatToolCallLog(name, { isError: true }));
+        throw e;
+      }
+      console.log(formatToolCallLog(name, result));
+      return result;
     };
 
     return originalRegisterTool(

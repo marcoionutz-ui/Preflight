@@ -3,9 +3,10 @@
  *
  * `getClientById` conflă „client inexistent" cu „eroare Supabase" în `null`. `classifyClientLookup` le separă:
  * error prezent → unavailable (503); data null fără error → not_found (401); data prezent → found. Leaf pur.
+ * Lot OAuth staging §4.1: `found` cere și `status=active` + `admin_authorized_at` nenul/valid (altfel not_found).
  */
 import { readFileSync } from "node:fs";
-import { classifyClientLookup, classifyClientCredentials } from "./clientLookup";
+import { classifyClientLookup, classifyClientCredentials, isUsableLegacyClient } from "./clientLookup";
 
 let passed = 0, failed = 0;
 function check(name: string, cond: boolean): void {
@@ -16,7 +17,12 @@ function check(name: string, cond: boolean): void {
 // Stub minimal de client. Tip STRICT (NonNullable) — altfel `OAuthClient|null|undefined` nu se poate pasa la
 // `{ status:"found", client: OAuthClient }` sub `strict` (tsx nu typecheck-uiește, dar `tsc`/CI da). (cgpt PH-9)
 type TestClient = NonNullable<Parameters<typeof classifyClientLookup>[0]>;
-const CLIENT = { client_id: "c1", secret_rotated_at: "v1" } as unknown as TestClient;
+// Lot OAuth staging §4.1: un client `found` trebuie să fie activ ȘI autorizat de admin → fixture-ul de bază le are pe ambele.
+const CLIENT = {
+  client_id: "c1", secret_rotated_at: "v1", status: "active",
+  admin_authorized_at: "2026-11-01T10:00:00.000Z", admin_authorized_by: "marco: M2M admin",
+} as unknown as TestClient;
+const withRow = (over: Record<string, unknown>) => ({ ...(CLIENT as unknown as Record<string, unknown>), ...over }) as unknown as TestClient;
 
 function main(): void {
 console.log("NF4 — classifyClientLookup (found | not_found | unavailable)");
@@ -70,6 +76,50 @@ check("13. ⭐ pe unavailable, secretMatches irelevant (chiar cu matchYes → to
 check("14. ⭐ unavailable ≠ invalid_client (nu mai sunt ambele 401)",
   classifyClientCredentials({ status: "unavailable", reason: "x" }, matchNo).status !==
   classifyClientCredentials({ status: "not_found" }, matchNo).status);
+
+// ── Lot OAuth staging §4.1 (O1): found DOAR pentru activ + admin_authorized_at nenul și valid ──
+check("22. ⭐⭐⭐ admin_authorized_at null → not_found (client auto-creat neautorizat: secret/token închise)",
+  classifyClientLookup(withRow({ admin_authorized_at: null }), null).status === "not_found");
+check("23. ⭐⭐⭐ admin_authorized_at LIPSĂ din rând (0002 neaplicată) → not_found (fail-closed)", (() => {
+  const row = { ...(CLIENT as unknown as Record<string, unknown>) };
+  delete row.admin_authorized_at;
+  return classifyClientLookup(row as unknown as TestClient, null).status === "not_found";
+})());
+check("24. ⭐⭐ admin_authorized_at malformat ('', '   ', 'ieri', număr, obiect) → not_found", (
+  ["", "   ", "ieri", "not-a-date"].every(v => classifyClientLookup(withRow({ admin_authorized_at: v }), null).status === "not_found")
+  && classifyClientLookup(withRow({ admin_authorized_at: 1730000000000 }), null).status === "not_found"
+  && classifyClientLookup(withRow({ admin_authorized_at: {} }), null).status === "not_found"
+  && classifyClientLookup(withRow({ admin_authorized_at: true }), null).status === "not_found"
+));
+check("25. ⭐⭐⭐ status ≠ active (revoked/suspended/lipsă), chiar autorizat → not_found (defense-in-depth peste filtrul de query)",
+  ["revoked", "suspended", undefined, "ACTIVE"].every(st => classifyClientLookup(withRow({ status: st }), null).status === "not_found"));
+check("26. ⭐⭐ activ + autorizat (ISO cu offset) → found", classifyClientLookup(withRow({ admin_authorized_at: "2026-11-01T10:00:00+00:00" }), null).status === "found");
+check("27. ⭐⭐⭐ NU deduce admin din user_id NULL / plan / scope: neautorizat rămâne not_found",
+  classifyClientLookup(withRow({ admin_authorized_at: null, user_id: null, plan: "enterprise", scopes: ["read:all"] }), null).status === "not_found");
+check("28. ⭐⭐ admin_authorized_by e doar audit: lipsă/null NU blochează un client autorizat",
+  classifyClientLookup(withRow({ admin_authorized_by: null }), null).status === "found");
+check("29. ⭐⭐ eroarea Supabase câștigă și pe un rând neautorizat → unavailable (outage ≠ neautorizat)",
+  classifyClientLookup(withRow({ admin_authorized_at: null }), { message: "down" }).status === "unavailable");
+check("30. ⭐ isUsableLegacyClient pe non-obiect (null/string/undefined) → false",
+  !isUsableLegacyClient(null) && !isUsableLegacyClient("c1") && !isUsableLegacyClient(undefined));
+check("31. ⭐⭐⭐ client_credentials pe client neautorizat → invalid_client (secretul corect nu mai emite)", (() => {
+  const lookup = classifyClientLookup(withRow({ admin_authorized_at: null }), null);
+  return classifyClientCredentials(lookup, matchYes).status === "invalid_client";
+})());
+
+// ── Guard de sursă: lookupClientById trece prin clasificator, iar dashboard-ul rămâne pe getClientByUserId ──
+{
+  const oc = readFileSync("lib/db/oauth-clients.ts", "utf8");
+  const lk = oc.match(/export async function lookupClientById[\s\S]*?\n\}/);
+  const body = lk ? lk[0] : "";
+  check("32. ⭐⭐⭐ lookupClientById delegă la classifyClientLookup (regula admin nu e ocolită)",
+    /return classifyClientLookup\(data as OAuthClient \| null, error\)/.test(body));
+  check("33. ⭐⭐ lookupClientById citește toate coloanele (select(\"*\") aduce admin_authorized_at)",
+    /\.select\("\*"\)/.test(body) || /admin_authorized_at/.test(body));
+  const gbu = oc.match(/export async function getClientByUserId[\s\S]*?\n\}/);
+  check("34. ⭐⭐ getClientByUserId (dashboard) NU aplică regula admin (titularul își vede și revocă clientul)",
+    !!gbu && !/classifyClientLookup|isUsableLegacyClient|admin_authorized_at/.test(gbu[0]));
+}
 
 // ── PH-9: GUARD DE SURSĂ — token route chiar CABLEAZĂ clasificatorul discriminat (cgpt) ──
 // Clasificatorul e verde mai sus, dar dacă ruta ar regresa mâine la `verifyClientCredentials()` + 401, testele

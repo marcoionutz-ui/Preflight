@@ -17,15 +17,20 @@ import { classifyGrantLookup, type GrantLookup } from "./grantLookup";
 import { resolveGrantInsert, type InsertGrantResult, type GrantInsertExecResult } from "./grantInsert";
 import type { OAuthGrant } from "../oauth/grant";
 
-/** Entitlement-ul de cont al unui user (account_entitlements). `not_found` = user fără entitlement; `unavailable` = Supabase jos. */
-export async function getAccountEntitlement(userId: string): Promise<AccountEntitlementLookup> {
+/**
+ * Entitlement-ul de cont al unui user (account_entitlements). `not_found` = user fără entitlement; `expired` =
+ * `access_expires_at <= nowMs` (migrarea 0002; tratat de TOȚI consumatorii ca un cont inactiv); `unavailable` =
+ * Supabase jos sau rând corupt. `access_expires_at` e cerut EXPLICIT: lipsa lui din rând = corupt (fail-closed).
+ * `nowMs` implicit = ceasul procesului, citit O dată per lookup (consumatorii păstrează apelul `getAccountEntitlement(id)`).
+ */
+export async function getAccountEntitlement(userId: string, nowMs: number = Date.now()): Promise<AccountEntitlementLookup> {
   try {
     const { data, error } = await supabaseAdmin
       .from("account_entitlements")
-      .select("user_id, plan, scopes, rate_limit_per_minute, rate_limit_per_day, status, entitlement_version")
+      .select("user_id, plan, scopes, rate_limit_per_minute, rate_limit_per_day, status, entitlement_version, access_expires_at")
       .eq("user_id", userId)
       .maybeSingle();
-    return classifyEntitlementLookup(data, error);
+    return classifyEntitlementLookup(data, error, nowMs);
   } catch (err) {
     return { status: "unavailable", reason: err instanceof Error ? err.message : "supabase_throw" };
   }

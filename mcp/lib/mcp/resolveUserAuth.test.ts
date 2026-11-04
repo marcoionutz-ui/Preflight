@@ -10,6 +10,7 @@ import { resolveAuth, type AuthDeps, type AuthResult } from "./authPolicy";
 import type { UserTokenPayload } from "../oauth/tokenPayloadModel";
 import type { OAuthGrant } from "../oauth/grant";
 import type { AccountEntitlement } from "../oauth/entitlement";
+import { classifyEntitlementLookup } from "../db/entitlementLookup";
 
 let passed = 0, failed = 0;
 function check(name: string, cond: boolean): void {
@@ -129,6 +130,25 @@ check("21. ⭐⭐⭐ entitlement user_id ≠ token → 401 (nu scurge contul gre
 let acctCalls = 0;
 const aunav = await run({ getAccountEntitlement: async () => { acctCalls++; return { status: "unavailable", reason: "down" }; } });
 check("22. ⭐⭐⭐ getAccountEntitlement unavailable → retry → 503 (2 apeluri, NU 401 fals)", aunav.status === 503 && aunav.errorCode === "AUTH_UNAVAILABLE" && acctCalls === 2);
+
+// ── cont: access_expires_at (migrarea 0002) — lookup-ul trece prin clasificatorul REAL (punctul unic de expirare) ──
+const NOW = Date.parse("2026-11-03T12:00:00.000Z");
+const entRowExp = (exp: unknown) => ({ ...ent, access_expires_at: exp });
+const viaClassifier = (exp: unknown, now: number = NOW): Partial<AuthDeps> =>
+  ({ getAccountEntitlement: async () => classifyEntitlementLookup(entRowExp(exp), null, now) });
+const aNotExp = await run(viaClassifier("2026-11-17T12:00:00.000000+00:00"));
+check("22a. ⭐⭐⭐ cont NEEXPIRAT (+14 zile) → ok, subiect cont neschimbat", aNotExp.ok === true);
+const aNull = await run(viaClassifier(null));
+check("22b. ⭐⭐⭐ access_expires_at null → ok (nu expiră niciodată)", aNull.ok === true);
+const aExp = await run(viaClassifier("2026-11-03T11:59:59.000Z"));
+check("22c. ⭐⭐⭐ cont EXPIRAT → 401 (ca un cont suspendat; E11)", aExp.ok === false && aExp.status === 401);
+const aExpEdge = await run(viaClassifier("2026-11-03T12:00:00.000Z"));
+check("22d. ⭐⭐ expirare == now → 401 (<= now)", aExpEdge.ok === false && aExpEdge.status === 401);
+const aExpDirect = await run({ getAccountEntitlement: async () => ({ status: "expired", user_id: "u1", access_expires_at_ms: NOW - 1 }) });
+check("22e. ⭐⭐⭐ lookup `expired` injectat direct → 401 (NU 503, fără retry de outage)", aExpDirect.ok === false && aExpDirect.status === 401);
+let malCalls = 0;
+const aMal = await run({ getAccountEntitlement: async () => { malCalls++; return classifyEntitlementLookup(entRowExp("garbage"), null, NOW); } });
+check("22f. ⭐⭐⭐ access_expires_at MALFORMAT → refuzat (rând corupt = unavailable → 503, fail-closed)", aMal.ok === false && aMal.status === 503 && malCalls === 2);
 
 // ── rate-limit ACCOUNT-ONLY ──────────────────────────────────────────────────────
 const rlim = await run({ checkAccountRate: async () => ({ status: "limited", retry_after: 42, remaining_min: 0, remaining_day: 5 }) });

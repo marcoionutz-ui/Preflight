@@ -5,18 +5,23 @@
  * security pattern: verified session -> user.id -> query scoped by user_id,
  * never trust client input).
  *
- * First visit: no oauth_clients row for this user yet -> provision one on
- * free_trial and pass the freshly generated secret down to the client
- * component for the one-time reveal. Every visit after that, the secret is
- * never re-derivable — only its hash is stored.
+ * Lot OAuth staging §4.1 (O1): dashboard-ul NU mai creează automat clienți confidențiali (`createOAuthClient` scos).
+ * Până acum, prima vizită proviziona un client `free_trial` cu secret → orice înscriere simplă primea un token
+ * `client_credentials` fără expirare. Acum:
+ *   - cont FĂRĂ client legacy → mesaj „acces doar pe invitație" + instrucțiunea de conectare din Claude („Use Claude's
+ *     published identity", cu URL-ul MCP). Accesul real se decide la consimțământ (entitlement din invitație).
+ *   - cont CU client legacy existent → afișat ca azi (citit prin `getClientByUserId`, care NU aplică regula de
+ *     autorizare admin), ca titularul să-l vadă; dacă nu e autorizat de admin, secretul nu mai emite token (§4.1).
+ *   - butonul „Revoke Claude's access" (§6) apare pentru orice cont logat și revocă DOAR grant-urile pe registration-urile Claude.
+ * Secretul e afișat o singură dată DOAR după rotație (Server Action); nu mai există reveal la creare.
  */
 
 import { redirect } from "next/navigation";
 import { headers } from "next/headers";
 import { createClient as createSupabaseServerClient } from "@/lib/supabase/server";
-import { getClientByUserId, createOAuthClient } from "@/lib/db/oauth-clients";
+import { getClientByUserId } from "@/lib/db/oauth-clients";
 import { getPlanConfig } from "@/lib/mcp/billing";
-import DashboardClient from "./dashboard-client";
+import DashboardClient, { type LegacyClientView } from "./dashboard-client";
 import { resolveBaseUrl } from "@/lib/oauth/baseUrl";
 
 export const dynamic = "force-dynamic";
@@ -27,81 +32,30 @@ export default async function DashboardPage() {
 
   if (!user) redirect("/login");
 
-  let client = await getClientByUserId(user.id);
-  let freshSecret: string | null = null;
-
-  if (!client) {
-    // Provisioning correctă: ratele trebuie luate din PLANS (billing.ts),
-    // NU din defaults-urile lui createOAuthClient() (acelea sunt gândite
-    // pentru clienți admin-provisioned pe plan "starter", nu free_trial).
-    const freeTrialConfig = getPlanConfig("free_trial");
-
-    const created = await createOAuthClient({
-      name:                  user.email ?? user.id,
-      plan:                  "free_trial",
-      scopes:                freeTrialConfig.allowed_scopes,
-      user_id:               user.id,
-      rate_limit_per_minute: freeTrialConfig.rate_limit_per_minute,
-      rate_limit_per_day:    freeTrialConfig.rate_limit_per_day,
-    });
-
-    if (!created) {
-      return (
-        <ErrorShell message="Could not provision your account. Refresh to try again." />
-      );
-    }
-
-    freshSecret = created.client_secret;
-    client      = created.client;
-  }
+  const client = await getClientByUserId(user.id);
 
   // U7: origine CANONICĂ din PUBLIC_BASE_URL (imun la host-header poisoning); fallback pe headers doar dev/compat.
   const h      = await headers();
   const mcpUrl = `${resolveBaseUrl(h, process.env)}/api/mcp`;
 
-  const planConfig = getPlanConfig(client.plan);
+  let legacyClient: LegacyClientView | null = null;
+  if (client) {
+    const planConfig = getPlanConfig(client.plan);
+    legacyClient = {
+      clientId:           client.client_id,
+      planName:           planConfig.name,
+      scopes:             client.scopes,
+      monthlyQuota:       planConfig.monthly_quota,
+      rateLimitPerMinute: client.rate_limit_per_minute,
+      redirectUris:       client.redirect_uris ?? [],
+    };
+  }
 
   return (
     <DashboardClient
       email={user.email ?? ""}
-      clientId={client.client_id}
-      freshSecret={freshSecret}
-      planName={planConfig.name}
-      scopes={client.scopes}
-      monthlyQuota={planConfig.monthly_quota}
-      rateLimitPerMinute={client.rate_limit_per_minute}
       mcpUrl={mcpUrl}
-      redirectUris={client.redirect_uris ?? []}
+      legacyClient={legacyClient}
     />
   );
 }
-
-function ErrorShell({ message }: { message: string }) {
-  return (
-    <div style={styles.page}>
-      <div style={styles.errorCard}>{message}</div>
-    </div>
-  );
-}
-
-const styles: Record<string, React.CSSProperties> = {
-  page: {
-    minHeight:      "100vh",
-    background:     "#030303",
-    color:          "#e0e0e0",
-    fontFamily:     "'Courier New', Courier, monospace",
-    display:        "flex",
-    alignItems:     "center",
-    justifyContent: "center",
-    padding:        "20px",
-  },
-  errorCard: {
-    background:   "#240a0a",
-    border:       "1px solid #3a0f0f",
-    borderRadius: "8px",
-    color:        "#ff5c5c",
-    fontSize:     "13px",
-    padding:      "20px 24px",
-    maxWidth:     "420px",
-  },
-};

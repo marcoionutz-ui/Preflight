@@ -2,7 +2,7 @@
  * lib/oauth/authCodeCutover.test.ts — PH-2 step 10.4c (flag cutover legacy, pur).
  * Absent/falsy → false (legacy acceptat în rollout); truthy → true (refuz); PREZENT-NECUNOSCUT → true (fail-closed).
  */
-import { isLegacyAuthCodeCutoverEnabled } from "./authCodeCutover";
+import { isLegacyAuthCodeCutoverEnabled, shouldRejectLegacyRefresh } from "./authCodeCutover";
 
 let passed = 0, failed = 0;
 function check(name: string, cond: boolean): void {
@@ -35,6 +35,17 @@ check("13. ⭐⭐ 'enable'/'enabled'/'reject' (necunoscute) → true", F("enable
 check("14. ⭐⭐ '2'/gunoi → true (prezent necunoscut = fail-closed)", F("2") === true && F("x!@#") === true);
 check("15. ⭐ regresie: NUMAI valori explicit-false/absent redeschid legacy", F(undefined) === false && F("false") === false && F("0") === false && F("") === false);
 check("16. ⭐ alte env vars nu influențează (fără PH2_REJECT_LEGACY_AUTHCODE → false)", isLegacyAuthCodeCutoverEnabled({ OTHER: "1" }) === false);
+
+// ── Lot OAuth staging §4.2: refuzul refresh-ului legacy = ACELAȘI flag + ACELAȘI parser ca ramura codului ──
+const R = (raw: string | undefined) => shouldRejectLegacyRefresh(raw === undefined ? {} : { PH2_REJECT_LEGACY_AUTHCODE: raw });
+check("17. ⭐⭐⭐ refresh legacy: flag '1' → refuz", R("1") === true);
+check("18. ⭐⭐⭐ refresh legacy: flag absent / '' / '0' / 'off' → acceptat (comportamentul de azi)",
+  R(undefined) === false && R("") === false && R("0") === false && R("off") === false);
+check("19. ⭐⭐⭐ refresh legacy: prezent-necunoscut ('treu') → refuz (fail-closed, ca la cod)", R("treu") === true);
+check("20. ⭐⭐⭐ decizia refresh == decizia cod pe TOATE valorile (o singură sursă de adevăr)",
+  [undefined, "", "0", "false", "no", "off", "1", "true", "TRUE", "yes", "on", " 1 ", "treu", "2", "enable"]
+    .every(v => R(v) === F(v)));
+check("21. ⭐ alte env vars nu influențează refuzul refresh-ului", shouldRejectLegacyRefresh({ PH2_RESOURCE_OWNER_AUTHORIZE: "1" }) === false);
 
 console.log("\n" + passed + " passed, " + failed + " failed");
 if (failed > 0) process.exit(1);

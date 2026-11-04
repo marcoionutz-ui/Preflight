@@ -21,6 +21,8 @@ export async function GET(req: NextRequest) {
     grant_types_supported:                 ["authorization_code", "client_credentials"],
     code_challenge_methods_supported:      ["S256"],
     token_endpoint_auth_methods_supported: ["client_secret_post", "none"],
+    // CIMD (Use Claude's published identity), fixat pe client: aceeași declarație ca în metadata RFC 8414.
+    client_id_metadata_document_supported: true,
     scopes_supported:                      [...SERVER_SCOPE_CATALOG],
     subject_types_supported:               ["public"],
   });

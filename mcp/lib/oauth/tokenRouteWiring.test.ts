@@ -9,6 +9,9 @@
  * BUG-ul prins de canary: calea de access chema NECONDIȚIONAT `lookupClientById` → un cod user (client în
  * `oauth_client_registrations`) dădea `unavailable`→503 (tabel legacy jos) sau `not_found`→401 (client absent din legacy),
  * deci fluxul user nu putea emite NICIODATĂ. cwd = pachetul mcp.
+ *
+ * Lot OAuth staging §4.2 (checks 15–21): pe grantul `refresh_token`, refresh-ul LEGACY (forma client) e refuzat cu
+ * `PH2_REJECT_LEGACY_AUTHCODE` DUPĂ bifurcația user și ÎNAINTE de lookup/rotație/touch; user și client_credentials neatinse.
  */
 import { readFileSync } from "node:fs";
 
@@ -83,6 +86,34 @@ function main(): void {
   check("14. ⭐ import readAuthCodeIdentity + (deja) verifyUserRegistration/getRegistrationByClientId/touchRegistration",
     /import \{ readAuthCodeIdentity \}/.test(src)
     && /verifyUserRegistration/.test(src) && /getRegistrationByClientId/.test(src) && /touchRegistration/.test(src));
+
+  // ── 15–21. Lot OAuth staging §4.2: refuzul refresh-ului LEGACY (guard de sursă pe handleRefreshGrant) ──
+  // Refuzul trebuie să stea DUPĂ bifurcația user (refresh-ul CIMD nu e atins) și ÎNAINTE de orice efect al ramurii
+  // legacy: lookupClientById (DB), rotateRefreshToken (Redis: consum + emitere), touchClient (scriere last_used_at).
+  const rg = src.match(/async function handleRefreshGrant[\s\S]*?\n\}/);
+  const rgBody = rg ? rg[0] : "";
+  check("15. ⭐ handleRefreshGrant izolat", rgBody.length > 0);
+  const iFork     = rgBody.indexOf("if (isUserRefresh(rp))");
+  const iRefuse   = rgBody.indexOf("if (shouldRejectLegacyRefresh(process.env))");
+  const iLookup   = rgBody.indexOf("lookupClientById(rp.client_id)");
+  const iRotate   = rgBody.indexOf("rotateRefreshToken(");
+  const iTouch    = rgBody.indexOf("touchClient(");
+  check("16. ⭐⭐⭐ refuzul legacy stă DUPĂ bifurcația isUserRefresh (refresh-ul user/CIMD neatins)",
+    iFork > -1 && iRefuse > iFork);
+  check("17. ⭐⭐⭐ refuzul legacy stă ÎNAINTE de lookupClientById, rotateRefreshToken și touchClient (fără efecte)",
+    iRefuse > -1 && iLookup > iRefuse && iRotate > iRefuse && iTouch > iRefuse);
+  check("18. ⭐⭐⭐ refuzul → 400 invalid_grant imediat (return, fără token în corp)",
+    /if \(shouldRejectLegacyRefresh\(process\.env\)\) \{\s*return jsonError\(400, "invalid_grant", [^)]*\);\s*\}/.test(rgBody));
+  check("19. ⭐⭐⭐ refuzul folosește ACELAȘI modul/parser ca ramura codului (authCodeCutover)",
+    /import \{[^}]*isLegacyAuthCodeCutoverEnabled[^}]*shouldRejectLegacyRefresh[^}]*\} from "@\/lib\/oauth\/authCodeCutover"/.test(src)
+    && !/process\.env\.PH2_REJECT_LEGACY_AUTHCODE|env\[["']PH2_REJECT_LEGACY_AUTHCODE/.test(src)); // fără parser paralel în rută
+  const uh = src.match(/async function handleUserRefreshGrant[\s\S]*?\n\}/);
+  check("20. ⭐⭐⭐ ramura user (handleUserRefreshGrant) NU aplică refuzul legacy",
+    !!uh && !/shouldRejectLegacyRefresh/.test(uh[0]));
+  const ccStart = src.indexOf('grant_type === "client_credentials"');
+  const ccBlock = ccStart > -1 && acStart > ccStart ? src.slice(ccStart, acStart) : "";
+  check("21. ⭐⭐⭐ client_credentials NU aplică refuzul legacy (M2M administrativ rămâne funcțional)",
+    ccBlock.length > 0 && !/shouldRejectLegacyRefresh|isLegacyAuthCodeCutoverEnabled/.test(ccBlock));
 
   console.log(`\n${passed} passed, ${failed} failed`);
   if (failed > 0) process.exit(1);

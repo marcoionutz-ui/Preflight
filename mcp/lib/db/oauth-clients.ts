@@ -38,6 +38,12 @@ export interface OAuthClient {
   // issue a code until at least one URI is configured — safe-by-default,
   // no client works "by accident" with an unvalidated redirect target.
   redirect_uris:         string[];
+  // Lot OAuth staging §4.1 (O1, migrația 0002): autorizarea EXPLICITĂ de admin, client cu client
+  // (`scripts/adminClientAccess.ts`). `lookupClientById` întoarce `found` DOAR cu `admin_authorized_at` nenul și
+  // valid (regula e în clasificatorul pur `isUsableLegacyClient`). `admin_authorized_by` = notă de audit, fără rol în
+  // decizie. Opționale în tip: înainte de `0002`, `select("*")` nu le aduce → clientul e tratat ca neautorizat.
+  admin_authorized_at?:  string | null;
+  admin_authorized_by?:  string | null;
 }
 
 // ── Hashing ───────────────────────────────────────────────────────────────────
@@ -72,6 +78,12 @@ export function isAllowedRedirectUri(client: OAuthClient, redirectUri: string): 
  * NF4: citire DISCRIMINATĂ a clientului — `found | not_found | unavailable`. `.maybeSingle()` (NU `.single()`):
  * 0 rânduri → `data:null, error:null` (= not_found), iar o eroare reală de backend → `error` setat (= unavailable).
  * `resolveAuth` mapează `unavailable` la 503 AUTH_UNAVAILABLE (nu 401 fals). Sursa autoritativă pt. auth.
+ *
+ * Lot OAuth staging §4.1 (O1): `found` DOAR pentru `status = active` ȘI `admin_authorized_at` nenul + valid; un client
+ * activ dar neautorizat → `not_found`. Punct UNIC de închidere: `/token` (`client_credentials`, cod și refresh legacy),
+ * `/authorize` legacy, verificarea per apel MCP (`resolveAuth` → `getClient`). `select("*")` aduce și coloana
+ * `admin_authorized_at`; decizia e în clasificatorul PUR (`classifyClientLookup` → `isUsableLegacyClient`).
+ * Dashboard-ul NU trece pe aici (`getClientByUserId`), deci titularul unui client neautorizat îl vede în continuare.
  */
 export async function lookupClientById(clientId: string): Promise<ClientLookup> {
   try {
@@ -93,6 +105,8 @@ export async function lookupClientById(clientId: string): Promise<ClientLookup> 
  * Backward-compat: `OAuthClient | null` pt. caller-ii care nu disting (verifyClientCredentials, add/removeRedirectUri,
  * token/route). Deleagă la `lookupClientById`; `not_found` ȘI `unavailable` → `null` (comportament neschimbat pt. ei).
  * Path-ul de auth Bearer (`resolveAuth`) folosește `lookupClientById` direct, ca să distingă 401 de 503.
+ * §4.1: moștenește regula admin → pentru un client neautorizat întoarce `null`, deci `/authorize` legacy și
+ * add/removeRedirectUri (dashboard) refuză și ele. Intenționat: allowlist-ul unui client închis nu are efect oricum.
  */
 export async function getClientById(clientId: string): Promise<OAuthClient | null> {
   const r = await lookupClientById(clientId);

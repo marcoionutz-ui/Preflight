@@ -22,7 +22,7 @@ function check(name: string, cond: boolean): void {
 
 const CH       = createHash("sha256").update("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk").digest("base64url");
 const ISSUER   = "https://preflight.app";
-const REDIRECT = "https://claude.ai/api/mcp/callback";
+const REDIRECT = "https://claude.ai/api/mcp/auth_callback"; // callback Claude exact (politica public, design rev3 §3)
 const NOW = 1_800_000_000_000;
 const TTL = 600_000;
 
